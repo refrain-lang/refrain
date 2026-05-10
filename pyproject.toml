@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "refrain"
+version = "0.0.0"
+description = "An open description language for clinical neurofeedback protocols"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+authors = [
+  { name = "Refrain Language" },
+]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Healthcare Industry",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+dependencies = [
+  "lark >= 1.1.9",
+  "numpy >= 1.24",
+  "scipy >= 1.10",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest >= 7.0",
+  "pytest-cov >= 4.0",
+  "ruff >= 0.4",
+  "mypy >= 1.0",
+]
+
+[project.scripts]
+refrain = "refrain.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/refrain"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+"src/refrain/grammar.lark" = "refrain/grammar.lark"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "B", "UP", "PL"]
+ignore = ["PLR0913"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true

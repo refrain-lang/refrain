@@ -1,0 +1,100 @@
+// Alpha-theta training (Peniston-style).
+//
+// Eyes-closed protocol training the alpha/theta crossover state.
+// Reward is continuous audio modulation tied to theta amplitude,
+// with a discrete event chime on alpha-to-theta crossover.
+// Patient is reclined, eyes closed; clinician observes phenomenology.
+//
+// Strawman example for Refrain v0.0. Not yet executable.
+
+protocol "alpha_theta_pz_v1" {
+
+  meta {
+    version          = "1.0.0"
+    evidence         = "clinical"
+    description      = "Alpha-theta training (Peniston) at Pz, linked-ears reference"
+    author           = "Peak Mind"
+    citation         = "Peniston E.G. & Kulkosky P.J. (1989). Alpha-Theta Brainwave Training and Beta-Endorphin Levels in Alcoholics. Alcoholism: Clinical & Experimental Research, 13(2), 271-279."
+    population       = "adults_18_plus"
+    indication       = "trauma_recovery_addiction_creative_state"
+    control_ref      = "library/alpha_theta/sham@1.0"
+    safety_monitoring = ["pre_session_check", "post_session_debrief"]
+    outcome_measures = ["BDI-II", "PCL-5", "subjective_state_report"]
+  }
+
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels    = ["Pz"]
+  }
+
+  input "raw" {
+    montage = referential(active: "Pz", reference: "linked_ears")
+  }
+
+  derive "alpha_envelope" {
+    from = "raw"
+    pipeline = [
+      bandpass(band: (8 Hz, 12 Hz), order: 4),
+      hilbert(),
+      magnitude(),
+      smooth(tau: 500 ms),
+    ]
+  }
+
+  derive "theta_envelope" {
+    from = "raw"
+    pipeline = [
+      bandpass(band: (4 Hz, 8 Hz), order: 4),
+      hilbert(),
+      magnitude(),
+      smooth(tau: 500 ms),
+    ]
+  }
+
+  // Crossover detection: theta - alpha. Positive when theta dominates
+  // (the meditative target state); negative when alpha dominates.
+  derive "theta_minus_alpha" {
+    formula = "theta_envelope" - "alpha_envelope"
+  }
+
+  inhibit "emg" {
+    metric    = bandpower(input: "raw", band: (50 Hz, 100 Hz), window: 100 ms)
+    threshold = percentile(target_pct: 95, window: 2 min)
+    action    = mute(release: 200 ms)
+  }
+
+  reward {
+    // Continuous: audio gain tracks theta-minus-alpha (smoothly increases
+    // as theta begins to dominate, even before full crossover).
+    continuous = sigmoid("theta_minus_alpha", midpoint: 0 uV, steepness: 0.5)
+
+    // Discrete: chime when theta has exceeded alpha for >1 second
+    // (sustained crossover state).
+    event = dwell(
+      condition: above("theta_envelope", "alpha_envelope"),
+      duration: 1000 ms
+    )
+  }
+
+  output {
+    audio_gain  = reward.continuous     // ambient soundscape grows as theta dominates
+    audio_chime = reward.event          // soft tone on sustained crossover
+  }
+
+  controls {
+    theta_midpoint_uv = voltage {
+      default      = 8 uV
+      range        = (3 uV, 25 uV)
+      label        = "Theta reward midpoint"
+      live_tunable = true
+    }
+  }
+
+  session {
+    phases = [
+      phase { name = "settle";   duration = 3 min;  output_muted = true },
+      phase { name = "training"; duration = 30 min },
+      phase { name = "return";   duration = 2 min;  output_muted = true },
+    ]
+  }
+}

@@ -1,0 +1,103 @@
+// Refrain grammar v0.0 — Phase 0 subset.
+//
+// Implemented:
+//   - protocol declaration
+//   - section blocks (meta, requires, reward, output, controls, session)
+//   - named blocks (input, derive, threshold, inhibit)
+//   - assignments
+//   - expressions: literals with units, references, primitive calls with named
+//     args, arrays, tuples, block expressions, binary ops, conditional ternary,
+//     member access, parenthesised expressions
+//
+// Not implemented yet (deferred until after Phase 0 validation):
+//   - extends, amend, remove, final
+//   - formula form for derive (pipeline form covers Phase 0 protocols)
+//   - import declarations
+//   - custom primitive declarations
+//
+// This is a strawman first-draft grammar; expect refinement once we run real
+// example files through it.
+
+start: protocol_decl
+
+protocol_decl: "protocol" string_lit block
+
+block: "{" statement* "}"
+
+?statement: section_block
+         | named_decl
+         | assignment
+
+section_block: SECTION_KW block
+SECTION_KW: "meta" | "requires" | "reward" | "output" | "controls" | "session"
+
+named_decl: DECL_KW string_lit block
+DECL_KW: "input" | "derive" | "threshold" | "inhibit"
+
+assignment: NAME "=" expression
+
+// Expression precedence (loosest to tightest): ternary, or, and, comparison,
+// add/sub, mul/div, member-access, atom.
+
+?expression: ternary
+
+ternary: or_expr ("?" expression ":" expression)?
+
+?or_expr: and_expr (OR_OP and_expr)*
+OR_OP: "||"
+
+?and_expr: comparison (AND_OP comparison)*
+AND_OP: "&&"
+
+?comparison: arith (COMP_OP arith)?
+COMP_OP: "==" | "!=" | "<=" | ">=" | "<" | ">"
+
+?arith: term (ADD_OP term)*
+ADD_OP: "+" | "-"
+
+?term: factor (MUL_OP factor)*
+MUL_OP: "*" | "/"
+
+?factor: atom member_access*
+
+member_access: "." NAME
+
+?atom: literal
+     | call
+     | name_ref
+     | array
+     | tuple
+     | block_expr
+     | "(" expression ")"
+
+call: NAME "(" arg_list? ")"
+arg_list: arg ("," arg)* ","?
+?arg: named_arg | expression
+named_arg: NAME ":" expression
+
+array: "[" (expression ("," expression)* ","?)? "]"
+
+// Tuples require at least two elements to disambiguate from
+// parenthesised single expressions: (a, b), (a, b, c), but not (a).
+tuple: "(" expression ("," expression)+ ","? ")"
+
+// `phase { name = "warmup" }` — constructor-like block expression.
+// `frequency { range = ... default = ... }` — same shape used in controls.
+block_expr: NAME block
+
+name_ref: NAME
+
+literal: number_with_unit | string_lit | bool_lit
+number_with_unit: NUMBER UNIT?
+UNIT: "Hz" | "ms" | "s" | "min" | "uV" | "uV2" | "%"
+string_lit: STRING
+bool_lit: BOOL
+BOOL: "true" | "false"
+
+NAME: /[A-Za-z_][A-Za-z0-9_]*/
+STRING: /"[^"]*"/
+NUMBER: /-?\d+(\.\d+)?([eE][+-]?\d+)?/
+
+COMMENT: /\/\/[^\n]*/ | /\/\*([^*]|\*(?!\/))*\*\//
+%ignore COMMENT
+%ignore /[ \t\r\n]+/
