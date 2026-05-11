@@ -433,6 +433,132 @@ deferred.
 
 ---
 
+## 4c. Evaluator + primitive library — Phase 0d complete (what landed)
+
+Implemented in:
+- `src/refrain/types_.py` (extended), `src/refrain/primitives.py` (extended)
+- `src/refrain/primitive_impls.py` (NEW) — streaming implementations
+- `src/refrain/sources.py` (NEW) — FIF/EDF/XDF/Synthetic source ABC
+- `src/refrain/synthetic.py` (NEW) — pink-noise EEG + scheduled bursts
+- `src/refrain/eval_.py` (NEW) — IR → event-stream walker
+- `src/refrain/cli.py` (extended) — `refrain run` subcommand
+
+The evaluator runs SMR Cz end-to-end against both synthetic and real
+(`data/CRJA_20240228_EO.xdf`) EEG, with reward events firing during
+SMR-enhanced segments and no NaN / crash on a 5-minute real EO baseline.
+
+### `kind:` parameter for filter families (NEW — proposing for v0.1 spec)
+
+`bandpass(..., kind: "butterworth" | "bessel" | "chebyshev2", attenuation_db: 40)`
+
+The `kind` argument is additive on existing primitive signatures and
+backward-compatible (defaults to `"butterworth"`). Cheby II takes an
+optional `attenuation_db` (default 40 dB) for its stopband floor.
+Cheby I and Elliptic are deliberately excluded because their passband
+ripple corrupts amplitude estimates — actively wrong for envelope-based
+NF.
+
+`hilbert(..., kind: "fir" | "iir_allpass", taps: 65)` — same shape.
+
+**Recommended spec addition for v0.1**:
+- §4.4 / PRIMITIVES.md: document `kind:` and the permitted values.
+- Mandate Butterworth as default so existing protocols load unchanged.
+- Add Bessel for phase-fidelity-sensitive research NF; add Cheby II for
+  protocols that need tight band separation.
+- Explicitly call out that Cheby I and Elliptic are not part of the
+  recommended NF filter set (rationale in PRIMITIVES.md).
+
+The resolver validates `kind` values against the permitted set
+(`refrain.primitives.BANDPASS_KINDS`, `HILBERT_KINDS`) at static-check
+time. Typos like `"butterwroth"` or out-of-set choices like `"elliptic"`
+fail with a clear diagnostic before the evaluator even instantiates the
+filter.
+
+### What's implemented in the evaluator
+
+Acquisition: `bipolar`, `referential` (with `linked_ears` falling back
+to common-average when ear channels aren't in the source).
+
+Spectral: `bandpass` (all three kinds; both edge-frequency and
+center/bandwidth parametrisations), `hilbert` (FIR; IIR all-pass is
+grammar-accepted but raises `NotImplementedError` at evaluator
+instantiation — future runtimes can supply it without spec churn).
+
+Time-series math: `magnitude`, `rectify`, `smooth` (one-pole IIR with
+α derived from τ and rate), `differentiate` (centered finite differences).
+
+Statistics: `percentile` (windowed `numpy.percentile`; the P² online
+algorithm is a future optimization), `auto_range` (rolling-percentile
+normalisation to [0, 1]).
+
+Conditions / events: `above`, `below`, `inside`, `all_of`, `any_of`,
+`dwell` (state machine producing both rising-edge events and `.holds`
+boolean view from one underlying counter).
+
+Mappings: `sigmoid`, `linear`. Inhibit actions: `mute` (with release
+hangover), `freeze`, `flag`. `bandpower` (windowed RMS over a
+Butterworth-filtered band).
+
+### What's NOT in the Phase 0d evaluator
+
+- **Vector primitives** (`pct_in_range`, `weighted_sum`) — needed for
+  LZT-class protocols; lands when vector-stream syntax in §10 is
+  resolved.
+- **Norms providers** (`norms.power_db.*`, `client.*`) — research IP
+  boundary; runtime-supplied assets.
+- **Custom Python primitives** (SPEC §4.11) — the language admits them,
+  the IR represents them, but the evaluator's dynamic-import + signature-
+  validation harness is deferred to Phase 0e.
+- **`hilbert(kind: "iir_allpass")`** — the language accepts it; the
+  evaluator raises `NotImplementedError`. Documented; future fix.
+
+### Synthetic validation methodology
+
+`tests/test_eval_validation.py` synthesizes 60 s of pink-noise EEG
+with controllable SMR-band bursts at known timestamps, runs SMR Cz,
+and asserts:
+
+  1. No NaN at any sample.
+  2. `audio_gain` in [0, 1] throughout (SPEC §7.6 clamping).
+  3. Mean `audio_gain` during burst windows exceeds quiet windows.
+  4. At least one `audio_chime` event fires during the burst windows
+     (precise count is loose because dwell + adaptive thresholds make
+     per-burst counts noisy).
+  5. Most chime events occur in or near (within 1 s of) a burst window.
+  6. Baseline pink noise without bursts produces a sane (low) chime
+     rate — not zero (the adaptive 70th-percentile threshold means the
+     condition is met some of the time even on noise) but not runaway.
+
+Also runs each filter `kind` end-to-end on an SMR-like protocol so a
+typo or numerical issue in any family surfaces at test time.
+
+### Real-data smoke test
+
+`data/CRJA_20240228_EO.xdf` — a 5-minute 19-channel Q21 eyes-open
+recording. The validation tests it for non-crash, no NaN, plausible
+chime rate (0–5 events/sec on EO baseline). This is not clinical
+validation (which would need ground-truth events from existing software
+to compare against) — that's Phase 0e.
+
+### Things spec needs to grow
+
+- **`kind:` parameter** — codify per the above.
+- **Inhibit-output gating** — SPEC §7.4 is clear that inhibits modify
+  *output values* and not *reward values*. The evaluator implements
+  this; recommend adding a worked example to TOUR §2 showing the
+  distinction (a downstream derive that consumes `reward.continuous`
+  sees the un-gated value, deliberately).
+- **`reward.event` semantics** — what's a "rising-edge event" precisely?
+  Phase 0d implements it as "boolean true on the sample where streak
+  first reaches dwell_samples." Documenting this explicitly in §5.6
+  would help.
+- **Synthetic source standardization** — the synthetic test generator
+  is implementation-internal. If multiple runtimes want shared
+  validation, we'd need a small standard for "synthetic test signal X"
+  (frequency / amplitude / scheduling) that they all agree on.
+
+---
+
 ## 5. Source location coverage (Phase 0b — done)
 
 What's covered:
@@ -475,3 +601,10 @@ What's coarse:
 - **Schema vs protocol version** (§11.5 vs §9) — decide which one
   `@<version>` in extends refers to, and mandate a single declaration
   site.
+- **`kind:` parameter on filter primitives** (Phase 0d) — codify
+  Butterworth/Bessel/Chebyshev II as the recommended NF set with
+  Butterworth as the implicit default; document why Cheby I and
+  Elliptic are excluded.
+- **`reward.event` rising-edge semantics** — make the "fires on the
+  sample where streak first reaches dwell_samples" rule explicit in
+  §5.6.
