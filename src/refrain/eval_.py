@@ -330,9 +330,12 @@ class Evaluator:
         for arg in call.args:
             self._instantiate_expr(arg.value)
         static, _dynamic = _classify_call(call)
+        # Substitute IRControlRefs in static args with their resolved
+        # Python values. This is how `bandpass(center: orf, ...)` picks
+        # up `orf`'s default at session start. Mid-session retuning is
+        # SPEC §7.7's warm-restart territory and not yet wired here.
+        static = _substitute_controls(static, self._controls)
         if call.callee in ("mute", "freeze", "flag"):
-            # These are inhibit-action constructors; the action object
-            # lives in _inhibit_actions, not in _impls. Skip here.
             return
         if call.callee == "ratio":
             return  # bandwidth constructor; consumed by bandpass
@@ -628,6 +631,29 @@ class Evaluator:
 # ---------------------------------------------------------------------------
 # Free-standing helpers
 # ---------------------------------------------------------------------------
+
+
+def _substitute_controls(value: Any, controls: dict[str, float]) -> Any:
+    """Walk a static-args structure, replacing IRControlRefs with the
+    corresponding control's resolved Python value.
+
+    Handles nested dicts / tuples / lists so that constructs like
+    `bandpass(center: orf, bandwidth: ratio(2.5))` see a float for
+    `center` even though the IR carried an IRControlRef.
+    """
+    if isinstance(value, IRControlRef):
+        if value.target not in controls:
+            raise KeyError(
+                f"control reference {value.target!r} has no resolved value"
+            )
+        return controls[value.target]
+    if isinstance(value, dict):
+        return {k: _substitute_controls(v, controls) for k, v in value.items()}
+    if isinstance(value, tuple):
+        return tuple(_substitute_controls(v, controls) for v in value)
+    if isinstance(value, list):
+        return [_substitute_controls(v, controls) for v in value]
+    return value
 
 
 def _apply_binop(op: str, left: np.ndarray, right: np.ndarray) -> np.ndarray:
