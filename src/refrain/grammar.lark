@@ -1,53 +1,76 @@
-// Refrain grammar v0.0 — Phase 0 subset.
+// Refrain grammar — v0.0r1 (full language surface).
 //
-// Implemented:
-//   - protocol declaration
-//   - section blocks (meta, requires, reward, output, controls, session)
-//   - named blocks (input, derive, threshold, inhibit)
-//   - assignments
-//   - expressions: literals with units, references, primitive calls with named
-//     args, arrays, tuples, block expressions, binary ops, conditional ternary,
-//     member access, parenthesised expressions
-//
-// Not implemented yet (deferred until after Phase 0 validation):
-//   - extends, amend, remove, final
-//   - formula form for derive (pipeline form covers Phase 0 protocols)
+// Covers everything in SPEC.md §3:
 //   - import declarations
-//   - custom primitive declarations
+//   - protocol declaration with optional `extends`
+//   - section blocks (meta, requires, reward, output, controls, session)
+//   - named declarations (input, derive, threshold, inhibit, custom)
+//   - composition: amend, remove
+//   - assignment with optional `;` terminator
+//   - expressions: literals with units, references, calls with named/positional
+//     args, arrays, tuples, parenthesised exprs, block expressions (named
+//     and anonymous), binary ops, ternary conditional, member access
 //
-// This is a strawman first-draft grammar; expect refinement once we run real
-// example files through it.
+// Notes vs. SPEC.md:
+//   - SPEC §3 EBNF defines binary `op` as { + - * / == != < > <= >= }. The
+//     prior draft grammar additionally defined `&&` and `||`; those are
+//     dropped here since they are not in the spec — boolean composition
+//     flows through `all_of` / `any_of` primitives.
+//   - SPEC §2.3 allows hyphens inside identifiers (for electrode-position
+//     tokens like `T3-T4`), with `binary - requires whitespace` as the
+//     disambiguator. Implementing whitespace-sensitive operators in Lark
+//     would require a custom lexer; meanwhile every example expresses
+//     electrode positions as string literals (`"T3-T4"`), so this v0.0r1
+//     grammar uses the conservative identifier pattern. Flagged in the PR.
+//   - SPEC §2.2 says block comments may nest. Lark's `%ignore` is regex-
+//     based and cannot match nested delimiters; block comments are
+//     stripped by a preprocessor in `parser.py` before Lark sees the
+//     source (newlines preserved for line tracking).
+//   - `final` is NOT a grammar keyword (SPEC §11.4 uses it as a field
+//     assignment `final = true` inside a declaration). It is the
+//     resolver's job to enforce.
 
-start: protocol_decl
+start: file
 
-protocol_decl: "protocol" string_lit block
+file: import_decl* protocol_decl
+
+import_decl: "import" string_lit ("as" NAME)? ";"
+
+protocol_decl: "protocol" string_lit extends_clause? block
+
+extends_clause: "extends" string_lit
 
 block: "{" statement* "}"
 
 ?statement: section_block
-         | named_decl
-         | assignment
+          | amend_decl
+          | remove_decl
+          | named_decl
+          | assignment
 
 section_block: SECTION_KW block
 SECTION_KW: "meta" | "requires" | "reward" | "output" | "controls" | "session"
 
 named_decl: DECL_KW string_lit block
-DECL_KW: "input" | "derive" | "threshold" | "inhibit"
+DECL_KW: "input" | "derive" | "threshold" | "inhibit" | "custom"
 
-assignment: NAME "=" expression
+amend_decl: "amend" (amend_section | amend_named)
+amend_section: SECTION_KW block
+amend_named: DECL_KW string_lit block
 
-// Expression precedence (loosest to tightest): ternary, or, and, comparison,
-// add/sub, mul/div, member-access, atom.
+remove_decl: "remove" DECL_KW string_lit ";"?
+
+assignment: NAME "=" expression ";"?
+
+// Expression precedence (loosest to tightest):
+//   ternary > comparison > add/sub > mul/div > member-access > atom.
+//
+// `?`-prefixed rules inline single-child trees, so simple expressions
+// pass through without a wrapper Tree.
 
 ?expression: ternary
 
-ternary: or_expr ("?" expression ":" expression)?
-
-?or_expr: and_expr (OR_OP and_expr)*
-OR_OP: "||"
-
-?and_expr: comparison (AND_OP comparison)*
-AND_OP: "&&"
+?ternary: comparison ("?" expression ":" expression)?
 
 ?comparison: arith (COMP_OP arith)?
 COMP_OP: "==" | "!=" | "<=" | ">=" | "<" | ">"
@@ -58,17 +81,16 @@ ADD_OP: "+" | "-"
 ?term: factor (MUL_OP factor)*
 MUL_OP: "*" | "/"
 
-?factor: atom member_access*
-
-member_access: "." NAME
+?factor: atom member_chain?
+member_chain: ("." NAME)+
 
 ?atom: literal
      | call
      | name_ref
      | array
      | tuple
+     | paren_expr
      | block_expr
-     | "(" expression ")"
 
 call: NAME "(" arg_list? ")"
 arg_list: arg ("," arg)* ","?
@@ -77,27 +99,28 @@ named_arg: NAME ":" expression
 
 array: "[" (expression ("," expression)* ","?)? "]"
 
-// Tuples require at least two elements to disambiguate from
-// parenthesised single expressions: (a, b), (a, b, c), but not (a).
+// Tuple requires 2+ elements; `(a)` is paren_expr, `(a, b)` is tuple.
 tuple: "(" expression ("," expression)+ ","? ")"
+paren_expr: "(" expression ")"
 
-// `phase { name = "warmup" }` — constructor-like block expression.
-// `frequency { range = ... default = ... }` — same shape used in controls.
-block_expr: NAME block
+// Named record block (e.g. `phase { ... }`, `frequency { ... }`) or the
+// anonymous form per SPEC §3 (`block_expr = block`).
+block_expr: NAME? block
 
 name_ref: NAME
 
 literal: number_with_unit | string_lit | bool_lit
 number_with_unit: NUMBER UNIT?
-UNIT: "Hz" | "ms" | "s" | "min" | "uV" | "uV2" | "%"
+UNIT: "uV2" | "Hz" | "ms" | "min" | "s" | "uV" | "%"
 string_lit: STRING
 bool_lit: BOOL
-BOOL: "true" | "false"
+BOOL.2: "true" | "false"
 
 NAME: /[A-Za-z_][A-Za-z0-9_]*/
-STRING: /"[^"]*"/
-NUMBER: /-?\d+(\.\d+)?([eE][+-]?\d+)?/
+STRING: /"(\\.|[^"\\])*"/
+NUMBER: /\d+(\.\d+)?([eE][+-]?\d+)?/
 
-COMMENT: /\/\/[^\n]*/ | /\/\*([^*]|\*(?!\/))*\*\//
-%ignore COMMENT
+LINE_COMMENT: /\/\/[^\n]*/
+
+%ignore LINE_COMMENT
 %ignore /[ \t\r\n]+/
