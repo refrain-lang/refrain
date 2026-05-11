@@ -1,0 +1,349 @@
+# Refrain implementation design notes
+
+**Status:** internal — implementation-side scratchpad, distinct from the
+public design corpus (`CONCEPT.md`, `SPEC.md`, `TOUR.md`, `PRIMITIVES.md`).
+Things in this file move into the spec once we're confident; until then
+they live here so future-us can pick up state without re-discovering it.
+
+This file is updated as the implementation progresses. Each section
+notes what session surfaced it and what's still open.
+
+---
+
+## 1. Spec gaps the resolver and type checker will hit
+
+Surfaced in Phase 0a (parser). The parser accepts what SPEC.md §3 says is
+grammatical and flags the ambiguities below to the resolver layer. Each
+needs a spec-level decision before the type checker can ship.
+
+### 1.1 Hyphenated identifiers (SPEC §2.3)
+
+The spec defines identifiers as `[A-Za-z_][A-Za-z0-9_-]*` with the
+disambiguation "binary `-` requires whitespace; identifier hyphens do
+not." This cannot be expressed in a context-free grammar without a
+whitespace-sensitive lexer; Lark's default lexer treats whitespace as
+purely a separator.
+
+Every example expresses electrode-position tokens as string literals
+(`"T3-T4"`), so the practical surface doesn't exercise the rule.
+
+**Proposed spec revision:** drop hyphens from §2.3. Electrode positions
+inside expressions remain string-literal references. If a future need
+arises for typed electrode-position tokens (autocomplete, validation),
+add a distinct `position_lit` production with its own delimiters.
+
+### 1.2 `custom` declaration syntax (SPEC §4.11)
+
+The §4.11 example shows two pieces of syntax not defined in §3:
+
+```refrain
+custom "my_phase_metric" {
+  signature = (stream<vector<19> uV>) -> stream<scalar dimensionless>
+  budget    = { state_kb: 4, worst_case_us: 50 }
+}
+```
+
+- The RHS of `signature =` is a bare type expression. §3's expression
+  grammar has no type-literal production. `<` and `>` are comparison
+  operators, so the parser sees this as a parse error.
+- `{ state_kb: 4, worst_case_us: 50 }` uses `:` separators and `,` joiners
+  inside a record. §3's block bodies are statement sequences with
+  `=`-form assignments separated by `;` or newlines.
+
+**Parser-level resolution (Phase 0a):** accept `signature` as a string
+literal and `budget` as a block-expression with `=`-form fields.
+
+**Proposed spec revision:** rewrite §4.11 to use the §3-compatible forms
+(`signature = "..."` and `budget = { state_kb = 4 }`) and defer the
+type-literal extension to v0.1. The string-literal form is parser-stable
+and the type-string is parseable by a tiny secondary grammar in the
+resolver. If type literals as first-class expressions become important
+(e.g. to support `match` on a stream type), add them to v0.1 with their
+own `type_literal` production.
+
+### 1.3 Negative numeric literals
+
+SPEC §3 has no unary minus production. TOUR §7's LZT sketch uses
+`range: (-1, 1)`, but TOUR §7 is itself flagged in SPEC §10 as
+incomplete.
+
+The parser does not accept negative numeric literals. Workaround in
+tests: use positive ranges.
+
+**Proposed spec revision:** add unary minus to §3's expression grammar
+with the same `-` token. The Earley parser handles the resulting
+`(- expr | expr)` ambiguity via context: in `(a - 1)`, the `-` is a
+binary operator; in `(-1, 1)` (after `(`, `,` or `=`), it's unary.
+
+### 1.4 `block_expr = block` vs the named form
+
+§3 EBNF: `block_expr = block` (anonymous record). Every example uses
+the named form: `phase { ... }`, `frequency { ... }`, `voltage { ... }`,
+etc. The parser accepts both with `BlockExpr.name: str | None`.
+
+**Proposed spec revision:** update §3 EBNF to
+`block_expr = identifier? block`. The name (when present) is a typeishtag
+the resolver uses for dispatch (`phase`, `frequency`, control-type tags).
+
+### 1.5 `session.schedule` is named but not defined
+
+SPEC §8's CRED-nf mapping table references `session.schedule` for
+"Number of sessions," but §3 and §4.10 only define `session.phases`.
+
+**Proposed spec revision:** either add a `session.schedule` field shape
+to §4.10 (proposed: a structured record with `total_sessions`, `cadence`,
+`break_weeks`, etc.) or remove the CRED-nf row and acknowledge sessions-
+per-week is reported in `meta.session_protocol_summary` as free text.
+
+### 1.6 Inside-block statement filtering
+
+§3 EBNF lets any `statement` appear inside any `block`. The parser does
+not filter, so `meta { input "X" { ... } }` parses (semantically nonsense).
+
+**Resolver responsibility:** enforce that:
+- `meta`, `requires`, `reward`, `output`, `controls`, `session` contain
+  only assignments (and possibly typed-block expressions in `controls`).
+- Top-level protocol body allows any of: section blocks, named decls,
+  amends, removes.
+- `input`, `derive`, `threshold`, `inhibit`, `custom` blocks contain
+  only assignments.
+
+**Proposed spec revision:** tighten §3 EBNF to enumerate which
+statements are legal in which contexts, OR document the contextual
+restrictions in each §4.* subsection (less rigorous but more readable).
+
+### 1.7 `final = true` as a field, not a modifier
+
+SPEC §11.4 says "Parent protocols may mark declarations as `final`,
+preventing child override or removal" but the example shows `final =
+true` as a body field. The parser treats it as an `Assignment`.
+
+This is unambiguous as long as the resolver knows to look for the
+`final` field on each named decl. Document explicitly in §11.4 that
+`final` is a body-level reserved field name, not a syntactic modifier.
+
+---
+
+## 2. Amp profile JSON schema (Session 2)
+
+The resolver validates a protocol's `requires` block against a connected
+amplifier. The amp's capabilities arrive as a JSON document the resolver
+consumes. The schema needs to cover what §4.2 references, plus what
+runtime engines will need at validation time.
+
+### 2.1 Draft schema shape
+
+```json
+{
+  "schema": "refrain-amp-profile/v0",
+  "model": "neurofield-q21",
+  "vendor": "Neurofield",
+  "firmware": "2024.03.1",
+
+  "coupling": ["dc", "ac"],
+  "sample_rates_hz": [256, 512, 1024, 2048],
+  "channels": [
+    {"name": "Fp1", "type": "eeg"},
+    {"name": "T3",  "type": "eeg"},
+    {"name": "Cz",  "type": "eeg"},
+    ...
+    {"name": "A1",  "type": "reference"},
+    {"name": "A2",  "type": "reference"}
+  ],
+  "supports_impedance_check": true,
+  "supports_markers": true,
+  "max_simultaneous_channels": 21,
+  "adc_bits": 24,
+  "input_range_uv": 374000,
+
+  "runtime_limits": {
+    "max_protocol_state_kb": 256,
+    "max_worst_case_us_per_step": 1000
+  }
+}
+```
+
+### 2.2 Open questions
+
+- **Vendor-supplied vs community-maintained.** CONCEPT.md flags this as
+  governance, not technical. Initial implementation: ship Q21 + OpenBCI
+  + BrainProducts profiles in `refrain/amp_profiles/` as JSON, document
+  how vendors contribute.
+- **`linked_ears` and `common_average` virtual references.** These are
+  computed from physical channels at runtime; not amp capabilities.
+  Don't put them in the profile — the resolver knows about them from
+  PRIMITIVES.md's `referential` semantics.
+- **Sample-rate ranges vs enumeration.** Real amps support discrete
+  rates, but a protocol's `sample_rate = ">= 256 Hz"` is a comparison.
+  The resolver picks the highest rate in `sample_rates_hz` that
+  satisfies the comparison.
+- **Channel name normalisation.** "T3" (old 10-20) vs "T7" (modern
+  10-10) refer to the same physical location. Should profiles list both
+  names, or should the resolver canonicalize? Lean toward the profile
+  exposing the amp's actual labels and the resolver matching with a
+  configurable alias table.
+
+### 2.3 Spec impact
+
+§4.2 `requires` should reference this schema explicitly:
+
+> The protocol's `requires` block is matched against an amp-profile JSON
+> document conforming to `refrain-amp-profile/v0` (see
+> `docs/AMP-PROFILE-SCHEMA.md`). Each `requires` field has a documented
+> comparison semantics against a profile field.
+
+This file (`AMP-PROFILE-SCHEMA.md`) does not yet exist; create it in
+Session 2 alongside the resolver.
+
+---
+
+## 3. Primitive type-signature registry (Session 2)
+
+Each primitive in `PRIMITIVES.md` needs a machine-readable signature
+the resolver can type-check calls against. The registry maps the
+primitive name to its parameter shape, defaults, and output-stream
+contract.
+
+### 3.1 Sketch
+
+```python
+# In refrain.primitives (Session 2)
+@register("bandpass")
+class BandpassSig:
+    """SPEC §4.4 / PRIMITIVES.md 'bandpass'."""
+    parametrisations = [
+        # band: (low_Hz, high_Hz), order: int
+        Sig(
+            inputs=(Stream(Scalar(uV)),),
+            params={
+                "band": Tuple(Number(Hz), Number(Hz)),
+                "order": Number(dimensionless, default=4),
+            },
+            output=Stream(Scalar(uV)),
+        ),
+        # center: Hz, bandwidth: ratio | (low_Hz, high_Hz), order: int
+        Sig(
+            inputs=(Stream(Scalar(uV)),),
+            params={
+                "center": Number(Hz),
+                "bandwidth": OneOf(RatioConstructor, Tuple(Number(Hz), Number(Hz))),
+                "order": Number(dimensionless, default=4),
+            },
+            output=Stream(Scalar(uV)),
+        ),
+    ]
+    budget = ResourceBudget(state_kb=2, worst_case_us=15)
+```
+
+### 3.2 Open questions
+
+- **Overloads.** `bandpass` has two parametrisations; the resolver picks
+  by named-arg presence (`band=` vs `center=`). Need a clean disambiguation
+  rule when both could match.
+- **Unit composition.** `differentiate()` returns `T/s` for any input
+  unit `T`. The signature language needs a way to express "preserve
+  input unit but multiply by 1/s." `square(uV) -> uV2` is similar.
+- **Variadic primitives.** `all_of([cond, cond, ...])` takes an array
+  of variable length.
+- **Threshold-type "constructors"** (`absolute`, `percentile`, `dynamic`):
+  these aren't primitives in the dataflow sense; they're values consumed
+  by `threshold` blocks. Probably a separate registry.
+- **Inhibit-action constructors** (`mute`, `freeze`, `flag`) similar.
+
+### 3.3 Spec impact
+
+PRIMITIVES.md currently uses informal signature notation
+(`bandpass(band: (low_Hz, high_Hz), order: int = 4) -> stream<scalar uV>`).
+The registry-Python form should round-trip to this notation for docs.
+No spec change required, but PRIMITIVES.md should explicitly note that
+the canonical signature lives in the registry and the prose is rendered.
+
+---
+
+## 4. IR sketch (Session 2)
+
+The resolver emits an IR: a fully-resolved, fully-typed dataflow graph
+ready for the evaluator. Shape (early draft):
+
+```python
+@dataclass(frozen=True, slots=True)
+class IRStream:
+    """A typed stream node in the dataflow graph."""
+    name: str                      # canonical: "input/raw", "derive/smr_envelope", ...
+    type: StreamType               # rate, value type, units
+    producer: IRProducer           # input, primitive call, expression
+    consumers: tuple[str, ...]     # names of streams depending on this one
+
+@dataclass(frozen=True, slots=True)
+class IRProtocol:
+    name: str
+    meta: dict[str, IRValue]
+    requires: dict[str, IRValue]
+    streams: dict[str, IRStream]   # all named streams, topologically ordered
+    reward: IRReward
+    output: dict[str, IRExpr]      # channel -> expression
+    controls: dict[str, IRControl]
+    session: IRSession
+    resource_budget: ResourceBudget  # computed from primitives
+```
+
+### 4.1 Open questions
+
+- **Should formula derives stay as expression trees, or be flattened
+  to a sequence of intermediate streams?** Expression trees are more
+  compact and preserve author intent; flattening makes the evaluator
+  uniform. Lean toward expression trees with the evaluator handling
+  them recursively.
+- **Where do `controls` references resolve?** A control like `orf` is
+  a runtime-mutable scalar. References to it (in `bandpass(center: orf)`)
+  resolve to a special `IRControlRef` node that the evaluator dereferences
+  per step.
+- **Inhibit gating model.** §7.4 says inhibits modify *what reaches the
+  patient* at the output stage, not reward values. So the IR's reward
+  node is unconditioned and each output binding gets implicit
+  gate-by-inhibits wrapping. Document this explicitly in IR.
+- **`event_stream` representation.** SPEC §10 open question 9 asks
+  whether both consumption modes (rising-edge event + `.holds` boolean)
+  should be opt-in. Lean toward both-always: it costs one extra boolean
+  per event-stream, runtime cost is negligible. Document opinion in IR;
+  let spec follow.
+
+---
+
+## 5. Source location coverage (Phase 0b — done)
+
+What's covered:
+- Every parser-produced AST node has a populated `loc: Loc` with
+  1-based line and column from Lark.
+- `loc` is excluded from equality and repr so round-tripping and test
+  ergonomics still work.
+
+What's coarse:
+- Inner nodes of left-folded chains (`a + b + c + d`) and member chains
+  (`a.b.c.d`) all share the outermost rule's span. Tightening to
+  per-node spans is a follow-up if a diagnostic surface needs it.
+- `Arg` nodes (positional) get the loc of their wrapped value, not the
+  full positional-arg span (which is the same in practice — no leading
+  syntax). Named args get the full `name: value` span.
+- `paren_expr` and `literal` pass through; the inner node's tighter loc
+  wins, which is the right call for diagnostics that point at content.
+
+---
+
+## 6. Things to revisit before v0.1
+
+- **Hyphenated identifiers** — drop or split into `position_lit`.
+- **§4.11 `custom`** — pick string-form signatures or commit to a
+  type-literal extension.
+- **Negative literals** — add unary minus.
+- **`block_expr = identifier? block`** — bring §3 in line with usage.
+- **`session.schedule`** — define or remove from §8.
+- **Statement-context restrictions** — tighten §3 or document per §4.
+- **`final` as a body field** — explicit note in §11.4.
+- **Vector reduction syntax** (§10 open question 1) — needed for LZT.
+- **Event-stream consumption opt-in** (§10 open question 9) — IR
+  decision feeds spec.
+- **`source_project` semantics** (§10 open question 2) — needs concrete
+  shape before z-score / source-space NF can ship.
+- **Reserved-word collisions** (§10 open question 7) — pick a namespace
+  separator before custom primitives can shadow stdlib names.
