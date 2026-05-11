@@ -238,29 +238,146 @@ def _massage_static_args(callee: str, static: dict[str, Any]) -> dict[str, Any]:
 
 
 class Evaluator:
-    """One-shot evaluator for an IRProtocol + Source.
+    """Runs a resolved `IRProtocol` against incoming sample chunks.
 
-    Construction does the setup phase: instantiate impls, resolve controls,
-    cache the IR walk plan. `run()` is a generator of `Event` records.
+    Two construction modes:
+
+      - `Evaluator(ir, source)` — *pull-mode*. Wraps a `Source` (file or
+        synthetic) and yields events from `run()`. Best for offline
+        replay and validation.
+
+      - `Evaluator.live(ir, sample_rate_hz, channel_names)` — *push-mode*.
+        Host applications (a recording app, an LSL bridge) hand chunks
+        in via `step_chunk(chunk)` and receive the events that fired
+        during that chunk. Best for live operation.
+
+    Lifecycle (SPEC §7.1):
+
+        ready  -- start() -->  warmup  -- (auto, after first muted phase)
+                                                 \\
+                                                  V
+                                                  run  -- stop() --> stopped
+
+    During `warmup`, primitive state (filter delay lines, percentile
+    windows) continues to update, but output bindings are muted so the
+    patient never hears artifacts from filter settling. The protocol
+    declares the warmup window via `session.phases[0].output_muted`.
+
+    Mid-session control tuning (SPEC §7.7) goes through `set_control`.
+    Filter coefficients recompute warm-restart-style; primitive state
+    is preserved across the change.
     """
 
-    def __init__(self, ir: IRProtocol, source: Source):
+    def __init__(
+        self,
+        ir: IRProtocol,
+        source: Source | None = None,
+        *,
+        sample_rate_hz: float | None = None,
+        channel_names: tuple[str, ...] | None = None,
+    ):
+        if source is not None:
+            if sample_rate_hz is not None or channel_names is not None:
+                raise ValueError(
+                    "Evaluator: pass either a Source OR explicit "
+                    "sample_rate_hz + channel_names, not both"
+                )
+            self.source = source
+            self.sample_rate_hz = source.sample_rate_hz
+            self.channel_names = source.channel_names
+        else:
+            if sample_rate_hz is None or channel_names is None:
+                raise ValueError(
+                    "Evaluator: in push-mode (no Source), both "
+                    "sample_rate_hz and channel_names are required"
+                )
+            self.source = None
+            self.sample_rate_hz = float(sample_rate_hz)
+            self.channel_names = tuple(channel_names)
         self.ir = ir
-        self.source = source
-        self.sample_rate_hz = source.sample_rate_hz
-        self.channel_names = source.channel_names
 
         # impls keyed by id(IRCall). One instance per CALL SITE so state
         # is per-call-site, not shared.
         self._impls: dict[int, impls.PrimitiveImpl] = {}
-        # Static control values, resolved once.
+        # Static control values, resolved once at construction.
         self._controls: dict[str, float] = self._resolve_controls()
+        # `control_target -> [impls that consumed it at construction]`
+        # so set_control(...) can forward updates.
+        self._control_deps: dict[str, list[impls.PrimitiveImpl]] = {}
         # Pre-instantiate input/derive/threshold/inhibit primitives.
         self._build_pipeline()
         # Inhibit actions are at the output stage.
         self._inhibit_actions: dict[str, Any] = self._build_inhibit_actions()
         # Track output-binding canonical names for event emission order.
         self._output_channels = list(ir.output.keys())
+
+        # Lifecycle state.
+        self._state: str = "ready"
+        self._samples_pushed: int = 0
+        self._warmup_samples: int = self._compute_warmup_samples()
+
+    # -- Live-mode factory --------------------------------------------------
+
+    @classmethod
+    def live(
+        cls,
+        ir: IRProtocol,
+        *,
+        sample_rate_hz: float,
+        channel_names: tuple[str, ...],
+    ) -> Evaluator:
+        """Construct a push-mode evaluator. The host calls `start()`,
+        then `step_chunk(chunk)` per arriving sample chunk, then `stop()`."""
+        return cls(ir, sample_rate_hz=sample_rate_hz, channel_names=channel_names)
+
+    # -- Lifecycle ----------------------------------------------------------
+
+    @property
+    def state(self) -> str:
+        """`"ready"` | `"warmup"` | `"run"` | `"stopped"`."""
+        return self._state
+
+    @property
+    def warmup_remaining_s(self) -> float:
+        """Seconds of warmup left, or 0 if not in warmup."""
+        if self._state != "warmup":
+            return 0.0
+        remaining = max(0, self._warmup_samples - self._samples_pushed)
+        return remaining / self.sample_rate_hz
+
+    def start(self, *, skip_warmup: bool = False) -> None:
+        """Enter `warmup` (or directly `run` if the protocol has no
+        warmup-muted phase). Call before the first `step_chunk`.
+
+        `skip_warmup=True` jumps straight to `run`, useful for offline
+        analysis and tests where the warmup-output-muting behaviour is
+        not the thing under test. Real clinical sessions should NEVER
+        skip warmup — filter state and percentile windows need the
+        warmup window to populate, and the patient would hear settling
+        transients without it.
+        """
+        if self._state != "ready":
+            raise RuntimeError(f"Evaluator.start() called in state {self._state!r}")
+        self._samples_pushed = 0
+        if skip_warmup or self._warmup_samples == 0:
+            self._state = "run"
+        else:
+            self._state = "warmup"
+
+    def stop(self) -> None:
+        """End the session. Subsequent `step_chunk` calls raise."""
+        self._state = "stopped"
+
+    def _compute_warmup_samples(self) -> int:
+        """Look at the first session phase; if `output_muted = true`, its
+        duration becomes the warmup window. Otherwise the protocol enters
+        `run` immediately."""
+        if not self.ir.session.phases:
+            return 0
+        first = self.ir.session.phases[0]
+        if not first.output_muted:
+            return 0
+        return int(round(first.duration_ms / 1000.0 * self.sample_rate_hz))
 
     # -- Setup -------------------------------------------------------------
 
@@ -330,10 +447,12 @@ class Evaluator:
         for arg in call.args:
             self._instantiate_expr(arg.value)
         static, _dynamic = _classify_call(call)
-        # Substitute IRControlRefs in static args with their resolved
-        # Python values. This is how `bandpass(center: orf, ...)` picks
-        # up `orf`'s default at session start. Mid-session retuning is
-        # SPEC §7.7's warm-restart territory and not yet wired here.
+        # Note any IRControlRefs in the static args *before* substitution
+        # so we can later forward set_control updates to this impl.
+        control_targets = _collect_control_targets(static)
+        # Substitute IRControlRefs with their resolved Python values
+        # (SPEC §5.4 / §7.7). `bandpass(center: orf, ...)` picks up
+        # `orf`'s default here; live retuning is wired via `set_control`.
         static = _substitute_controls(static, self._controls)
         if call.callee in ("mute", "freeze", "flag"):
             return
@@ -346,6 +465,8 @@ class Evaluator:
             channel_names=self.channel_names,
         )
         self._impls[id(call)] = impl
+        for target in control_targets:
+            self._control_deps.setdefault(target, []).append(impl)
 
     def _build_inhibit_actions(self) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -364,122 +485,195 @@ class Evaluator:
             out[ih.canonical_name] = act
         return out
 
-    # -- Run ---------------------------------------------------------------
+    # -- Run / step_chunk --------------------------------------------------
 
-    def run(self, *, chunk_size: int = 64) -> Iterator[Event]:
-        """Yield events one chunk at a time."""
-        # Stream values keyed by canonical name (input/derive/threshold/inhibit).
-        # Each chunk we recompute them in topological order.
-        cursor_samples = 0
-        # Cache static control-value chunks.
-        control_chunks_cache: dict[str, np.ndarray] = {}
+    def run(
+        self,
+        *,
+        chunk_size: int = 64,
+        skip_warmup: bool = False,
+    ) -> Iterator[Event]:
+        """Pull-mode runner: iterate over the configured Source, yielding
+        events as they fire.
 
+        Equivalent to repeatedly calling `step_chunk(chunk)`. The first
+        chunk transitions the lifecycle from `ready` → `warmup` (or
+        directly to `run` if the protocol has no warmup phase or
+        `skip_warmup=True` was passed). See `start()` for the warmup
+        rationale.
+        """
+        if self.source is None:
+            raise RuntimeError(
+                "Evaluator.run() requires a Source. For push-mode (without "
+                "a Source), use Evaluator.live(...) and step_chunk()."
+            )
+        if self._state == "ready":
+            self.start(skip_warmup=skip_warmup)
         for raw_chunk in self.source.iter_chunks(chunk_size):
-            actual_chunk_size = raw_chunk.shape[0]
-            t0_s = cursor_samples / self.sample_rate_hz
+            yield from self.step_chunk(raw_chunk)
 
-            # Refresh control chunks if size changed.
-            if not control_chunks_cache or next(iter(control_chunks_cache.values())).shape[0] != actual_chunk_size:
-                control_chunks_cache = {
-                    name: np.full(actual_chunk_size, val, dtype=np.float64)
-                    for name, val in self._controls.items()
-                }
+    def step_chunk(self, raw_chunk: np.ndarray) -> list[Event]:
+        """Push-mode chunk processor: consume one (n_samples, n_channels)
+        chunk, return the events that fired during it.
 
-            stream_values: dict[str, np.ndarray] = {}
+        The first call after construction implicitly transitions from
+        `ready` to `warmup`/`run`. During `warmup`, primitive state
+        still updates (filters settle, percentile windows populate),
+        but output events are suppressed so the patient doesn't hear
+        artifacts. After enough samples have been pushed to satisfy the
+        protocol's first muted phase, the evaluator transitions to `run`
+        and starts emitting events.
 
-            # Inputs
-            for inp in self.ir.inputs.values():
-                impl = self._impls[id(inp.montage)]
-                stream_values[inp.canonical_name] = impl.step(raw_chunk)
+        Re-shapes a 1-D chunk to (n, 1) for single-channel sources.
+        """
+        if self._state == "ready":
+            self.start()
+        if self._state == "stopped":
+            raise RuntimeError("Evaluator.step_chunk() called after stop()")
 
-            # Derives
-            for d in self.ir.derives.values():
-                stream_values[d.canonical_name] = self._eval_expr(
-                    d.expression, stream_values, control_chunks_cache, actual_chunk_size
+        if raw_chunk.ndim == 1:
+            raw_chunk = raw_chunk[:, None]
+        if raw_chunk.shape[1] != len(self.channel_names):
+            raise ValueError(
+                f"step_chunk: chunk has {raw_chunk.shape[1]} channels "
+                f"but evaluator was configured for {len(self.channel_names)} "
+                f"({self.channel_names!r})"
+            )
+
+        actual_chunk_size = raw_chunk.shape[0]
+        t0_s = self._samples_pushed / self.sample_rate_hz
+
+        # Build per-chunk control broadcasts.
+        control_chunks_cache: dict[str, np.ndarray] = {
+            name: np.full(actual_chunk_size, val, dtype=np.float64)
+            for name, val in self._controls.items()
+        }
+
+        events = list(self._process_chunk(raw_chunk, t0_s, control_chunks_cache))
+
+        # Advance cursor and possibly transition warmup -> run.
+        self._samples_pushed += actual_chunk_size
+        if self._state == "warmup" and self._samples_pushed >= self._warmup_samples:
+            self._state = "run"
+
+        return events
+
+    def _process_chunk(
+        self,
+        raw_chunk: np.ndarray,
+        t0_s: float,
+        control_chunks_cache: dict[str, np.ndarray],
+    ) -> Iterator[Event]:
+        """Walk the IR for one chunk. Always updates state; only emits
+        events when state == 'run'."""
+        actual_chunk_size = raw_chunk.shape[0]
+        suppress_output = (self._state == "warmup")
+
+        stream_values: dict[str, np.ndarray] = {}
+
+        # Inputs
+        for inp in self.ir.inputs.values():
+            impl = self._impls[id(inp.montage)]
+            stream_values[inp.canonical_name] = impl.step(raw_chunk)
+
+        # Derives
+        for d in self.ir.derives.values():
+            stream_values[d.canonical_name] = self._eval_expr(
+                d.expression, stream_values, control_chunks_cache, actual_chunk_size
+            )
+
+        # Thresholds: per-threshold call, fed the signal it tracks.
+        for t in self.ir.thresholds.values():
+            impl = self._impls[id(t.threshold_call)]
+            if isinstance(impl, impls.AbsoluteThresholdImpl):
+                stream_values[t.canonical_name] = impl.step(np.zeros(actual_chunk_size))
+            else:
+                signal_chunk = stream_values[t.signal]
+                stream_values[t.canonical_name] = impl.step(signal_chunk)
+
+        # Inhibits: metric → threshold → boolean active stream.
+        inhibit_active: dict[str, np.ndarray] = {}
+        for ih in self.ir.inhibits.values():
+            metric_chunk = self._eval_expr(
+                ih.metric, stream_values, control_chunks_cache, actual_chunk_size
+            )
+            thresh_impl = self._impls[id(ih.threshold)]
+            if isinstance(thresh_impl, impls.AbsoluteThresholdImpl):
+                thresh_chunk = thresh_impl.step(np.zeros(actual_chunk_size))
+            else:
+                thresh_chunk = thresh_impl.step(metric_chunk)
+            inhibit_active[ih.canonical_name] = metric_chunk > thresh_chunk
+
+        # Reward
+        reward_continuous: np.ndarray | None = None
+        reward_event: impls.DwellResult | None = None
+        if self.ir.reward.continuous is not None:
+            reward_continuous = self._eval_expr(
+                self.ir.reward.continuous,
+                stream_values, control_chunks_cache, actual_chunk_size,
+            )
+        if self.ir.reward.event is not None:
+            reward_event = self._eval_reward_event(
+                self.ir.reward.event,
+                stream_values, control_chunks_cache, actual_chunk_size,
+            )
+
+        # Output bindings + inhibit gating. During warmup we still compute
+        # everything (so primitive state stays current), but suppress
+        # emission so the patient hears nothing while filters settle.
+        if suppress_output:
+            return
+
+        for channel, expr in self.ir.output.items():
+            values = self._eval_expr(
+                expr,
+                stream_values, control_chunks_cache, actual_chunk_size,
+                reward_continuous=reward_continuous,
+                reward_event=reward_event,
+            )
+            muted = self._compute_muted(inhibit_active, actual_chunk_size)
+            if self._is_event_channel(expr):
+                for i in range(actual_chunk_size):
+                    if values[i] and not muted[i]:
+                        yield Event(
+                            timestamp_s=t0_s + i / self.sample_rate_hz,
+                            channel=channel,
+                            kind="event",
+                            value=None,
+                        )
+            else:
+                clamped = np.clip(values, 0.0, 1.0)
+                gated = np.where(muted, 0.0, clamped)
+                yield Event(
+                    timestamp_s=t0_s,
+                    channel=channel,
+                    kind="value",
+                    value=float(np.mean(gated)),
                 )
 
-            # Thresholds: the threshold's value stream = call(threshold_call) on the
-            # source signal (referenced as IRStreamRef.signal — already in stream_values).
-            for t in self.ir.thresholds.values():
-                impl = self._impls[id(t.threshold_call)]
-                # PercentileImpl is fed the signal it tracks; absolute is constant.
-                if isinstance(impl, impls.AbsoluteThresholdImpl):
-                    stream_values[t.canonical_name] = impl.step(np.zeros(actual_chunk_size))
-                else:
-                    signal_chunk = stream_values[t.signal]
-                    stream_values[t.canonical_name] = impl.step(signal_chunk)
+    # -- Mid-session control tuning (SPEC §7.7) ----------------------------
 
-            # Inhibits: metric → threshold → boolean active stream.
-            # Stored under canonical_name as the BOOLEAN active stream
-            # (not the metric value itself).
-            inhibit_active: dict[str, np.ndarray] = {}
-            for ih in self.ir.inhibits.values():
-                metric_chunk = self._eval_expr(
-                    ih.metric, stream_values, control_chunks_cache, actual_chunk_size
-                )
-                # Threshold call: a percentile/absolute over the metric.
-                thresh_impl = self._impls[id(ih.threshold)]
-                if isinstance(thresh_impl, impls.AbsoluteThresholdImpl):
-                    thresh_chunk = thresh_impl.step(np.zeros(actual_chunk_size))
-                else:
-                    thresh_chunk = thresh_impl.step(metric_chunk)
-                inhibit_active[ih.canonical_name] = metric_chunk > thresh_chunk
+    def set_control(self, name: str, value: float) -> None:
+        """Update a control's runtime value and forward the change to any
+        primitive impls that depend on it (warm-restart per SPEC §7.7 —
+        impl state is preserved across the update).
 
-            # Reward
-            reward_continuous: np.ndarray | None = None
-            reward_event: impls.DwellResult | None = None
-            if self.ir.reward.continuous is not None:
-                reward_continuous = self._eval_expr(
-                    self.ir.reward.continuous,
-                    stream_values,
-                    control_chunks_cache,
-                    actual_chunk_size,
-                )
-            if self.ir.reward.event is not None:
-                # The event expression's top-level call should be `dwell`.
-                reward_event = self._eval_reward_event(
-                    self.ir.reward.event,
-                    stream_values,
-                    control_chunks_cache,
-                    actual_chunk_size,
-                )
+        Looks up `name` against the protocol's `controls.<name>`
+        declarations. Raises if the name doesn't match a declared
+        control.
 
-            # Output bindings + inhibit gating
-            for channel, expr in self.ir.output.items():
-                values = self._eval_expr(
-                    expr,
-                    stream_values,
-                    control_chunks_cache,
-                    actual_chunk_size,
-                    reward_continuous=reward_continuous,
-                    reward_event=reward_event,
-                )
-                # Apply inhibits at the output stage.
-                muted = self._compute_muted(inhibit_active, actual_chunk_size)
-                # Detect event channels by their reward.event binding.
-                if self._is_event_channel(expr):
-                    # Emit a discrete event per True sample.
-                    for i in range(actual_chunk_size):
-                        if values[i] and not muted[i]:
-                            yield Event(
-                                timestamp_s=t0_s + i / self.sample_rate_hz,
-                                channel=channel,
-                                kind="event",
-                                value=None,
-                            )
-                else:
-                    # Analog channel: emit chunked summary (one Event
-                    # carrying chunk-mean) plus implicit clamping to [0, 1].
-                    clamped = np.clip(values, 0.0, 1.0)
-                    gated = np.where(muted, 0.0, clamped)
-                    yield Event(
-                        timestamp_s=t0_s,
-                        channel=channel,
-                        kind="value",
-                        value=float(np.mean(gated)),
-                    )
-
-            cursor_samples += actual_chunk_size
+        Phase 0e-a scope: PercentileImpl (target_pct), SigmoidImpl
+        (midpoint/steepness), SmoothImpl (tau). Other impls receiving a
+        control change silently ignore — Phase 0e-c extends this.
+        """
+        target = f"control/{name}"
+        if target not in self._controls:
+            raise KeyError(f"no control named {name!r}")
+        self._controls[target] = float(value)
+        for impl in self._control_deps.get(target, []):
+            updater = getattr(impl, "update_control", None)
+            if updater is not None:
+                updater(target, float(value))
 
     # -- Helpers ----------------------------------------------------------
 
@@ -633,6 +827,26 @@ class Evaluator:
 # ---------------------------------------------------------------------------
 
 
+def _collect_control_targets(value: Any) -> list[str]:
+    """Walk a static-args structure looking for IRControlRefs; return
+    the list of canonical control names they reference. Used by the
+    evaluator to register control->impl dependencies for `set_control`."""
+    out: list[str] = []
+
+    def walk(v: Any) -> None:
+        if isinstance(v, IRControlRef):
+            out.append(v.target)
+        elif isinstance(v, dict):
+            for val in v.values():
+                walk(val)
+        elif isinstance(v, (tuple, list)):
+            for item in v:
+                walk(item)
+
+    walk(value)
+    return out
+
+
 def _substitute_controls(value: Any, controls: dict[str, float]) -> Any:
     """Walk a static-args structure, replacing IRControlRefs with the
     corresponding control's resolved Python value.
@@ -700,9 +914,16 @@ def eval_protocol(
     source: Source,
     *,
     chunk_size: int = 64,
+    skip_warmup: bool = False,
 ) -> Iterator[Event]:
-    """Run the IR against the source, yielding events."""
-    yield from Evaluator(ir, source).run(chunk_size=chunk_size)
+    """Run the IR against the source, yielding events.
+
+    `skip_warmup=True` jumps the evaluator straight to `run` state,
+    bypassing the protocol's session.phases[0] output-mute window.
+    Useful for tests and offline analysis; never appropriate for live
+    clinical use.
+    """
+    yield from Evaluator(ir, source).run(chunk_size=chunk_size, skip_warmup=skip_warmup)
 
 
 __all__ = ["Evaluator", "Event", "eval_protocol"]

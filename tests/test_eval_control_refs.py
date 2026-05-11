@@ -42,7 +42,7 @@ def test_othmer_ilf_runs_end_to_end():
     ir = resolve(parse_file(EXAMPLES / "othmer_ilf_t3t4.refrain"),
                  load_amp_profile(AMP_PATH))
     src = _synthetic_source(channels=("T3", "T4"))
-    events = list(eval_protocol(ir, src, chunk_size=64))
+    events = list(eval_protocol(ir, src, chunk_size=64, skip_warmup=True))
     # Othmer ILF has only `continuous` (no `event`); we should get
     # value-summary events for each output channel.
     assert any(e.channel == "audio_gain" for e in events)
@@ -84,7 +84,7 @@ def test_control_ref_substituted_in_nested_call():
     # Instantiation alone should succeed — this was the original
     # failure mode (IRControlRef leaking into BandpassImpl.__init__).
     ev = Evaluator(ir, src)
-    events = list(ev.run(chunk_size=64))
+    events = list(ev.run(chunk_size=64, skip_warmup=True))
     assert len(events) > 0
 
 

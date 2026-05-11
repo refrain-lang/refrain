@@ -52,7 +52,13 @@ def smr_ir():
 
 
 def _run_synthetic_smr(smr_ir, *, duration_s, bursts):
-    """Helper: run SMR Cz against a synthetic signal with the given bursts."""
+    """Helper: run SMR Cz against a synthetic signal with the given bursts.
+
+    Tests in this file are about the burst/threshold/event math, not
+    about warmup behaviour, so they skip the protocol's 90-second
+    warmup phase. The warmup-specific tests live in
+    `test_eval_lifecycle.py`.
+    """
     gen = SignalGenerator(
         sample_rate_hz=256,
         channels=("Cz", "A1", "A2"),
@@ -61,7 +67,7 @@ def _run_synthetic_smr(smr_ir, *, duration_s, bursts):
         seed=1,
     )
     src = SyntheticSource(gen, duration_s=duration_s)
-    return list(eval_protocol(smr_ir, src, chunk_size=64))
+    return list(eval_protocol(smr_ir, src, chunk_size=64, skip_warmup=True))
 
 
 def test_evaluator_runs_to_completion_on_synthetic(smr_ir):
@@ -195,7 +201,7 @@ def test_evaluator_runs_with_each_filter_kind(kind):
         seed=1,
     )
     src = SyntheticSource(gen, duration_s=15.0)
-    events = list(eval_protocol(ir, src, chunk_size=64))
+    events = list(eval_protocol(ir, src, chunk_size=64, skip_warmup=True))
     gains = [e.value for e in events if e.channel == "audio_gain" and e.kind == "value"]
     assert all(0.0 <= v <= 1.0 for v in gains)
     assert any(v > 0.5 for v in gains), f"{kind}: expected some gain > 0.5 during burst"
@@ -209,9 +215,10 @@ def test_evaluator_runs_with_each_filter_kind(kind):
 @pytest.mark.skipif(not XDF_PATH.exists(), reason="XDF fixture not available")
 def test_smr_runs_on_real_xdf(smr_ir):
     """Run SMR Cz on the shipped 5-min eyes-open Q21 recording. The bar:
-    no NaN, finite events, gain values in [0, 1]."""
+    no NaN, finite events, gain values in [0, 1]. Skip warmup so events
+    from the 5-min recording aren't all suppressed by the 90s warmup."""
     source = open_source(XDF_PATH)
-    events = list(eval_protocol(smr_ir, source, chunk_size=64))
+    events = list(eval_protocol(smr_ir, source, chunk_size=64, skip_warmup=True))
     assert len(events) > 0
     chimes = [e for e in events if e.channel == "audio_chime" and e.kind == "event"]
     gains = [e.value for e in events if e.channel == "audio_gain" and e.kind == "value"]
