@@ -1,0 +1,34 @@
+{
+  "schema": "refrain-amp-profile/v0",
+  "model": "openbci-cyton",
+  "vendor": "OpenBCI",
+  "firmware": "3.1.2",
+
+  "coupling": ["ac"],
+  "sample_rates_hz": [250],
+
+  "channels": [
+    {"name": "Fp1", "kind": "eeg"},
+    {"name": "Fp2", "kind": "eeg"},
+    {"name": "C3",  "kind": "eeg"},
+    {"name": "C4",  "kind": "eeg"},
+    {"name": "P7",  "kind": "eeg"},
+    {"name": "P8",  "kind": "eeg"},
+    {"name": "O1",  "kind": "eeg"},
+    {"name": "O2",  "kind": "eeg"},
+    {"name": "A1",  "kind": "reference"},
+    {"name": "A2",  "kind": "reference"}
+  ],
+
+  "supports_impedance_check": false,
+  "supports_markers": true,
+
+  "max_simultaneous_channels": 8,
+  "adc_bits": 24,
+  "input_range_uv": 187000,
+
+  "resource_limits": {
+    "max_state_kb": 128,
+    "max_worst_case_us_per_step": 4000
+  }
+}
