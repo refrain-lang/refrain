@@ -949,6 +949,9 @@ class _Resolver:
             call.loc,
         )
 
+        # Per-primitive validation of `kind`-style enumerated string args.
+        _validate_kind_args(spec, resolved_args, call.loc)
+
         # Account budget.
         self._state_kb += spec.budget.state_kb
         self._worst_case_us += spec.budget.worst_case_us
@@ -1007,6 +1010,7 @@ class _Resolver:
             _stream_input_hint=prev_type,
             loc=call.loc,
         )
+        _validate_kind_args(spec, resolved_args, call.loc)
         self._state_kb += spec.budget.state_kb
         self._worst_case_us += spec.budget.worst_case_us
         return IRCall(
@@ -1130,6 +1134,37 @@ def _pick_signature(spec: PrimitiveSpec, args: list[IRArg], loc: Loc | None) -> 
         if required_named.issubset(named_arg_names) or len(sig.params) <= positional_capacity + len(named_arg_names):
             return sig
     return spec.signatures[0]
+
+
+_KIND_ENUMS: dict[str, tuple[str, ...]] = {
+    "bandpass": P.BANDPASS_KINDS,
+    "hilbert": P.HILBERT_KINDS,
+}
+
+
+def _validate_kind_args(spec: P.PrimitiveSpec, args: list[IRArg], loc: Loc | None) -> None:
+    """For primitives that take a `kind: <enum>` parameter, verify the
+    value is one of the permitted strings. Catches typos at static-check
+    time rather than letting them surface as runtime ValueError in the
+    evaluator."""
+    allowed = _KIND_ENUMS.get(spec.name)
+    if allowed is None:
+        return
+    for arg in args:
+        if arg.name != "kind":
+            continue
+        if not isinstance(arg.value, IRStringLit):
+            raise ResolveError(
+                f"{spec.name}(kind: ...) requires a string literal, "
+                f"got {type(arg.value).__name__}",
+                loc=arg.loc,
+            )
+        if arg.value.value not in allowed:
+            raise ResolveError(
+                f"{spec.name}(kind: {arg.value.value!r}) is not a supported "
+                f"filter family; allowed: {list(allowed)}",
+                loc=arg.loc,
+            )
 
 
 def _to_resolved_arg(expr: IRExpr) -> ResolvedArg:
