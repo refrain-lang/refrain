@@ -1,0 +1,45 @@
+{
+  "schema": "refrain-amp-profile/v0",
+  "model": "neurofield-q21",
+  "vendor": "Neurofield",
+  "firmware": "2024.03.1",
+
+  "coupling": ["dc", "ac"],
+  "sample_rates_hz": [256, 512, 1024, 2048],
+
+  "channels": [
+    {"name": "Fp1", "kind": "eeg"},
+    {"name": "Fp2", "kind": "eeg"},
+    {"name": "F3",  "kind": "eeg"},
+    {"name": "F4",  "kind": "eeg"},
+    {"name": "C3",  "kind": "eeg"},
+    {"name": "C4",  "kind": "eeg"},
+    {"name": "P3",  "kind": "eeg"},
+    {"name": "P4",  "kind": "eeg"},
+    {"name": "O1",  "kind": "eeg"},
+    {"name": "O2",  "kind": "eeg"},
+    {"name": "F7",  "kind": "eeg"},
+    {"name": "F8",  "kind": "eeg"},
+    {"name": "T3",  "kind": "eeg"},
+    {"name": "T4",  "kind": "eeg"},
+    {"name": "T5",  "kind": "eeg"},
+    {"name": "T6",  "kind": "eeg"},
+    {"name": "Fz",  "kind": "eeg"},
+    {"name": "Cz",  "kind": "eeg"},
+    {"name": "Pz",  "kind": "eeg"},
+    {"name": "A1",  "kind": "reference"},
+    {"name": "A2",  "kind": "reference"}
+  ],
+
+  "supports_impedance_check": true,
+  "supports_markers": true,
+
+  "max_simultaneous_channels": 21,
+  "adc_bits": 24,
+  "input_range_uv": 374000,
+
+  "resource_limits": {
+    "max_state_kb": 512,
+    "max_worst_case_us_per_step": 2000
+  }
+}
