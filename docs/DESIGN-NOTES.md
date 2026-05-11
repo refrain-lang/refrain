@@ -361,6 +361,78 @@ Spec ambiguities resolved while building this:
 
 ---
 
+## 4b. Composition — Phase 0c complete (what landed)
+
+Implemented in `src/refrain/compose.py`. The composer runs as an AST
+pass before the resolver: it walks the `extends` chain, recursively
+loads parents, applies the SPEC §11 semantics, and emits a merged AST
+that the existing resolver consumes unchanged.
+
+**Merge rules implemented per SPEC §11.1:**
+
+| Parent / child collision | Behaviour |
+|---|---|
+| `meta.<field>` | Field-level merge: child overrides same-named parent fields; unmentioned inherit. |
+| `requires.<field>` | Same field-level merge. |
+| `controls.<name>` | Same field-level merge (control names are the field keys). |
+| `reward`, `output`, `session` | Child replaces parent wholesale. |
+| Named decls `input "X"` / `derive "X"` / etc. | Child re-declaration replaces parent's same-named block. |
+| `amend section { ... }` | Field-level merge into the named section. |
+| `amend kw "X" { ... }` | Field-level merge into the named decl. |
+| `remove kw "X"` | Deletes the parent's named decl. |
+| `final = true` in parent body | Blocks child amend / remove / redeclaration of that decl. |
+
+**Ordering invariant**: parent's body items stay in their original
+positions; child replacements / amends happen in-place at the parent's
+position; new child decls append at the end. This preserves the SPEC
+§5.4 source-order rule the resolver relies on for reference resolution.
+
+**Chained inheritance** (A → B → C): supported via recursive
+composition with cycle detection on the ref chain.
+
+**Loader API**: composition is loader-agnostic. The `ParentLoader`
+protocol is a callable `(ref: str) -> File`; tests pass an in-memory
+map, the CLI passes `filesystem_loader([library_dirs...])`.
+
+### Library-path convention (NEW — proposing for spec)
+
+SPEC §11 references parent protocols by string like
+`"library/othmer/ilf_base@1.2"` but doesn't specify the on-disk
+mapping. Phase 0c picks the following convention:
+
+1. The ref splits as `(path, version)` on the final `@`. `library/foo/bar@1.2` → path `library/foo/bar`, version `1.2`.
+2. The path component is interpreted as a literal filesystem subpath under each search root: `<root>/library/foo/bar.refrain`.
+3. The `library/` prefix in the ref is part of the path (not stripped). This lets protocol packs live under a `library/` subdirectory by convention; first-party packs live alongside `examples/`.
+4. Search path is built from `--library DIR` CLI args (repeatable, leftmost wins) plus the `REFRAIN_LIBRARY_PATH` env var (`:`-separated, like `PATH`).
+
+**Recommended spec note in §11**: codify this convention so other
+runtimes interoperate. Add a short subsection: *"A protocol reference
+`<path>@<version>` resolves to the first existing
+`<library_root>/<path>.refrain` along the implementation's library
+search path. Implementations should support a configurable search
+path."*
+
+### Schema-version handling (light-touch)
+
+SPEC §11.5 frames version compatibility in terms of *schema version*
+(language version), distinct from `meta.version` (protocol version).
+SPEC §9.2 says schema version lives in a "file header convention" or
+`meta.schema_version`. None of the three example protocols declare a
+schema version, and the §11.5 rule ("major version match, minor must
+be <= the ref constraint") is underspecified.
+
+Phase 0c does the pragmatic 80%: it parses `@<version>` from the ref,
+reads `meta.version` from the composed parent, and rejects on major-
+number mismatch. Minor-version compatibility, schema-version
+declarations, and warnings for older-child-on-newer-parent are all
+deferred.
+
+**Recommended spec revisions**:
+- Decide whether `@<version>` refers to schema or protocol version. The example string `"library/othmer/ilf_base@1.2"` is more naturally read as "version 1.2 of this specific protocol pack."
+- Mandate one declaration site (probably `meta.schema_version`) and require it on every protocol that aims to be portable.
+
+---
+
 ## 5. Source location coverage (Phase 0b — done)
 
 What's covered:
@@ -398,3 +470,8 @@ What's coarse:
   shape before z-score / source-space NF can ship.
 - **Reserved-word collisions** (§10 open question 7) — pick a namespace
   separator before custom primitives can shadow stdlib names.
+- **Library-path convention** (Phase 0c) — codify the
+  `<root>/library/<path>.refrain` mapping in §11.
+- **Schema vs protocol version** (§11.5 vs §9) — decide which one
+  `@<version>` in extends refers to, and mandate a single declaration
+  site.
