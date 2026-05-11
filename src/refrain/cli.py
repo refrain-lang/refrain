@@ -24,6 +24,7 @@ from pathlib import Path
 
 from . import __version__
 from .amp_profile import AmpProfileError, load_amp_profile
+from .compose import default_library_dirs, filesystem_loader
 from .ir_print import print_cred_nf, print_ir
 from .parser import ParseError, parse_file
 from .resolver import ResolveError, resolve
@@ -67,6 +68,10 @@ def _cmd_resolve(args: argparse.Namespace) -> int:
             print(f"error: {amp_path}: {exc}", file=sys.stderr)
             return 1
 
+    # Build the parent loader from --library dirs and REFRAIN_LIBRARY_PATH.
+    library_dirs = [Path(d) for d in (args.library or [])] + default_library_dirs()
+    loader = filesystem_loader(library_dirs) if library_dirs else None
+
     try:
         file_ast = parse_file(path)
     except ParseError as exc:
@@ -75,7 +80,7 @@ def _cmd_resolve(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        ir = resolve(file_ast, amp)
+        ir = resolve(file_ast, amp, parent_loader=loader)
     except ResolveError as exc:
         print(f"error: {path}: resolve failed", file=sys.stderr)
         print(str(exc), file=sys.stderr)
@@ -119,6 +124,17 @@ def _build_argparser() -> argparse.ArgumentParser:
         choices=["ir", "cred-nf"],
         default="ir",
         help="Output format: `ir` (default) or `cred-nf` (markdown table per SPEC §8).",
+    )
+    resolve_cmd.add_argument(
+        "--library",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help=(
+            "Directory to search for `extends`-referenced parent protocols. "
+            "Repeatable; first match wins. The REFRAIN_LIBRARY_PATH env var "
+            "is also consulted (`:`-separated, like PATH)."
+        ),
     )
     resolve_cmd.set_defaults(func=_cmd_resolve)
 

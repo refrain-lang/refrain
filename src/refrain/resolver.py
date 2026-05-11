@@ -40,6 +40,7 @@ from . import ast as A
 from . import primitives as P
 from .amp_profile import AmpProfile
 from .ast import Loc
+from .compose import ComposeError, ParentLoader, compose
 from .ir import (
     IRArg,
     IRArray,
@@ -158,10 +159,14 @@ class _Resolver:
 
     def resolve(self) -> IRProtocol:
         proto = self.file.protocol
+        # Note: composition is applied by the public `resolve()` entry
+        # point before constructing `_Resolver`, so any `extends` is
+        # already merged in. If this invariant is violated (e.g. caller
+        # constructs `_Resolver` directly), surface a clear error.
         if proto.extends is not None:
             raise ResolveError(
-                f"protocol composition (`extends \"{proto.extends}\"`) is not yet "
-                "supported by the Phase 0b resolver; see docs/DESIGN-NOTES.md",
+                f"internal: protocol still has `extends \"{proto.extends}\"` at "
+                "resolver entry; composition must run first",
                 loc=proto.loc,
             )
 
@@ -236,9 +241,13 @@ class _Resolver:
                     )
                 setattr(self, attr, stmt)
             elif isinstance(stmt, (A.AmendDecl, A.RemoveDecl)):
+                # After composition, only top-level section/named decls
+                # remain. A stray amend/remove here means the protocol
+                # used amend/remove without an `extends` — which has no
+                # parent to compose against.
                 raise ResolveError(
-                    "composition (`amend`/`remove`) requires `extends`; not "
-                    "supported by the Phase 0b resolver",
+                    f"`{type(stmt).__name__.replace('Decl', '').lower()}` requires "
+                    "an `extends` clause (nothing to compose against)",
                     loc=stmt.loc,
                 )
             # Named decls are resolved in source order, not pre-hoisted.
@@ -1257,13 +1266,33 @@ def _extract_duration_ms(action_call: IRCall, param_name: str) -> float | None:
 # ---------------------------------------------------------------------------
 
 
-def resolve(file_ast: A.File, amp: AmpProfile | None = None) -> IRProtocol:
+def resolve(
+    file_ast: A.File,
+    amp: AmpProfile | None = None,
+    *,
+    parent_loader: ParentLoader | None = None,
+) -> IRProtocol:
     """Resolve a parsed `File` AST into an `IRProtocol`.
 
     Pass an `AmpProfile` to validate hardware requirements (§6.3) and
     to compute the chosen sample rate. Pass `None` to skip those checks.
+
+    Pass a `parent_loader` (typically built via
+    `refrain.compose.filesystem_loader([...])`) if the protocol uses
+    `extends` to inherit from a parent. Composition runs as a pre-pass
+    on the AST; the resolver then operates on the merged result.
     """
-    return _Resolver(file_ast, amp).resolve()
+    try:
+        composed = compose(file_ast, parent_loader)
+    except ComposeError as exc:
+        # Re-raise as ResolveError so callers see a single error type.
+        # `exc.args[0]` is the bare message without `ResolveError`'s
+        # line-prefix re-wrap; passing `loc` reconstructs it correctly.
+        msg = exc.args[0] if exc.args else str(exc)
+        if exc.loc is not None and msg.startswith(f"line {exc.loc.line}:{exc.loc.col}: "):
+            msg = msg.split(": ", 1)[1]
+        raise ResolveError(msg, loc=exc.loc) from exc
+    return _Resolver(composed, amp).resolve()
 
 
 __all__ = ["resolve", "ResolveError"]

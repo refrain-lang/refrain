@@ -391,28 +391,37 @@ def test_forward_reference_raises():
 
 
 # ---------------------------------------------------------------------------
-# Composition not yet supported
+# Composition wiring (full coverage in test_compose.py)
 # ---------------------------------------------------------------------------
 
 
-def test_extends_raises_until_phase_0c():
+def test_extends_without_loader_raises_with_helpful_message():
     src = '''
         protocol "child" extends "library/parent@1.0" {
           meta { version = "1.0" }
         }
     '''
-    with pytest.raises(ResolveError, match="not yet supported"):
+    with pytest.raises(ResolveError, match="no parent loader"):
         _minimal(src)
 
 
-def test_amend_raises_until_phase_0c():
+def test_amend_outside_extends_raises():
     src = '''
-        protocol "child" extends "library/parent@1.0" {
+        protocol "orphan_amend" {
           amend reward { continuous = sigmoid("x", midpoint: 0, steepness: 1) }
         }
     '''
-    # `extends` fails first.
-    with pytest.raises(ResolveError):
+    with pytest.raises(ResolveError, match="requires an `extends`"):
+        _minimal(src)
+
+
+def test_remove_outside_extends_raises():
+    src = '''
+        protocol "orphan_remove" {
+          remove inhibit "emg"
+        }
+    '''
+    with pytest.raises(ResolveError, match="requires an `extends`"):
         _minimal(src)
 
 
