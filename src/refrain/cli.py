@@ -7,10 +7,11 @@ v0.0r1 subcommands:
   - `refrain resolve FILE [--amp AMP.json]`    — parse + resolve + type check;
                                                  print the resolved IR or
                                                  a CRED-nf supplement
-
-Reserved for later sessions:
-  - `refrain run FILE [--input recording.fif]` (Session 3)
-  - `refrain export cred-nf FILE` (will alias `resolve --print cred-nf`)
+  - `refrain run FILE --input PATH | --synthetic [...]`
+                                                — run the resolved protocol
+                                                  against a recording or
+                                                  synthetic source; emit
+                                                  events to stdout / JSONL
 
 The entry point is `main()`, wired in `pyproject.toml` as
 `refrain = "refrain.cli:main"`.
@@ -19,6 +20,7 @@ The entry point is `main()`, wired in `pyproject.toml` as
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -138,7 +140,179 @@ def _build_argparser() -> argparse.ArgumentParser:
     )
     resolve_cmd.set_defaults(func=_cmd_resolve)
 
+    # `refrain run`
+    run_cmd = sub.add_parser(
+        "run",
+        help="Run the resolved protocol against a recording or synthetic source.",
+    )
+    run_cmd.add_argument("file", help="Path to the .refrain protocol file.")
+    src_group = run_cmd.add_mutually_exclusive_group(required=True)
+    src_group.add_argument(
+        "--input",
+        metavar="PATH",
+        help="Input recording (auto-detected: .fif/.edf/.xdf).",
+    )
+    src_group.add_argument(
+        "--synthetic",
+        action="store_true",
+        help="Use a deterministic synthetic source (pink noise + scheduled SMR bursts).",
+    )
+    run_cmd.add_argument(
+        "--stream", metavar="NAME",
+        help="XDF stream name (when --input is an XDF with multiple streams).",
+    )
+    run_cmd.add_argument(
+        "--duration", metavar="SECONDS", type=float, default=60.0,
+        help="Synthetic-source duration in seconds (default: 60).",
+    )
+    run_cmd.add_argument(
+        "--smr-bursts", metavar="N", type=int, default=3,
+        help="Number of evenly-spaced 3-second SMR bursts to schedule (synthetic).",
+    )
+    run_cmd.add_argument(
+        "--amp", help="Path to amp-profile JSON.", default=None,
+    )
+    run_cmd.add_argument(
+        "--library", action="append", default=[], metavar="DIR",
+        help="Library search dir for `extends`-referenced parents.",
+    )
+    run_cmd.add_argument(
+        "--output", metavar="PATH",
+        help="Write events as JSON-lines to PATH (default: print summary only).",
+    )
+    run_cmd.add_argument(
+        "--chunk-size", type=int, default=64,
+        help="Samples per evaluator step (default: 64 = 250 ms at 256 Hz).",
+    )
+    run_cmd.set_defaults(func=_cmd_run)
+
     return p
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    """Run an evaluator against the chosen source."""
+    from .eval_ import eval_protocol
+    from .sources import SourceError, SyntheticSource, open_source
+    from .synthetic import SMRBurst, SignalGenerator
+
+    path = Path(args.file)
+    if not path.exists():
+        print(f"error: {path}: no such file", file=sys.stderr)
+        return 2
+
+    # Amp profile (optional).
+    amp = None
+    if args.amp is not None:
+        amp_path = Path(args.amp)
+        if not amp_path.exists():
+            print(f"error: {amp_path}: no such amp-profile file", file=sys.stderr)
+            return 2
+        try:
+            amp = load_amp_profile(amp_path)
+        except AmpProfileError as exc:
+            print(f"error: {amp_path}: {exc}", file=sys.stderr)
+            return 1
+
+    library_dirs = [Path(d) for d in (args.library or [])] + default_library_dirs()
+    loader = filesystem_loader(library_dirs) if library_dirs else None
+
+    try:
+        file_ast = parse_file(path)
+    except ParseError as exc:
+        print(f"error: {path}: parse failed", file=sys.stderr)
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    try:
+        ir = resolve(file_ast, amp, parent_loader=loader)
+    except ResolveError as exc:
+        print(f"error: {path}: resolve failed", file=sys.stderr)
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    # Source
+    if args.synthetic:
+        # Pick channels matching the protocol's requires + the reference
+        # electrodes its montages need.
+        channels = _channels_for_synthetic(ir)
+        bursts = _scheduled_bursts(args.duration, args.smr_bursts)
+        gen = SignalGenerator(
+            sample_rate_hz=int(amp.sample_rates_hz[-1]) if amp else 256,
+            channels=channels,
+            bursts=bursts,
+            seed=42,
+        )
+        source = SyntheticSource(gen, duration_s=args.duration)
+        source_label = f"synthetic ({args.duration:g}s, {args.smr_bursts} bursts)"
+    else:
+        try:
+            source = open_source(args.input, stream_name=args.stream)
+        except SourceError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        source_label = args.input
+
+    # Run.
+    out_file = open(args.output, "w") if args.output else None
+    n_events = {"value": 0, "event": 0}
+    by_channel: dict[str, int] = {}
+    try:
+        for ev in eval_protocol(ir, source, chunk_size=args.chunk_size):
+            n_events[ev.kind] = n_events.get(ev.kind, 0) + 1
+            by_channel[ev.channel] = by_channel.get(ev.channel, 0) + 1
+            if out_file is not None:
+                out_file.write(json.dumps({
+                    "t": ev.timestamp_s,
+                    "channel": ev.channel,
+                    "kind": ev.kind,
+                    "value": ev.value,
+                }) + "\n")
+    finally:
+        if out_file is not None:
+            out_file.close()
+
+    # Summary on stderr (so stdout stays JSONL-only when --output is unused).
+    duration_s = source.n_samples / source.sample_rate_hz if source.n_samples > 0 else 0
+    print(f"protocol: {ir.name}", file=sys.stderr)
+    print(f"source:   {source_label}", file=sys.stderr)
+    print(f"duration: {duration_s:.1f}s, {source.sample_rate_hz} Hz", file=sys.stderr)
+    print(f"events:   {n_events['event']} discrete, {n_events['value']} value summaries", file=sys.stderr)
+    for ch in sorted(by_channel):
+        print(f"  {ch}: {by_channel[ch]}", file=sys.stderr)
+    return 0
+
+
+def _channels_for_synthetic(ir) -> tuple[str, ...]:
+    """Pick channels for synthetic sources. Include everything the
+    protocol's requires asks for plus the standard ear channels (so
+    `linked_ears` references resolve)."""
+    channels = list(ir.requires.channels) or ["Cz"]
+    for ear in ("A1", "A2"):
+        if ear not in channels:
+            channels.append(ear)
+    return tuple(channels)
+
+
+def _scheduled_bursts(duration_s: float, n_bursts: int):
+    """Schedule N evenly-spaced 3-second SMR bursts within `duration_s`.
+
+    Bursts inject at 13.5 Hz (mid-SMR) at 25 µV peak on the first channel.
+    """
+    from .synthetic import SMRBurst
+
+    if n_bursts <= 0:
+        return ()
+    out = []
+    spacing = duration_s / (n_bursts + 1)
+    for i in range(n_bursts):
+        start = spacing * (i + 1) - 1.5
+        out.append(SMRBurst(
+            start_s=max(0.0, start),
+            end_s=start + 3.0,
+            center_hz=13.5,
+            amplitude_uv=25.0,
+        ))
+    return tuple(out)
 
 
 def main(argv: list[str] | None = None) -> int:
