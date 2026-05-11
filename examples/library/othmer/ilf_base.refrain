@@ -1,0 +1,97 @@
+// Othmer ILF training — base protocol template.
+//
+// The canonical ILF math: bipolar acquisition, narrow bandpass at the
+// ORF, differentiate-then-rectify-then-smooth, auto-range to [0,1],
+// sigmoid reward. The montage (which two channels) is left to children;
+// the bipolar pair is the only thing that varies across clinical
+// placements (T3-T4, T4-P4, Cz-Pz, F3-F4, ...).
+//
+// Children inherit everything below and supply only:
+//   - `requires.channels` (the bipolar pair they want)
+//   - `input "ilf" { montage = bipolar(plus: "...", minus: "...") }`
+//   - any meta fields they wish to override (description, citation)
+//
+// Strawman example for Refrain v0.0r1.
+
+protocol "othmer_ilf_base_v1" {
+
+  meta {
+    version           = "1.0.0"
+    evidence          = "clinical"
+    description       = "Othmer ILF training, generic montage"
+    author            = "Peak Mind"
+    citation          = "Othmer S. & Othmer S. (2009). Post Traumatic Stress Disorder—The Neurofeedback Remedy. Biofeedback, 37(1), 24-31."
+    population        = "adults_18_plus"
+    indication        = "regulatory_dysfunction"
+    control_ref       = "library/othmer/ilf_sham@1.0"
+    safety_monitoring = ["pre_session_check", "intra_session_clinician_observation"]
+    outcome_measures  = ["BAI", "BDI-II", "subjective_arousal_scale"]
+  }
+
+  requires {
+    coupling    = "dc"
+    sample_rate = ">= 256 Hz"
+    impedance   = "preferred"
+    markers     = "not_required"
+    // `channels` is intentionally left for the child to declare.
+  }
+
+  // Children override the montage with their preferred bipolar pair.
+  // The placeholder T3-T4 here is the most common Othmer ILF placement;
+  // it parses cleanly so the base file resolves standalone for testing.
+  input "ilf" {
+    montage = bipolar(plus: "T3", minus: "T4")
+  }
+
+  derive "band" {
+    from = "ilf"
+    pipeline = [
+      bandpass(center: orf, bandwidth: ratio(2.5), order: 4),
+      differentiate(),
+      rectify(),
+      smooth(tau: 1500 ms),
+    ]
+  }
+
+  derive "reward_signal" {
+    from = "band"
+    pipeline = [
+      auto_range(window: 5 min, percentile: (5, 95)),
+    ]
+  }
+
+  inhibit "emg" {
+    metric    = bandpower(input: "ilf", band: (50 Hz, 100 Hz), window: 100 ms)
+    threshold = percentile(target_pct: 95, window: 2 min)
+    action    = mute(release: 200 ms)
+  }
+
+  reward {
+    continuous = sigmoid("reward_signal", midpoint: 0.5, steepness: 4)
+  }
+
+  output {
+    audio_gain      = 0.2 + 0.8 * reward.continuous
+    video_clarity   = reward.continuous
+    ambient_density = 0.4 + 0.6 * reward.continuous
+  }
+
+  controls {
+    orf = frequency {
+      range         = (0.0001 Hz, 0.5 Hz)
+      default       = 0.01 Hz
+      log           = true
+      label         = "Optimal Reinforcement Frequency"
+      live_tunable  = true
+      tune_strategy = "warm_restart"
+    }
+  }
+
+  session {
+    phases = [
+      phase { name = "warmup";   duration = 60 s;  output_muted = true },
+      phase { name = "training"; duration = 25 min },
+      phase { name = "cooldown"; duration = 60 s;  output_muted = true },
+    ]
+  }
+}
