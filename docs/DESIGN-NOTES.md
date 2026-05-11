@@ -559,6 +559,70 @@ to compare against) — that's Phase 0e.
 
 ---
 
+## 4d. Embedding API — Phase 0e-a complete (what landed)
+
+The evaluator can now be embedded in a host application (recorder,
+LSL relay, BCI middleware) without going through a Source. Three
+additions:
+
+  - **`Evaluator.live(ir, sample_rate_hz, channel_names)`** — push-mode
+    factory. The host owns acquisition, hands chunks in via
+    `step_chunk(chunk)`, receives events back synchronously. No Source
+    object is constructed.
+  - **Lifecycle state machine** (SPEC §7.1): `ready → warmup → run →
+    stopped`. `start()` advances to warmup (or to run if the protocol
+    has no muted phase, or via `skip_warmup=True` for tests). During
+    `warmup`, primitive state still updates (filters settle, percentile
+    windows populate) but output events are suppressed so the patient
+    doesn't hear settling artifacts. After enough samples have been
+    pushed to satisfy the protocol's first muted phase, the evaluator
+    transitions to `run` and starts emitting.
+  - **`set_control(name, value)`** with warm-restart. Phase 0e-a
+    supports `target_pct` on PercentileImpl, `tau` on SmoothImpl, and
+    `midpoint` on SigmoidImpl. Filter-coefficient recompute for
+    BandpassImpl (the Othmer ORF case) is deferred to Phase 0e-c.
+
+A `BrainBit Flex` amp profile ships at
+`amp_profiles/brainbit_flex.json` (4 user-placeable scalp electrodes
++ dedicated hardware reference + ground; 250 Hz; AC-coupled; no
+impedance check). The matching example protocol is
+`examples/smr_cz_brainbit.refrain` — SMR Cz with a monopolar Cz
+montage via `reference: "device"`.
+
+### `reference: "device"` (NEW v0.1 spec proposal)
+
+The `referential` montage's `reference` argument gains a third magic
+value beyond `"linked_ears"` and `"common_average"`:
+
+  `reference: "device"` — use the active channel as-recorded; the
+  amp's hardware reference is already baked into the channel value, so
+  Refrain applies no software re-referencing.
+
+This is the right model for amps like BrainBit Flex, OpenBCI Cyton's
+built-in reference, and any other device that delivers channels
+already referenced to a dedicated hardware electrode. Without it,
+users would have to either fake an A1/A2 placement on user-placeable
+electrodes (wasting a channel) or rely on the `linked_ears` →
+`common_average` fallback (which is wrong for 4-channel amps where
+common-average isn't a meaningful reference).
+
+**Recommended spec addition**: PRIMITIVES.md acquisition section
+extends `referential(reference: ...)` to accept `"device"`. The
+semantic note: "use when the amp delivers channels already referenced
+to a dedicated hardware electrode; no software re-referencing is
+applied."
+
+### Bug fix that surfaced during embedding work
+
+The existing `examples/smr_cz.refrain` declared
+`smr_target_pct` / `theta_target_pct` controls but never used them —
+the percentile thresholds had literal `70` / `30` baked in. Fixed:
+thresholds now reference the controls, so `evaluator.set_control(
+"smr_target_pct", 65)` actually changes behaviour live. The
+BrainBit-tailored example follows the same wiring.
+
+---
+
 ## 5. Source location coverage (Phase 0b — done)
 
 What's covered:
@@ -608,3 +672,7 @@ What's coarse:
 - **`reward.event` rising-edge semantics** — make the "fires on the
   sample where streak first reaches dwell_samples" rule explicit in
   §5.6.
+- **`reference: "device"`** (Phase 0e-a) — add to PRIMITIVES.md's
+  `referential` documentation as a third magic reference value
+  alongside `linked_ears` and `common_average`. Used for amps with a
+  dedicated hardware reference electrode.
