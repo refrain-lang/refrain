@@ -1,0 +1,30 @@
+// Othmer ILF training, Cz-Pz attention-focus placement.
+//
+// A clinical variant of the standard Othmer base: same math, same ORF
+// control, same inhibits, but a midline bipolar pair (Cz-Pz) typically
+// used for attentional regulation rather than the T3-T4 default.
+//
+// This is the canonical "small variant of a published protocol" shape:
+// a few lines of file declares everything that differs. Run it with:
+//
+//   refrain resolve examples/othmer_ilf_cz_pz.refrain \
+//       --amp src/refrain/amp_profiles/q21.json \
+//       --library examples
+//
+// Strawman example for Refrain v0.0r1.
+
+protocol "othmer_ilf_cz_pz_v1" extends "library/othmer/ilf_base@1" {
+
+  amend meta {
+    description       = "Othmer ILF training, Cz-Pz midline (attention focus)"
+    indication        = "attention_focus"
+  }
+
+  amend requires {
+    channels = ["Cz", "Pz"]
+  }
+
+  input "ilf" {
+    montage = bipolar(plus: "Cz", minus: "Pz")
+  }
+}
