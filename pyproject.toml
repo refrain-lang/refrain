@@ -30,11 +30,21 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Evaluator dependencies. The parser/resolver/IR work without these;
+# only `refrain run` (live or file replay) needs them.
+#   - mne provides FIF and EDF readers
+#   - pyxdf provides XDF readers (LabStreamingLayer recordings)
+eval = [
+  "mne >= 1.4",
+  "pyxdf >= 1.16",
+]
 dev = [
   "pytest >= 7.0",
   "pytest-cov >= 4.0",
   "ruff >= 0.4",
   "mypy >= 1.0",
+  "mne >= 1.4",
+  "pyxdf >= 1.16",
 ]
 
 [project.scripts]
