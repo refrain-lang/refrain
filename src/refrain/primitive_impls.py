@@ -73,9 +73,16 @@ class BipolarImpl(PrimitiveImpl):
 class ReferentialImpl(PrimitiveImpl):
     """`referential(active, reference)` — single-active-electrode referencing.
 
-    `reference` may be a channel name, or one of the virtual references
-    `"linked_ears"` (mean of A1/A2 or T9/T10) or `"common_average"`
-    (mean of all channels).
+    `reference` may be:
+      - a physical channel name in the source
+      - `"linked_ears"` — mean of A1/A2 or M1/M2 or T9/T10 if any are present;
+        falls back to common_average if no ear channels are in the source
+      - `"common_average"` — mean of all channels
+      - `"device"` — return the active channel as-recorded, applying no
+        software re-referencing. The amp's hardware reference is already
+        baked into the channel values. Used for amplifiers (e.g. BrainBit
+        Flex) that have a dedicated hardware reference electrode rather
+        than exposing it as a software channel.
     """
 
     def __init__(
@@ -90,7 +97,13 @@ class ReferentialImpl(PrimitiveImpl):
         self.active_idx = channel_names.index(active)
         self.channel_names = channel_names
         self.reference = reference
-        self.ref_indices = self._resolve_reference(reference, channel_names)
+        self.use_hardware_reference = (reference == "device")
+        # ref_indices is None for "device" (no software re-referencing) and
+        # for "common_average" (computed per-step over all channels).
+        if self.use_hardware_reference:
+            self.ref_indices: tuple[int, ...] | None = None
+        else:
+            self.ref_indices = self._resolve_reference(reference, channel_names)
 
     @staticmethod
     def _resolve_reference(
@@ -117,7 +130,11 @@ class ReferentialImpl(PrimitiveImpl):
 
     def step(self, raw_chunk: np.ndarray) -> np.ndarray:
         active = raw_chunk[:, self.active_idx]
+        if self.use_hardware_reference:
+            # Channel as recorded; no software subtraction.
+            return active.copy()
         if self.ref_indices is None:
+            # common_average (or linked_ears fallback): mean of all channels
             ref = raw_chunk.mean(axis=1)
         elif len(self.ref_indices) == 1:
             ref = raw_chunk[:, self.ref_indices[0]]
@@ -283,24 +300,33 @@ class SmoothImpl(PrimitiveImpl):
     """`smooth(tau)` — one-pole IIR low-pass.
 
     α = 1 − exp(−1 / (τ · rate)). State: previous output value.
+    Supports live retuning of `tau` via `update_control`; the running
+    output value carries across to avoid an audible step.
     """
 
     def __init__(self, *, tau_ms: float, sample_rate_hz: float):
         if tau_ms <= 0:
             raise ValueError("smooth: tau must be positive")
-        tau_s = tau_ms / 1000.0
-        self.alpha = 1.0 - np.exp(-1.0 / (tau_s * sample_rate_hz))
+        self._sample_rate_hz = float(sample_rate_hz)
+        self._set_tau(tau_ms)
         self._state = 0.0  # initialised lazily on first sample
 
+    def _set_tau(self, tau_ms: float) -> None:
+        tau_s = tau_ms / 1000.0
+        self.tau_ms = tau_ms
+        self.alpha = 1.0 - np.exp(-1.0 / (tau_s * self._sample_rate_hz))
+
     def step(self, x: np.ndarray) -> np.ndarray:
-        # Vectorised one-pole IIR via lfilter (b=[α], a=[1, -(1-α)]).
         b = np.array([self.alpha])
         a = np.array([1.0, -(1.0 - self.alpha)])
         zi = np.array([self._state * (1.0 - self.alpha)])
         y, zf = scisig.lfilter(b, a, x, zi=zi)
-        # State carried forward is the last output.
         self._state = float(y[-1])
         return y
+
+    def update_control(self, target: str, value: float) -> None:
+        if value > 0:
+            self._set_tau(float(value))
 
 
 class DifferentiateImpl(PrimitiveImpl):
@@ -333,6 +359,10 @@ class PercentileImpl(PrimitiveImpl):
     Maintains a rolling buffer of `window` samples; per chunk computes
     `numpy.percentile`. With a 2-minute window at 256 Hz that's 30,720
     samples — a single percentile call is microseconds.
+
+    Supports live retuning of `target_pct` via `update_control` (the
+    threshold percentile is the most commonly clinician-tuned parameter
+    in operant NF). The buffer state survives the change unchanged.
     """
 
     def __init__(
@@ -347,6 +377,11 @@ class PercentileImpl(PrimitiveImpl):
         self.target_pct = target_pct
         self.window_samples = max(1, int(round(window_ms / 1000.0 * sample_rate_hz)))
         self._buffer: deque[float] = deque(maxlen=self.window_samples)
+        # Track which control names map to which parameters, populated
+        # via update_control. The map is empty until the evaluator has
+        # registered control->impl deps; PercentileImpl supports
+        # updating `target_pct` from any incoming control change.
+        self._control_param_map: dict[str, str] = {}
 
     def step(self, x: np.ndarray) -> np.ndarray:
         out = np.empty(x.shape[0], dtype=np.float64)
@@ -356,6 +391,12 @@ class PercentileImpl(PrimitiveImpl):
             arr = np.fromiter(self._buffer, dtype=np.float64)
             out[i] = float(np.percentile(arr, self.target_pct))
         return out
+
+    def update_control(self, target: str, value: float) -> None:
+        """Set `target_pct` to a new value. Percentile is typically the
+        live-tunable parameter for operant thresholds; clamp to [0, 100]
+        defensively so a clinician's slider can't wedge the impl."""
+        self.target_pct = float(max(0.0, min(100.0, value)))
 
 
 class AutoRangeImpl(PrimitiveImpl):
@@ -511,7 +552,11 @@ class DwellImpl(PrimitiveImpl):
 
 
 class SigmoidImpl(PrimitiveImpl):
-    """`sigmoid(input, midpoint, steepness)` — logistic curve."""
+    """`sigmoid(input, midpoint, steepness)` — logistic curve.
+
+    Stateless aside from the parameters themselves, so live retuning of
+    either parameter is a one-attribute update.
+    """
 
     def __init__(self, *, midpoint: float, steepness: float):
         self.midpoint = float(midpoint)
@@ -519,6 +564,14 @@ class SigmoidImpl(PrimitiveImpl):
 
     def step(self, x: np.ndarray) -> np.ndarray:
         return 1.0 / (1.0 + np.exp(-self.steepness * (x - self.midpoint)))
+
+    def update_control(self, target: str, value: float) -> None:
+        # Without per-control routing we can't know whether the change
+        # is for midpoint or steepness. The protocol writer wires
+        # exactly one control into a sigmoid parameter, so a single
+        # target maps to one slot — pick midpoint as the conventional
+        # default. Phase 0e-c may refine this to per-parameter routing.
+        self.midpoint = float(value)
 
 
 class LinearImpl(PrimitiveImpl):
