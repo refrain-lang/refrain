@@ -11,14 +11,41 @@ on the concrete subclasses. Compound containers use tuples rather than
 lists so that nested structures remain immutable (and thus hashable along
 with their parents).
 
-Source-location tracking is intentionally deferred. The grammar is
-position-preserving in Lark; attaching `(line, col)` to every node is a
-follow-up once the resolver/diagnostics layer needs it.
+Source locations are attached to every node via the inherited `loc` field
+(line, col, end_line, end_col). The parser populates it from Lark's
+position metadata. `loc` is keyword-only and excluded from `__eq__` and
+`__repr__` so that:
+
+  - Round-tripping `parse(unparse(parse(src))) == parse(src)` still
+    succeeds even though the unparsed source has different line layout.
+  - Test assertions can construct expected ASTs without supplying locs.
+  - Test failure output stays readable.
+
+Diagnostic-producing code reads `node.loc` directly.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+# ---------------------------------------------------------------------------
+# Source locations
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Loc:
+    """A span in the source file. Line and column are 1-based.
+
+    `end_line` / `end_col` mark the position just past the last character,
+    matching Lark's convention.
+    """
+
+    line: int
+    col: int
+    end_line: int
+    end_col: int
+
 
 # ---------------------------------------------------------------------------
 # Marker bases
@@ -27,7 +54,14 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class Node:
-    """Base for every AST node."""
+    """Base for every AST node.
+
+    `loc` is keyword-only, excluded from equality and repr (see module
+    docstring). It is `None` for AST nodes constructed by hand (e.g. in
+    tests); the parser always populates it.
+    """
+
+    loc: Loc | None = field(default=None, kw_only=True, compare=False, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
