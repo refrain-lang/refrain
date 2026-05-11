@@ -258,6 +258,14 @@ def _vector_size_from(args: dict[str, ResolvedArg], key: str) -> int:
 
 # Spectral -----------------------------------------------------------------
 
+# Permitted filter families for `bandpass(..., kind: ...)`. Cheby I and
+# Elliptic are deliberately excluded — their passband ripple corrupts
+# amplitude estimates, which is wrong for envelope-based NF. See
+# docs/DESIGN-NOTES.md §8 for the rationale.
+BANDPASS_KINDS = ("butterworth", "bessel", "chebyshev2")
+
+HILBERT_KINDS = ("fir", "iir_allpass")
+
 _BANDPASS = PrimitiveSpec(
     name="bandpass",
     category="signal",
@@ -267,6 +275,10 @@ _BANDPASS = PrimitiveSpec(
             params=(
                 ParamSpec("band", "tuple_2_numbers", dims=FREQUENCY),
                 ParamSpec("order", "ratio", default=4, required=False),
+                ParamSpec("kind", "string_enum", default="butterworth", required=False),
+                # `attenuation_db` is only meaningful for kind="chebyshev2".
+                # The resolver flags mismatches via _validate_kind_specific_params.
+                ParamSpec("attenuation_db", "ratio", default=40, required=False),
             ),
             output=_identity_input,
         ),
@@ -276,12 +288,16 @@ _BANDPASS = PrimitiveSpec(
                 ParamSpec("center", "frequency"),
                 ParamSpec("bandwidth", "ratio_call_or_tuple"),
                 ParamSpec("order", "ratio", default=4, required=False),
+                ParamSpec("kind", "string_enum", default="butterworth", required=False),
+                ParamSpec("attenuation_db", "ratio", default=40, required=False),
             ),
             output=_identity_input,
         ),
     ),
     budget=ResourceBudget(state_kb=2, worst_case_us=20),
-    doc="Butterworth biquad bandpass.",
+    doc="Bandpass filter. Default Butterworth; `kind=\"bessel\"` for "
+        "constant group delay; `kind=\"chebyshev2\"` for sharper rolloff "
+        "without passband ripple (requires `attenuation_db`).",
 )
 
 _HILBERT = PrimitiveSpec(
@@ -289,14 +305,20 @@ _HILBERT = PrimitiveSpec(
     category="signal",
     signatures=(
         Signature(
-            params=(),
+            params=(
+                ParamSpec("kind", "string_enum", default="fir", required=False),
+                # `taps` only meaningful for kind="fir".
+                ParamSpec("taps", "ratio", default=65, required=False),
+            ),
             output=lambda args: complex_stream(
                 _identity_input(args).dimensions
             ),
         ),
     ),
     budget=ResourceBudget(state_kb=4, worst_case_us=40),
-    doc="Analytic signal via Hilbert transform.",
+    doc="Analytic signal via Hilbert transform. Default FIR (linear phase, "
+        "bounded group delay); `kind=\"iir_allpass\"` for lower latency at "
+        "the cost of band-edge accuracy.",
 )
 
 _BANDPOWER = PrimitiveSpec(
@@ -665,6 +687,8 @@ def is_inhibit_action(name: str) -> bool:
 
 
 __all__ = [
+    "BANDPASS_KINDS",
+    "HILBERT_KINDS",
     "ParamSpec",
     "PrimitiveSpec",
     "ResourceBudget",

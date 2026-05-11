@@ -426,6 +426,80 @@ def test_remove_outside_extends_raises():
 
 
 # ---------------------------------------------------------------------------
+# Filter `kind:` validation (Phase 0d)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("kind", ["butterworth", "bessel", "chebyshev2"])
+def test_bandpass_kind_butterworth_bessel_chebyshev2_accepted(kind):
+    src = f'''
+        protocol "P" {{
+          input "raw" {{ montage = bipolar(plus: "T3", minus: "T4") }}
+          derive "env" {{
+            from = "raw"
+            pipeline = [bandpass(band: (12 Hz, 15 Hz), order: 4, kind: "{kind}")]
+          }}
+        }}
+    '''
+    _minimal(src)
+
+
+def test_bandpass_kind_elliptic_rejected_with_clear_message():
+    src = '''
+        protocol "P" {
+          input "raw" { montage = bipolar(plus: "T3", minus: "T4") }
+          derive "env" {
+            from = "raw"
+            pipeline = [bandpass(band: (12 Hz, 15 Hz), kind: "elliptic")]
+          }
+        }
+    '''
+    with pytest.raises(ResolveError, match="not a supported filter family"):
+        _minimal(src)
+
+
+def test_bandpass_kind_typo_rejected():
+    src = '''
+        protocol "P" {
+          input "raw" { montage = bipolar(plus: "T3", minus: "T4") }
+          derive "env" {
+            from = "raw"
+            pipeline = [bandpass(band: (12 Hz, 15 Hz), kind: "butterwroth")]
+          }
+        }
+    '''
+    with pytest.raises(ResolveError, match="not a supported filter family"):
+        _minimal(src)
+
+
+def test_hilbert_kind_fir_accepted():
+    src = '''
+        protocol "P" {
+          input "raw" { montage = bipolar(plus: "T3", minus: "T4") }
+          derive "env" {
+            from = "raw"
+            pipeline = [hilbert(kind: "fir", taps: 65), magnitude()]
+          }
+        }
+    '''
+    _minimal(src)
+
+
+def test_hilbert_kind_unknown_rejected():
+    src = '''
+        protocol "P" {
+          input "raw" { montage = bipolar(plus: "T3", minus: "T4") }
+          derive "env" {
+            from = "raw"
+            pipeline = [hilbert(kind: "wavelet"), magnitude()]
+          }
+        }
+    '''
+    with pytest.raises(ResolveError, match="not a supported filter family"):
+        _minimal(src)
+
+
+# ---------------------------------------------------------------------------
 # Reward shape rules
 # ---------------------------------------------------------------------------
 
