@@ -310,6 +310,57 @@ class IRProtocol:
 
 ---
 
+## 4a. Resolver / type checker — Phase 0b complete (what landed)
+
+Implemented in `src/refrain/resolver.py`, `src/refrain/types_.py`,
+`src/refrain/primitives.py`, `src/refrain/ir.py`,
+`src/refrain/ir_print.py`. Two amp profiles shipped: Q21 and
+OpenBCI Cyton.
+
+What works:
+- Reference resolution (SPEC §5.4): string-lits in expression position
+  classified as `IRStreamRef` / `IRThresholdRef` / `IRStringLit`
+  contextually.
+- NameRef resolution: bare identifiers like `orf` resolve to
+  `IRControlRef`, with `controls` pre-hoisted before named decls so
+  Othmer ILF's `bandpass(center: orf, ...)` works.
+- Acyclicity via strict source-order processing.
+- Primitive call type-checking against the signature registry; unit
+  composition (uV/s, dimensionless, etc.) flows through `differentiate`,
+  `magnitude`, division, etc.
+- Hardware validation: channel existence, coupling support, sample-rate
+  selection (highest-supported-rate-at-least-protocol-minimum).
+- Resource budget summed across primitives.
+- `IRReward` enforces at-least-one-of-{continuous, event}; reward.event
+  must be event_stream.
+
+Deferred (called out at resolve time with a friendly diagnostic):
+- Composition: `extends` / `amend` / `remove` / `final`. Library path
+  resolution is the bigger half of this; it needs design.
+- Rate alignment (SPEC §6.6). No three-example protocol triggers a
+  rate mismatch; landing this needs every primitive's rate behaviour
+  encoded in the registry.
+
+Spec ambiguities resolved while building this:
+- **Controls pre-hoisting** (NEW spec note). SPEC §5.4 says
+  string-literal references must be "previously declared." NameRefs
+  (bare identifiers — used for control names) are a separate
+  expression form per §3 EBNF, not constrained to source order. The
+  Othmer ILF example exercises this: `derive "band" {...
+  bandpass(center: orf, ...) ...}` references `orf` which is declared
+  in a `controls` block later in source. The resolver pre-hoists
+  controls before named decls. **Recommended spec note in §5.4:** add
+  a sentence clarifying that NameRefs to controls are protocol-global
+  and not subject to the "previously declared" rule.
+- **`session.schedule`** is named in §8 (CRED-nf mapping table) for
+  "Number of sessions" but not defined in §3 or §4.10. The CRED-nf
+  export now pulls from `meta.session_count` instead, falling back to
+  `[NOT SPECIFIED]`. **Recommended spec change:** either define
+  `session.schedule` in §4.10 with a concrete shape, or relabel the
+  CRED-nf row to point at `meta.session_count` (free text).
+
+---
+
 ## 5. Source location coverage (Phase 0b — done)
 
 What's covered:
