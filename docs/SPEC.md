@@ -172,7 +172,7 @@ protocol "othmer_ilf_t3t4_v1" {
 
 ### 4.1 `meta`
 
-Metadata. Required fields: `version`, `evidence`, `description`. Optional fields cover author, citation, lineage, control protocol reference, indication, target population, safety monitoring, outcome measures.
+Metadata. Required fields: `version`, `evidence`, `description`. Optional fields cover author, citation, lineage, control protocol reference, indication, target population, safety monitoring, outcome measures, and the **sham strategies whitelist** for research-mode operation (§7.9).
 
 ```refrain
 meta {
@@ -185,10 +185,17 @@ meta {
   indication        = "regulatory_dysfunction"
   control_ref       = "library/othmer/ilf_sham@1.0"
   outcome_measures  = ["BAI", "BDI-II", "subjective_arousal"]
+  sham_strategies   = ["time_shifted_self", "phase_scrambled"]
 }
 ```
 
 The `meta` block carries all CRED-nf-aligned metadata. See §8.
+
+#### `meta.sham_strategies`
+
+A whitelist of chunk-transformer type names that are *clinically valid* sham conditions for this protocol. Runtimes that support research mode (§7.9) MUST reject host attempts to use a sham type not in this list. An empty list or absent field means **no sham is permitted for this protocol** — strict by default, since sham appropriateness depends on what the protocol is training.
+
+Permitted values are runtime-defined; the reference implementation accepts `"time_shifted_self"`, `"phase_scrambled"`, and `"yoked_replay"` (§7.9.2). Protocol authors choose which subset is methodologically appropriate for their clinical training; e.g., `phase_scrambled` is inappropriate for protocols that train phase-coherence features.
 
 ### 4.2 `requires`
 
@@ -633,6 +640,80 @@ Implementation guidance (non-normative): tap collection should be a pure read of
 
 See `docs/EMBEDDING.md` for the host-side API surface and a code example.
 
+### 7.9 Research mode (sham conditions and allocation concealment)
+
+Refrain runtimes SHOULD support a research-mode operating mode that enables CRED-nf-grade controlled studies: blinded allocation between real and sham conditions, with the allocation decision sealed cryptographically so neither clinician nor researcher can decode it until the study is unblinded. The reference implementation is described here; runtimes that match this contract can claim conformance regardless of internal architecture.
+
+The full threat model, cryptographic protocol, and constant-time guarantees are in `docs/RESEARCH-MODE.md`. This section establishes the language-level contract.
+
+#### 7.9.1 The chunk-transformer abstraction
+
+A *chunk transformer* is a stateful object that sits between the host's raw EEG chunks and the evaluator's reward/output pipeline. Its surface contract:
+
+```python
+class ChunkTransformer:
+    def step(self, raw_chunk: np.ndarray) -> np.ndarray: ...
+    def reset(self) -> None: ...
+```
+
+When configured, the evaluator calls `transformer.step(chunk)` on each incoming chunk and processes the returned chunk as if it were the raw input. **Every downstream observable — reward events, output bindings, tap values per §7.8 — reflects the transformed signal, not the original.** This is required for blinding: a clinician's observation window plotting envelopes from the "real" signal during a sham session would instantly unblind.
+
+The identity transformer (which returns chunks unchanged) is the default. Hosts opt into a custom transformer via the runtime's `Evaluator.live(..., chunk_transformer=...)` API or equivalent.
+
+#### 7.9.2 Standard sham types
+
+The reference implementation ships three first-class sham transformers, each preserving and destroying different signal properties:
+
+| Sham type | Preserves | Destroys | Use case |
+|---|---|---|---|
+| `time_shifted_self` | spectral statistics, artifact structure, channel relationships | temporal correlation with the patient's current state | training paradigms where the *type* of signal matters but the *timing* is what carries the conditioning |
+| `phase_scrambled` | power spectrum within the scrambling window | phase coherence, transient structure | training paradigms that depend on amplitude-based features (most envelope-based NF) |
+| `yoked_replay` | inter-channel and temporal structure of a real recording | any link to the current patient's state | designs that need a "control patient's signal" as the sham, common in multi-arm studies |
+
+Runtimes MAY ship additional sham types; the protocol whitelist (`meta.sham_strategies`, §4.1) is the safety mechanism that prevents clinically inappropriate shams from being applied to a given protocol.
+
+#### 7.9.3 Sealed allocation
+
+For studies that require true blinding, runtimes SHOULD support a *sealed allocation* mode in which Refrain itself owns the randomization and conceals the result. The mechanism:
+
+1. The host provides a list of permitted sham candidates and an X25519 public key.
+2. Refrain rolls a cryptographically-random allocation (real vs sham; if sham, which type).
+3. Refrain selects the corresponding transformer for the session.
+4. Refrain seals the allocation decision with libsodium `crypto_box_seal` against the public key, producing an opaque token.
+5. The host stores the token. Neither host nor clinician can decrypt it.
+6. Post-hoc, the holder of the matching X25519 private key (typically an independent statistician) decrypts every session's token and reconstructs the allocation matrix.
+
+The sealed plaintext is a JSON object whose schema is fixed at the language level (so cross-runtime tokens are interoperable):
+
+```json
+{
+  "version": 1,
+  "condition": "real" | "sham",
+  "sham_type": "time_shifted_self" | "phase_scrambled" | "yoked_replay" | null,
+  "sham_params": { ... },
+  "candidate_index": 0,
+  "seed": "0x...",
+  "timestamp": "2026-05-12T...Z",
+  "refrain_version": "0.0.5",
+  "protocol_id": "smr_cz_brainbit_v1",
+  "protocol_hash": "sha256:..."
+}
+```
+
+`protocol_hash` is the SHA-256 of the canonical-unparsed *resolved* IR — not the source file. Resolved-IR hashing means the hash captures composition (`extends`, `amend`, `remove`) and is invariant to whitespace, comment, and source-file-arrangement changes. Two sessions with the same `protocol_hash` are guaranteed to have run the same computation.
+
+#### 7.9.4 Constraints
+
+Runtimes claiming research-mode conformance MUST guarantee:
+
+- **No within-session side channels.** A clinician observing the patient's session in real time MUST NOT be able to distinguish real from sham via timing patterns, event distributions, latency profiles, or any other observable. Constant-time-within-session is mandatory.
+- **Observable internals reflect the processed signal.** The §7.8 tap API MUST expose values from the transformed (sham) signal during sham mode, not from the underlying raw input. Otherwise tap-based observation windows unblind the clinician.
+- **Whitelist enforcement.** Runtimes MUST reject sham candidates whose type name is not in `meta.sham_strategies`.
+
+Constant-time *across* sessions (i.e., resistance to timing attacks aggregated over many runs) is OPTIONAL and host-configurable. See `docs/RESEARCH-MODE.md` for the threat model and the opt-in `strict_constant_time` mode.
+
+See `docs/RESEARCH-MODE.md` for the full cryptographic protocol, per-sham-type constant-time guarantees, sealed-token format spec, and test fixtures. See `docs/EMBEDDING.md` for host-side integration.
+
 ---
 
 ## 8. CRED-nf mapping
@@ -643,7 +724,7 @@ Every CRED-nf checklist item maps to a Refrain field. A complete protocol genera
 |---|---|
 | Pre/post outcome measures | `meta.outcome_measures` |
 | Indication / clinical population | `meta.indication`, `meta.population` |
-| Control / sham condition | `meta.control_ref` |
+| Control / sham condition | `meta.control_ref`, `meta.sham_strategies` (§4.1), plus the sealed-allocation token (§7.9) for studies that ran randomised sham |
 | Citation / prior literature | `meta.citation` |
 | Adverse event monitoring | `meta.safety_monitoring` |
 | Exact electrode locations | `requires.channels`, `input.*.montage` |
