@@ -12,7 +12,7 @@ from . import ast
 from .parser import ParseError, parse, parse_file
 from .unparser import unparse
 
-__version__ = "0.0.0"
+__version__ = "0.0.1"
 
 __all__ = [
     "__version__",
