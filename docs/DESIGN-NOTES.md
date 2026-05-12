@@ -623,6 +623,67 @@ BrainBit-tailored example follows the same wiring.
 
 ---
 
+## 4e. Host-introspection tap API — Phase 0e-b complete (what landed)
+
+`Evaluator.last_taps() -> dict[str, float | bool]` exposes the per-chunk
+last-sample values of internal stream computations so a host application
+can plot a clinician observation window (envelope traces, threshold
+lines, dwell sub-conditions, pre-gating reward.continuous, post-gating
+output).
+
+Triggered by host-side feedback: the Coherence Recorder had three UI
+placeholders waiting for this — `⚠ NEEDS REFRAIN`. The four asks were
+envelope-per-derive, current adaptive threshold values, boolean dwell
+components, and pre-gating `reward.continuous`. Shipped that set plus
+two adds the Plan-agent design review recommended:
+
+- **`muted` combined inhibit-gate** — convenient single boolean for "is
+  the patient currently being muted by any inhibit"
+- **`output/<channel>` post-gating values** — lets the clinician
+  compare "what the patient actually heard" vs "what they would have
+  heard absent the inhibit"
+
+### Key design choices
+
+- **Tap capture lands BEFORE the warmup output-suppression early-return.**
+  Hosts plotting a warmup observation window need envelope/threshold
+  values during the 90-second warmup phase. Tap values populate
+  identically in `warmup` and `run` states; the only thing the warmup
+  branch suppresses is patient-facing event emission.
+- **Uniform `reward/condition[i]` naming.** Single-condition dwells
+  emit `reward/condition[0]` so the host's iteration loop is
+  `for i = 0..` until a missing key. Avoids a special case.
+- **`reward/event` is `.any()` per chunk**, not last-sample. The
+  regular Event stream from `step_chunk` is the source of truth for
+  edge timing; this tap is a status indicator ("anything fired in
+  this chunk").
+- **Returns a copy.** `last_taps()` returns `dict(self._last_taps)` so
+  the host can persist or aggregate snapshots without state
+  interference from the next `step_chunk`.
+- **Sub-condition discovery is localised in `_eval_reward_event`.** No
+  general expression-eval hook; the existing path already classifies
+  `dwell`'s condition expression, so the all_of/any_of unrolling
+  happens in one place. Handles non-Call sub-conditions (binops,
+  refs) naturally via `_eval_expr` recursion.
+
+### `reference: "device"` — already shipped in Phase 0e-a
+
+Worth flagging as still-current advice: amps with a hardware reference
+electrode (BrainBit Flex, OpenBCI Cyton with built-in ref) should use
+`referential(active: "X", reference: "device")` to consume channels
+as-recorded.
+
+### Recommended spec entries
+
+§7.8 "Tap API" was added to SPEC.md establishing the runtime-SHOULD-
+expose contract and the canonical naming scheme. EMBEDDING.md gained a
+full "Introspection: live taps" section with code example for hosts.
+
+This unblocks the Coherence Recorder's clinician observation window;
+the recorder is expected to pin to `refrain==0.0.1` after the tag.
+
+---
+
 ## 5. Source location coverage (Phase 0b — done)
 
 What's covered:
