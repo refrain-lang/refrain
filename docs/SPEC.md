@@ -608,6 +608,31 @@ Three options for handling live filter-coefficient changes:
 
 Default is warm-restart; protocols may opt in to crossfade via `controls.<name>.tune_strategy = "crossfade"`.
 
+### 7.8 Tap API (host introspection)
+
+A Refrain runtime SHOULD expose per-chunk last-sample values of the internal stream computations through a host-facing introspection method. The canonical signature in the reference implementation is `Evaluator.last_taps() -> dict[str, float | bool]`; other runtimes MAY name the method differently as long as they expose the same keyset and value contract.
+
+The keyset is derived from the resolved IR's named entities, with a uniform `<kind>/<name>` convention. A tap is present in the dict iff the corresponding entity exists in the resolved protocol:
+
+| Tap key | Type | Meaning |
+|---|---|---|
+| `input/<name>` | float | last sample of the post-montage input stream |
+| `derive/<name>` | float | last sample of the derive's output |
+| `threshold/<name>` | float | current adaptive threshold value (last sample) |
+| `inhibit/<name>` | boolean | whether this inhibit is currently active |
+| `muted` | boolean | combined inhibit-gate state |
+| `reward/continuous` | float | the `reward.continuous` value *before* output-stage gating |
+| `reward/event` | boolean | whether the dwell event fired *any* sample in this chunk |
+| `reward/event.holds` | boolean | whether the dwell condition is currently held |
+| `reward/condition[i]` | boolean | i-th sub-condition of the dwell. Single-condition dwells uniformly emit `reward/condition[0]`. |
+| `output/<channel>` | float \| boolean | post-gating, post-clamp value of the patient-facing channel |
+
+Taps are populated identically during the `warmup` and `run` lifecycle states (§7.1). Hosts that render a clinician observation window need warmup-state taps so the warmup progress is visualisable.
+
+Implementation guidance (non-normative): tap collection should be a pure read of values the evaluator has already computed for reward/output evaluation. The reference implementation captures taps before the warmup output-suppression branch so the values are available even when patient-facing events are suppressed.
+
+See `docs/EMBEDDING.md` for the host-side API surface and a code example.
+
 ---
 
 ## 8. CRED-nf mapping

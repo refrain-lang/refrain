@@ -170,6 +170,66 @@ delay-line state — SPEC §7.7's warm-restart — land in Phase 0e-c.
 
 ---
 
+## Introspection: live taps
+
+For host applications that render a clinician observation window —
+envelope traces per derive, threshold lines that move with the
+envelopes, a dwell-component tape showing which sub-condition is
+blocking reward, a pre-gating "how close to reward" overlay — Refrain
+exposes per-chunk last-sample values of the internal stream
+computations via `Evaluator.last_taps()`.
+
+```python
+events = evaluator.step_chunk(chunk)
+# Dispatch patient-facing events as before
+for ev in events:
+    render_to_patient(ev)
+
+# Pull internal values for the clinician observation window
+taps = evaluator.last_taps()
+plot_envelope.append(taps["derive/smr_envelope"])
+plot_threshold.append(taps["threshold/smr_t"])
+plot_pre_gating_reward.append(taps["reward/continuous"])
+dwell_tape.append([
+    taps["reward/condition[0]"],   # SMR > threshold?
+    taps["reward/condition[1]"],   # theta < threshold?
+    taps["reward/condition[2]"],   # high-beta < threshold?
+])
+```
+
+### Tap keys
+
+`last_taps()` returns a `dict[str, float | bool]`. Only keys for
+entities that exist in the resolved protocol are present:
+
+| Key | Type | What it is |
+|---|---|---|
+| `input/<name>` | float | last sample of the post-montage input |
+| `derive/<name>` | float | last sample of the derive's output |
+| `threshold/<name>` | float | current threshold value (last sample) |
+| `inhibit/<name>` | boolean | this inhibit currently active |
+| `muted` | boolean | combined inhibit-gate state |
+| `reward/continuous` | float | pre-gating reward sigmoid value |
+| `reward/event` | boolean | dwell fired any sample this chunk |
+| `reward/event.holds` | boolean | dwell condition currently held |
+| `reward/condition[i]` | boolean | i-th dwell sub-condition. Single-condition dwells uniformly emit `reward/condition[0]` |
+| `output/<channel>` | float \| boolean | post-gating, post-clamp value of the channel |
+
+### Behaviour
+
+- **Empty before first step_chunk.** `last_taps()` returns `{}` until at least one chunk has been pushed.
+- **Returns a copy.** Mutating the returned dict has no effect on the evaluator's internal state. Persist or zip-aggregate freely.
+- **Populated during warmup.** The taps are populated identically during `warmup` and `run` lifecycle states — hosts legitimately want to plot warmup progress.
+- **One read per chunk.** Reading `last_taps()` from a 60-Hz UI thread when chunks arrive at 16 Hz is fine but wasteful (you'll get the same values four times). Cache the snapshot once per chunk arrival and redraw from the cache.
+
+### Naming conventions
+
+- `<kind>/<name>` matches the IR's internal canonical-name scheme — no ambiguity between user-named entities (`derive/my_signal`) and category-level globals (`muted`).
+- Bracketed indices (`reward/condition[0]`) for arrayed sub-conditions; flat names for everything else.
+- `reward/event` semantics are intentionally `.any()` over the chunk's events (boolean: did anything fire), distinct from the per-sample event Event records that step_chunk returns. Use the Event stream for accurate edge timing; use the tap for "is anything happening" status display.
+
+---
+
 ## Channel-order and montage notes
 
 When you call `Evaluator.live(channel_names=(...))`, those names define
