@@ -88,6 +88,7 @@ pip install "refrain[eval]==0.1.0"
 | [`docs/TOUR.md`](docs/TOUR.md) | Tutorial-flavored walkthrough |
 | [`docs/PRIMITIVES.md`](docs/PRIMITIVES.md) | Standard library reference |
 | [`docs/EMBEDDING.md`](docs/EMBEDDING.md) | Integration guide for host applications |
+| [`docs/RESEARCH-MODE.md`](docs/RESEARCH-MODE.md) | CRED-nf-grade allocation concealment: sham types, sealed allocation, threat model |
 | [`docs/HOST-PLUGIN-BRIEF.md`](docs/HOST-PLUGIN-BRIEF.md) | Prompt template for briefing an AI session in a host repo |
 | [`docs/DESIGN-NOTES.md`](docs/DESIGN-NOTES.md) | Implementation-side scratchpad and v0.1 spec proposals |
 | [`examples/`](examples/) | Complete `.refrain` worked examples |
@@ -106,6 +107,10 @@ Shipped on `main`:
 - Host-introspection tap API (`Evaluator.last_taps()`)
 - CLI: `refrain check`, `refrain resolve`, `refrain run`
 - 350+ tests passing on Python 3.10–3.13
+
+Specified but not yet implemented:
+
+- **Research mode** (CRED-nf-grade allocation concealment): chunk-transformer abstraction, three first-class sham types, sealed allocation via libsodium `crypto_box_seal`, `meta.sham_strategies` whitelist. Contract documented in [`docs/RESEARCH-MODE.md`](docs/RESEARCH-MODE.md) and [`SPEC §7.9`](docs/SPEC.md); reference implementation tracked for the next phase.
 
 ## Clinical-use disclaimer
 

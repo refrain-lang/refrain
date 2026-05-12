@@ -684,6 +684,141 @@ the recorder is expected to pin to `refrain==0.0.1` after the tag.
 
 ---
 
+## 4f. Research mode — Phase 0f (spec landed; implementation pending)
+
+CRED-nf-grade allocation concealment: chunk-transformer abstraction,
+three first-class sham types (`TimeShiftedSelf`, `PhaseScrambled`,
+`YokedReplay`), sealed allocation via libsodium `crypto_box_seal`,
+protocol-level `meta.sham_strategies` whitelist.
+
+Triggered by host-side feedback positioning Refrain for both clinical-
+practice and clinical-research use. The host R&D team identified
+allocation concealment as CRED-nf's most-flagged-as-missing
+methodology in NF studies and asked Refrain to own it because
+Refrain's architecture (separate compute-signal vs render-feedback)
+makes it mechanically tractable.
+
+This entry documents the design decisions; the spec contract lives in
+SPEC §4.1 / §7.9; the long-form deep dive is in `docs/RESEARCH-MODE.md`;
+the integration walkthrough is in `docs/EMBEDDING.md`.
+
+### Why ChunkTransformer is a separate concept from Source
+
+Both wrap "produce a chunk per step," so the natural question is:
+isn't ChunkTransformer just a Source? No, because:
+
+- **Sources are runtime inputs.** They wrap files, synthetic
+  generators, or amp connections. The host either pulls from them
+  (file replay) or doesn't use them (push-mode with `step_chunk`).
+- **Transformers are mid-pipeline.** They sit BETWEEN the host's raw
+  chunks and the evaluator's reward pipeline. They consume the host's
+  pushed chunk and return a modified one.
+
+`YokedReplay` is the borderline case: it wraps a Source and emits its
+content as if it were the host's pushed chunk. But it's still
+conceptually a transformer (taking the host's chunk and replacing it
+with something else), not a source (the host still owns acquisition;
+the Source is just YokedReplay's internal data).
+
+API: `ChunkTransformer` is its own ABC. `YokedReplay` *contains* a
+Source instance but *is* a Transformer.
+
+### Why we hash the resolved IR, not the source file
+
+The sealed token's `protocol_hash` field needs to answer one question:
+"did all these sessions run the same computation?" Two options:
+
+1. SHA-256 of the source file → simple but doesn't capture
+   composition. A child protocol extending a parent has different
+   source bytes than the parent but identical resolved IR. Two
+   sessions hashing the same source could still run different
+   computations if one of them rebased onto a different parent.
+2. SHA-256 of the canonical-unparsed resolved IR → captures composition
+   exactly. Whitespace, comments, source-file arrangement don't
+   affect the hash. Composition collapse means the hash reflects
+   *what the runtime is executing*, which is what matters.
+
+Picked (2). Requires writing a canonical unparser that emits sorted-
+key form (or sorted-statement form within blocks where order doesn't
+matter — TBD during implementation). Slightly more work; substantially
+stronger reproducibility guarantee.
+
+### Why constant-time-across-sessions is opt-in
+
+Real-mode sessions skip the FFT cost that `PhaseScrambled` sessions
+pay. A researcher running 100 sessions and aggregating per-session
+wall-clock time could distinguish condition prevalence statistically.
+
+For most NF study designs this isn't a credible threat:
+- Single-session timing differences are <1 ms per chunk
+- Blinding is meant to protect against *within-session* unblinding,
+  not against post-hoc statistical attacks
+- The unblinding key is the harder target anyway
+
+For studies where cross-session timing attacks are in scope (e.g.,
+adversarial replication settings), `strict_constant_time=True` runs
+all candidate transformers on every chunk and selects internally.
+~3× CPU cost; cross-session constant time guaranteed.
+
+Default off because most users don't need it and pay the cost
+unnecessarily.
+
+### Why composition is rejected
+
+`TimeShiftedSelf(YokedReplay(...))` was floated. Rejected because:
+
+- A session is in exactly one condition. Composition implies "this
+  session's condition is `time_shifted_self_of_yoked_replay`," which
+  doesn't map onto the reporting schema CRED-nf expects.
+- The sealed-token plaintext has a `sham_type` field that's a single
+  string. Compound types would need either a list, a structured
+  object, or string conventions like `"time_shifted_self/yoked_replay"`
+  — all of which expand the surface area.
+- If a study wants the *characteristics* of both shams (preservation
+  of artifact structure + removal of self-correlation), the answer is
+  to write a custom transformer the host owns directly via the
+  `chunk_transformer=` hook, not to compose Refrain's stdlib shams.
+
+Closed.
+
+### Why 50/50 default sham probability
+
+The proposed alternatives were per-protocol declaration (e.g.,
+`meta.sham_probability = 0.3`) or always-host-specified.
+
+Per-protocol declaration mixes study-design parameters into the
+protocol artifact. A protocol is supposed to describe *what training
+runs*, not *what study runs it*. Different studies on the same
+protocol will want different allocation ratios; the protocol shouldn't
+constrain that.
+
+Host-passed with 50/50 default keeps the protocol clean and lets the
+host decide. 50/50 is the methodologically conservative default for
+controlled trials; researchers running observational or pilot designs
+can override to favour one arm.
+
+### Threat model documented separately
+
+The threat model lives in `docs/RESEARCH-MODE.md` §5, not here.
+Important distinction: the *system* defends against blinding failures
+from clinician observation; the *researcher* defends against the
+participant's own introspection, the IRB's compliance review, and
+everything else study-design-shaped. Refrain's contract is bounded;
+the deep-dive doc makes that bound explicit.
+
+### Recommended spec revisions
+
+- §4.1 `meta` block gains `sham_strategies` as a recognized optional
+  field. (Landed in this PR.)
+- §7.9 establishes the runtime-SHOULD-support contract. (Landed.)
+- §8 CRED-nf mapping table gains a reference to the sealed-token
+  allocation method for blinded studies. (Landed.)
+- v0.1 should consider adding `meta.sham_probability` as a
+  recommended-by-protocol field (host honours by default; researcher
+  may override).
+
+---
+
 ## 5. Source location coverage (Phase 0b — done)
 
 What's covered:
