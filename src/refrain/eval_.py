@@ -316,6 +316,11 @@ class Evaluator:
         self._samples_pushed: int = 0
         self._warmup_samples: int = self._compute_warmup_samples()
 
+        # Per-chunk last-sample values for introspection (the tap API).
+        # Repopulated every step_chunk call by `_capture_taps`. Empty
+        # before the first step_chunk. See `last_taps()` for the schema.
+        self._last_taps: dict[str, float | bool] = {}
+
     # -- Live-mode factory --------------------------------------------------
 
     @classmethod
@@ -607,23 +612,27 @@ class Evaluator:
         # Reward
         reward_continuous: np.ndarray | None = None
         reward_event: impls.DwellResult | None = None
+        reward_sub_chunks: list[np.ndarray] = []
         if self.ir.reward.continuous is not None:
             reward_continuous = self._eval_expr(
                 self.ir.reward.continuous,
                 stream_values, control_chunks_cache, actual_chunk_size,
             )
         if self.ir.reward.event is not None:
-            reward_event = self._eval_reward_event(
+            reward_event, reward_sub_chunks = self._eval_reward_event(
                 self.ir.reward.event,
                 stream_values, control_chunks_cache, actual_chunk_size,
             )
 
-        # Output bindings + inhibit gating. During warmup we still compute
-        # everything (so primitive state stays current), but suppress
-        # emission so the patient hears nothing while filters settle.
-        if suppress_output:
-            return
+        # Combined inhibit gate — also exposed as the `muted` tap.
+        muted = self._compute_muted(inhibit_active, actual_chunk_size)
 
+        # Pre-compute each output binding's gated/clamped values now so
+        # we can capture them as `output/<channel>` taps *and* emit
+        # them as events below. Tap capture lands BEFORE the warmup
+        # early-return so a host clinician observation window can plot
+        # envelopes / thresholds / output traces during warmup.
+        per_channel_output: dict[str, tuple[np.ndarray, bool]] = {}
         for channel, expr in self.ir.output.items():
             values = self._eval_expr(
                 expr,
@@ -631,10 +640,40 @@ class Evaluator:
                 reward_continuous=reward_continuous,
                 reward_event=reward_event,
             )
-            muted = self._compute_muted(inhibit_active, actual_chunk_size)
-            if self._is_event_channel(expr):
+            is_event = self._is_event_channel(expr)
+            if is_event:
+                # Event channels: gate by inhibits, keep as boolean.
+                gated_bool = values.astype(bool) & ~muted
+                per_channel_output[channel] = (gated_bool, True)
+            else:
+                clamped = np.clip(values, 0.0, 1.0)
+                gated = np.where(muted, 0.0, clamped)
+                per_channel_output[channel] = (gated, False)
+
+        # Capture taps for introspection (SPEC §7.8 / EMBEDDING.md).
+        # This populates `self._last_taps` and runs in BOTH warmup and
+        # run states — the host wants warmup visibility.
+        self._capture_taps(
+            stream_values=stream_values,
+            inhibit_active=inhibit_active,
+            muted=muted,
+            reward_continuous=reward_continuous,
+            reward_event=reward_event,
+            reward_sub_chunks=reward_sub_chunks,
+            per_channel_output=per_channel_output,
+        )
+
+        # Output emission: during warmup we still computed everything
+        # (so primitive state stays current and taps populate), but we
+        # suppress events so the patient hears nothing while filters
+        # settle.
+        if suppress_output:
+            return
+
+        for channel, (out_chunk, is_event) in per_channel_output.items():
+            if is_event:
                 for i in range(actual_chunk_size):
-                    if values[i] and not muted[i]:
+                    if out_chunk[i]:
                         yield Event(
                             timestamp_s=t0_s + i / self.sample_rate_hz,
                             channel=channel,
@@ -642,14 +681,131 @@ class Evaluator:
                             value=None,
                         )
             else:
-                clamped = np.clip(values, 0.0, 1.0)
-                gated = np.where(muted, 0.0, clamped)
                 yield Event(
                     timestamp_s=t0_s,
                     channel=channel,
                     kind="value",
-                    value=float(np.mean(gated)),
+                    value=float(np.mean(out_chunk)),
                 )
+
+    # -- Introspection: live taps (SPEC §7.8) ------------------------------
+
+    def _capture_taps(
+        self,
+        *,
+        stream_values: dict[str, np.ndarray],
+        inhibit_active: dict[str, np.ndarray],
+        muted: np.ndarray,
+        reward_continuous: np.ndarray | None,
+        reward_event: impls.DwellResult | None,
+        reward_sub_chunks: list[np.ndarray],
+        per_channel_output: dict[str, tuple[np.ndarray, bool]],
+    ) -> None:
+        """Repopulate `self._last_taps` from the current chunk's
+        intermediate values. Called once per `_process_chunk` *before*
+        the warmup output-suppression early-return so the host can
+        plot envelopes / thresholds during warmup.
+
+        Mutates the existing dict in place to avoid per-chunk
+        allocation. The dict's keyset is stable for a given protocol,
+        so re-creating the dict every step would be wasted work.
+        """
+        taps = self._last_taps
+
+        # Inputs and derives — last sample of each canonical stream.
+        for inp in self.ir.inputs.values():
+            chunk = stream_values.get(inp.canonical_name)
+            if chunk is not None and chunk.size:
+                taps[inp.canonical_name] = float(chunk[-1])
+        for d in self.ir.derives.values():
+            chunk = stream_values.get(d.canonical_name)
+            if chunk is not None and chunk.size:
+                taps[d.canonical_name] = float(chunk[-1])
+
+        # Thresholds — current adaptive value (last sample).
+        for t in self.ir.thresholds.values():
+            chunk = stream_values.get(t.canonical_name)
+            if chunk is not None and chunk.size:
+                taps[t.canonical_name] = float(chunk[-1])
+
+        # Inhibits — last-sample boolean for each.
+        for ih in self.ir.inhibits.values():
+            chunk = inhibit_active.get(ih.canonical_name)
+            if chunk is not None and chunk.size:
+                taps[ih.canonical_name] = bool(chunk[-1])
+
+        # Combined gate.
+        if muted.size:
+            taps["muted"] = bool(muted[-1])
+        else:
+            taps["muted"] = False
+
+        # Reward.
+        if reward_continuous is not None and reward_continuous.size:
+            taps["reward/continuous"] = float(reward_continuous[-1])
+        if reward_event is not None:
+            # `reward/event` semantics: did the dwell fire ANY sample
+            # in this chunk. The regular Event stream from step_chunk
+            # is the source of truth for edge timing; this tap is a
+            # quick "anything fired" indicator for the observation
+            # window.
+            taps["reward/event"] = bool(reward_event.events.any())
+            if reward_event.holds.size:
+                taps["reward/event.holds"] = bool(reward_event.holds[-1])
+        # Sub-condition taps. `reward_sub_chunks` is empty when reward
+        # has no event; populated with at least one element otherwise
+        # (single-condition dwells are still exposed as
+        # `reward/condition[0]` for uniform host iteration).
+        for i, sub in enumerate(reward_sub_chunks):
+            if sub.size:
+                taps[f"reward/condition[{i}]"] = bool(sub[-1])
+
+        # Output taps — what the patient-facing value actually was,
+        # post-gating and post-clamp. For event channels we expose
+        # "did the channel fire any sample this chunk."
+        for channel, (out_chunk, is_event) in per_channel_output.items():
+            key = f"output/{channel}"
+            if out_chunk.size == 0:
+                continue
+            if is_event:
+                taps[key] = bool(out_chunk.any())
+            else:
+                taps[key] = float(out_chunk[-1])
+
+    def last_taps(self) -> dict[str, float | bool]:
+        """Return last-sample values for internal taps from the most
+        recent `step_chunk` call. Repopulated on every step_chunk;
+        empty before the first one.
+
+        A host application uses this to populate a clinician observation
+        window — envelope traces per derive, threshold lines, dwell
+        sub-condition tape, pre-gating reward.continuous overlay.
+
+        Keys included when the corresponding entity exists in the
+        resolved protocol:
+
+          - "input/<name>"           last sample of post-montage input
+          - "derive/<name>"          last sample of the derive's output
+          - "threshold/<name>"       current threshold value (last sample)
+          - "inhibit/<name>"         boolean: inhibit active this sample
+          - "muted"                  boolean: combined inhibit gate
+          - "reward/continuous"      pre-gating sigmoid value
+          - "reward/event"           boolean: did dwell event fire any
+                                     sample in this chunk (np.any)
+          - "reward/event.holds"     boolean: dwell condition currently held
+          - "reward/condition[i]"    boolean: i-th sub-condition. Uniform
+                                     indexed form — single-condition
+                                     dwells emit `reward/condition[0]`.
+          - "output/<channel>"       post-gating, post-clamp value of
+                                     the patient-facing channel
+
+        Returns a copy, so callers can persist or aggregate without
+        worrying about subsequent step_chunk mutating the snapshot.
+
+        Populated identically during `warmup` and `run` states — hosts
+        legitimately want to plot warmup progress.
+        """
+        return dict(self._last_taps)
 
     # -- Mid-session control tuning (SPEC §7.7) ----------------------------
 
@@ -782,10 +938,18 @@ class Evaluator:
         stream_values: dict[str, np.ndarray],
         control_chunks: dict[str, np.ndarray],
         chunk_size: int,
-    ) -> impls.DwellResult:
+    ) -> tuple[impls.DwellResult, list[np.ndarray]]:
         """The reward.event expression's top-level call is `dwell` (or
         another event-producing primitive). Special-cased so we keep the
-        DwellResult around for `.events` and `.holds` view access."""
+        DwellResult around for `.events` and `.holds` view access.
+
+        Returns (dwell_result, sub_condition_chunks) where
+        sub_condition_chunks is a list of per-sub-condition boolean
+        arrays — one element per `all_of` / `any_of` sub-expression,
+        or one element wrapping the whole condition when it's not a
+        compound. The host's `last_taps()` exposes these as
+        `reward/condition[i]`.
+        """
         if not isinstance(expr, IRCall) or expr.callee != "dwell":
             # For Phase 0d, only `dwell` is supported as a reward event source.
             raise NotImplementedError(
@@ -794,10 +958,40 @@ class Evaluator:
         impl = self._impls[id(expr)]
         # `dwell`'s dynamic input is the `condition` expression.
         _static, dynamic_exprs = _classify_call(expr)
-        condition_chunk = self._eval_expr(
-            dynamic_exprs[0], stream_values, control_chunks, chunk_size,
-        )
-        return impl.step(condition_chunk)
+        condition_expr = dynamic_exprs[0]
+
+        # Sub-condition expansion for the tap API. When the condition
+        # is `all_of([c0, c1, ...])` or `any_of([...])`, evaluate each
+        # element individually so the host can see which sub-condition
+        # is blocking reward. Then recombine for the dwell's input —
+        # cheaper than re-evaluating, semantically identical to the
+        # AllOfImpl / AnyOfImpl reduction (np.all / np.any).
+        sub_chunks: list[np.ndarray]
+        if (
+            isinstance(condition_expr, IRCall)
+            and condition_expr.callee in ("all_of", "any_of")
+            and condition_expr.args
+            and isinstance(condition_expr.args[0].value, IRArray)
+        ):
+            arr = condition_expr.args[0].value
+            sub_chunks = [
+                self._eval_expr(elt, stream_values, control_chunks, chunk_size)
+                for elt in arr.elements
+            ]
+            stacked = np.stack(sub_chunks, axis=0)
+            if condition_expr.callee == "all_of":
+                condition_chunk = np.all(stacked, axis=0)
+            else:
+                condition_chunk = np.any(stacked, axis=0)
+        else:
+            # Single condition — expose it as `reward/condition[0]`
+            # so the host iteration loop is uniform.
+            condition_chunk = self._eval_expr(
+                condition_expr, stream_values, control_chunks, chunk_size,
+            )
+            sub_chunks = [condition_chunk]
+
+        return impl.step(condition_chunk), sub_chunks
 
     def _compute_muted(
         self, inhibit_active: dict[str, np.ndarray], chunk_size: int
