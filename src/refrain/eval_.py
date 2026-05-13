@@ -106,6 +106,7 @@ _DYNAMIC_ARG_KEYS: dict[str, tuple[str, ...]] = {
     "sigmoid": ("_pos_0",),
     "linear": ("_pos_0",),
     "bandpower": ("input",),
+    "coherence": ("input_a", "input_b"),
     # threshold/inhibit constructors with no dynamic inputs
     "mute": (),
     "freeze": (),
@@ -221,6 +222,8 @@ def _massage_static_args(callee: str, static: dict[str, Any]) -> dict[str, Any]:
     if callee == "dwell" and "duration" in out:
         out["duration_ms"] = out.pop("duration")
     if callee == "bandpower" and "window" in out:
+        out["window_ms"] = out.pop("window")
+    if callee == "coherence" and "window" in out:
         out["window_ms"] = out.pop("window")
     if callee == "absolute" and "_pos_0" in out:
         out["value"] = out.pop("_pos_0")

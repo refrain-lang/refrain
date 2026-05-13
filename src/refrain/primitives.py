@@ -339,6 +339,34 @@ _BANDPOWER = PrimitiveSpec(
 )
 
 
+def _coherence_output(args: dict[str, ResolvedArg]) -> StreamType:
+    # Magnitude-squared coherence is dimensionless in [0, 1].
+    return scalar_stream(DIMENSIONLESS)
+
+
+_COHERENCE = PrimitiveSpec(
+    name="coherence",
+    category="signal",
+    signatures=(
+        Signature(
+            params=(
+                ParamSpec("input_a", "stream_ref"),
+                ParamSpec("input_b", "stream_ref"),
+                ParamSpec("band", "tuple_2_numbers", dims=FREQUENCY),
+                # Default window 1 s; impl enforces minimum given the
+                # multi-segment Welch requirement. See CoherenceImpl docstring.
+                ParamSpec("window", "duration", default=None, required=False),
+            ),
+            output=_coherence_output,
+        ),
+    ),
+    budget=ResourceBudget(state_kb=12, worst_case_us=500),
+    doc="Magnitude-squared coherence between two streams, averaged over "
+        "a frequency band. Streaming Welch on a sliding window. Returns "
+        "scalar in [0, 1].",
+)
+
+
 # Time-series math ---------------------------------------------------------
 
 _DIFFERENTIATE = PrimitiveSpec(
@@ -638,6 +666,7 @@ _REGISTRY: dict[str, PrimitiveSpec] = {
         _BANDPASS,
         _HILBERT,
         _BANDPOWER,
+        _COHERENCE,
         _DIFFERENTIATE,
         _MAGNITUDE,
         _RECTIFY,
