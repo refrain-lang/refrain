@@ -703,6 +703,107 @@ class BandpowerImpl(PrimitiveImpl):
 
 
 # ---------------------------------------------------------------------------
+# Coherence — magnitude-squared coherence between two streams
+# ---------------------------------------------------------------------------
+
+
+class CoherenceImpl(PrimitiveImpl):
+    """`coherence(input_a, input_b, band, window)` — band-averaged
+    magnitude-squared coherence (MSC) between two streams.
+
+    Implementation: streaming Welch's method via `scipy.signal.coherence`.
+    Two `deque(maxlen=window_samples)` buffers hold the trailing window of
+    each input. Per chunk, samples are appended; once enough data is
+    present (≥ 2 segments), MSC is computed over the buffer, averaged
+    over the requested frequency band, broadcast across the chunk's
+    samples as a single scalar.
+
+    Why per-chunk-constant: Welch is O(N log N) per segment; per-sample
+    update would be 64× more expensive than necessary. Clinical coherence
+    training has seconds-scale dynamics, so chunk-cadence (4 Hz at 64-
+    sample chunks @ 256 Hz) is plenty.
+
+    Critical math note: a single-segment Welch returns MSC ≡ 1.0 for
+    any input — the formula `|Pxy|^2 = Pxx * Pyy` reduces trivially with
+    one segment. This impl forces `nperseg ≤ window_samples / 2`
+    (typically ~250 ms segments) so multi-segment averaging gives a
+    real coherence estimate.
+
+    Frequency resolution = `sample_rate / nperseg` ≈ 4 Hz with default
+    settings, which is coarse for narrow clinical bands; use a longer
+    `window` (e.g. 2 s with the same nperseg gives more segments rather
+    than finer frequency bins) for tighter band averaging.
+    """
+
+    def __init__(
+        self,
+        *,
+        band: tuple[float, float],
+        window_ms: float,
+        sample_rate_hz: float,
+    ):
+        low, high = float(band[0]), float(band[1])
+        nyq = sample_rate_hz / 2.0
+        if not (0 <= low < high <= nyq):
+            raise ValueError(
+                f"coherence: band ({low}, {high}) Hz must satisfy "
+                f"0 <= low < high <= nyquist ({nyq} Hz)"
+            )
+        self.band = (low, high)
+        self.sample_rate_hz = float(sample_rate_hz)
+        self.window_samples = max(1, int(round(window_ms / 1000.0 * sample_rate_hz)))
+        # 250 ms segments by default. nperseg MUST be < window_samples
+        # for multi-segment Welch to produce meaningful MSC.
+        self.nperseg = max(8, int(sample_rate_hz // 4))
+        min_window_ms = 2 * self.nperseg * 1000.0 / sample_rate_hz
+        if self.window_samples < self.nperseg * 2:
+            raise ValueError(
+                f"coherence: window must be ≥ {min_window_ms:.0f} ms at this "
+                f"sample rate (got {window_ms} ms). A single-segment Welch "
+                f"returns MSC = 1.0 trivially and cannot be used."
+            )
+        self.noverlap = self.nperseg // 2
+        # We need enough samples for ≥ 2 segments before MSC is
+        # meaningful — single-segment Welch returns 1.0 trivially.
+        self._min_samples = self.nperseg + (self.nperseg - self.noverlap)
+        self._buf_a: deque[float] = deque(maxlen=self.window_samples)
+        self._buf_b: deque[float] = deque(maxlen=self.window_samples)
+
+    def step(self, x_a: np.ndarray, x_b: np.ndarray) -> np.ndarray:
+        n = x_a.shape[0]
+        if x_b.shape[0] != n:
+            raise ValueError(
+                f"coherence: input_a and input_b chunk sizes differ "
+                f"({n} vs {x_b.shape[0]})"
+            )
+        self._buf_a.extend(x_a.tolist())
+        self._buf_b.extend(x_b.tolist())
+        if len(self._buf_a) < self._min_samples:
+            # Warm-up: not enough samples for multi-segment MSC. Match
+            # BandpowerImpl's "return 0.0 during warm-up" convention.
+            return np.zeros(n, dtype=np.float64)
+        a = np.fromiter(self._buf_a, dtype=np.float64, count=len(self._buf_a))
+        b = np.fromiter(self._buf_b, dtype=np.float64, count=len(self._buf_b))
+        with np.errstate(invalid="ignore", divide="ignore"):
+            f, Cxy = scisig.coherence(
+                a, b,
+                fs=self.sample_rate_hz,
+                nperseg=self.nperseg,
+                noverlap=self.noverlap,
+                window="hann",
+            )
+        # Constant or all-zero inputs produce NaN entries (divide by
+        # Pxx=0 or Pyy=0). Coerce to 0 so downstream comparisons behave.
+        Cxy = np.nan_to_num(Cxy, nan=0.0, posinf=0.0, neginf=0.0)
+        mask = (f >= self.band[0]) & (f <= self.band[1])
+        if not mask.any():
+            msc = 0.0
+        else:
+            msc = float(np.clip(np.mean(Cxy[mask]), 0.0, 1.0))
+        return np.full(n, msc, dtype=np.float64)
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
@@ -813,6 +914,12 @@ def make_filter_impl(
             window_ms=float(static_args["window_ms"]),
             sample_rate_hz=sample_rate_hz,
         )
+    if callee == "coherence":
+        return CoherenceImpl(
+            band=tuple(static_args["band"]),
+            window_ms=float(static_args.get("window_ms", 1000.0)),
+            sample_rate_hz=sample_rate_hz,
+        )
     raise NotImplementedError(f"no evaluator impl for primitive {callee!r}")
 
 
@@ -848,6 +955,7 @@ __all__ = [
     "BandpowerImpl",
     "BelowImpl",
     "BipolarImpl",
+    "CoherenceImpl",
     "DifferentiateImpl",
     "DwellImpl",
     "DwellResult",
