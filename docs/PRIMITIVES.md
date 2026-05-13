@@ -211,6 +211,41 @@ inhibit "emg" {
 }
 ```
 
+### `coherence`
+
+```
+coherence(input_a: stream_ref, input_b: stream_ref,
+          band: (low_Hz, high_Hz),
+          window: duration = 1 s) -> stream<scalar in [0, 1]>
+```
+
+Magnitude-squared coherence (MSC) between two time-domain streams, averaged over a frequency band. Streaming Welch's method on a sliding window. The output is dimensionless in `[0, 1]`: `1.0` means perfect phase-consistency between the streams in the band; `0.0` means no phase relationship.
+
+```refrain
+derive "alpha_coh" {
+  formula = coherence(
+    input_a: "raw_c3",
+    input_b: "raw_c4",
+    band:    (8 Hz, 12 Hz),
+    window:  2 s
+  )
+}
+```
+
+The signature uses `input_a` / `input_b` rather than `channel_a` / `channel_b` because the operands are streams (potentially already montaged, filtered, or otherwise derived), not raw electrode channels.
+
+**Window choice matters.** Coherence requires multi-segment Welch averaging to produce meaningful values — a single-segment MSC reduces to `1.0` trivially regardless of input. The implementation uses ~250 ms segments at 50% overlap; `window` must be at least 500 ms (~2 segments) and produces meaningful coherence estimates only after the buffer fills. A 1-second window yields ~7 segments of averaging; 2 seconds yields ~15.
+
+**Frequency resolution** is `sample_rate / nperseg`, not `1 / window`. With default settings (~250 ms `nperseg`), that's ~4 Hz resolution — coarse for the 4 Hz–wide alpha band, where a single FFT bin will dominate the band's MSC. For narrow-band coherence work, longer `window` does NOT improve resolution (it only adds more segments); the only way to tighten resolution is to use a higher sample rate.
+
+**Warm-up** behavior: returns `0.0` until the buffer accumulates ≥ 2 segments of data. Approximately 500 ms at typical NF sample rates. Downstream `above` / `dwell` / threshold comparisons handle this correctly (a zero coherence reading is not above any positive threshold).
+
+**Pre-filter or not?** Coherence operates on time-domain signals. You can pass raw referential channels directly (recommended for most NF use cases), or pre-bandpass the streams if you want to isolate a specific frequency before computing coherence. The `band` parameter inside `coherence` is the *analysis* band (which frequencies to average MSC over), not a pre-filter.
+
+`coherence` is the right primitive for *coherence training* — rewarding the patient for increased inter-hemispheric synchrony in a target band. For amplitude-symmetry training (rewarding equal power between channels), use bandpower on each channel and a difference/ratio in the formula derive instead.
+
+> **Out of scope for v0.1:** Phase-locking value (PLV) — a strict phase-alignment measure decoupled from amplitude. Multi-channel coherence reductions (network coherence, weighted average across multiple pairs). Cross-frequency coupling (phase-amplitude coupling, PAC). These may land in v0.2+ as motivated by clinical demand.
+
 ---
 
 ## Time-series math
@@ -513,7 +548,7 @@ The v0.0 standard library is sufficient for these clinical protocol families:
 - **Alpha-theta (Peniston)** — fully expressible.
 - **Asymmetry training** — expressible with `formula` and existing primitives.
 - **Live z-score training (LZT)** — sketched but vector-reduction syntax is incomplete.
-- **Coherence training** — needs `coherence(channel_a, channel_b, band)` primitive (planned for v0.1).
+- **Coherence training** — fully expressible via `coherence(input_a, input_b, band, window)` (Spectral operators section).
 - **Source-space NF** — `source_project` is stubbed; needs concrete semantics.
 - **Phase-based protocols** — outside scope of v0.0.
 
