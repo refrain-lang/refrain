@@ -23,6 +23,7 @@ from refrain.primitive_impls import (
     BandpowerImpl,
     BelowImpl,
     BipolarImpl,
+    CoherenceImpl,
     DifferentiateImpl,
     DwellImpl,
     HilbertFirImpl,
@@ -412,3 +413,113 @@ def test_bandpower_out_of_band_has_low_power():
     y_in = impl2.step(sig_in)
     # Out-of-band power should be much lower than in-band.
     assert y[-1] < y_in[-1] * 0.1
+
+
+# ---------------------------------------------------------------------------
+# Coherence — magnitude-squared coherence between two streams
+# ---------------------------------------------------------------------------
+
+
+def test_coherence_identical_signals_yields_one():
+    """Two identical streams have MSC = 1.0 (a signal is perfectly
+    coherent with itself)."""
+    impl = CoherenceImpl(band=(8.0, 12.0), window_ms=2000.0, sample_rate_hz=SR)
+    sig = _sine(10.0, n=4096, amplitude=10.0)
+    out = impl.step(sig, sig)
+    assert out[-1] > 0.95, f"MSC for identical signals should be ~1.0, got {out[-1]:.3f}"
+
+
+def test_coherence_independent_noise_is_low():
+    """Independent white noise in both channels should give low MSC —
+    the 7-segment averaging noise floor is approximately 1/n_segments."""
+    rng = np.random.default_rng(0)
+    impl = CoherenceImpl(band=(8.0, 12.0), window_ms=2000.0, sample_rate_hz=SR)
+    a = rng.standard_normal(4096)
+    b = rng.standard_normal(4096)
+    out = impl.step(a, b)
+    assert out[-1] < 0.4, (
+        f"MSC for independent noise should be < 0.4 with 7-segment averaging, "
+        f"got {out[-1]:.3f}"
+    )
+
+
+def test_coherence_band_selective():
+    """Streams sharing a 10 Hz alpha component plus independent broadband
+    noise have high MSC in the alpha band, low MSC everywhere else.
+
+    Note: a fixed-phase sinusoid (even one with random initial phase)
+    remains coherent over time because coherence measures phase
+    *consistency*, not phase *value*. To make beta-band content
+    incoherent, the contribution must be independent broadband noise,
+    not synchronized tones with a fixed offset.
+    """
+    rng = np.random.default_rng(1)
+    t = np.arange(4096) / SR
+    shared_alpha = np.sin(2 * np.pi * 10 * t)
+    # Independent broadband noise on each channel — incoherent at every
+    # frequency including beta.
+    noise_a = rng.standard_normal(4096)
+    noise_b = rng.standard_normal(4096)
+    a = shared_alpha + 0.5 * noise_a
+    b = shared_alpha + 0.5 * noise_b
+
+    impl_alpha = CoherenceImpl(band=(8.0, 12.0), window_ms=2000.0, sample_rate_hz=SR)
+    impl_beta = CoherenceImpl(band=(20.0, 30.0), window_ms=2000.0, sample_rate_hz=SR)
+    msc_alpha = impl_alpha.step(a, b)[-1]
+    msc_beta = impl_beta.step(a, b)[-1]
+
+    assert msc_alpha > 0.7, f"alpha MSC should be > 0.7, got {msc_alpha:.3f}"
+    assert msc_beta < 0.4, f"beta MSC should be < 0.4, got {msc_beta:.3f}"
+    assert msc_alpha > msc_beta + 0.3
+
+
+def test_coherence_warmup_returns_zero():
+    """Before the buffer accumulates enough samples for multi-segment
+    Welch, MSC should be 0.0 (matches BandpowerImpl's warmup convention,
+    not NaN — downstream comparisons would mishandle NaN)."""
+    impl = CoherenceImpl(band=(8.0, 12.0), window_ms=2000.0, sample_rate_hz=SR)
+    # 50 samples — well below the 96-sample minimum for 2-segment Welch.
+    out = impl.step(np.ones(50), np.ones(50))
+    assert np.all(out == 0.0)
+
+
+def test_coherence_constant_input_returns_zero_not_nan():
+    """Constant or all-zero inputs make Welch's denominators zero,
+    producing NaN per bin. The impl should coerce to 0.0."""
+    impl = CoherenceImpl(band=(8.0, 12.0), window_ms=2000.0, sample_rate_hz=SR)
+    out = impl.step(np.zeros(4096), np.zeros(4096))
+    assert np.all(np.isfinite(out))
+    assert out[-1] == 0.0
+
+
+def test_coherence_streaming_matches_single_shot():
+    """Feeding the same data chunked vs. single-shot must produce the
+    same MSC for the trailing window (the only window both have seen)."""
+    rng = np.random.default_rng(42)
+    a = rng.standard_normal(4096)
+    b = 0.7 * a + 0.3 * rng.standard_normal(4096)  # partially coherent
+
+    impl1 = CoherenceImpl(band=(0.0, 50.0), window_ms=2000.0, sample_rate_hz=SR)
+    out_single = impl1.step(a, b)[-1]
+
+    impl2 = CoherenceImpl(band=(0.0, 50.0), window_ms=2000.0, sample_rate_hz=SR)
+    out_chunked = None
+    for i in range(0, 4096, 64):
+        out_chunked = impl2.step(a[i:i + 64], b[i:i + 64])[-1]
+    assert abs(out_single - out_chunked) < 1e-9, (
+        f"streaming vs single-shot MSC drift: {out_single:.6f} vs {out_chunked:.6f}"
+    )
+
+
+def test_coherence_band_outside_nyquist_rejected():
+    """Band edges above Nyquist must be rejected at construction."""
+    with pytest.raises(ValueError, match="nyquist"):
+        CoherenceImpl(band=(50.0, 150.0), window_ms=2000.0, sample_rate_hz=SR)
+
+
+def test_coherence_window_too_short_rejected():
+    """Window must accommodate ≥ 2 segments of multi-segment Welch.
+    With nperseg = SR/4 (~62 samples at SR=250), the minimum is ~500 ms.
+    A 100 ms window must be rejected with a clear diagnostic."""
+    with pytest.raises(ValueError, match="window must be"):
+        CoherenceImpl(band=(8.0, 12.0), window_ms=100.0, sample_rate_hz=SR)
