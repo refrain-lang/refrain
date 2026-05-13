@@ -46,7 +46,13 @@ What Refrain does:
 - Parse and validate protocol files
 - Type-check expressions, validate hardware against an amp profile
 - Compute reward / inhibit / output signals from streaming EEG chunks
+  using a curated math library (bandpass, hilbert, magnitude, smooth,
+  bandpower, coherence, percentile threshold, dwell, sigmoid, mute,
+  etc. — see `docs/PRIMITIVES.md`)
 - Emit timestamped events (chimes, gain values) back to the host
+- Expose internal computed values (envelope traces, threshold lines,
+  dwell sub-conditions, pre-gating reward, post-gating output) via
+  `Evaluator.last_taps()` for clinician observation windows
 
 What Refrain explicitly does NOT do:
 - Own amp acquisition
@@ -85,8 +91,31 @@ without them.
    — the amp profile for the target hardware. The 4-channel layout
    and AC coupling shape what the plugin can do.
 
+6. `/Users/jcroall/git/refrain/refrain/docs/PRIMITIVES.md` — the
+   standard library of math operators that appear inside protocol
+   files. Skim the table-of-contents and scan: Acquisition (bipolar,
+   referential), Spectral (bandpass, hilbert, bandpower, coherence),
+   Time-series (magnitude, rectify, smooth, differentiate),
+   Statistics (auto_range, percentile), Mappings (sigmoid, linear),
+   Conditions (above/below/inside/all_of/any_of), Events (dwell),
+   Inhibit actions (mute/freeze/flag). You don't need to memorize
+   parameters; you need to know what's in the standard library when
+   a clinical question lands. Coherence training (e.g. "deep state /
+   flow" via inter-hemispheric alpha synchrony) is supported as of
+   refrain==0.1.0.
+
 You do NOT need to read the implementation in `src/refrain/`. Treat
 the package as a black box with the API documented in EMBEDDING.md.
+
+## Refrain version to pin against
+
+Pin to `refrain==0.1.0` (or a newer version that is
+backward-compatible — Refrain follows semver, and v0.x.y bumps are
+additive). The available primitive surface as of v0.1.0 is in
+`docs/PRIMITIVES.md`. If you find yourself wanting a primitive
+that's not in the standard library, flag it as a Refrain feature
+request rather than working around it host-side — the standard
+library is intentionally small but grows on demand.
 
 ## The integration contract — five methods
 
@@ -217,8 +246,9 @@ convention puts design docs). Cover:
   proposals. Code lands in a follow-up session after this design is
   reviewed.
 - **No new dependencies** beyond what the recorder already uses,
-  except `refrain` itself (`pip install refrain[eval]` if it's
-  published; for now, `pip install -e /Users/jcroall/git/refrain/refrain`).
+  except `refrain` itself. Pin to `refrain==0.1.0` from PyPI when
+  it's published, or `pip install -e /Users/jcroall/git/refrain/refrain`
+  during local development.
 - **Single protocol first.** Don't design for the full protocol
   library yet. SMR Cz on BrainBit working end-to-end is the v1 bar.
 - **Refrain owns the math.** Don't propose duplicating Refrain's
