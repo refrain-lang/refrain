@@ -38,6 +38,7 @@ ALL_CASES = [
     ("micro_03_envelope", "bench.baselines.micro_03_envelope_idiomatic"),
     ("micro_04_threshold", "bench.baselines.micro_04_threshold_idiomatic"),
     ("micro_05_reward", "bench.baselines.micro_05_reward_idiomatic"),
+    ("realistic_smr", "bench.baselines.realistic_smr_idiomatic"),
 ]
 
 
