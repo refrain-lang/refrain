@@ -23,8 +23,12 @@ class Baseline:
         self.theta_env = _Envelope(band=(4.0, 8.0), tau_ms=250.0, sample_rate_hz=sample_rate_hz)
         self.hbeta_env = _Envelope(band=(22.0, 30.0), tau_ms=250.0, sample_rate_hz=sample_rate_hz)
 
-        self.smr_t = _PercentileThreshold(target_pct=70.0, window_ms=120000.0, sample_rate_hz=sample_rate_hz)
-        self.theta_t = _PercentileThreshold(target_pct=30.0, window_ms=120000.0, sample_rate_hz=sample_rate_hz)
+        self.smr_t = _PercentileThreshold(
+            target_pct=70.0, window_ms=120000.0, sample_rate_hz=sample_rate_hz
+        )
+        self.theta_t = _PercentileThreshold(
+            target_pct=30.0, window_ms=120000.0, sample_rate_hz=sample_rate_hz
+        )
         self.hbeta_value = 8.0
 
         # dwell state machine (DwellImpl): 250 ms @ rate

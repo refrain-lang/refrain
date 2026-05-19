@@ -12,14 +12,13 @@ from typing import Iterable
 
 import numpy as np
 
+from bench.harness.env_capture import capture_env
+from bench.harness.equivalence import EquivalenceFailure, assert_equivalent
+from bench.harness.runner import ChunkedRunner
 from refrain.amp_profile import load_amp_profile
 from refrain.eval_ import Evaluator
 from refrain.parser import parse_file
 from refrain.resolver import resolve
-
-from bench.harness.env_capture import capture_env
-from bench.harness.equivalence import EquivalenceFailure, assert_equivalent
-from bench.harness.runner import ChunkedRunner
 
 REPO = Path(__file__).resolve().parent.parent
 PROTOCOLS = REPO / "bench" / "protocols"
@@ -72,7 +71,11 @@ def _equivalence_run(only: Iterable[str] | None) -> int:
     env = capture_env()
     sha = env["git_sha"][:12] if env["git_sha"] else "?"
     print(f"# Refrain bench equivalence audit (git {sha})")
-    print(f"# python={env['python_version']}  numpy={env['numpy_version']}  scipy={env['scipy_version']}")
+    print(
+        f"# python={env['python_version']}"
+        f"  numpy={env['numpy_version']}"
+        f"  scipy={env['scipy_version']}"
+    )
     print()
 
     rng = np.random.default_rng(0)

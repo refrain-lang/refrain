@@ -42,7 +42,8 @@ class ChunkedRunner:
         total_samples = input_signal.shape[0]
         if total_samples % self.chunk_size != 0:
             raise ValueError(
-                f"input_signal length {total_samples} is not divisible by chunk_size {self.chunk_size}"
+                f"input_signal length {total_samples} is not divisible"
+                f" by chunk_size {self.chunk_size}"
             )
         n_chunks = total_samples // self.chunk_size
 
