@@ -1,4 +1,4 @@
-"""record_streams=True captures per-chunk stream_values for the bench harness."""
+"""record_streams=True captures per-chunk stream arrays for the bench harness."""
 
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
 AMP_Q21 = REPO / "src" / "refrain" / "amp_profiles" / "q21.json"
 
+CHANNELS = ("Cz", "A1", "A2")
+
 
 def _smr_ir():
     return resolve(parse_file(EXAMPLES / "smr_cz.refrain"),
@@ -22,36 +24,39 @@ def _smr_ir():
 
 
 def test_record_streams_default_off():
-    ev = Evaluator.live(_smr_ir(), sample_rate_hz=256, channel_names=("Cz",))
+    ev = Evaluator.live(_smr_ir(), sample_rate_hz=256, channel_names=CHANNELS)
     ev.start(skip_warmup=True)
-    ev.step_chunk(np.zeros((32, 1), dtype=np.float64))
+    ev.step_chunk(np.zeros((32, 3), dtype=np.float64))
     assert ev.last_streams() == {}, "default mode must not record"
 
 
 def test_record_streams_captures_chunk():
     ev = Evaluator.live(
-        _smr_ir(), sample_rate_hz=256, channel_names=("Cz",),
+        _smr_ir(), sample_rate_hz=256, channel_names=CHANNELS,
         record_streams=True,
     )
     ev.start(skip_warmup=True)
-    chunk = np.random.default_rng(0).standard_normal((32, 1))
+    chunk = np.random.default_rng(0).standard_normal((32, 3))
     ev.step_chunk(chunk)
     streams = ev.last_streams()
-    assert "raw" in streams
-    assert streams["raw"].shape == (32,)
-    assert "smr_envelope" in streams
-    assert streams["smr_envelope"].shape == (32,)
+    assert "raw" in streams and streams["raw"].shape == (32,)
+    assert "smr_envelope" in streams and streams["smr_envelope"].shape == (32,)
+    # smr_cz has reward + output bindings; those must be captured too.
+    assert "reward.continuous" in streams
+    assert "reward.event" in streams
+    assert "reward.event.holds" in streams
+    assert any(k.startswith("output/") for k in streams), "output streams must be captured"
 
 
 def test_record_streams_overwrites_each_chunk():
     ev = Evaluator.live(
-        _smr_ir(), sample_rate_hz=256, channel_names=("Cz",),
+        _smr_ir(), sample_rate_hz=256, channel_names=CHANNELS,
         record_streams=True,
     )
     ev.start(skip_warmup=True)
     rng = np.random.default_rng(1)
-    ev.step_chunk(rng.standard_normal((32, 1)))
+    ev.step_chunk(rng.standard_normal((32, 3)))
     first = ev.last_streams()["raw"].copy()
-    ev.step_chunk(rng.standard_normal((32, 1)))
+    ev.step_chunk(rng.standard_normal((32, 3)))
     second = ev.last_streams()["raw"]
     assert not np.array_equal(first, second), "stream snapshot must refresh per chunk"
