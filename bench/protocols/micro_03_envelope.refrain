@@ -1,0 +1,34 @@
+// micro_03_envelope.refrain
+// Bench micro: full SMR envelope pipeline. The dominant per-sample work
+// in a realistic SMR protocol per band.
+
+protocol "micro_03_envelope" {
+  meta {
+    version  = "0.1.0"
+    evidence = "demo"
+    description = "Bench: bandpass -> hilbert -> magnitude -> smooth"
+  }
+
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels    = ["Cz"]
+  }
+
+  input "raw" {
+    montage = referential(active: "Cz", reference: "linked_ears")
+  }
+
+  derive "smr_envelope" {
+    from = "raw"
+    pipeline = [
+      bandpass(band: (12 Hz, 15 Hz), order: 4),
+      hilbert(),
+      magnitude(),
+      smooth(tau: 250 ms),
+    ]
+  }
+
+  output {
+    audio_gain = 0
+  }
+}
