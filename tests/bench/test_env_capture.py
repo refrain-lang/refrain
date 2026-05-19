@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from bench.harness.env_capture import capture_env
 
-
 REQUIRED_KEYS = (
     "python_version",
     "platform",

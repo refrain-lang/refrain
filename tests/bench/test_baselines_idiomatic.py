@@ -13,13 +13,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from bench.harness.equivalence import assert_equivalent
+from bench.harness.runner import ChunkedRunner
 from refrain.amp_profile import load_amp_profile
 from refrain.eval_ import Evaluator
 from refrain.parser import parse_file
 from refrain.resolver import resolve
-
-from bench.harness.equivalence import assert_equivalent
-from bench.harness.runner import ChunkedRunner
 
 REPO = Path(__file__).resolve().parent.parent.parent
 PROTOCOLS = REPO / "bench" / "protocols"
