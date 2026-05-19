@@ -1,0 +1,131 @@
+// realistic_smr.refrain
+// DO NOT EDIT — synced from examples/smr_cz.refrain at P1 ship time.
+// Re-syncing requires re-running the equivalence audit; see
+// docs/superpowers/specs/2026-05-19-performance-benchmark-design.md §8.
+//
+// SMR / theta-beta operant training at Cz.
+//
+// Classical operant NF: reward fires when SMR is up, theta is down,
+// and high-beta is below an absolute artifact threshold, sustained
+// for 250 ms (dwell). Continuous modulation tracks SMR/threshold ratio
+// when the condition holds.
+//
+// Strawman example for Refrain v0.0. Not yet executable.
+
+protocol "smr_cz_v1" {
+
+  meta {
+    version          = "1.0.0"
+    evidence         = "clinical"
+    description      = "SMR/theta-beta operant training at Cz, linked-ears reference"
+    author           = "Peak Mind"
+    citation         = "Sterman M.B. & Lubar J.F. (foundational corpus, 1970s-1990s)"
+    population       = "children_adults"
+    indication       = "ADHD_attention_regulation"
+    control_ref      = "library/operant/smr_sham@1.0"
+    safety_monitoring = ["pre_session_check", "intra_session_clinician_observation"]
+    outcome_measures = ["IVA-2_continuous_performance", "Conners-3"]
+  }
+
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels    = ["Cz"]
+  }
+
+  input "raw" {
+    montage = referential(active: "Cz", reference: "linked_ears")
+  }
+
+  // Three band envelopes, computed in parallel
+  derive "smr_envelope" {
+    from = "raw"
+    pipeline = [
+      bandpass(band: (12 Hz, 15 Hz), order: 4),
+      hilbert(),
+      magnitude(),
+      smooth(tau: 250 ms),
+    ]
+  }
+
+  derive "theta_envelope" {
+    from = "raw"
+    pipeline = [
+      bandpass(band: (4 Hz, 8 Hz), order: 4),
+      hilbert(),
+      magnitude(),
+      smooth(tau: 250 ms),
+    ]
+  }
+
+  derive "high_beta_envelope" {
+    from = "raw"
+    pipeline = [
+      bandpass(band: (22 Hz, 30 Hz), order: 4),
+      hilbert(),
+      magnitude(),
+      smooth(tau: 250 ms),
+    ]
+  }
+
+  // Adaptive thresholds for SMR (uptrain) and theta (downtrain).
+  // Target percentiles come from the controls block so the clinician can
+  // tune them live via Evaluator.set_control(...).
+  threshold "smr_t" {
+    signal       = "smr_envelope"
+    type         = percentile(target_pct: smr_target_pct, window: 2 min)
+    live_tunable = true
+  }
+
+  threshold "theta_t" {
+    signal       = "theta_envelope"
+    type         = percentile(target_pct: theta_target_pct, window: 2 min)
+    live_tunable = true
+  }
+
+  threshold "hbeta_t" {
+    signal = "high_beta_envelope"
+    type   = absolute(8 uV)
+  }
+
+  reward {
+    event = dwell(
+      condition: all_of([
+        above("smr_envelope",       "smr_t"),
+        below("theta_envelope",     "theta_t"),
+        below("high_beta_envelope", "hbeta_t"),
+      ]),
+      duration: 250 ms
+    )
+    continuous = sigmoid("smr_envelope" / "smr_t",
+                         midpoint: 1.0, steepness: 3)
+  }
+
+  output {
+    audio_chime = reward.event                                     // discrete chime on dwell-met
+    audio_gain  = reward.event.holds ? reward.continuous : 0       // gated graded modulation
+    game_speed  = reward.event.holds ? reward.continuous : 0
+  }
+
+  controls {
+    smr_target_pct = percent {
+      default      = 70
+      range        = (50, 90)
+      label        = "SMR target percentile"
+      live_tunable = true
+    }
+    theta_target_pct = percent {
+      default      = 30
+      range        = (10, 50)
+      label        = "Theta target percentile"
+      live_tunable = true
+    }
+  }
+
+  session {
+    phases = [
+      phase { name = "warmup";   duration = 90 s;  output_muted = true },
+      phase { name = "training"; duration = 30 min },
+      phase { name = "cooldown"; duration = 30 s;  output_muted = true },
+    ]
+  }
+}

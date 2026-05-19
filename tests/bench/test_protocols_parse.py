@@ -30,3 +30,16 @@ def test_microbench_protocol_parses_and_resolves(filename: str):
     ir = resolve(parse_file(path), load_amp_profile(AMP_Q21))
     assert ir is not None
     assert ir.name is not None
+
+
+REALISTIC_PROTOCOLS = [
+    "realistic_smr.refrain",
+]
+
+
+@pytest.mark.parametrize("filename", REALISTIC_PROTOCOLS)
+def test_realistic_protocol_parses_and_resolves(filename: str):
+    path = PROTOCOLS / filename
+    assert path.exists(), f"missing protocol file: {path}"
+    ir = resolve(parse_file(path), load_amp_profile(AMP_Q21))
+    assert ir is not None
