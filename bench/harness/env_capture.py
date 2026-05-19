@@ -1,9 +1,7 @@
-"""Capture the host environment for a bench run.
+"""Captures the host environment (versions, CPU, git SHA) for a bench run.
 
-Returned dict is committed to `bench/results/<run>/env.json`. Every field is
-either a string or None; never raises. Designed to never block a run on a
-missing tool — if `git` isn't on PATH, `git_sha` is None and the run still
-goes through.
+Every field is either a string or None; never raises — a missing tool
+(e.g. git not on PATH) yields None rather than an error.
 """
 
 from __future__ import annotations

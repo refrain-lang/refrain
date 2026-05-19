@@ -1,1 +1,1 @@
-"""Bench harness: runner, equivalence checker, env capture, transpiler."""
+"""Bench harness: chunked runner, numerical-equivalence checker, env capture."""
