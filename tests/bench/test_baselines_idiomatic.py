@@ -35,6 +35,7 @@ N_SAMPLES = WARMUP_SAMPLES + 2048
 ALL_CASES = [
     ("micro_01_passthrough", "bench.baselines.micro_01_passthrough_idiomatic"),
     ("micro_02_bandpass", "bench.baselines.micro_02_bandpass_idiomatic"),
+    ("micro_03_envelope", "bench.baselines.micro_03_envelope_idiomatic"),
 ]
 
 
