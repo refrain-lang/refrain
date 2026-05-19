@@ -193,7 +193,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     """Run an evaluator against the chosen source."""
     from .eval_ import eval_protocol
     from .sources import SourceError, SyntheticSource, open_source
-    from .synthetic import SMRBurst, SignalGenerator
+    from .synthetic import SignalGenerator
 
     path = Path(args.file)
     if not path.exists():
