@@ -275,6 +275,7 @@ class Evaluator:
         *,
         sample_rate_hz: float | None = None,
         channel_names: tuple[str, ...] | None = None,
+        record_streams: bool = False,
     ):
         if source is not None:
             if sample_rate_hz is not None or channel_names is not None:
@@ -321,6 +322,11 @@ class Evaluator:
         # before the first step_chunk. See `last_taps()` for the schema.
         self._last_taps: dict[str, float | bool] = {}
 
+        # Per-chunk full stream arrays for benchmark harness use.
+        # Only populated when `record_streams=True`. See `last_streams()`.
+        self._record_streams: bool = bool(record_streams)
+        self._last_streams: dict[str, np.ndarray] = {}
+
     # -- Live-mode factory --------------------------------------------------
 
     @classmethod
@@ -330,10 +336,16 @@ class Evaluator:
         *,
         sample_rate_hz: float,
         channel_names: tuple[str, ...],
+        record_streams: bool = False,
     ) -> Evaluator:
         """Construct a push-mode evaluator. The host calls `start()`,
         then `step_chunk(chunk)` per arriving sample chunk, then `stop()`."""
-        return cls(ir, sample_rate_hz=sample_rate_hz, channel_names=channel_names)
+        return cls(
+            ir,
+            sample_rate_hz=sample_rate_hz,
+            channel_names=channel_names,
+            record_streams=record_streams,
+        )
 
     # -- Lifecycle ----------------------------------------------------------
 
@@ -662,6 +674,11 @@ class Evaluator:
             reward_sub_chunks=reward_sub_chunks,
             per_channel_output=per_channel_output,
         )
+        if self._record_streams:
+            self._last_streams = {
+                k.split("/", 1)[-1]: np.asarray(v).copy()
+                for k, v in stream_values.items()
+            }
 
         # Output emission: during warmup we still computed everything
         # (so primitive state stays current and taps populate), but we
@@ -806,6 +823,16 @@ class Evaluator:
         legitimately want to plot warmup progress.
         """
         return dict(self._last_taps)
+
+    def last_streams(self) -> dict[str, np.ndarray]:
+        """Per-chunk snapshot of derive/input/threshold stream arrays.
+
+        Empty unless `record_streams=True` was passed at construction. The bench
+        harness uses this to compare per-sample stream outputs against
+        independently computed baselines. Returns a fresh dict each call; callers
+        may mutate it freely.
+        """
+        return dict(self._last_streams)
 
     # -- Mid-session control tuning (SPEC §7.7) ----------------------------
 
