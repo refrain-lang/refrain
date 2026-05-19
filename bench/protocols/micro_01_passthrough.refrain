@@ -1,0 +1,24 @@
+// micro_01_passthrough.refrain
+// Bench micro: input stage only. Establishes the lower bound of overhead —
+// no DSP, just the IR walk and dispatch.
+
+protocol "micro_01_passthrough" {
+  meta {
+    version  = "0.1.0"
+    evidence = "demo"
+    description = "Bench: passthrough — input stage only, no derives"
+  }
+
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels    = ["Cz"]
+  }
+
+  input "raw" {
+    montage = referential(active: "Cz", reference: "linked_ears")
+  }
+
+  output {
+    audio_gain = 0
+  }
+}

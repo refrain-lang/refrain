@@ -1,0 +1,30 @@
+// micro_02_bandpass.refrain
+// Bench micro: one bandpass on the input. Isolates filter cost.
+
+protocol "micro_02_bandpass" {
+  meta {
+    version  = "0.1.0"
+    evidence = "demo"
+    description = "Bench: single bandpass, no envelope"
+  }
+
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels    = ["Cz"]
+  }
+
+  input "raw" {
+    montage = referential(active: "Cz", reference: "linked_ears")
+  }
+
+  derive "smr_bp" {
+    from = "raw"
+    pipeline = [
+      bandpass(band: (12 Hz, 15 Hz), order: 4),
+    ]
+  }
+
+  output {
+    audio_gain = 0
+  }
+}
