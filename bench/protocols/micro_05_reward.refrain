@@ -1,0 +1,67 @@
+// micro_05_reward.refrain
+// Bench micro: full reward stage — sigmoid continuous + dwell event with
+// above/below/all_of. Covers everything below the inhibit gate.
+
+protocol "micro_05_reward" {
+  meta {
+    version  = "0.1.0"
+    evidence = "demo"
+    description = "Bench: envelope + threshold + dwell event + sigmoid reward"
+  }
+
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels    = ["Cz"]
+  }
+
+  input "raw" {
+    montage = referential(active: "Cz", reference: "linked_ears")
+  }
+
+  derive "smr_envelope" {
+    from = "raw"
+    pipeline = [
+      bandpass(band: (12 Hz, 15 Hz), order: 4),
+      hilbert(),
+      magnitude(),
+      smooth(tau: 250 ms),
+    ]
+  }
+
+  derive "theta_envelope" {
+    from = "raw"
+    pipeline = [
+      bandpass(band: (4 Hz, 8 Hz), order: 4),
+      hilbert(),
+      magnitude(),
+      smooth(tau: 250 ms),
+    ]
+  }
+
+  threshold "smr_t" {
+    signal = "smr_envelope"
+    type   = percentile(target_pct: 70, window: 2 min)
+  }
+
+  threshold "theta_t" {
+    signal = "theta_envelope"
+    type   = percentile(target_pct: 30, window: 2 min)
+  }
+
+  reward {
+    event = dwell(
+      condition: all_of([
+        above("smr_envelope", "smr_t"),
+        below("theta_envelope", "theta_t"),
+      ]),
+      duration: 250 ms
+    )
+    continuous = sigmoid("smr_envelope" / "smr_t",
+                         midpoint: 1.0, steepness: 3)
+  }
+
+  output {
+    audio_chime = reward.event
+    audio_gain  = reward.continuous
+  }
+}

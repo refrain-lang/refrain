@@ -1,0 +1,40 @@
+// micro_04_threshold.refrain
+// Bench micro: envelope + percentile threshold. Exercises the rolling-window
+// percentile data structure, the heaviest non-FFT primitive in a typical NF
+// pipeline.
+
+protocol "micro_04_threshold" {
+  meta {
+    version  = "0.1.0"
+    evidence = "demo"
+    description = "Bench: envelope + percentile threshold over 2 min window"
+  }
+
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels    = ["Cz"]
+  }
+
+  input "raw" {
+    montage = referential(active: "Cz", reference: "linked_ears")
+  }
+
+  derive "smr_envelope" {
+    from = "raw"
+    pipeline = [
+      bandpass(band: (12 Hz, 15 Hz), order: 4),
+      hilbert(),
+      magnitude(),
+      smooth(tau: 250 ms),
+    ]
+  }
+
+  threshold "smr_t" {
+    signal = "smr_envelope"
+    type   = percentile(target_pct: 70, window: 2 min)
+  }
+
+  output {
+    audio_gain = 0
+  }
+}
