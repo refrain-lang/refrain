@@ -1,0 +1,45 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Keep mne / matplotlib from booting a GUI backend on headless CI.
+env:
+  MNE_USE_NUMBA: "false"
+  QT_QPA_PLATFORM: offscreen
+  MPLBACKEND: Agg
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install package + dev/eval extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[eval,dev]"
+
+      - name: Show installed versions
+        run: |
+          python --version
+          pip list
+
+      - name: Run pytest
+        run: pytest -q
+
+      - name: Lint (real errors only)
+        run: ruff check src/refrain --select F,E9
