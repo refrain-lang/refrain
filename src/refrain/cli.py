@@ -27,6 +27,7 @@ from pathlib import Path
 from . import __version__
 from .amp_profile import AmpProfileError, load_amp_profile
 from .compose import default_library_dirs, filesystem_loader
+from .cost import estimate_cost
 from .ir_print import print_cred_nf, print_ir
 from .parser import ParseError, parse_file
 from .resolver import ResolveError, resolve
@@ -95,6 +96,71 @@ def _cmd_resolve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_cost(args: argparse.Namespace) -> int:
+    """Parse + resolve, then print a PROVISIONAL runtime-cost estimate and a
+    per-tier real-time-factor projection (an authoring-time complexity hint)."""
+    path = Path(args.file)
+    if not path.exists():
+        print(f"error: {path}: no such file", file=sys.stderr)
+        return 2
+
+    amp = None
+    if args.amp is not None:
+        amp_path = Path(args.amp)
+        if not amp_path.exists():
+            print(f"error: {amp_path}: no such amp-profile file", file=sys.stderr)
+            return 2
+        try:
+            amp = load_amp_profile(amp_path)
+        except AmpProfileError as exc:
+            print(f"error: {amp_path}: {exc}", file=sys.stderr)
+            return 1
+
+    library_dirs = [Path(d) for d in (args.library or [])] + default_library_dirs()
+    loader = filesystem_loader(library_dirs) if library_dirs else None
+
+    try:
+        file_ast = parse_file(path)
+    except ParseError as exc:
+        print(f"error: {path}: parse failed", file=sys.stderr)
+        print(str(exc), file=sys.stderr)
+        return 1
+    try:
+        ir = resolve(file_ast, amp, parent_loader=loader)
+    except ResolveError as exc:
+        print(f"error: {path}: resolve failed", file=sys.stderr)
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    rep = estimate_cost(ir, sample_rate_hz=args.sample_rate)
+
+    out = sys.stdout
+    out.write(f"cost estimate: {rep.protocol}  "
+              f"({rep.sample_rate_hz:g} Hz, {rep.n_channels} ch)\n")
+    out.write("  PROVISIONAL heuristic — coefficients from a single benchmark run, "
+              "pending calibration.\n\n")
+    out.write(f"  {'driver':<26}{'est. us/sample':>16}\n")
+    for d in sorted(rep.drivers, key=lambda d: d.us_per_sample, reverse=True):
+        flag = "" if d.calibrated else "  (uncalibrated)"
+        out.write(f"  {d.name:<26}{d.us_per_sample:>16,.2f}{flag}\n")
+        out.write(f"      {d.detail}\n")
+    out.write(f"  {'TOTAL':<26}{rep.total_us_per_sample:>16,.2f}\n\n")
+
+    out.write("  projected real-time factor (RTF; < 1.0 keeps up):\n")
+    for tier, rtf in rep.rtf_by_tier.items():
+        verdict = "OK" if rtf < 0.5 else ("tight" if rtf < 1.0 else "EXCEEDS")
+        out.write(f"    {tier:<16}{rtf:>8.3f}   {verdict}\n")
+
+    if rep.warnings:
+        out.write("\n")
+        for w in rep.warnings:
+            out.write(f"  ! {w}\n")
+    if rep.any_uncalibrated:
+        out.write("\n  note: some drivers use uncalibrated coefficients "
+                  "(coherence/bandpower); treat those as rough.\n")
+    return 0
+
+
 def _build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="refrain",
@@ -139,6 +205,23 @@ def _build_argparser() -> argparse.ArgumentParser:
         ),
     )
     resolve_cmd.set_defaults(func=_cmd_resolve)
+
+    # `refrain cost`
+    cost_cmd = sub.add_parser(
+        "cost",
+        help="Estimate runtime cost and project real-time factor per hardware tier.",
+    )
+    cost_cmd.add_argument("file", help="Path to the .refrain protocol file.")
+    cost_cmd.add_argument(
+        "--sample-rate", type=float, default=None, metavar="HZ",
+        help="Sample rate to estimate for (default: the protocol's chosen rate).",
+    )
+    cost_cmd.add_argument("--amp", default=None, help="Path to amp-profile JSON.")
+    cost_cmd.add_argument(
+        "--library", action="append", default=[], metavar="DIR",
+        help="Library search dir for `extends`-referenced parents.",
+    )
+    cost_cmd.set_defaults(func=_cmd_cost)
 
     # `refrain run`
     run_cmd = sub.add_parser(
