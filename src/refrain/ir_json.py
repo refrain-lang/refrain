@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .eval_ import _classify_call
+from .eval_ import _classify_call, _substitute_controls, control_defaults
 from .ir import (
     IRArray,
     IRBinaryOp,
@@ -59,6 +59,7 @@ class _EmitCtx:
 
     sample_rate_hz: float | None
     channel_names: tuple[str, ...]
+    controls: dict[str, float]
 
 
 # ---------------------------------------------------------------------------
@@ -120,8 +121,13 @@ def _bake_coeffs(call: IRCall, ctx: _EmitCtx) -> dict | None:
         return None
     try:
         static, _dynamic = _classify_call(call)
-        # A non-literal argument (e.g. a control reference) can't be baked
-        # ahead of time; leave it for the runtime to resolve.
+        # Resolve control references to their default value (the value the
+        # runtime uses by default) so control-parameterized coefficients —
+        # e.g. percentile `window_samples` alongside a control-ref
+        # `target_pct` — bake. REUSE the evaluator's substitution walker.
+        static = _substitute_controls(static, ctx.controls)
+        # A remaining non-literal argument (an unresolvable dynamic expr)
+        # can't be baked ahead of time; leave it for the runtime to resolve.
         if any(isinstance(v, IRExpr) for v in static.values()):
             return None
         impl = make_filter_impl(
@@ -170,7 +176,17 @@ def _emit_expr(expr: IRExpr, ctx: _EmitCtx) -> dict:
             "stream_type": _emit_stream_type(expr.stream_type),
         }
     if isinstance(expr, IRControlRef):
-        return {"node": "control_ref", "target": expr.target, "dims": _emit_dims(expr.dims)}
+        # Resolve the control-ref to its default value as a literal number
+        # node, so a non-Python runtime reads a plain number. The tunable
+        # metadata is preserved in the top-level `controls` block; this just
+        # bakes the value the runtime uses by default. Missing default → 0.0,
+        # matching `control_defaults`.
+        return {
+            "node": "number",
+            "value": ctx.controls.get(expr.target, 0.0),
+            "dims": _emit_dims(expr.dims),
+            "unit": None,
+        }
     if isinstance(expr, IRRewardField):
         return {
             "node": "reward_field",
@@ -318,6 +334,7 @@ def ir_to_json_obj(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> di
     ctx = _EmitCtx(
         sample_rate_hz=rate,
         channel_names=tuple(ir.requires.channels),
+        controls=control_defaults(ir),
     )
     return {
         "refrain_ir_version": IR_JSON_VERSION,

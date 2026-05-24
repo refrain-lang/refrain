@@ -103,8 +103,8 @@
         "vector_size": null
       },
       "upstream": [
-        "input/raw_a",
-        "input/raw_b"
+        "input/raw_b",
+        "input/raw_a"
       ]
     }
   },

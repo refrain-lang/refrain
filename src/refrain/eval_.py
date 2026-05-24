@@ -401,23 +401,7 @@ class Evaluator:
     def _resolve_controls(self) -> dict[str, float]:
         """Read each control's `default` value at session start. Phase 0d
         keeps controls static; runtime tuning is Phase 0e."""
-        out: dict[str, float] = {}
-        for control in self.ir.controls.values():
-            if control.default is not None and isinstance(control.default, IRNumberLit):
-                # Default is in surface units; convert duration→ms when
-                # relevant. For frequency / voltage / percent, raw value
-                # is fine.
-                val = float(control.default.value)
-                if control.default.unit == "ms":
-                    pass
-                elif control.default.unit == "s":
-                    val *= 1000.0
-                elif control.default.unit == "min":
-                    val *= 60_000.0
-                out[control.canonical_name] = val
-            else:
-                out[control.canonical_name] = 0.0
-        return out
+        return control_defaults(self.ir)
 
     def _build_pipeline(self) -> None:
         # Inputs: each has a single montage call.
@@ -1064,6 +1048,33 @@ class Evaluator:
 # ---------------------------------------------------------------------------
 
 
+def control_defaults(ir: IRProtocol) -> dict[str, float]:
+    """Resolve each control's `default` to a `{canonical_name: float}` map.
+
+    Default values carry surface units; durations are converted to ms while
+    frequency / voltage / percent keep their raw value. A control with no
+    numeric default resolves to 0.0. Shared by the `Evaluator` (session-start
+    control values) and the IR-JSON emitter (so control-refs in inline
+    expressions and coefficient baking resolve to a literal numeric value)."""
+    out: dict[str, float] = {}
+    for control in ir.controls.values():
+        if control.default is not None and isinstance(control.default, IRNumberLit):
+            # Default is in surface units; convert duration→ms when
+            # relevant. For frequency / voltage / percent, raw value
+            # is fine.
+            val = float(control.default.value)
+            if control.default.unit == "ms":
+                pass
+            elif control.default.unit == "s":
+                val *= 1000.0
+            elif control.default.unit == "min":
+                val *= 60_000.0
+            out[control.canonical_name] = val
+        else:
+            out[control.canonical_name] = 0.0
+    return out
+
+
 def _collect_control_targets(value: Any) -> list[str]:
     """Walk a static-args structure looking for IRControlRefs; return
     the list of canonical control names they reference. Used by the
@@ -1163,4 +1174,4 @@ def eval_protocol(
     yield from Evaluator(ir, source).run(chunk_size=chunk_size, skip_warmup=skip_warmup)
 
 
-__all__ = ["Evaluator", "Event", "eval_protocol"]
+__all__ = ["Evaluator", "Event", "control_defaults", "eval_protocol"]

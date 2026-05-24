@@ -83,9 +83,9 @@ def generate(stem: str) -> None:
 
 if __name__ == "__main__":
     FIX.mkdir(parents=True, exist_ok=True)
-    # realistic_smr deferred: its percentile thresholds use control-ref
-    # target_pct, which needs control-default resolution in the emitter
-    # (a known Phase-B item). micro_03/04/05 use literal args and cover
+    # realistic_smr now covered: its percentile thresholds use control-ref
+    # target_pct, which the emitter resolves to the control default (and
+    # bakes the percentile window). micro_03/04/05 use literal args and cover
     # percentile, threshold, dwell, above/below/all_of, sigmoid, and binop.
     for stem in (
         "micro_01_passthrough",
@@ -94,5 +94,6 @@ if __name__ == "__main__":
         "micro_04_threshold",
         "micro_05_reward",
         "micro_06_coherence",
+        "realistic_smr",
     ):
         generate(stem)

@@ -99,3 +99,8 @@ fn micro_05_reward_equivalent() {
 fn coherence_pair_equivalent() {
     run_protocol("micro_06_coherence");
 }
+
+#[test]
+fn realistic_smr_equivalent() {
+    run_protocol("realistic_smr");
+}
