@@ -587,12 +587,7 @@ class Evaluator:
             raw_chunk = np.ascontiguousarray(raw_chunk)
             # Validate channel count before forwarding to Rust (matches the
             # Python branch check so both backends raise the same ValueError).
-            if raw_chunk.shape[1] != len(self.channel_names):
-                raise ValueError(
-                    f"step_chunk: chunk has {raw_chunk.shape[1]} channels "
-                    f"but evaluator was configured for {len(self.channel_names)} "
-                    f"({self.channel_names!r})"
-                )
+            _validate_chunk_channels(raw_chunk, self.channel_names)
             # step_chunk_events is the lifecycle-aware path (handles warmup
             # suppression, cursor advance, and caches last_streams).
             rust_events = self._rust.step_chunk_events(raw_chunk)
@@ -613,12 +608,7 @@ class Evaluator:
 
         if raw_chunk.ndim == 1:
             raw_chunk = raw_chunk[:, None]
-        if raw_chunk.shape[1] != len(self.channel_names):
-            raise ValueError(
-                f"step_chunk: chunk has {raw_chunk.shape[1]} channels "
-                f"but evaluator was configured for {len(self.channel_names)} "
-                f"({self.channel_names!r})"
-            )
+        _validate_chunk_channels(raw_chunk, self.channel_names)
 
         actual_chunk_size = raw_chunk.shape[0]
         t0_s = self._samples_pushed / self.sample_rate_hz
@@ -1159,6 +1149,23 @@ class Evaluator:
 # ---------------------------------------------------------------------------
 # Free-standing helpers
 # ---------------------------------------------------------------------------
+
+
+def _validate_chunk_channels(
+    raw_chunk: np.ndarray, channel_names: tuple[str, ...]
+) -> None:
+    """Raise `ValueError` if the chunk's column count doesn't match the
+    configured channel count. Called by both the Python and Rust branches
+    of `step_chunk` so the error message is identical for both backends.
+
+    Assumes the caller has already reshaped a 1-D input to (n, 1).
+    """
+    if raw_chunk.shape[1] != len(channel_names):
+        raise ValueError(
+            f"step_chunk: chunk has {raw_chunk.shape[1]} channels "
+            f"but evaluator was configured for {len(channel_names)} "
+            f"({channel_names!r})"
+        )
 
 
 def control_defaults(ir: IRProtocol) -> dict[str, float]:

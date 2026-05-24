@@ -383,10 +383,15 @@ def test_rust_event_ordering_value_before_event(ordering_ir):
 
 
 def _both_backends(ir, **kw):
-    """Yield (label, ev) for python then rust."""
+    """Yield (label, ev) for python then rust.
+
+    The Python backend is always yielded (it is the reference anchor and
+    requires no wheel).  The Rust backend is skipped when refrain_core is
+    not installed, so the Python half still runs even without the wheel.
+    """
+    yield "python", Evaluator.live(ir, **kw, backend="python")
     pytest.importorskip("refrain_core", reason="refrain_core wheel not installed")
-    for backend in ("python", "rust"):
-        yield backend, Evaluator.live(ir, **kw, backend=backend)
+    yield "rust", Evaluator.live(ir, **kw, backend="rust")
 
 
 # --- Contract 1: step_chunk after stop() → RuntimeError("after stop") ------
@@ -448,6 +453,49 @@ def test_parity_state_warmup(smr_bb_ir):
         assert ev.warmup_remaining_s == pytest.approx(90.0, abs=0.01), (
             f"{backend}: warmup_remaining_s expected ~90.0, got {ev.warmup_remaining_s}"
         )
+
+
+def test_parity_warmup_remaining_decrements(smr_bb_ir):
+    """Both backends must report the same decremented warmup_remaining_s after
+    pushing several chunks of warmup-state input (still within the warmup window).
+
+    Locks the samples_pushed accounting parity during warmup: both backends must
+    track pushed samples identically so the remaining-warmup calculation agrees.
+    """
+    # Use a chunk size of 250 samples (1 s at 250 Hz). Push 3 chunks → 3 s.
+    chunk_size = 250
+    n_chunks = 3
+    chunk = np.zeros((chunk_size, len(BB_CHANNELS)), dtype=np.float64)
+
+    remaining_values: dict[str, float] = {}
+    for backend, ev in _both_backends(
+        smr_bb_ir, sample_rate_hz=BB_RATE, channel_names=BB_CHANNELS,
+    ):
+        ev.start()  # enters warmup (90-s phase)
+        assert ev.state == "warmup", f"{backend}: must be in warmup after start()"
+        initial = ev.warmup_remaining_s
+        assert initial == pytest.approx(90.0, abs=0.01), (
+            f"{backend}: expected ~90.0 s initially, got {initial}"
+        )
+        for _ in range(n_chunks):
+            ev.step_chunk(chunk.copy())
+        assert ev.state == "warmup", f"{backend}: must still be in warmup after {n_chunks} chunks"
+        remaining = ev.warmup_remaining_s
+        assert remaining < initial, (
+            f"{backend}: warmup_remaining_s must decrease after pushing chunks; "
+            f"initial={initial}, after={remaining}"
+        )
+        # 3 chunks × 1 s/chunk = 3 s consumed → ~87 s remaining
+        assert remaining == pytest.approx(87.0, abs=0.1), (
+            f"{backend}: expected ~87.0 s remaining after 3 s of input, got {remaining}"
+        )
+        remaining_values[backend] = remaining
+
+    # Both backends must agree (within floating-point tolerance).
+    assert remaining_values["python"] == pytest.approx(remaining_values["rust"], abs=1e-6), (
+        f"warmup_remaining_s mismatch: python={remaining_values['python']}, "
+        f"rust={remaining_values['rust']}"
+    )
 
 
 def test_parity_state_run_after_skip_warmup(smr_bb_ir):
