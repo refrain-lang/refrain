@@ -29,7 +29,11 @@ Validated on `worktree-rust-core-poc`: IR-JSON emitter (`src/refrain/ir_json.py`
 
 ---
 
-## M1a — Coherence (Welch MSC) parity spike  ← START HERE
+## M1a — Coherence (Welch MSC) parity spike  ✅ DONE (commit d7474ac)
+
+**Result:** `refrain-core/src/coherence.rs` (realfft Welch MSC) matches `scipy.signal.coherence` to **max|diff| = 9.7e-17** (machine epsilon) on the `micro_06_coherence` golden-vector test — the #1 estimate risk is retired. Reused the fixture generator, equivalence harness, Coeffs struct, and the integration-test protocol; the only new code is the Welch math. All 6 Rust equivalence tests + Python suite (398) green, 0 warnings. Original step-by-step plan retained below for reference.
+
+---
 
 **Why first:** `coherence` is the one HARD primitive with no Rust crate; SciPy's exact Welch semantics (window, detrend, overlap, scaling, one-sided scaling, segment averaging) are fiddly. Proving bit-tolerance parity now converts the #1 estimate risk into a known quantity.
 
