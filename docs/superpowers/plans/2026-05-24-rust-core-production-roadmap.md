@@ -99,7 +99,13 @@ fn welch_msc_matches_scipy_on_fixture() {
 
 **M2a DONE (commit 35cb87b + 1535301):** control-ref resolution landed — `ir_json.py` resolves control defaults (reused `control_defaults` extracted from `_resolve_controls`, + `_substitute_controls`) so `realistic_smr` (3 bands, percentile+absolute thresholds, dwell+all_of, sigmoid, conditional outputs) reproduces at machine precision (worst 1.35e-13) with **no Rust change**. Corpus now 7/7 (micro_01–06 + realistic_smr). Emitter made deterministic (sorted `upstream`).
 
-**M2b/M2c REMAINING:** the primitives + lifecycle below are not yet exercised by any committed protocol; port each with a golden-vector test when a protocol needs it.
+**M2b DONE (commit becabcd):** ported bipolar montage, auto_range, differentiate, inside, and **fixed bandpower** (was mis-aliased to plain bandpass). Also fixed a latent derive-ordering bug (derives now evaluate in `topological_order`, not alphabetical). rectify/any_of/linear were already covered. New test protocols micro_07/08; all machine-precision.
+
+**M2c DONE (commit dec6561):** inhibit actions (mute/freeze hangover gate, flag no-op) + output muting (`muted` OR-fold, event `&~muted` / value `where(muted,0,clamped)`). micro_09 inhibit protocol trips genuinely (50.7% samples muted) and matches to ~5e-15.
+
+**→ SIGNAL-PATH PARITY COMPLETE:** the Rust core reproduces the full evaluator (montage → derives → thresholds → inhibits → reward → outputs → events) at machine precision across the corpus. 14 Rust tests, 401 Python tests, drift gates green.
+
+**M3b/c REMAINING:** `set_control` + `last_taps` over the bindings; then `Evaluator` delegation + full Python suite.
 
 **Files:** `src/refrain/ir_json.py` (control-default resolution), `refrain-core/src/eval.rs` + `dsp.rs` (remaining primitives), `tools/gen_fixtures.py`, `tests/equivalence.rs`.
 
