@@ -22,6 +22,9 @@ use crate::ir::Protocol;
 pub enum RefrainError {
     /// The IR-JSON string could not be deserialized into a `Protocol`.
     InvalidIr { message: String },
+    /// `set_control` was called with a name that is not a declared control
+    /// (mirrors the Python evaluator raising `KeyError`).
+    UnknownControl { message: String },
 }
 
 impl std::fmt::Display for RefrainError {
@@ -29,6 +32,9 @@ impl std::fmt::Display for RefrainError {
         match self {
             RefrainError::InvalidIr { message } => {
                 write!(f, "IR-JSON deserialization failed: {message}")
+            }
+            RefrainError::UnknownControl { message } => {
+                write!(f, "set_control: {message}")
             }
         }
     }
@@ -90,6 +96,17 @@ impl RefrainCore {
     /// `eval::Evaluator::stop`: end the session.
     pub fn stop(&self) {
         self.inner.lock().unwrap().stop();
+    }
+
+    /// `eval::Evaluator::set_control`: live-retune a clinician control in place,
+    /// preserving streaming state. An unknown name yields
+    /// `RefrainError::UnknownControl` (the FFI analogue of Python's `KeyError`).
+    pub fn set_control(&self, name: String, value: f64) -> Result<(), RefrainError> {
+        self.inner
+            .lock()
+            .unwrap()
+            .set_control(&name, value)
+            .map_err(|message| RefrainError::UnknownControl { message })
     }
 
     /// Process one chunk and emit feedback `Event`s. uniffi has no 2-D type, so

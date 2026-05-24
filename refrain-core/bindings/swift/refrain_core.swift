@@ -506,6 +506,13 @@ fileprivate struct FfiConverterString: FfiConverter {
 public protocol RefrainCoreProtocol: AnyObject, Sendable {
     
     /**
+     * `eval::Evaluator::set_control`: live-retune a clinician control in place,
+     * preserving streaming state. An unknown name yields
+     * `RefrainError::UnknownControl` (the FFI analogue of Python's `KeyError`).
+     */
+    func setControl(name: String, value: Double) throws 
+    
+    /**
      * `eval::Evaluator::start`: enter warmup (or run). Call before the first
      * `step_chunk_events`. `skip_warmup` jumps straight to `run`.
      */
@@ -598,6 +605,19 @@ public convenience init(irJson: String, sampleRateHz: Double, channelNames: [Str
 
     
 
+    
+    /**
+     * `eval::Evaluator::set_control`: live-retune a clinician control in place,
+     * preserving streaming state. An unknown name yields
+     * `RefrainError::UnknownControl` (the FFI analogue of Python's `KeyError`).
+     */
+open func setControl(name: String, value: Double)throws   {try rustCallWithError(FfiConverterTypeRefrainError_lift) {
+    uniffi_refrain_core_fn_method_refraincore_set_control(self.uniffiClonePointer(),
+        FfiConverterString.lower(name),
+        FfiConverterDouble.lower(value),$0
+    )
+}
+}
     
     /**
      * `eval::Evaluator::start`: enter warmup (or run). Call before the first
@@ -797,6 +817,12 @@ public enum RefrainError: Swift.Error {
      */
     case InvalidIr(message: String
     )
+    /**
+     * `set_control` was called with a name that is not a declared control
+     * (mirrors the Python evaluator raising `KeyError`).
+     */
+    case UnknownControl(message: String
+    )
 }
 
 
@@ -816,6 +842,9 @@ public struct FfiConverterTypeRefrainError: FfiConverterRustBuffer {
         case 1: return .InvalidIr(
             message: try FfiConverterString.read(from: &buf)
             )
+        case 2: return .UnknownControl(
+            message: try FfiConverterString.read(from: &buf)
+            )
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -830,6 +859,11 @@ public struct FfiConverterTypeRefrainError: FfiConverterRustBuffer {
         
         case let .InvalidIr(message):
             writeInt(&buf, Int32(1))
+            FfiConverterString.write(message, into: &buf)
+            
+        
+        case let .UnknownControl(message):
+            writeInt(&buf, Int32(2))
             FfiConverterString.write(message, into: &buf)
             
         }
@@ -979,6 +1013,9 @@ private let initializationResult: InitializationResult = {
     let scaffolding_contract_version = ffi_refrain_core_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
+    }
+    if (uniffi_refrain_core_checksum_method_refraincore_set_control() != 31390) {
+        return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_refrain_core_checksum_method_refraincore_start() != 44094) {
         return InitializationResult.apiChecksumMismatch

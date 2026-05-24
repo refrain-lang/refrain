@@ -266,6 +266,11 @@ void uniffi_refrain_core_fn_free_refraincore(void*_Nonnull ptr, RustCallStatus *
 void*_Nonnull uniffi_refrain_core_fn_constructor_refraincore_new(RustBuffer ir_json, double sample_rate_hz, RustBuffer channel_names, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_FN_METHOD_REFRAINCORE_SET_CONTROL
+#define UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_FN_METHOD_REFRAINCORE_SET_CONTROL
+void uniffi_refrain_core_fn_method_refraincore_set_control(void*_Nonnull ptr, RustBuffer name, double value, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_FN_METHOD_REFRAINCORE_START
 #define UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_FN_METHOD_REFRAINCORE_START
 void uniffi_refrain_core_fn_method_refraincore_start(void*_Nonnull ptr, int8_t skip_warmup, RustCallStatus *_Nonnull out_status
@@ -559,6 +564,12 @@ void ffi_refrain_core_rust_future_free_void(uint64_t handle
 #ifndef UNIFFI_FFIDEF_FFI_REFRAIN_CORE_RUST_FUTURE_COMPLETE_VOID
 #define UNIFFI_FFIDEF_FFI_REFRAIN_CORE_RUST_FUTURE_COMPLETE_VOID
 void ffi_refrain_core_rust_future_complete_void(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_CHECKSUM_METHOD_REFRAINCORE_SET_CONTROL
+#define UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_CHECKSUM_METHOD_REFRAINCORE_SET_CONTROL
+uint16_t uniffi_refrain_core_checksum_method_refraincore_set_control(void
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_CHECKSUM_METHOD_REFRAINCORE_START

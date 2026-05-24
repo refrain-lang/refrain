@@ -178,16 +178,20 @@ def _emit_expr(expr: IRExpr, ctx: _EmitCtx) -> dict:
             "stream_type": _emit_stream_type(expr.stream_type),
         }
     if isinstance(expr, IRControlRef):
-        # Resolve the control-ref to its default value as a literal number
-        # node, so a non-Python runtime reads a plain number. The tunable
-        # metadata is preserved in the top-level `controls` block; this just
-        # bakes the value the runtime uses by default. Missing default → 0.0,
-        # matching `control_defaults`.
+        # Emit a `control_ref` node carrying BOTH the canonical control target
+        # AND the resolved default value. The default is the value the runtime
+        # uses until a `set_control(...)` arrives (so behaviour with no live
+        # retuning is identical to baking the literal number, as before), while
+        # the `target` preserves the binding "control X feeds this param" so a
+        # non-Python runtime can route `set_control` to the right impl. Missing
+        # default → 0.0, matching `control_defaults`. NB: coefficient *baking*
+        # (`_bake_coeffs`) substitutes controls to literals on its own internal
+        # path, so this change does not perturb any baked coefficient.
         return {
-            "node": "number",
-            "value": ctx.controls.get(expr.target, 0.0),
+            "node": "control_ref",
+            "target": expr.target,
+            "default": ctx.controls.get(expr.target, 0.0),
             "dims": _emit_dims(expr.dims),
-            "unit": None,
         }
     if isinstance(expr, IRRewardField):
         return {

@@ -7,8 +7,22 @@
 //! agree to floating-point tolerance.
 
 use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 use crate::coherence::WelchMsc;
+
+/// A live-tunable scalar parameter shared between a stage and the evaluator's
+/// `set_control` registry. `Arc<Mutex<_>>` (rather than `Rc<RefCell<_>>`) keeps
+/// the evaluator `Send + Sync`, which the uniffi `Arc<Mutex<Evaluator>>` wrapper
+/// requires. The cell is read once per `step`/`process` call (per chunk), so the
+/// lock is uncontended and never on a per-sample hot path. Writes happen only
+/// from `set_control` (under the evaluator's `&mut self`).
+pub type ControlCell = Arc<Mutex<f64>>;
+
+/// Make a fresh control cell holding `initial`.
+pub fn control_cell(initial: f64) -> ControlCell {
+    Arc::new(Mutex::new(initial))
+}
 
 /// A chunk of stream values: real-valued, or complex (analytic signal) held
 /// as parallel real/imag vectors.
@@ -146,12 +160,21 @@ impl Stage for Magnitude {
 /// with the baked coefficient `a` and zero initial state, matching
 /// `SmoothImpl` (lfilter with `zi = state*(1-a)`, state starting at 0).
 pub struct Smooth {
-    alpha: f64,
+    /// Smoothing coefficient, shared with the `set_control` registry so a live
+    /// `tau` retune (which recomputes `alpha`) takes effect without resetting
+    /// `prev`. Read once per `process` call (per chunk).
+    alpha: ControlCell,
     prev: f64,
 }
 
 impl Smooth {
     pub fn new(alpha: f64) -> Self {
+        Smooth { alpha: control_cell(alpha), prev: 0.0 }
+    }
+
+    /// Construct over an existing shared `alpha` cell so the evaluator can keep
+    /// a clone in its control registry.
+    pub fn from_cell(alpha: ControlCell) -> Self {
         Smooth { alpha, prev: 0.0 }
     }
 }
@@ -159,9 +182,10 @@ impl Smooth {
 impl Stage for Smooth {
     fn process(&mut self, input: Signal) -> Signal {
         let x = input.into_real();
+        let alpha = *self.alpha.lock().unwrap();
         let mut out = vec![0.0; x.len()];
         for (slot, &v) in out.iter_mut().zip(&x) {
-            let y = self.alpha * v + (1.0 - self.alpha) * self.prev;
+            let y = alpha * v + (1.0 - alpha) * self.prev;
             self.prev = y;
             *slot = y;
         }
@@ -169,29 +193,48 @@ impl Stage for Smooth {
     }
 }
 
+/// Recompute a `smooth` alpha from a new tau (in ms) at the given sample rate,
+/// mirroring `SmoothImpl.update_control` / `_set_tau`:
+/// `alpha = 1 - exp(-1 / ((tau_ms/1000) * fs))`. The `prev` state is untouched
+/// (warm-restart), preserving the running output across the change.
+pub fn smooth_alpha_from_tau_ms(tau_ms: f64, sample_rate_hz: f64) -> f64 {
+    let tau_s = tau_ms / 1000.0;
+    1.0 - (-1.0 / (tau_s * sample_rate_hz)).exp()
+}
+
 /// `percentile(target_pct, window)` — rolling-window percentile tracker
 /// (mirrors `PercentileImpl`): a bounded buffer of the last `window` samples;
 /// per sample append, then NumPy-`linear` percentile over the current buffer.
 pub struct Percentile {
-    target_pct: f64,
+    /// Target percentile, shared with the `set_control` registry so a live
+    /// retune takes effect WITHOUT resetting `buf` (the rolling window keeps
+    /// filling across the change). Read once per `step` call (per chunk).
+    target_pct: ControlCell,
     cap: usize,
     buf: VecDeque<f64>,
 }
 
 impl Percentile {
     pub fn new(target_pct: f64, window_samples: usize) -> Self {
+        Self::from_cell(control_cell(target_pct), window_samples)
+    }
+
+    /// Construct over an existing shared `target_pct` cell so the evaluator can
+    /// keep a clone in its control registry.
+    pub fn from_cell(target_pct: ControlCell, window_samples: usize) -> Self {
         let cap = window_samples.max(1);
         Percentile { target_pct, cap, buf: VecDeque::with_capacity(cap) }
     }
 
     pub fn step(&mut self, x: &[f64]) -> Vec<f64> {
+        let target_pct = *self.target_pct.lock().unwrap();
         let mut out = Vec::with_capacity(x.len());
         for &v in x {
             if self.buf.len() == self.cap {
                 self.buf.pop_front();
             }
             self.buf.push_back(v);
-            out.push(percentile_linear(&self.buf, self.target_pct));
+            out.push(percentile_linear(&self.buf, target_pct));
         }
         out
     }

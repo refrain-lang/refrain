@@ -26,6 +26,20 @@ pub struct Protocol {
     pub session: Option<Session>,
     #[serde(default)]
     pub topological_order: Vec<String>,
+    /// Declared clinician controls, keyed by bare name (`smr_target_pct`).
+    /// Only the canonical name is read; the runtime uses the key set to mirror
+    /// the Python `set_control`'s "is this a declared control?" check (the live
+    /// value/default lives inline as a `control_ref` at each use site).
+    #[serde(default)]
+    pub controls: BTreeMap<String, ControlDecl>,
+}
+
+/// A `controls.<name>` declaration. Only the canonical name is needed by the
+/// runtime; the rest of the block (default/range/label) is authoring metadata
+/// serde ignores.
+#[derive(Debug, Deserialize)]
+pub struct ControlDecl {
+    pub canonical_name: String,
 }
 
 /// Session timeline (`_emit_session`): an ordered list of phases. The first
@@ -135,7 +149,17 @@ pub enum Expr {
     #[serde(rename = "threshold_ref")]
     ThresholdRef { target: String },
     #[serde(rename = "control_ref")]
-    ControlRef { target: String },
+    ControlRef {
+        /// Canonical control target (e.g. `control/smr_target_pct`). Preserves
+        /// the binding so `set_control` can route a live change to the impl
+        /// this ref feeds.
+        target: String,
+        /// Resolved default value (the value the runtime uses until a
+        /// `set_control` arrives). Equals what the emitter would previously
+        /// have baked as a literal `number` node, so default behaviour is
+        /// unchanged.
+        default: f64,
+    },
     #[serde(rename = "reward_field")]
     RewardField { field_path: String },
     #[serde(rename = "call")]

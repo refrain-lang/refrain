@@ -1402,13 +1402,13 @@
           {
             "name": "target_pct",
             "value": {
+              "default": 70.0,
               "dims": {
                 "time": 0,
                 "voltage": 0
               },
-              "node": "number",
-              "unit": null,
-              "value": 70.0
+              "node": "control_ref",
+              "target": "control/smr_target_pct"
             }
           },
           {
@@ -1456,13 +1456,13 @@
           {
             "name": "target_pct",
             "value": {
+              "default": 30.0,
               "dims": {
                 "time": 0,
                 "voltage": 0
               },
-              "node": "number",
-              "unit": null,
-              "value": 30.0
+              "node": "control_ref",
+              "target": "control/theta_target_pct"
             }
           },
           {

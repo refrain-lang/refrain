@@ -722,6 +722,8 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -737,7 +739,9 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 // when the library is loaded.
 internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
-    fun uniffi_refrain_core_checksum_method_refraincore_start(
+    fun uniffi_refrain_core_checksum_method_refraincore_set_control(
+): Short
+fun uniffi_refrain_core_checksum_method_refraincore_start(
 ): Short
 fun uniffi_refrain_core_checksum_method_refraincore_step_chunk_events(
 ): Short
@@ -800,6 +804,8 @@ fun uniffi_refrain_core_fn_free_refraincore(`ptr`: Pointer,uniffi_out_err: Uniff
 ): Unit
 fun uniffi_refrain_core_fn_constructor_refraincore_new(`irJson`: RustBuffer.ByValue,`sampleRateHz`: Double,`channelNames`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
+fun uniffi_refrain_core_fn_method_refraincore_set_control(`ptr`: Pointer,`name`: RustBuffer.ByValue,`value`: Double,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_refrain_core_fn_method_refraincore_start(`ptr`: Pointer,`skipWarmup`: Byte,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_refrain_core_fn_method_refraincore_step_chunk_events(`ptr`: Pointer,`chunk`: RustBuffer.ByValue,`nChannels`: Int,uniffi_out_err: UniffiRustCallStatus, 
@@ -932,6 +938,9 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
+    if (lib.uniffi_refrain_core_checksum_method_refraincore_set_control() != 31390.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_refrain_core_checksum_method_refraincore_start() != 44094.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1321,6 +1330,13 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
 public interface RefrainCoreInterface {
     
     /**
+     * `eval::Evaluator::set_control`: live-retune a clinician control in place,
+     * preserving streaming state. An unknown name yields
+     * `RefrainError::UnknownControl` (the FFI analogue of Python's `KeyError`).
+     */
+    fun `setControl`(`name`: kotlin.String, `value`: kotlin.Double)
+    
+    /**
      * `eval::Evaluator::start`: enter warmup (or run). Call before the first
      * `step_chunk_events`. `skip_warmup` jumps straight to `run`.
      */
@@ -1442,6 +1458,23 @@ open class RefrainCore: Disposable, AutoCloseable, RefrainCoreInterface
             UniffiLib.INSTANCE.uniffi_refrain_core_fn_clone_refraincore(pointer!!, status)
         }
     }
+
+    
+    /**
+     * `eval::Evaluator::set_control`: live-retune a clinician control in place,
+     * preserving streaming state. An unknown name yields
+     * `RefrainError::UnknownControl` (the FFI analogue of Python's `KeyError`).
+     */
+    @Throws(RefrainException::class)override fun `setControl`(`name`: kotlin.String, `value`: kotlin.Double)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(RefrainException) { _status ->
+    UniffiLib.INSTANCE.uniffi_refrain_core_fn_method_refraincore_set_control(
+        it, FfiConverterString.lower(`name`),FfiConverterDouble.lower(`value`),_status)
+}
+    }
+    
+    
 
     
     /**
@@ -1595,6 +1628,18 @@ sealed class RefrainException: kotlin.Exception() {
             get() = "message=${ `message` }"
     }
     
+    /**
+     * `set_control` was called with a name that is not a declared control
+     * (mirrors the Python evaluator raising `KeyError`).
+     */
+    class UnknownControl(
+        
+        val `message`: kotlin.String
+        ) : RefrainException() {
+        override val message
+            get() = "message=${ `message` }"
+    }
+    
 
     companion object ErrorHandler : UniffiRustCallStatusErrorHandler<RefrainException> {
         override fun lift(error_buf: RustBuffer.ByValue): RefrainException = FfiConverterTypeRefrainError.lift(error_buf)
@@ -1614,6 +1659,9 @@ public object FfiConverterTypeRefrainError : FfiConverterRustBuffer<RefrainExcep
             1 -> RefrainException.InvalidIr(
                 FfiConverterString.read(buf),
                 )
+            2 -> RefrainException.UnknownControl(
+                FfiConverterString.read(buf),
+                )
             else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
         }
     }
@@ -1625,6 +1673,11 @@ public object FfiConverterTypeRefrainError : FfiConverterRustBuffer<RefrainExcep
                 4UL
                 + FfiConverterString.allocationSize(value.`message`)
             )
+            is RefrainException.UnknownControl -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`message`)
+            )
         }
     }
 
@@ -1632,6 +1685,11 @@ public object FfiConverterTypeRefrainError : FfiConverterRustBuffer<RefrainExcep
         when(value) {
             is RefrainException.InvalidIr -> {
                 buf.putInt(1)
+                FfiConverterString.write(value.`message`, buf)
+                Unit
+            }
+            is RefrainException.UnknownControl -> {
+                buf.putInt(2)
                 FfiConverterString.write(value.`message`, buf)
                 Unit
             }

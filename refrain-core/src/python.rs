@@ -76,6 +76,15 @@ impl RustEvaluator {
         self.inner.stop();
     }
 
+    /// `eval_.Evaluator.set_control`: live-retune a clinician control in place,
+    /// preserving streaming state. An unknown name raises `KeyError`, matching
+    /// the Python evaluator.
+    fn set_control(&mut self, name: &str, value: f64) -> PyResult<()> {
+        self.inner
+            .set_control(name, value)
+            .map_err(pyo3::exceptions::PyKeyError::new_err)
+    }
+
     /// Process one `(n_samples, n_channels)` chunk and return the feedback
     /// `Event`s, matching the Python evaluator's `step_chunk` return value.
     fn step_chunk_events<'py>(

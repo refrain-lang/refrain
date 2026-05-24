@@ -73,6 +73,82 @@ def _reference(
     return streams, events, taps
 
 
+# --- set_control (live retuning) scenario ----------------------------------
+#
+# `realistic_smr`'s SMR/theta thresholds are `percentile(target_pct: <control>)`,
+# the canonical live-tunable clinician knob. The scenario runs the same seeded
+# signal through the Python evaluator but calls `set_control` partway through,
+# proving (a) the retune matches Python and (b) the percentile buffer is NOT
+# reset — it keeps filling across the change. The Rust `set_control.rs` test
+# replays the SAME schedule at the same chunk and asserts the event/tap streams
+# match.
+SETCONTROL_STEM = "realistic_smr"
+# Apply the retune at this chunk index (0-based): halfway, well after warm-up,
+# so the percentile buffer is partially filled when the change lands.
+SETCONTROL_AT_CHUNK = 64
+# Knobs to retune and their new values. Moving SMR's target percentile up and
+# theta's down shifts both adaptive thresholds, so events visibly diverge from
+# the static run — making the parity test meaningful.
+SETCONTROL_CHANGES = (
+    ("smr_target_pct", 55.0),
+    ("theta_target_pct", 45.0),
+)
+
+
+def _setcontrol_reference(
+    ir, signal: np.ndarray
+) -> tuple[list[dict], list[dict]]:
+    """Drive the Python evaluator over `signal`, calling `set_control` at
+    `SETCONTROL_AT_CHUNK`, and capture per-chunk events + taps across the whole
+    run. REUSES the same `Evaluator.live` / `step_chunk` / `last_taps` path as
+    `_reference`; the only difference is the mid-run control change."""
+    ev = Evaluator.live(
+        ir, sample_rate_hz=SAMPLE_RATE_HZ, channel_names=CHANNELS, record_streams=True
+    )
+    ev.start(skip_warmup=True)
+
+    events: list[dict] = []
+    taps: list[dict] = []
+    n_chunks = signal.shape[0] // CHUNK_SIZE
+    for i in range(n_chunks):
+        if i == SETCONTROL_AT_CHUNK:
+            for name, value in SETCONTROL_CHANGES:
+                ev.set_control(name, value)
+        chunk = signal[i * CHUNK_SIZE : (i + 1) * CHUNK_SIZE]
+        for e in ev.step_chunk(chunk):
+            events.append(
+                {
+                    "timestamp_s": e.timestamp_s,
+                    "channel": e.channel,
+                    "kind": e.kind,
+                    "value": e.value,
+                }
+            )
+        taps.append({k: float(v) for k, v in ev.last_taps().items()})
+    return events, taps
+
+
+def _generate_setcontrol(ir) -> None:
+    """Emit `<stem>_setcontrol.events.json` / `.taps.json` plus the schedule
+    metadata the Rust test replays."""
+    rng = np.random.default_rng(SEED)
+    signal = rng.standard_normal((N_SAMPLES, len(CHANNELS))) * 10.0
+    events, taps = _setcontrol_reference(ir, signal)
+
+    schedule = {
+        "at_chunk": SETCONTROL_AT_CHUNK,
+        "changes": [{"name": n, "value": v} for n, v in SETCONTROL_CHANGES],
+    }
+    (FIX / f"{SETCONTROL_STEM}_setcontrol.events.json").write_text(json.dumps(events))
+    (FIX / f"{SETCONTROL_STEM}_setcontrol.taps.json").write_text(json.dumps(taps))
+    (FIX / f"{SETCONTROL_STEM}_setcontrol.schedule.json").write_text(json.dumps(schedule))
+    print(
+        f"{SETCONTROL_STEM}_setcontrol: events+taps+schedule written; "
+        f"events = {len(events)}; set_control @ chunk {SETCONTROL_AT_CHUNK} "
+        f"-> {list(SETCONTROL_CHANGES)}"
+    )
+
+
 # Protocols whose output channels actually emit events (the others are
 # pure-DSP micro corpora with no `output` bindings to compare).
 EVENT_BEARING = frozenset({"micro_05_reward", "realistic_smr", "micro_09_inhibit"})
@@ -128,6 +204,12 @@ def generate(stem: str) -> None:
         (FIX / f"{stem}.taps.json").write_text(json.dumps(taps))
         keyset = sorted({k for chunk in taps for k in chunk})
         print(f"{stem}: taps written; {len(taps)} chunks; tap keys = {keyset}")
+
+    # The live-retuning parity scenario (set_control.rs): same IR / seeded
+    # signal, but a mid-run `set_control` on this protocol's percentile knobs.
+    # REUSES the just-resolved `ir` and the same chunk size / seed.
+    if stem == SETCONTROL_STEM:
+        _generate_setcontrol(ir)
 
 
 if __name__ == "__main__":

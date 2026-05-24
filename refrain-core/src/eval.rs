@@ -13,8 +13,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::dsp::{
-    AutoRange, Bandpower, Biquad, Coherence, Differentiate, Dwell, HilbertFir, Magnitude,
-    Percentile, Signal, Smooth, Stage,
+    control_cell, smooth_alpha_from_tau_ms, AutoRange, Bandpower, Biquad, Coherence, ControlCell,
+    Differentiate, Dwell, HilbertFir, Magnitude, Percentile, Signal, Smooth, Stage,
 };
 use crate::ir::{Coeffs, Expr, Protocol};
 
@@ -80,6 +80,80 @@ impl Val {
             Val::B(v) => v.iter().map(|&b| if b { 1.0 } else { 0.0 }).collect(),
         }
     }
+}
+
+// --- Live control retuning -------------------------------------------------
+
+/// One binding from a clinician control to a controllable stage parameter,
+/// mirroring an entry in the Python evaluator's `_control_deps`. Each variant
+/// holds a clone of the same shared `ControlCell` the stage reads, so applying
+/// a value here is observed by the stage on its next chunk — WITHOUT resetting
+/// any buffer/filter state. `apply` mirrors the corresponding Python
+/// `update_control`.
+enum Control {
+    /// `PercentileImpl.update_control`: `target_pct = clamp(value, 0, 100)`.
+    Percentile { target_pct: ControlCell },
+    /// `SmoothImpl.update_control`: if `value > 0`, recompute `alpha` from the
+    /// new tau (ms) at the stage's sample rate. The stage's `prev` state is
+    /// preserved (warm-restart).
+    Smooth { alpha: ControlCell, sample_rate_hz: f64 },
+    /// `SigmoidImpl.update_control`: `midpoint = value`.
+    Sigmoid { midpoint: ControlCell },
+}
+
+impl Control {
+    /// Forward a control change to the bound stage parameter, matching the
+    /// Python impl's `update_control`. State other than the targeted parameter
+    /// is untouched.
+    fn apply(&self, value: f64) {
+        match self {
+            Control::Percentile { target_pct } => {
+                *target_pct.lock().unwrap() = value.clamp(0.0, 100.0);
+            }
+            Control::Smooth { alpha, sample_rate_hz } => {
+                if value > 0.0 {
+                    *alpha.lock().unwrap() = smooth_alpha_from_tau_ms(value, *sample_rate_hz);
+                }
+            }
+            Control::Sigmoid { midpoint } => {
+                *midpoint.lock().unwrap() = value;
+            }
+        }
+    }
+}
+
+/// Build-time context threaded through the compilation helpers: the runtime
+/// sample rate plus the control registry being assembled. As each controllable
+/// stage is built, its binding is recorded under the control's canonical target
+/// (`control/<name>`). Mirrors the Python evaluator populating `_control_deps`
+/// during `_build_pipeline`.
+struct BuildCtx {
+    sample_rate_hz: f64,
+    controls: HashMap<String, Vec<Control>>,
+}
+
+impl BuildCtx {
+    fn new(sample_rate_hz: f64) -> Self {
+        BuildCtx { sample_rate_hz, controls: HashMap::new() }
+    }
+
+    fn register(&mut self, target: &str, ctrl: Control) {
+        self.controls.entry(target.to_string()).or_default().push(ctrl);
+    }
+}
+
+/// Read a numeric argument by `name`, accepting either a literal `number` node
+/// or a `control_ref` (using its baked `default`). When the arg is a
+/// `control_ref`, the control's canonical `target` is also returned so the
+/// caller can register a binding. Returns `(value, Option<target>)`.
+fn num_named_controllable(args: &[crate::ir::Arg], name: &str) -> Option<(f64, Option<String>)> {
+    args.iter().find_map(|a| match (&a.name, &a.value) {
+        (Some(nm), Expr::Number { value }) if nm == name => Some((*value, None)),
+        (Some(nm), Expr::ControlRef { target, default }) if nm == name => {
+            Some((*default, Some(target.clone())))
+        }
+        _ => None,
+    })
 }
 
 // --- Montage --------------------------------------------------------------
@@ -195,7 +269,7 @@ enum CNode {
     Inside { input: Box<CNode>, low: f64, high: f64 }, // low <= x <= high
     AllOf(Vec<CNode>),
     AnyOf(Vec<CNode>),
-    Sigmoid { midpoint: f64, steepness: f64, input: Box<CNode> },
+    Sigmoid { midpoint: ControlCell, steepness: f64, input: Box<CNode> },
     Linear { midpoint: f64, slope: f64, input: Box<CNode> },
     Binop(String, Box<CNode>, Box<CNode>),
     Cond(Box<CNode>, Box<CNode>, Box<CNode>),
@@ -252,9 +326,10 @@ impl CNode {
             }
             CNode::Sigmoid { midpoint, steepness, input } => {
                 let x = input.eval(env, n).into_f();
+                let midpoint = *midpoint.lock().unwrap();
                 Val::F(
                     x.iter()
-                        .map(|v| 1.0 / (1.0 + (-*steepness * (v - *midpoint)).exp()))
+                        .map(|v| 1.0 / (1.0 + (-*steepness * (v - midpoint)).exp()))
                         .collect(),
                 )
             }
@@ -389,6 +464,17 @@ pub struct Evaluator {
     /// 0.0/1.0 in this single map for the golden-vector compare. Empty before
     /// the first chunk; repopulated by `eval_chunk` in every lifecycle state.
     last_taps: BTreeMap<String, f64>,
+    /// Live-control registry: `control/<name>` → the bound stage parameters
+    /// that consumed it at build time. Mirrors `Evaluator._control_deps`;
+    /// `set_control` forwards a change to every binding here. Each `Control`
+    /// shares the stage's parameter cell, so applying a value retunes the stage
+    /// in place without disturbing its buffer/filter state.
+    controls: HashMap<String, Vec<Control>>,
+    /// Every declared `control/<name>` target (from the IR `controls` block),
+    /// so `set_control` can reject an unknown name with the same semantics as
+    /// the Python evaluator (KeyError) while still treating a known control
+    /// with no bound stages as a no-op success.
+    declared_controls: std::collections::HashSet<String>,
 }
 
 /// Compiled reward-event source. Mirrors `_eval_reward_event`: a `dwell`
@@ -413,6 +499,12 @@ enum SubCombine {
 
 impl Evaluator {
     pub fn new(p: &Protocol, sample_rate_hz: f64, channels: &[String]) -> Self {
+        // Build-time context: carries the sample rate and accumulates the
+        // control → stage-parameter bindings as each controllable stage is
+        // compiled (mirrors the Python evaluator building `_control_deps`
+        // during `_build_pipeline`).
+        let mut ctx = BuildCtx::new(sample_rate_hz);
+
         // One montage per declared input (keyed by its bare name). The single-
         // input protocols use `raw`; coherence uses two referential inputs.
         let inputs: Vec<(String, Montage)> = p
@@ -427,12 +519,12 @@ impl Evaluator {
         // alphabetical order; otherwise a downstream derive can be evaluated
         // before its upstream is bound. Any derive missing from the topo list
         // (defensive) is appended in map order.
-        let derives = order_derives(p, sample_rate_hz);
+        let derives = order_derives(p, &mut ctx);
 
         let thresholds: Vec<(String, CNode)> = p
             .thresholds
             .iter()
-            .map(|(name, t)| (name.clone(), build_threshold(t, sample_rate_hz)))
+            .map(|(name, t)| (name.clone(), build_threshold(t, &mut ctx)))
             .collect();
 
         // Inhibits (BTreeMap order, matching the Python evaluator's dict
@@ -440,22 +532,18 @@ impl Evaluator {
         // but kept deterministic). Each pairs a metric node with a threshold
         // node (built via the SHARED `build_threshold_call`, with the metric
         // as the threshold's tracked signal) and an action gate.
-        let inhibits = p
-            .inhibits
-            .values()
-            .map(|ih| build_inhibit(ih, sample_rate_hz))
-            .collect();
+        let inhibits = p.inhibits.values().map(|ih| build_inhibit(ih, &mut ctx)).collect();
 
         let (mut reward_continuous, mut reward_event) = (None, None);
         if let Some(r) = &p.reward {
-            reward_continuous = r.continuous.as_ref().map(|e| build_node(e, sample_rate_hz));
-            reward_event = r.event.as_ref().map(|e| build_reward_event(e, sample_rate_hz));
+            reward_continuous = r.continuous.as_ref().map(|e| build_node(e, &mut ctx));
+            reward_event = r.event.as_ref().map(|e| build_reward_event(e, &mut ctx));
         }
 
         let outputs = p
             .output
             .iter()
-            .map(|(ch, e)| (ch.clone(), build_node(e, sample_rate_hz)))
+            .map(|(ch, e)| (ch.clone(), build_node(e, &mut ctx)))
             .collect();
 
         // Canonical tap names, parallel to each entity's compiled list above
@@ -486,7 +574,36 @@ impl Evaluator {
             samples_pushed: 0,
             warmup_samples,
             last_taps: BTreeMap::new(),
+            controls: ctx.controls,
+            declared_controls: p
+                .controls
+                .values()
+                .map(|c| c.canonical_name.clone())
+                .collect(),
         }
+    }
+
+    /// Live-retune a clinician control in place, mirroring
+    /// `eval_.Evaluator.set_control`. Resolves `name` to its canonical target
+    /// `control/<name>` and forwards `value` to every stage parameter that was
+    /// built from a call referencing that control. Buffer/filter state is
+    /// PRESERVED across the change — only the targeted parameter moves.
+    ///
+    /// Errors on an unknown control name (`Err(String)`), mirroring the Python
+    /// `set_control` raising `KeyError`. A known control with no bound stages
+    /// (e.g. only consumed by coefficient baking) is a no-op success, matching
+    /// Python updating `_controls` even when `_control_deps` has no entry.
+    pub fn set_control(&mut self, name: &str, value: f64) -> Result<(), String> {
+        let target = format!("control/{name}");
+        if !self.declared_controls.contains(&target) {
+            return Err(format!("no control named {name:?}"));
+        }
+        if let Some(bindings) = self.controls.get(&target) {
+            for ctrl in bindings {
+                ctrl.apply(value);
+            }
+        }
+        Ok(())
     }
 
     /// `eval_.Evaluator.start`: enter `warmup` (or directly `run` if the
@@ -787,20 +904,20 @@ fn compute_warmup_samples(p: &Protocol, sample_rate_hz: f64) -> usize {
 /// derive's upstreams are bound before it runs. Follows the resolver's
 /// `topological_order` (entries like `"derive/<name>"`); derives absent from
 /// the topo list are appended in BTreeMap order as a fallback.
-fn order_derives(p: &Protocol, sample_rate_hz: f64) -> Vec<(String, CNode)> {
+fn order_derives(p: &Protocol, ctx: &mut BuildCtx) -> Vec<(String, CNode)> {
     let mut emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out: Vec<(String, CNode)> = Vec::new();
     for entry in &p.topological_order {
         let name = bare(entry);
         if let Some(d) = p.derives.get(&name) {
             if emitted.insert(name.clone()) {
-                out.push((name.clone(), build_node(&d.expression, sample_rate_hz)));
+                out.push((name.clone(), build_node(&d.expression, ctx)));
             }
         }
     }
     for (name, d) in p.derives.iter() {
         if emitted.insert(name.clone()) {
-            out.push((name.clone(), build_node(&d.expression, sample_rate_hz)));
+            out.push((name.clone(), build_node(&d.expression, ctx)));
         }
     }
     out
@@ -924,7 +1041,12 @@ fn build_montage(expr: &Expr, channels: &[String]) -> Montage {
     }
 }
 
-fn build_stage(callee: &str, args: &[crate::ir::Arg], coeffs: Option<&Coeffs>) -> Box<dyn Stage> {
+fn build_stage(
+    callee: &str,
+    args: &[crate::ir::Arg],
+    coeffs: Option<&Coeffs>,
+    ctx: &mut BuildCtx,
+) -> Box<dyn Stage> {
     let need = || coeffs.unwrap_or_else(|| panic!("{callee}: missing baked coeffs"));
     match callee {
         "bandpass" => Box::new(Biquad::new(need().sos.as_ref().expect("sos"))),
@@ -936,7 +1058,22 @@ fn build_stage(callee: &str, args: &[crate::ir::Arg], coeffs: Option<&Coeffs>) -
             ))
         }
         "magnitude" | "rectify" => Box::new(Magnitude),
-        "smooth" => Box::new(Smooth::new(need().alpha.expect("alpha"))),
+        "smooth" => {
+            // Initial alpha is baked (from the default tau). If `tau` is a
+            // control-ref, bind it so a live retune recomputes alpha from the
+            // new tau-ms (preserving the running `prev`), matching SmoothImpl.
+            let alpha = control_cell(need().alpha.expect("alpha"));
+            if let Some((_, Some(target))) = num_named_controllable(args, "tau") {
+                ctx.register(
+                    &target,
+                    Control::Smooth {
+                        alpha: alpha.clone(),
+                        sample_rate_hz: ctx.sample_rate_hz,
+                    },
+                );
+            }
+            Box::new(Smooth::from_cell(alpha))
+        }
         "differentiate" => Box::new(Differentiate::new(need().dt.expect("dt"))),
         "auto_range" => {
             // window_samples is baked; low/high percentiles come from the
@@ -957,22 +1094,28 @@ fn build_stage(callee: &str, args: &[crate::ir::Arg], coeffs: Option<&Coeffs>) -
     }
 }
 
-fn build_node(e: &Expr, sample_rate_hz: f64) -> CNode {
+fn build_node(e: &Expr, ctx: &mut BuildCtx) -> CNode {
     match e {
         Expr::Number { value } => CNode::Const(*value),
+        // A `control_ref` in a plain value position (not a recognised tunable
+        // parameter slot) evaluates to its baked default — identical to the
+        // literal `number` the emitter previously baked here. Live retuning is
+        // wired only where a build helper recognises the parameter (percentile
+        // `target_pct`, smooth `tau`, sigmoid `midpoint`).
+        Expr::ControlRef { default, .. } => CNode::Const(*default),
         Expr::Bool { value } => CNode::BoolConst(*value),
         Expr::StreamRef { target } => CNode::Stream(bare(target)),
         Expr::ThresholdRef { target } => CNode::Stream(bare(target)),
         Expr::RewardField { field_path } => CNode::Reward(field_path.clone()),
         Expr::Binop { op, left, right } => CNode::Binop(
             op.clone(),
-            Box::new(build_node(left, sample_rate_hz)),
-            Box::new(build_node(right, sample_rate_hz)),
+            Box::new(build_node(left, ctx)),
+            Box::new(build_node(right, ctx)),
         ),
         Expr::Conditional { cond, then, els } => CNode::Cond(
-            Box::new(build_node(cond, sample_rate_hz)),
-            Box::new(build_node(then, sample_rate_hz)),
-            Box::new(build_node(els, sample_rate_hz)),
+            Box::new(build_node(cond, ctx)),
+            Box::new(build_node(then, ctx)),
+            Box::new(build_node(els, ctx)),
         ),
         Expr::Call { callee, args, coeffs } if is_dsp(callee) => {
             // Flatten a contiguous DSP chain into one Pipeline; the complex
@@ -983,15 +1126,15 @@ fn build_node(e: &Expr, sample_rate_hz: f64) -> CNode {
                 if !is_dsp(callee) {
                     break;
                 }
-                stages.push(build_stage(callee, args, coeffs.as_ref()));
+                stages.push(build_stage(callee, args, coeffs.as_ref(), ctx));
                 cur = dsp_input(callee, args);
             }
             let _ = (args, coeffs);
             stages.reverse();
-            CNode::Pipeline(stages, Box::new(build_node(cur, sample_rate_hz)))
+            CNode::Pipeline(stages, Box::new(build_node(cur, ctx)))
         }
         Expr::Call { callee, args, coeffs } => {
-            build_compute_call(callee, args, coeffs.as_ref(), sample_rate_hz)
+            build_compute_call(callee, args, coeffs.as_ref(), ctx)
         }
         _ => panic!("unexpected node in expression"),
     }
@@ -1019,32 +1162,32 @@ fn band_arg(args: &[crate::ir::Arg]) -> (f64, f64) {
 
 /// Resolve a coherence input arg by name (`input_a`/`input_b`) or, failing
 /// that, the i-th positional arg.
-fn coherence_input(args: &[crate::ir::Arg], name: &str, pos: usize, sample_rate_hz: f64) -> CNode {
+fn coherence_input(args: &[crate::ir::Arg], name: &str, pos: usize, ctx: &mut BuildCtx) -> CNode {
     let expr = args
         .iter()
         .find(|a| a.name.as_deref() == Some(name))
         .map(|a| &a.value)
         .unwrap_or_else(|| positional(args, pos));
-    build_node(expr, sample_rate_hz)
+    build_node(expr, ctx)
 }
 
 fn build_compute_call(
     callee: &str,
     args: &[crate::ir::Arg],
     coeffs: Option<&Coeffs>,
-    sample_rate_hz: f64,
+    ctx: &mut BuildCtx,
 ) -> CNode {
     match callee {
         "above" => CNode::Above(
-            Box::new(build_node(positional(args, 0), sample_rate_hz)),
-            Box::new(build_node(positional(args, 1), sample_rate_hz)),
+            Box::new(build_node(positional(args, 0), ctx)),
+            Box::new(build_node(positional(args, 1), ctx)),
         ),
         "below" => CNode::Below(
-            Box::new(build_node(positional(args, 0), sample_rate_hz)),
-            Box::new(build_node(positional(args, 1), sample_rate_hz)),
+            Box::new(build_node(positional(args, 0), ctx)),
+            Box::new(build_node(positional(args, 1), ctx)),
         ),
         "inside" => CNode::Inside {
-            input: Box::new(build_node(positional(args, 0), sample_rate_hz)),
+            input: Box::new(build_node(positional(args, 0), ctx)),
             low: num_named(args, "low").expect("inside needs `low`"),
             high: num_named(args, "high").expect("inside needs `high`"),
         },
@@ -1054,23 +1197,34 @@ fn build_compute_call(
                 Expr::Array { elements } => elements,
                 _ => panic!("{callee}: expected an array of conditions"),
             };
-            let nodes: Vec<CNode> =
-                elements.iter().map(|e| build_node(e, sample_rate_hz)).collect();
+            let nodes: Vec<CNode> = elements.iter().map(|e| build_node(e, ctx)).collect();
             if callee == "all_of" {
                 CNode::AllOf(nodes)
             } else {
                 CNode::AnyOf(nodes)
             }
         }
-        "sigmoid" => CNode::Sigmoid {
-            midpoint: num_named(args, "midpoint").unwrap_or(0.0),
-            steepness: num_named(args, "steepness").unwrap_or(1.0),
-            input: Box::new(build_node(positional(args, 0), sample_rate_hz)),
-        },
+        "sigmoid" => {
+            // `midpoint` is the live-tunable parameter (SigmoidImpl). Accept a
+            // literal or a control-ref; bind the latter so set_control updates
+            // the shared midpoint cell. `steepness` stays a literal here
+            // (matches SigmoidImpl picking midpoint as the controllable slot).
+            let (midpoint_v, target) =
+                num_named_controllable(args, "midpoint").unwrap_or((0.0, None));
+            let midpoint = control_cell(midpoint_v);
+            if let Some(target) = target {
+                ctx.register(&target, Control::Sigmoid { midpoint: midpoint.clone() });
+            }
+            CNode::Sigmoid {
+                midpoint,
+                steepness: num_named(args, "steepness").unwrap_or(1.0),
+                input: Box::new(build_node(positional(args, 0), ctx)),
+            }
+        }
         "linear" => CNode::Linear {
             midpoint: num_named(args, "midpoint").unwrap_or(0.0),
             slope: num_named(args, "slope").unwrap_or(1.0),
-            input: Box::new(build_node(positional(args, 0), sample_rate_hz)),
+            input: Box::new(build_node(positional(args, 0), ctx)),
         },
         "coherence" => {
             let c = coeffs.unwrap_or_else(|| panic!("coherence: missing baked coeffs"));
@@ -1079,19 +1233,20 @@ fn build_compute_call(
             let window_samples =
                 c.window_samples.expect("coherence: missing baked window_samples");
             let band = band_arg(args);
+            let sample_rate_hz = ctx.sample_rate_hz;
             CNode::Coherence {
                 coh: Coherence::new(sample_rate_hz, nperseg, noverlap, window_samples, band),
-                a: Box::new(coherence_input(args, "input_a", 0, sample_rate_hz)),
-                b: Box::new(coherence_input(args, "input_b", 1, sample_rate_hz)),
+                a: Box::new(coherence_input(args, "input_a", 0, ctx)),
+                b: Box::new(coherence_input(args, "input_b", 1, ctx)),
             }
         }
         other => panic!("PoC: unsupported compute primitive {other:?}"),
     }
 }
 
-fn build_threshold(t: &crate::ir::Threshold, sample_rate_hz: f64) -> CNode {
+fn build_threshold(t: &crate::ir::Threshold, ctx: &mut BuildCtx) -> CNode {
     let signal = CNode::Stream(bare(&t.signal));
-    build_threshold_call(&t.threshold_call, signal, sample_rate_hz)
+    build_threshold_call(&t.threshold_call, signal, ctx)
 }
 
 /// Compile one `inhibit` block: a metric node, a threshold node (REUSES
@@ -1099,12 +1254,12 @@ fn build_threshold(t: &crate::ir::Threshold, sample_rate_hz: f64) -> CNode {
 /// signal — exactly as the Python evaluator does), and an action gate.
 /// `flag` → `gate = None` (telemetry-only). `action_release_ms` defaults to
 /// 200 ms when null (matching `_build_inhibit_actions`).
-fn build_inhibit(ih: &crate::ir::Inhibit, sample_rate_hz: f64) -> CompiledInhibit {
-    let metric = build_node(&ih.metric, sample_rate_hz);
-    let threshold = build_inhibit_threshold(&ih.threshold);
+fn build_inhibit(ih: &crate::ir::Inhibit, ctx: &mut BuildCtx) -> CompiledInhibit {
+    let metric = build_node(&ih.metric, ctx);
+    let threshold = build_inhibit_threshold(&ih.threshold, ctx);
     let release_ms = ih.action_release_ms.unwrap_or(200.0);
     let gate = match ih.action_kind.as_str() {
-        "mute" | "freeze" => Some(InhibitGate::new(release_ms, sample_rate_hz)),
+        "mute" | "freeze" => Some(InhibitGate::new(release_ms, ctx.sample_rate_hz)),
         "flag" => None,
         other => panic!("PoC: unsupported inhibit action {other:?}"),
     };
@@ -1115,16 +1270,20 @@ fn build_inhibit(ih: &crate::ir::Inhibit, sample_rate_hz: f64) -> CompiledInhibi
 /// `percentile(...)`) into an `InhibitThreshold` fed by the metric chunk.
 /// Shares the exact constructor parsing (`absolute` value, `percentile`
 /// target_pct + baked window_samples) with `build_threshold_call`.
-fn build_inhibit_threshold(call: &Expr) -> InhibitThreshold {
+fn build_inhibit_threshold(call: &Expr, ctx: &mut BuildCtx) -> InhibitThreshold {
     match call {
         Expr::Call { callee, args, coeffs } if callee == "percentile" => {
-            let target_pct = num_named(args, "target_pct")
-                .expect("percentile threshold needs a literal target_pct (control-ref is Phase-B)");
+            let (target_pct, target) = num_named_controllable(args, "target_pct")
+                .expect("percentile threshold needs a numeric or control-ref target_pct");
             let window_samples = coeffs
                 .as_ref()
                 .and_then(|c| c.window_samples)
                 .expect("percentile: missing baked window_samples");
-            InhibitThreshold::Pct(Percentile::new(target_pct, window_samples))
+            let cell = control_cell(target_pct);
+            if let Some(target) = target {
+                ctx.register(&target, Control::Percentile { target_pct: cell.clone() });
+            }
+            InhibitThreshold::Pct(Percentile::from_cell(cell, window_samples))
         }
         Expr::Call { callee, args, .. } if callee == "absolute" => {
             let v = absolute_value(args);
@@ -1140,17 +1299,24 @@ fn build_inhibit_threshold(call: &Expr) -> InhibitThreshold {
 /// (sharing `absolute_value` + the same percentile fields) but bind the
 /// percentile tracker to the metric chunk rather than re-evaluating a signal
 /// node, so a stateful metric pipeline is not double-advanced.
-fn build_threshold_call(call: &Expr, signal: CNode, sample_rate_hz: f64) -> CNode {
+fn build_threshold_call(call: &Expr, signal: CNode, ctx: &mut BuildCtx) -> CNode {
     match call {
         Expr::Call { callee, args, coeffs } if callee == "percentile" => {
-            let target_pct = num_named(args, "target_pct")
-                .expect("percentile threshold needs a literal target_pct (control-ref is Phase-B)");
+            // `target_pct` is the clinician's live-tunable knob. Accept a
+            // literal or a control-ref; for a control-ref, register a binding
+            // sharing the percentile tracker's `target_pct` cell so set_control
+            // retunes it in place (buffer state preserved).
+            let (target_pct, target) = num_named_controllable(args, "target_pct")
+                .expect("percentile threshold needs a numeric or control-ref target_pct");
             let window_samples = coeffs
                 .as_ref()
                 .and_then(|c| c.window_samples)
                 .expect("percentile: missing baked window_samples");
-            let _ = sample_rate_hz;
-            CNode::Pct(Percentile::new(target_pct, window_samples), Box::new(signal))
+            let cell = control_cell(target_pct);
+            if let Some(target) = target {
+                ctx.register(&target, Control::Percentile { target_pct: cell.clone() });
+            }
+            CNode::Pct(Percentile::from_cell(cell, window_samples), Box::new(signal))
         }
         Expr::Call { callee, args, .. } if callee == "absolute" => {
             CNode::Const(absolute_value(args))
@@ -1176,7 +1342,7 @@ fn absolute_value(args: &[crate::ir::Arg]) -> f64 {
 /// recombined for the dwell input); a lone condition becomes a single-element
 /// `All` (exposed as `reward/condition[0]`). REUSES `build_node` for the
 /// sub-condition CNodes — same compiler path as every other expression.
-fn build_reward_event(event_expr: &Expr, sample_rate_hz: f64) -> RewardEvent {
+fn build_reward_event(event_expr: &Expr, ctx: &mut BuildCtx) -> RewardEvent {
     let Expr::Call { callee, args, coeffs } = event_expr else {
         panic!("reward.event must be a dwell(...) call");
     };
@@ -1197,15 +1363,15 @@ fn build_reward_event(event_expr: &Expr, sample_rate_hz: f64) -> RewardEvent {
     let (sub_conditions, combine) = match condition {
         Expr::Call { callee, args, .. } if callee == "all_of" || callee == "any_of" => {
             if let Expr::Array { elements } = positional(args, 0) {
-                let nodes = elements.iter().map(|e| build_node(e, sample_rate_hz)).collect();
+                let nodes = elements.iter().map(|e| build_node(e, ctx)).collect();
                 let combine =
                     if callee == "all_of" { SubCombine::All } else { SubCombine::Any };
                 (nodes, combine)
             } else {
-                (vec![build_node(condition, sample_rate_hz)], SubCombine::All)
+                (vec![build_node(condition, ctx)], SubCombine::All)
             }
         }
-        _ => (vec![build_node(condition, sample_rate_hz)], SubCombine::All),
+        _ => (vec![build_node(condition, ctx)], SubCombine::All),
     };
 
     RewardEvent { dwell: Dwell::new(dwell_samples), sub_conditions, combine }
