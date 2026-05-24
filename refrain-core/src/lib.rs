@@ -6,6 +6,7 @@
 //! in Python; the coefficients are baked into the IR, so this core only
 //! *runs* deterministic cascades/convolutions.
 
+pub mod coherence;
 pub mod dsp;
 pub mod eval;
 pub mod ir;

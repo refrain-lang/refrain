@@ -93,5 +93,6 @@ if __name__ == "__main__":
         "micro_03_envelope",
         "micro_04_threshold",
         "micro_05_reward",
+        "micro_06_coherence",
     ):
         generate(stem)

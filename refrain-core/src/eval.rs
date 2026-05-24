@@ -6,12 +6,13 @@
 //! PoC scope: the micro_03/04/05 corpus — referential montage, the envelope
 //! DSP pipeline, windowed-percentile / absolute thresholds, above/below/
 //! all_of conditions, the dwell event machine, the sigmoid mapping, and the
-//! `/` binop. (Control-ref args, the conditional output, and coherence are
-//! Phase-B.)
+//! `/` binop — plus multi-input protocols and the two-input `coherence`
+//! primitive (streaming Welch MSC). (Control-ref args and the conditional
+//! output remain Phase-B.)
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::dsp::{Biquad, Dwell, HilbertFir, Magnitude, Percentile, Signal, Smooth, Stage};
+use crate::dsp::{Biquad, Coherence, Dwell, HilbertFir, Magnitude, Percentile, Signal, Smooth, Stage};
 use crate::ir::{Coeffs, Expr, Protocol};
 
 /// A per-chunk stream value: float-valued or boolean.
@@ -46,6 +47,7 @@ impl Val {
 
 struct Montage {
     active_idx: usize,
+    device: bool,                    // "device" => active as-recorded, no subtraction
     ref_indices: Option<Vec<usize>>, // None => common-average over all channels
 }
 
@@ -55,6 +57,11 @@ impl Montage {
             .iter()
             .position(|c| c == active)
             .unwrap_or_else(|| panic!("referential: active {active:?} not in source"));
+        if reference == "device" {
+            // Hardware reference baked into the channel values: no software
+            // re-referencing (matches ReferentialImpl's `use_hardware_reference`).
+            return Montage { active_idx, device: true, ref_indices: None };
+        }
         let ref_indices = match reference {
             "linked_ears" => {
                 let mut cand = Vec::new();
@@ -78,7 +85,7 @@ impl Montage {
                 Some(vec![i])
             }
         };
-        Montage { active_idx, ref_indices }
+        Montage { active_idx, device: false, ref_indices }
     }
 
     fn run(&self, chunk: &[Vec<f64>]) -> Vec<f64> {
@@ -86,6 +93,9 @@ impl Montage {
             .iter()
             .map(|row| {
                 let active = row[self.active_idx];
+                if self.device {
+                    return active;
+                }
                 let refv = match &self.ref_indices {
                     None => row.iter().sum::<f64>() / row.len() as f64,
                     Some(idx) if idx.len() == 1 => row[idx[0]],
@@ -106,6 +116,7 @@ enum CNode {
     Reward(String),       // "reward.<field_path>" lookup in env
     Pipeline(Vec<Box<dyn Stage>>, Box<CNode>), // contiguous DSP chain (handles complex internally)
     Pct(Percentile, Box<CNode>),
+    Coherence { coh: Coherence, a: Box<CNode>, b: Box<CNode> }, // 2-input, per-chunk scalar
     Above(Box<CNode>, Box<CNode>),
     Below(Box<CNode>, Box<CNode>),
     AllOf(Vec<CNode>),
@@ -139,6 +150,11 @@ impl CNode {
             CNode::Pct(perc, input) => {
                 let x = input.eval(env, n).into_f();
                 Val::F(perc.step(&x))
+            }
+            CNode::Coherence { coh, a, b } => {
+                let xa = a.eval(env, n).into_f();
+                let xb = b.eval(env, n).into_f();
+                Val::F(coh.step(&xa, &xb))
             }
             CNode::Above(l, r) => {
                 let (a, b) = (l.eval(env, n), r.eval(env, n));
@@ -204,7 +220,7 @@ fn apply_binop(op: &str, x: f64, y: f64) -> f64 {
 // --- Evaluator ------------------------------------------------------------
 
 pub struct Evaluator {
-    montage: Montage,
+    inputs: Vec<(String, Montage)>, // (bare input name, montage)
     derives: Vec<(String, CNode)>,
     thresholds: Vec<(String, CNode)>,
     reward_continuous: Option<CNode>,
@@ -213,41 +229,48 @@ pub struct Evaluator {
 }
 
 impl Evaluator {
-    pub fn new(p: &Protocol, _sample_rate_hz: f64, channels: &[String]) -> Self {
-        let inp = p.inputs.get("raw").expect("PoC expects an input named 'raw'");
-        let montage = build_montage(&inp.montage, channels);
+    pub fn new(p: &Protocol, sample_rate_hz: f64, channels: &[String]) -> Self {
+        // One montage per declared input (keyed by its bare name). The single-
+        // input protocols use `raw`; coherence uses two referential inputs.
+        let inputs: Vec<(String, Montage)> = p
+            .inputs
+            .iter()
+            .map(|(name, inp)| (name.clone(), build_montage(&inp.montage, channels)))
+            .collect();
 
         let derives = p
             .derives
             .iter()
-            .map(|(name, d)| (name.clone(), build_node(&d.expression)))
+            .map(|(name, d)| (name.clone(), build_node(&d.expression, sample_rate_hz)))
             .collect();
 
         let thresholds = p
             .thresholds
             .iter()
-            .map(|(name, t)| (name.clone(), build_threshold(t)))
+            .map(|(name, t)| (name.clone(), build_threshold(t, sample_rate_hz)))
             .collect();
 
         let (mut reward_continuous, mut reward_event) = (None, None);
         if let Some(r) = &p.reward {
-            reward_continuous = r.continuous.as_ref().map(build_node);
-            reward_event = r.event.as_ref().map(build_dwell);
+            reward_continuous = r.continuous.as_ref().map(|e| build_node(e, sample_rate_hz));
+            reward_event = r.event.as_ref().map(|e| build_dwell(e, sample_rate_hz));
         }
 
         let outputs = p
             .output
             .iter()
-            .map(|(ch, e)| (ch.clone(), build_node(e)))
+            .map(|(ch, e)| (ch.clone(), build_node(e, sample_rate_hz)))
             .collect();
 
-        Evaluator { montage, derives, thresholds, reward_continuous, reward_event, outputs }
+        Evaluator { inputs, derives, thresholds, reward_continuous, reward_event, outputs }
     }
 
     pub fn step_chunk(&mut self, chunk: &[Vec<f64>]) -> BTreeMap<String, Vec<f64>> {
         let n = chunk.len();
         let mut env: HashMap<String, Val> = HashMap::new();
-        env.insert("raw".to_string(), Val::F(self.montage.run(chunk)));
+        for (name, montage) in self.inputs.iter() {
+            env.insert(name.clone(), Val::F(montage.run(chunk)));
+        }
 
         for (name, node) in self.derives.iter_mut() {
             let v = node.eval(&env, n);
@@ -357,20 +380,22 @@ fn build_stage(callee: &str, coeffs: Option<&Coeffs>) -> Box<dyn Stage> {
     }
 }
 
-fn build_node(e: &Expr) -> CNode {
+fn build_node(e: &Expr, sample_rate_hz: f64) -> CNode {
     match e {
         Expr::Number { value } => CNode::Const(*value),
         Expr::Bool { value } => CNode::BoolConst(*value),
         Expr::StreamRef { target } => CNode::Stream(bare(target)),
         Expr::ThresholdRef { target } => CNode::Stream(bare(target)),
         Expr::RewardField { field_path } => CNode::Reward(field_path.clone()),
-        Expr::Binop { op, left, right } => {
-            CNode::Binop(op.clone(), Box::new(build_node(left)), Box::new(build_node(right)))
-        }
+        Expr::Binop { op, left, right } => CNode::Binop(
+            op.clone(),
+            Box::new(build_node(left, sample_rate_hz)),
+            Box::new(build_node(right, sample_rate_hz)),
+        ),
         Expr::Conditional { cond, then, els } => CNode::Cond(
-            Box::new(build_node(cond)),
-            Box::new(build_node(then)),
-            Box::new(build_node(els)),
+            Box::new(build_node(cond, sample_rate_hz)),
+            Box::new(build_node(then, sample_rate_hz)),
+            Box::new(build_node(els, sample_rate_hz)),
         ),
         Expr::Call { callee, args, coeffs } if is_dsp(callee) => {
             // Flatten a contiguous DSP chain into one Pipeline; the complex
@@ -386,22 +411,60 @@ fn build_node(e: &Expr) -> CNode {
             }
             let _ = (args, coeffs);
             stages.reverse();
-            CNode::Pipeline(stages, Box::new(build_node(cur)))
+            CNode::Pipeline(stages, Box::new(build_node(cur, sample_rate_hz)))
         }
-        Expr::Call { callee, args, .. } => build_compute_call(callee, args),
+        Expr::Call { callee, args, coeffs } => {
+            build_compute_call(callee, args, coeffs.as_ref(), sample_rate_hz)
+        }
         _ => panic!("unexpected node in expression"),
     }
 }
 
-fn build_compute_call(callee: &str, args: &[crate::ir::Arg]) -> CNode {
+/// Read a `band: (low, high)` arg — a tuple of two `number` nodes. The band is
+/// not baked into `coeffs` (it is cheap to read here), matching the IR-JSON.
+fn band_arg(args: &[crate::ir::Arg]) -> (f64, f64) {
+    let tuple = args
+        .iter()
+        .find(|a| a.name.as_deref() == Some("band"))
+        .map(|a| &a.value)
+        .expect("coherence: missing `band` arg");
+    match tuple {
+        Expr::Tuple { elements } | Expr::Array { elements } if elements.len() == 2 => {
+            let num = |e: &Expr| match e {
+                Expr::Number { value } => *value,
+                _ => panic!("coherence: band bounds must be numbers"),
+            };
+            (num(&elements[0]), num(&elements[1]))
+        }
+        _ => panic!("coherence: `band` must be a 2-tuple of numbers"),
+    }
+}
+
+/// Resolve a coherence input arg by name (`input_a`/`input_b`) or, failing
+/// that, the i-th positional arg.
+fn coherence_input(args: &[crate::ir::Arg], name: &str, pos: usize, sample_rate_hz: f64) -> CNode {
+    let expr = args
+        .iter()
+        .find(|a| a.name.as_deref() == Some(name))
+        .map(|a| &a.value)
+        .unwrap_or_else(|| positional(args, pos));
+    build_node(expr, sample_rate_hz)
+}
+
+fn build_compute_call(
+    callee: &str,
+    args: &[crate::ir::Arg],
+    coeffs: Option<&Coeffs>,
+    sample_rate_hz: f64,
+) -> CNode {
     match callee {
         "above" => CNode::Above(
-            Box::new(build_node(positional(args, 0))),
-            Box::new(build_node(positional(args, 1))),
+            Box::new(build_node(positional(args, 0), sample_rate_hz)),
+            Box::new(build_node(positional(args, 1), sample_rate_hz)),
         ),
         "below" => CNode::Below(
-            Box::new(build_node(positional(args, 0))),
-            Box::new(build_node(positional(args, 1))),
+            Box::new(build_node(positional(args, 0), sample_rate_hz)),
+            Box::new(build_node(positional(args, 1), sample_rate_hz)),
         ),
         "all_of" | "any_of" => {
             let arr = positional(args, 0);
@@ -409,7 +472,8 @@ fn build_compute_call(callee: &str, args: &[crate::ir::Arg]) -> CNode {
                 Expr::Array { elements } => elements,
                 _ => panic!("{callee}: expected an array of conditions"),
             };
-            let nodes: Vec<CNode> = elements.iter().map(build_node).collect();
+            let nodes: Vec<CNode> =
+                elements.iter().map(|e| build_node(e, sample_rate_hz)).collect();
             if callee == "all_of" {
                 CNode::AllOf(nodes)
             } else {
@@ -419,18 +483,31 @@ fn build_compute_call(callee: &str, args: &[crate::ir::Arg]) -> CNode {
         "sigmoid" => CNode::Sigmoid {
             midpoint: num_named(args, "midpoint").unwrap_or(0.0),
             steepness: num_named(args, "steepness").unwrap_or(1.0),
-            input: Box::new(build_node(positional(args, 0))),
+            input: Box::new(build_node(positional(args, 0), sample_rate_hz)),
         },
         "linear" => CNode::Linear {
             midpoint: num_named(args, "midpoint").unwrap_or(0.0),
             slope: num_named(args, "slope").unwrap_or(1.0),
-            input: Box::new(build_node(positional(args, 0))),
+            input: Box::new(build_node(positional(args, 0), sample_rate_hz)),
         },
+        "coherence" => {
+            let c = coeffs.unwrap_or_else(|| panic!("coherence: missing baked coeffs"));
+            let nperseg = c.nperseg.expect("coherence: missing baked nperseg");
+            let noverlap = c.noverlap.expect("coherence: missing baked noverlap");
+            let window_samples =
+                c.window_samples.expect("coherence: missing baked window_samples");
+            let band = band_arg(args);
+            CNode::Coherence {
+                coh: Coherence::new(sample_rate_hz, nperseg, noverlap, window_samples, band),
+                a: Box::new(coherence_input(args, "input_a", 0, sample_rate_hz)),
+                b: Box::new(coherence_input(args, "input_b", 1, sample_rate_hz)),
+            }
+        }
         other => panic!("PoC: unsupported compute primitive {other:?}"),
     }
 }
 
-fn build_threshold(t: &crate::ir::Threshold) -> CNode {
+fn build_threshold(t: &crate::ir::Threshold, sample_rate_hz: f64) -> CNode {
     let signal = CNode::Stream(bare(&t.signal));
     match &t.threshold_call {
         Expr::Call { callee, args, coeffs } if callee == "percentile" => {
@@ -440,6 +517,7 @@ fn build_threshold(t: &crate::ir::Threshold) -> CNode {
                 .as_ref()
                 .and_then(|c| c.window_samples)
                 .expect("percentile: missing baked window_samples");
+            let _ = sample_rate_hz;
             CNode::Pct(Percentile::new(target_pct, window_samples), Box::new(signal))
         }
         Expr::Call { callee, args, .. } if callee == "absolute" => {
@@ -456,7 +534,7 @@ fn build_threshold(t: &crate::ir::Threshold) -> CNode {
     }
 }
 
-fn build_dwell(event_expr: &Expr) -> (Dwell, CNode) {
+fn build_dwell(event_expr: &Expr, sample_rate_hz: f64) -> (Dwell, CNode) {
     match event_expr {
         Expr::Call { callee, args, coeffs } if callee == "dwell" => {
             let dwell_samples = coeffs
@@ -466,7 +544,7 @@ fn build_dwell(event_expr: &Expr) -> (Dwell, CNode) {
             let cond = args
                 .iter()
                 .find(|a| a.name.as_deref() == Some("condition"))
-                .map(|a| build_node(&a.value))
+                .map(|a| build_node(&a.value, sample_rate_hz))
                 .expect("dwell needs a `condition` arg");
             (Dwell::new(dwell_samples), cond)
         }

@@ -8,6 +8,8 @@
 
 use std::collections::VecDeque;
 
+use crate::coherence::WelchMsc;
+
 /// A chunk of stream values: real-valued, or complex (analytic signal) held
 /// as parallel real/imag vectors.
 pub enum Signal {
@@ -218,6 +220,66 @@ fn percentile_linear(buf: &VecDeque<f64>, pct: f64) -> f64 {
     }
     let hi_v = a[lo + 1..].iter().copied().fold(f64::INFINITY, f64::min);
     lo_v + (hi_v - lo_v) * frac
+}
+
+/// `coherence(input_a, input_b, band, window)` — band-averaged
+/// magnitude-squared coherence between two streams via streaming Welch's
+/// method (mirrors `CoherenceImpl`). Two bounded buffers hold the trailing
+/// `window_samples` of each input; per chunk both buffers are extended, and
+/// once `>= nperseg + (nperseg - noverlap)` samples are present a single MSC
+/// scalar is computed and broadcast across the chunk. During warm-up the
+/// scalar is 0.0 (matching `CoherenceImpl`'s "return 0.0 until enough
+/// samples" convention). The Welch math lives in `WelchMsc`.
+pub struct Coherence {
+    welch: WelchMsc,
+    cap: usize,
+    min_samples: usize,
+    buf_a: VecDeque<f64>,
+    buf_b: VecDeque<f64>,
+}
+
+impl Coherence {
+    pub fn new(
+        sample_rate_hz: f64,
+        nperseg: usize,
+        noverlap: usize,
+        window_samples: usize,
+        band: (f64, f64),
+    ) -> Self {
+        let cap = window_samples.max(1);
+        Coherence {
+            welch: WelchMsc::new(sample_rate_hz, nperseg, noverlap, band),
+            cap,
+            min_samples: nperseg + (nperseg - noverlap),
+            buf_a: VecDeque::with_capacity(cap),
+            buf_b: VecDeque::with_capacity(cap),
+        }
+    }
+
+    /// Append both chunks, then emit the per-chunk-constant MSC across `n`
+    /// samples (`n == a.len() == b.len()`).
+    pub fn step(&mut self, a: &[f64], b: &[f64]) -> Vec<f64> {
+        let n = a.len();
+        for &v in a {
+            if self.buf_a.len() == self.cap {
+                self.buf_a.pop_front();
+            }
+            self.buf_a.push_back(v);
+        }
+        for &v in b {
+            if self.buf_b.len() == self.cap {
+                self.buf_b.pop_front();
+            }
+            self.buf_b.push_back(v);
+        }
+        if self.buf_a.len() < self.min_samples {
+            return vec![0.0; n];
+        }
+        let va: Vec<f64> = self.buf_a.iter().copied().collect();
+        let vb: Vec<f64> = self.buf_b.iter().copied().collect();
+        let msc = self.welch.band_msc(&va, &vb);
+        vec![msc; n]
+    }
 }
 
 /// `dwell(condition, duration)` rising-edge / holds state machine (mirrors

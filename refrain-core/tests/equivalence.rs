@@ -94,3 +94,8 @@ fn micro_04_threshold_equivalent() {
 fn micro_05_reward_equivalent() {
     run_protocol("micro_05_reward");
 }
+
+#[test]
+fn coherence_pair_equivalent() {
+    run_protocol("micro_06_coherence");
+}
