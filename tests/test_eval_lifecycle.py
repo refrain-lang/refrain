@@ -6,6 +6,8 @@ The validation harness in `test_eval_validation.py` skips warmup since
 those tests are about burst/threshold behaviour. This file is the
 counterpart that specifically exercises the lifecycle and embedding
 surface used by host applications.
+
+Push-mode (live) tests declare the `backend` fixture so they run on both the Python and Rust backends (see tests/conftest.py); set REFRAIN_EVAL_BACKEND=rust to exercise the Rust core.
 """
 
 from __future__ import annotations
@@ -76,10 +78,6 @@ def test_run_without_source_raises(smr_bb_ir, backend):
         list(ev.run())
 
 
-@pytest.mark.skipif(
-    RUST_BACKEND_ACTIVE,
-    reason="pull-mode constructor arg-validation; not a live/rust path",
-)
 def test_evaluator_rejects_both_source_and_explicit_args(smr_bb_ir):
     gen = SignalGenerator(sample_rate_hz=250, channels=("Cz",))
     src = SyntheticSource(gen, duration_s=1.0)
@@ -87,10 +85,6 @@ def test_evaluator_rejects_both_source_and_explicit_args(smr_bb_ir):
         Evaluator(smr_bb_ir, src, sample_rate_hz=250, channel_names=("Cz",))
 
 
-@pytest.mark.skipif(
-    RUST_BACKEND_ACTIVE,
-    reason="constructor arg-validation; not a live/rust path",
-)
 def test_push_mode_requires_both_rate_and_channels(smr_bb_ir):
     with pytest.raises(ValueError, match="both"):
         Evaluator(smr_bb_ir, sample_rate_hz=250)

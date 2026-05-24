@@ -6,6 +6,8 @@ The host application embedding Refrain wants per-chunk visibility into
 internal values — envelopes, threshold values, dwell sub-conditions,
 pre-gating reward, post-gating output — to plot a clinician observation
 window. These tests pin down what `last_taps()` exposes.
+
+Push-mode (live) tests declare the `backend` fixture so they run on both the Python and Rust backends (see tests/conftest.py); set REFRAIN_EVAL_BACKEND=rust to exercise the Rust core.
 """
 
 from __future__ import annotations
@@ -39,6 +41,9 @@ def smr_bb_ir():
 
 
 def _live_bb(ir, backend="python"):
+    # Tests that should run on BOTH backends must receive `backend` from the
+    # `backend` fixture and pass it here. The "python" default exists only for
+    # the skipif(RUST_BACKEND_ACTIVE) tests that omit the fixture.
     return Evaluator.live(
         ir, sample_rate_hz=250, channel_names=("Cz", "F3", "F4", "Pz"),
         backend=backend,
