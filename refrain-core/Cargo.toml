@@ -1,0 +1,20 @@
+[package]
+name = "refrain-core"
+version = "0.1.0"
+edition = "2021"
+description = "Portable real-time evaluator for Refrain neurofeedback protocols (PoC)"
+license = "Apache-2.0"
+
+[lib]
+name = "refrain_core"
+path = "src/lib.rs"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+pyo3 = { version = "0.24", features = ["extension-module", "abi3-py310"], optional = true }
+numpy = { version = "0.24", optional = true }
+
+[features]
+python = ["dep:pyo3", "dep:numpy"]
