@@ -128,6 +128,8 @@ fn welch_msc_matches_scipy_on_fixture() {
 
 ## M4 — Mobile bindings (the app: iOS/Swift + Android/Kotlin)
 
+**M4 in-sandbox + CI wiring DONE (commits 563fc44, de43a63):** uniffi interface (`src/mobile.rs`, feature-gated) wraps the evaluator's event API; Swift + Kotlin bindings generated and committed under `refrain-core/bindings/`; staticlibs cross-compile for `aarch64-apple-ios` + `aarch64-linux-android` with `--features uniffi`; a feature-gated test proves the wrapper emits byte-identical events to the evaluator. Packaging home (owner's choice): **Mac-only job in THIS repo** — `.github/workflows/mobile.yml` has `bindings-verify` (Linux, Mac-free drift gate via `tools/check_bindings.py`, CI-validatable), `ios-xcframework` (`self-hosted, macOS` = the farm Mac mini, **unvalidated**), `android-aar` (Linux + NDK, **unvalidated** — NDK provisioning + Gradle AAR module still needed). **Remaining for the farm:** confirm macOS runner labels, provision Android NDK + cargo-ndk, add the Gradle AAR module; then enable the two flagged jobs.
+
 **Files:** `refrain-core/src/udl` or `#[uniffi::export]` interface, `refrain-core/Cargo.toml` (uniffi), `build.rs`, packaging scripts.
 
 - [ ] Define a uniffi interface over the evaluator: `RefrainCore::new(ir_json: String, sample_rate_hz: f64, channel_names: Vec<String>)`, `step_chunk(chunk: Vec<f64>, n_channels: u32) -> Vec<Event>` (or a `HashMap<String, Vec<f64>>` of streams), `set_control(name, value)`, `last_taps() -> HashMap<String, f64>`. Flat `Vec<f64>` + `n_channels` (uniffi has no 2-D type).
