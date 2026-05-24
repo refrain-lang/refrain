@@ -391,11 +391,15 @@ class Evaluator:
     @property
     def state(self) -> str:
         """`"ready"` | `"warmup"` | `"run"` | `"stopped"`."""
+        if self._rust is not None:
+            return self._rust.state()
         return self._state
 
     @property
     def warmup_remaining_s(self) -> float:
         """Seconds of warmup left, or 0 if not in warmup."""
+        if self._rust is not None:
+            return self._rust.warmup_remaining_s()
         if self._state != "warmup":
             return 0.0
         remaining = max(0, self._warmup_samples - self._samples_pushed)
@@ -413,6 +417,9 @@ class Evaluator:
         transients without it.
         """
         if self._rust is not None:
+            rust_state = self._rust.state()
+            if rust_state != "ready":
+                raise RuntimeError(f"Evaluator.start() called in state {rust_state!r}")
             self._rust.start(skip_warmup)
             return
         if self._state != "ready":
@@ -578,6 +585,14 @@ class Evaluator:
             if raw_chunk.ndim == 1:
                 raw_chunk = raw_chunk[:, None]
             raw_chunk = np.ascontiguousarray(raw_chunk)
+            # Validate channel count before forwarding to Rust (matches the
+            # Python branch check so both backends raise the same ValueError).
+            if raw_chunk.shape[1] != len(self.channel_names):
+                raise ValueError(
+                    f"step_chunk: chunk has {raw_chunk.shape[1]} channels "
+                    f"but evaluator was configured for {len(self.channel_names)} "
+                    f"({self.channel_names!r})"
+                )
             # step_chunk_events is the lifecycle-aware path (handles warmup
             # suppression, cursor advance, and caches last_streams).
             rust_events = self._rust.step_chunk_events(raw_chunk)

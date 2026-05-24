@@ -634,6 +634,16 @@ impl Evaluator {
         self.state
     }
 
+    /// Seconds of warmup remaining, mirroring `eval_.Evaluator.warmup_remaining_s`.
+    /// Returns 0.0 unless the evaluator is in `Warmup` state.
+    pub fn warmup_remaining_s(&self) -> f64 {
+        if self.state != State::Warmup {
+            return 0.0;
+        }
+        let remaining = self.warmup_samples.saturating_sub(self.samples_pushed);
+        remaining as f64 / self.sample_rate_hz
+    }
+
     /// Shared per-chunk computation: runs inputs/derives/thresholds/inhibits/
     /// reward and every output channel, returning the populated `env`, the
     /// combined per-sample `muted` gate, and the per-output channel `Val`

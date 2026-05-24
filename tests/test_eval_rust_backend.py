@@ -23,16 +23,26 @@ from refrain.resolver import resolve
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
 AMP_Q21 = REPO / "src" / "refrain" / "amp_profiles" / "q21.json"
+AMP_BRAINBIT = REPO / "src" / "refrain" / "amp_profiles" / "brainbit_flex.json"
 
 SAMPLE_RATE = 256
 CHANNELS = ("Cz", "A1", "A2")
 CHUNK_SEED = 42
 CHUNK_SIZE = 64
 
+# Brainbit fixture: 4 channels, 250 Hz, has a 90-s warmup muted phase.
+BB_CHANNELS = ("Cz", "F3", "F4", "Pz")
+BB_RATE = 250
+
 
 @pytest.fixture(scope="module")
 def smr_ir():
     return resolve(parse_file(EXAMPLES / "smr_cz.refrain"), load_amp_profile(AMP_Q21))
+
+
+@pytest.fixture(scope="module")
+def smr_bb_ir():
+    return resolve(parse_file(EXAMPLES / "smr_cz_brainbit.refrain"), load_amp_profile(AMP_BRAINBIT))
 
 
 def _make_chunk(n_samples: int = CHUNK_SIZE, seed: int = CHUNK_SEED) -> np.ndarray:
@@ -362,3 +372,103 @@ def test_rust_event_ordering_value_before_event(ordering_ir):
             assert abs(pe.value - re.value) < 1e-6, (
                 f"event[{i}] value mismatch: {pe.value} vs {re.value}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Task 2 — error/lifecycle-semantics PARITY tests
+# Each test asserts both backends raise the SAME exception type with the
+# SAME message pattern.  Written as failing tests first (TDD), then the
+# fixes below make them pass.
+# ---------------------------------------------------------------------------
+
+
+def _both_backends(ir, **kw):
+    """Yield (label, ev) for python then rust."""
+    pytest.importorskip("refrain_core", reason="refrain_core wheel not installed")
+    for backend in ("python", "rust"):
+        yield backend, Evaluator.live(ir, **kw, backend=backend)
+
+
+# --- Contract 1: step_chunk after stop() → RuntimeError("after stop") ------
+
+
+def test_parity_stop_blocks_step_chunk(smr_bb_ir):
+    """Both backends must raise RuntimeError matching 'after stop' on
+    step_chunk() called after stop()."""
+    chunk = np.zeros((64, 4), dtype=np.float64)
+    for backend, ev in _both_backends(
+        smr_bb_ir, sample_rate_hz=BB_RATE, channel_names=BB_CHANNELS,
+    ):
+        ev.start(skip_warmup=True)
+        ev.stop()
+        assert ev.state == "stopped", f"{backend}: state after stop() must be 'stopped'"
+        with pytest.raises(RuntimeError, match="after stop"):
+            ev.step_chunk(chunk)
+
+
+# --- Contract 2: step_chunk with wrong channel count → ValueError ----------
+
+
+def test_parity_step_chunk_wrong_channel_count(smr_bb_ir):
+    """Both backends must raise ValueError matching 'configured for 4' when
+    step_chunk receives a chunk with the wrong number of columns."""
+    wrong_chunk = np.zeros((64, 3), dtype=np.float64)  # 3 instead of 4 channels
+    for backend, ev in _both_backends(
+        smr_bb_ir, sample_rate_hz=BB_RATE, channel_names=BB_CHANNELS,
+    ):
+        ev.start(skip_warmup=True)
+        with pytest.raises(ValueError, match="configured for 4"):
+            ev.step_chunk(wrong_chunk)
+
+
+# --- Contract 3: set_control unknown name → KeyError("no control named") --
+
+
+def test_parity_set_control_unknown_name(smr_bb_ir):
+    """Both backends must raise KeyError matching 'no control named' for an
+    unknown control name."""
+    for backend, ev in _both_backends(
+        smr_bb_ir, sample_rate_hz=BB_RATE, channel_names=BB_CHANNELS,
+    ):
+        with pytest.raises(KeyError, match="no control named"):
+            ev.set_control("nonexistent_ctrl_xyz", 0.5)
+
+
+# --- Contract 4: state / warmup_remaining_s behave consistently -----------
+
+
+def test_parity_state_warmup(smr_bb_ir):
+    """Both backends must report state='warmup' and warmup_remaining_s≈90
+    immediately after start() with no skip_warmup."""
+    for backend, ev in _both_backends(
+        smr_bb_ir, sample_rate_hz=BB_RATE, channel_names=BB_CHANNELS,
+    ):
+        ev.start()  # enters warmup (90-s phase)
+        assert ev.state == "warmup", f"{backend}: state must be 'warmup' after start()"
+        assert ev.warmup_remaining_s == pytest.approx(90.0, abs=0.01), (
+            f"{backend}: warmup_remaining_s expected ~90.0, got {ev.warmup_remaining_s}"
+        )
+
+
+def test_parity_state_run_after_skip_warmup(smr_bb_ir):
+    """Both backends must report state='run' and warmup_remaining_s==0.0
+    after start(skip_warmup=True)."""
+    for backend, ev in _both_backends(
+        smr_bb_ir, sample_rate_hz=BB_RATE, channel_names=BB_CHANNELS,
+    ):
+        ev.start(skip_warmup=True)
+        assert ev.state == "run", f"{backend}: state must be 'run' after skip_warmup"
+        assert ev.warmup_remaining_s == 0.0, (
+            f"{backend}: warmup_remaining_s must be 0.0 when in run state"
+        )
+
+
+def test_parity_start_twice_raises(smr_bb_ir):
+    """Both backends must raise RuntimeError matching \"state 'run'\" when
+    start() is called a second time."""
+    for backend, ev in _both_backends(
+        smr_bb_ir, sample_rate_hz=BB_RATE, channel_names=BB_CHANNELS,
+    ):
+        ev.start(skip_warmup=True)
+        with pytest.raises(RuntimeError, match="state 'run'"):
+            ev.start()

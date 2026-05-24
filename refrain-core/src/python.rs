@@ -6,8 +6,19 @@ use numpy::{IntoPyArray, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use crate::eval::{Evaluator, Event as CoreEvent};
+use crate::eval::{Evaluator, Event as CoreEvent, State};
 use crate::ir::Protocol;
+
+/// Map the Rust `State` enum to the string values Python expects, matching
+/// `eval_.Evaluator.state` (`"ready"` | `"warmup"` | `"run"` | `"stopped"`).
+fn state_str(s: State) -> &'static str {
+    match s {
+        State::Ready => "ready",
+        State::Warmup => "warmup",
+        State::Run => "run",
+        State::Stopped => "stopped",
+    }
+}
 
 /// Mirror of `eval_.Event`: one unit of evaluator output.
 #[pyclass]
@@ -95,7 +106,6 @@ impl RustEvaluator {
         &mut self,
         chunk: PyReadonlyArray2<'py, f64>,
     ) -> PyResult<Vec<Event>> {
-        use crate::eval::State;
         if self.inner.state() == State::Stopped {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(
                 "Evaluator.step_chunk() called after stop()",
@@ -104,6 +114,18 @@ impl RustEvaluator {
         let arr = chunk.as_array();
         let rows: Vec<Vec<f64>> = arr.outer_iter().map(|r| r.to_vec()).collect();
         Ok(self.inner.step_chunk_events(&rows).into_iter().map(Event::from).collect())
+    }
+
+    /// Current lifecycle state, mirroring `eval_.Evaluator.state`.
+    /// Returns `"ready"` | `"warmup"` | `"run"` | `"stopped"`.
+    fn state(&self) -> &'static str {
+        state_str(self.inner.state())
+    }
+
+    /// Seconds of warmup remaining, mirroring `eval_.Evaluator.warmup_remaining_s`.
+    /// Returns 0.0 unless the evaluator is in `warmup` state.
+    fn warmup_remaining_s(&self) -> f64 {
+        self.inner.warmup_remaining_s()
     }
 
     /// Clinician-observation snapshot from the most recent `step_chunk_events`
