@@ -21,7 +21,25 @@ pub struct Protocol {
     #[serde(default)]
     pub output: BTreeMap<String, Expr>,
     #[serde(default)]
+    pub session: Option<Session>,
+    #[serde(default)]
     pub topological_order: Vec<String>,
+}
+
+/// Session timeline (`_emit_session`): an ordered list of phases. The first
+/// phase, if `output_muted`, defines the warmup window (see `Evaluator`).
+#[derive(Debug, Deserialize)]
+pub struct Session {
+    #[serde(default)]
+    pub phases: Vec<Phase>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Phase {
+    pub name: String,
+    pub duration_ms: f64,
+    #[serde(default)]
+    pub output_muted: bool,
 }
 
 #[derive(Debug, Deserialize)]

@@ -37,18 +37,38 @@ WARMUP_SAMPLES = 512
 SEED = 0
 
 
-def _reference_streams(ir, signal: np.ndarray) -> dict[str, np.ndarray]:
+def _reference(ir, signal: np.ndarray) -> tuple[dict[str, np.ndarray], list[dict]]:
+    """Drive the canonical Python evaluator once over `signal`, capturing both
+    the reference output *streams* (ground truth for `equivalence.rs`) and the
+    `list[Event]` returned per chunk (ground truth for `events.rs`). One run,
+    same seeded signal — no duplicated signal generation or evaluator setup."""
     ev = Evaluator.live(
         ir, sample_rate_hz=SAMPLE_RATE_HZ, channel_names=CHANNELS, record_streams=True
     )
     ev.start(skip_warmup=True)
 
+    events: list[dict] = []
+
     class _Adapter:
         def step(self, raw_chunk):
-            ev.step_chunk(raw_chunk)
+            for e in ev.step_chunk(raw_chunk):
+                events.append(
+                    {
+                        "timestamp_s": e.timestamp_s,
+                        "channel": e.channel,
+                        "kind": e.kind,
+                        "value": e.value,
+                    }
+                )
             return {k: np.asarray(v).copy() for k, v in ev.last_streams().items()}
 
-    return ChunkedRunner(chunk_size=CHUNK_SIZE).run(_Adapter(), signal).streams
+    streams = ChunkedRunner(chunk_size=CHUNK_SIZE).run(_Adapter(), signal).streams
+    return streams, events
+
+
+# Protocols whose output channels actually emit events (the others are
+# pure-DSP micro corpora with no `output` bindings to compare).
+EVENT_BEARING = frozenset({"micro_05_reward", "realistic_smr"})
 
 
 def generate(stem: str) -> None:
@@ -61,7 +81,7 @@ def generate(stem: str) -> None:
 
     rng = np.random.default_rng(SEED)
     signal = rng.standard_normal((N_SAMPLES, len(CHANNELS))) * 10.0
-    streams = _reference_streams(ir, signal)
+    streams, events = _reference(ir, signal)
 
     io = {
         "sample_rate_hz": SAMPLE_RATE_HZ,
@@ -78,7 +98,17 @@ def generate(stem: str) -> None:
         },
     }
     (FIX / f"{stem}.io.json").write_text(json.dumps(io))
-    print(f"{stem}: ir+io written; reference streams = {sorted(streams)}")
+
+    # Event-bearing protocols also capture the feedback Event list the Rust
+    # core must reproduce (events.rs).
+    if stem in EVENT_BEARING:
+        (FIX / f"{stem}.events.json").write_text(json.dumps(events))
+        print(
+            f"{stem}: ir+io+events written; "
+            f"streams = {sorted(streams)}; events = {len(events)}"
+        )
+    else:
+        print(f"{stem}: ir+io written; reference streams = {sorted(streams)}")
 
 
 if __name__ == "__main__":

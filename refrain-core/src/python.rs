@@ -6,8 +6,28 @@ use numpy::{IntoPyArray, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use crate::eval::Evaluator;
+use crate::eval::{Evaluator, Event as CoreEvent};
 use crate::ir::Protocol;
+
+/// Mirror of `eval_.Event`: one unit of evaluator output.
+#[pyclass]
+#[derive(Clone)]
+struct Event {
+    #[pyo3(get)]
+    timestamp_s: f64,
+    #[pyo3(get)]
+    channel: String,
+    #[pyo3(get)]
+    kind: String,
+    #[pyo3(get)]
+    value: Option<f64>,
+}
+
+impl From<CoreEvent> for Event {
+    fn from(e: CoreEvent) -> Self {
+        Event { timestamp_s: e.timestamp_s, channel: e.channel, kind: e.kind, value: e.value }
+    }
+}
 
 #[pyclass]
 struct RustEvaluator {
@@ -43,10 +63,34 @@ impl RustEvaluator {
         }
         Ok(out)
     }
+
+    /// `eval_.Evaluator.start`: enter warmup (or run). Call before the first
+    /// `step_chunk_events`.
+    #[pyo3(signature = (skip_warmup = false))]
+    fn start(&mut self, skip_warmup: bool) {
+        self.inner.start(skip_warmup);
+    }
+
+    /// `eval_.Evaluator.stop`: end the session.
+    fn stop(&mut self) {
+        self.inner.stop();
+    }
+
+    /// Process one `(n_samples, n_channels)` chunk and return the feedback
+    /// `Event`s, matching the Python evaluator's `step_chunk` return value.
+    fn step_chunk_events<'py>(
+        &mut self,
+        chunk: PyReadonlyArray2<'py, f64>,
+    ) -> PyResult<Vec<Event>> {
+        let arr = chunk.as_array();
+        let rows: Vec<Vec<f64>> = arr.outer_iter().map(|r| r.to_vec()).collect();
+        Ok(self.inner.step_chunk_events(&rows).into_iter().map(Event::from).collect())
+    }
 }
 
 #[pymodule]
 fn refrain_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustEvaluator>()?;
+    m.add_class::<Event>()?;
     Ok(())
 }

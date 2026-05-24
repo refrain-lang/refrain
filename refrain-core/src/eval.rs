@@ -15,6 +15,25 @@ use std::collections::{BTreeMap, HashMap};
 use crate::dsp::{Biquad, Coherence, Dwell, HilbertFir, Magnitude, Percentile, Signal, Smooth, Stage};
 use crate::ir::{Coeffs, Expr, Protocol};
 
+/// One unit of evaluator output, mirroring `eval_.Event`. `value` is the
+/// per-chunk mean for value channels and `None` for discrete events.
+#[derive(Clone, Debug)]
+pub struct Event {
+    pub timestamp_s: f64,
+    pub channel: String,
+    pub kind: String,
+    pub value: Option<f64>,
+}
+
+/// Lifecycle state, mirroring `Evaluator.state` in `eval_.py`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum State {
+    Ready,
+    Warmup,
+    Run,
+    Stopped,
+}
+
 /// A per-chunk stream value: float-valued or boolean.
 #[derive(Clone)]
 enum Val {
@@ -226,6 +245,10 @@ pub struct Evaluator {
     reward_continuous: Option<CNode>,
     reward_event: Option<(Dwell, CNode)>,
     outputs: Vec<(String, CNode)>,
+    sample_rate_hz: f64,
+    state: State,
+    samples_pushed: usize,
+    warmup_samples: usize,
 }
 
 impl Evaluator {
@@ -262,10 +285,49 @@ impl Evaluator {
             .map(|(ch, e)| (ch.clone(), build_node(e, sample_rate_hz)))
             .collect();
 
-        Evaluator { inputs, derives, thresholds, reward_continuous, reward_event, outputs }
+        let warmup_samples = compute_warmup_samples(p, sample_rate_hz);
+
+        Evaluator {
+            inputs,
+            derives,
+            thresholds,
+            reward_continuous,
+            reward_event,
+            outputs,
+            sample_rate_hz,
+            state: State::Ready,
+            samples_pushed: 0,
+            warmup_samples,
+        }
     }
 
-    pub fn step_chunk(&mut self, chunk: &[Vec<f64>]) -> BTreeMap<String, Vec<f64>> {
+    /// `eval_.Evaluator.start`: enter `warmup` (or directly `run` if the
+    /// protocol has no warmup-muted phase). `skip_warmup` jumps straight to
+    /// `run`. Call before the first event-emitting chunk.
+    pub fn start(&mut self, skip_warmup: bool) {
+        self.samples_pushed = 0;
+        self.state = if skip_warmup || self.warmup_samples == 0 {
+            State::Run
+        } else {
+            State::Warmup
+        };
+    }
+
+    /// `eval_.Evaluator.stop`: end the session.
+    pub fn stop(&mut self) {
+        self.state = State::Stopped;
+    }
+
+    pub fn state(&self) -> State {
+        self.state
+    }
+
+    /// Shared per-chunk computation: runs inputs/derives/thresholds/reward and
+    /// every output channel, returning the populated `env` and the per-output
+    /// channel `Val` (boolean → event channel, float → value channel). Both
+    /// `step_chunk` (streams) and `step_chunk_events` (events) build on this so
+    /// the interpreter runs exactly once per output and is never duplicated.
+    fn eval_chunk(&mut self, chunk: &[Vec<f64>]) -> (HashMap<String, Val>, Vec<(String, Val)>) {
         let n = chunk.len();
         let mut env: HashMap<String, Val> = HashMap::new();
         for (name, montage) in self.inputs.iter() {
@@ -291,9 +353,27 @@ impl Evaluator {
             env.insert("reward.event.holds".to_string(), Val::B(holds));
         }
 
-        let mut outs: Vec<(String, Vec<f64>)> = Vec::new();
+        let mut outs: Vec<(String, Val)> = Vec::new();
         for (ch, node) in self.outputs.iter_mut() {
             let v = node.eval(&env, n);
+            outs.push((ch.clone(), v));
+        }
+        (env, outs)
+    }
+
+    /// Process one chunk and return `{stream: values}`, matching the Python
+    /// evaluator's `last_streams()` contract. Output channels are coerced to
+    /// floats (booleans → 0/1, floats clamped to [0, 1]); the streams API is
+    /// stateless w.r.t. the warmup lifecycle, mirroring tap capture which
+    /// runs in every state.
+    pub fn step_chunk(&mut self, chunk: &[Vec<f64>]) -> BTreeMap<String, Vec<f64>> {
+        let (env, outs) = self.eval_chunk(chunk);
+
+        let mut result: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+        for (k, v) in env {
+            result.insert(k, v.into_f());
+        }
+        for (ch, v) in outs {
             let f = match v {
                 Val::B(b) => b.iter().map(|&x| if x { 1.0 } else { 0.0 }).collect(),
                 Val::F(mut f) => {
@@ -303,18 +383,108 @@ impl Evaluator {
                     f
                 }
             };
-            outs.push((format!("output/{ch}"), f));
-        }
-
-        let mut result: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-        for (k, v) in env {
-            result.insert(k, v.into_f());
-        }
-        for (k, f) in outs {
-            result.insert(k, f);
+            result.insert(format!("output/{ch}"), f);
         }
         result
     }
+
+    /// Process one chunk and emit feedback `Event`s, mirroring
+    /// `eval_.Evaluator.step_chunk` / `_process_chunk`. The same per-chunk
+    /// computation runs in every state (so primitive state stays current),
+    /// but during `warmup` events are suppressed. Advances `samples_pushed`
+    /// and transitions `warmup → run` once the warmup window is satisfied.
+    pub fn step_chunk_events(&mut self, chunk: &[Vec<f64>]) -> Vec<Event> {
+        if self.state == State::Ready {
+            self.start(false);
+        }
+        if self.state == State::Stopped {
+            panic!("step_chunk_events called after stop()");
+        }
+
+        let n = chunk.len();
+        let t0_s = self.samples_pushed as f64 / self.sample_rate_hz;
+        let suppress_output = self.state == State::Warmup;
+
+        // `muted` comes from inhibits; the current corpus has none, so it is
+        // all-false. The gating below is structured so inhibits can plug in
+        // here later without touching the emission logic.
+        let muted = vec![false; n];
+
+        let (_env, outs) = self.eval_chunk(chunk);
+
+        let mut events: Vec<Event> = Vec::new();
+        if suppress_output {
+            // Still advance the cursor / transition, but emit nothing.
+            self.advance(n);
+            return events;
+        }
+
+        for (channel, v) in outs {
+            match v {
+                Val::B(values) => {
+                    // Event channel: gated bool = values & ~muted; one Event
+                    // per true sample.
+                    for (i, &on) in values.iter().enumerate() {
+                        if on && !muted[i] {
+                            events.push(Event {
+                                timestamp_s: t0_s + i as f64 / self.sample_rate_hz,
+                                channel: channel.clone(),
+                                kind: "event".to_string(),
+                                value: None,
+                            });
+                        }
+                    }
+                }
+                Val::F(values) => {
+                    // Value channel: clamp to [0, 1], zero where muted, emit
+                    // one Event per chunk carrying the mean.
+                    let gated: Vec<f64> = values
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &x)| if muted[i] { 0.0 } else { x.clamp(0.0, 1.0) })
+                        .collect();
+                    let mean = if gated.is_empty() {
+                        0.0
+                    } else {
+                        gated.iter().sum::<f64>() / gated.len() as f64
+                    };
+                    events.push(Event {
+                        timestamp_s: t0_s,
+                        channel: channel.clone(),
+                        kind: "value".to_string(),
+                        value: Some(mean),
+                    });
+                }
+            }
+        }
+
+        self.advance(n);
+        events
+    }
+
+    /// Advance the sample cursor and transition `warmup → run` once enough
+    /// samples have been pushed (mirrors the tail of `step_chunk`).
+    fn advance(&mut self, n: usize) {
+        self.samples_pushed += n;
+        if self.state == State::Warmup && self.samples_pushed >= self.warmup_samples {
+            self.state = State::Run;
+        }
+    }
+}
+
+/// `eval_.Evaluator._compute_warmup_samples`: if the first session phase is
+/// `output_muted`, its duration becomes the warmup window; otherwise 0.
+fn compute_warmup_samples(p: &Protocol, sample_rate_hz: f64) -> usize {
+    let Some(session) = p.session.as_ref() else {
+        return 0;
+    };
+    let Some(first) = session.phases.first() else {
+        return 0;
+    };
+    if !first.output_muted {
+        return 0;
+    }
+    (first.duration_ms / 1000.0 * sample_rate_hz).round() as usize
 }
 
 // --- Compilation helpers --------------------------------------------------
