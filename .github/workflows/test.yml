@@ -47,6 +47,12 @@ jobs:
   # NOTE: This job cannot be validated locally — it requires a real GitHub
   # Actions runner with network access to download the Rust toolchain and
   # Python packages.  The toolchain wiring must be confirmed on first CI push.
+  # The gate (check_equivalence.py) now runs four steps proving one canonical
+  # transformation across both backends: (a) regenerates golden-vector fixtures
+  # from the current Python evaluator, (b) runs cargo test (Rust equivalence +
+  # events + taps + ir_deser), (c) builds the refrain_core wheel from current
+  # Rust source, and (d) runs the behavioral evaluator suite under
+  # REFRAIN_EVAL_BACKEND=rust — enforcing Python↔Rust parity at every level.
   rust-equivalence:
     runs-on: ubuntu-latest
     # Run on a single Python version; the equivalence gate is about Rust/Python
@@ -73,7 +79,7 @@ jobs:
       - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Run equivalence drift gate
+      - name: Run equivalence + dual-backend drift gate
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: python refrain-core/tools/check_equivalence.py

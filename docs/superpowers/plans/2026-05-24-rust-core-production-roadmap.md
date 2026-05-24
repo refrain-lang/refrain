@@ -107,7 +107,7 @@ fn welch_msc_matches_scipy_on_fixture() {
 
 **M3b DONE (commits d4adaf1, b84d389):** `last_taps` (canonical-keyed observation snapshot — key-sets match Python exactly, values ≤1.3e-13) and `set_control` (live retuning **in place, state preserved** — a test proves the percentile buffer isn't reset; events match to 2e-15). Exposed on PyO3 + uniffi. Wire change: control args now emit `control_ref{target,default}` (baked coeffs byte-identical). **→ FULL EMBEDDING API SURFACE COMPLETE** (live/start/step_chunk→events/set_control/stop/last_taps), all machine-precision vs Python. 19 Rust tests; drift gate runs the whole suite.
 
-**M3c REMAINING:** wire `Evaluator.live(..., backend="rust")` so the Python evaluator *delegates* to the Rust core, then run the full Python suite through it (the "literally one implementation" finale).
+**M3c DONE (Tasks 1–4):** `Evaluator.live(..., backend="rust")` delegates to the Rust core — one implementation (commits `fdcd7a9`/`ce4f26e`/`dbe40f3` Task 1, `161f549`/`7bf889b` Task 2, `1a449ce`/`a9f2322` Task 3, Task 4 this commit). The behavioral evaluator suite runs green under `REFRAIN_EVAL_BACKEND=rust` (49 passed / 17 skipped; exclusions = pull-mode, Python-internal, perf). The **dual-backend drift gate is live** in `check_equivalence.py` (steps 3+4: builds the wheel + runs the suite) and enforced in CI (`rust-equivalence` job). Remaining: M5 only.
 
 **Files:** `src/refrain/ir_json.py` (control-default resolution), `refrain-core/src/eval.rs` + `dsp.rs` (remaining primitives), `tools/gen_fixtures.py`, `tests/equivalence.rs`.
 
@@ -123,7 +123,7 @@ fn welch_msc_matches_scipy_on_fixture() {
 
 **M3a DONE (commit d0592b6):** the streams→`list[Event]` stage + warmup lifecycle are ported. Rust `step_chunk_events` reproduces the Python evaluator's feedback events exactly — micro_05 128/128 (max value diff 8.8e-15), realistic_smr 256/256 (exact), timestamps exact. PyO3 exposes `start`/`stop`/`step_chunk_events` + an `Event` pyclass; the streams `step_chunk` API is unchanged (shared private `eval_chunk()`, no duplicate interpreter). 10/10 Rust tests, 0 warnings, drift gate PASS. **The Rust core now has the full feedback pipeline (streams + events).** Remaining M3b/c below.
 
-**M3b/c REMAINING:** `set_control` + `last_taps` parity over PyO3; then `Evaluator.live(..., backend="rust")` delegation + run the full Python suite through it.
+**M3b/c DONE:** `set_control` + `last_taps` parity over PyO3 (M3b); `Evaluator.live(..., backend="rust")` delegation + full behavioral suite green under `REFRAIN_EVAL_BACKEND=rust` + dual-backend drift gate live (M3c). M3 complete.
 
 **Why:** ship the lowest-risk target first *and* collapse to one implementation. After this, `refrain.Evaluator` is a thin wrapper over `refrain-core`; the pure-Python evaluator becomes the reference/spec oracle used only by the equivalence gate.
 

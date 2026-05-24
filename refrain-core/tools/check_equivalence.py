@@ -1,11 +1,16 @@
-"""Drift gate: regenerate golden-vector fixtures then run Rust equivalence tests.
+"""Drift gate: regenerate golden-vector fixtures, run Rust equivalence tests,
+build the refrain_core wheel, and run the behavioral evaluator suite through
+the Rust backend.
 
 Usage (from worktree root):
     PYTHONPATH="$PWD" ./.venv/bin/python refrain-core/tools/check_equivalence.py
 
-Exits 0 only when BOTH steps succeed:
+Exits 0 only when ALL FOUR steps succeed:
   1. gen_fixtures.py regenerates all fixtures from the current Python evaluator.
   2. `cargo test` (equivalence + events + taps + ir_deser) passes in refrain-core/.
+  3. The refrain_core wheel is built and installed from current source.
+  4. The behavioral evaluator suite (tests/test_eval_*.py) passes under
+     REFRAIN_EVAL_BACKEND=rust — proving Python↔Rust behavioral parity.
 
 REUSE: calls the existing gen_fixtures.py as a subprocess; does not duplicate
        fixture-generation logic.  The Rust tests already exist in
@@ -64,9 +69,33 @@ def main() -> int:
         cwd=REFRAIN_CORE,
     )
 
+    # Step 3 — build and install the refrain_core wheel from current source.
+    # This is the SAME install path locally and in CI: PEP517 build isolation
+    # auto-provisions maturin per refrain-core/pyproject's build-system; the
+    # Rust `target/` cache makes the compile incremental.  --force-reinstall
+    # guarantees the wheel reflects current Rust source; --no-deps avoids
+    # disturbing numpy/etc. (already installed).
+    results["build_wheel"] = _run(
+        "Build + install refrain_core wheel from current source (pip install)",
+        [sys.executable, "-m", "pip", "install", "--force-reinstall", "--no-deps", str(REFRAIN_CORE)],
+        cwd=WORKTREE,
+        extra_env={"PYO3_USE_ABI3_FORWARD_COMPATIBILITY": "1"},
+    )
+
+    # Step 4 — run the behavioral evaluator suite through the Rust backend.
+    # This makes the gate fail on ANY Python↔Rust behavioral drift, not just
+    # golden-vector drift detected by the Rust tests above.
+    behavioral_files = [str(p) for p in sorted((WORKTREE / "tests").glob("test_eval_*.py"))]
+    results["dual_backend_pytest"] = _run(
+        "Behavioral evaluator suite under REFRAIN_EVAL_BACKEND=rust (pytest)",
+        [sys.executable, "-m", "pytest", *behavioral_files, "-q"],
+        cwd=WORKTREE,
+        extra_env={"REFRAIN_EVAL_BACKEND": "rust", "PYTHONPATH": str(WORKTREE)},
+    )
+
     # Summary
     print(f"\n{'='*60}")
-    print("EQUIVALENCE DRIFT GATE — SUMMARY")
+    print("EQUIVALENCE + DUAL-BACKEND DRIFT GATE — SUMMARY")
     print(f"{'='*60}")
     all_ok = True
     for name, ok in results.items():
@@ -77,7 +106,7 @@ def main() -> int:
 
     print(f"{'='*60}")
     if all_ok:
-        print("RESULT: PASS — fixtures are current and Rust core is equivalent.")
+        print("RESULT: PASS — fixtures current, Rust core equivalent, wheel built, dual-backend parity confirmed.")
     else:
         print("RESULT: FAIL — see step output above for details.")
     print(f"{'='*60}")

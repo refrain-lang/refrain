@@ -6,8 +6,10 @@ from Python (desktop/tooling), Swift, and Kotlin (mobile), reproducing the
 Python reference evaluator (`src/refrain/eval_.py`) to floating-point tolerance.
 
 > Status: production-track PoC on branch `worktree-rust-core-poc` / PR #13.
-> The full evaluator signal path is implemented and validated; remaining work
-> is M3c (Python-delegates-to-Rust) and M5 (schema/conformance docs). See
+> M3c is done — `Evaluator.live(..., backend="rust")` delegates to this core,
+> the behavioral suite is green under `REFRAIN_EVAL_BACKEND=rust` (49 passed /
+> 17 skipped), and the dual-backend drift gate is live in CI. Remaining: M5
+> (schema/conformance docs). See
 > `docs/superpowers/plans/2026-05-24-rust-core-production-roadmap.md`.
 
 ## What it is (and isn't)
@@ -107,9 +109,12 @@ PATH="$HOME/.cargo/bin:$PATH" PYTHONPATH="$PWD" .venv/bin/python refrain-core/to
 PATH="$HOME/.cargo/bin:$PATH" PYTHONPATH="$PWD" .venv/bin/python refrain-core/tools/check_bindings.py
 ```
 
-- `check_equivalence.py` — regenerates fixtures from the *current* Python
-  evaluator, then runs the full Rust suite. Fails on any drift between the two
-  implementations (this is what keeps "one canonical transformation" honest).
+- `check_equivalence.py` — four-step gate: (1) regenerates fixtures from the
+  *current* Python evaluator, (2) runs the full Rust suite, (3) builds the
+  `refrain_core` wheel from current Rust source, (4) runs the behavioral
+  evaluator suite (`tests/test_eval_*.py`) under `REFRAIN_EVAL_BACKEND=rust`
+  (dual-backend parity). Fails on any Python↔Rust drift at the golden-vector
+  or behavioral level (this is what keeps "one canonical transformation" honest).
 - `check_bindings.py` — cross-compiles the iOS/Android staticlibs and
   regenerates the Swift/Kotlin bindings, failing if the committed bindings are
   stale.
@@ -133,6 +138,7 @@ NumPy's complexity). Latency reproducible via `tools/latency.py`.
 
 ## Dependencies
 
-`serde`, `serde_json`, `realfft` (coherence FFT). Optional: `pyo3` + `numpy`
-(feature `python`), `uniffi` (feature `uniffi`). No BLAS/LAPACK/ndarray-linalg —
-no eigendecomposition is needed. f64 throughout.
+`serde`, `serde_json`, `realfft` (coherence FFT), `indexmap` (preserves output
+declaration order). Optional: `pyo3` + `numpy` (feature `python`), `uniffi`
+(feature `uniffi`). No BLAS/LAPACK/ndarray-linalg — no eigendecomposition is
+needed. f64 throughout.
