@@ -25,6 +25,23 @@ pub struct Event {
     pub value: Option<f64>,
 }
 
+/// Reshape a flat, row-major `(n_samples * n_channels)` buffer into the
+/// `Vec<Vec<f64>>` of per-sample rows that `step_chunk` / `step_chunk_events`
+/// consume. Bindings that can only carry a 1-D buffer (e.g. uniffi, which has
+/// no 2-D type) call this so the reshape lives in exactly one place rather than
+/// being duplicated per FFI layer. The pyo3 path receives an already-2-D numpy
+/// array and reshapes via `outer_iter`, so it does not need this entry point.
+pub fn rows_from_flat(flat: &[f64], n_channels: usize) -> Vec<Vec<f64>> {
+    assert!(n_channels > 0, "rows_from_flat: n_channels must be > 0");
+    assert!(
+        flat.len() % n_channels == 0,
+        "rows_from_flat: buffer length {} is not a multiple of n_channels {}",
+        flat.len(),
+        n_channels
+    );
+    flat.chunks(n_channels).map(<[f64]>::to_vec).collect()
+}
+
 /// Lifecycle state, mirroring `Evaluator.state` in `eval_.py`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum State {

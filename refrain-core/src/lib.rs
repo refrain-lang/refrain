@@ -13,3 +13,11 @@ pub mod ir;
 
 #[cfg(feature = "python")]
 mod python;
+
+#[cfg(feature = "uniffi")]
+mod mobile;
+
+// uniffi scaffolding must be set up at the crate root: it generates the
+// crate-level `UniFfiTag` that the derive/export macros in `mobile` resolve to.
+#[cfg(feature = "uniffi")]
+uniffi::setup_scaffolding!();
