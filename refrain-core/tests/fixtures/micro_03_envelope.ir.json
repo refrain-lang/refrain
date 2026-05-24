@@ -1,80 +1,171 @@
 {
+  "refrain_ir_version": "0.1",
+  "name": "micro_03_envelope",
+  "extends": null,
+  "sample_rate_hz": 256.0,
   "channels": [
     "Cz"
   ],
-  "controls": {},
+  "requires": {
+    "coupling": null,
+    "sample_rate_min_hz": 256,
+    "sample_rate_chosen_hz": 2048,
+    "channels": [
+      "Cz"
+    ],
+    "impedance": "not_required",
+    "markers": "not_required"
+  },
+  "meta": {
+    "version": {
+      "node": "string",
+      "value": "0.1.0"
+    },
+    "evidence": {
+      "node": "string",
+      "value": "demo"
+    },
+    "description": {
+      "node": "string",
+      "value": "Bench: bandpass -> hilbert -> magnitude -> smooth"
+    }
+  },
+  "inputs": {
+    "raw": {
+      "canonical_name": "input/raw",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "montage": {
+        "node": "call",
+        "callee": "referential",
+        "args": [
+          {
+            "name": "active",
+            "value": {
+              "node": "string",
+              "value": "Cz"
+            }
+          },
+          {
+            "name": "reference",
+            "value": {
+              "node": "string",
+              "value": "linked_ears"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        }
+      }
+    }
+  },
   "derives": {
     "smr_envelope": {
       "canonical_name": "derive/smr_envelope",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
       "expression": {
+        "node": "call",
+        "callee": "smooth",
         "args": [
           {
             "name": null,
             "value": {
+              "node": "call",
+              "callee": "magnitude",
               "args": [
                 {
                   "name": null,
                   "value": {
+                    "node": "call",
+                    "callee": "hilbert",
                     "args": [
                       {
                         "name": null,
                         "value": {
+                          "node": "call",
+                          "callee": "bandpass",
                           "args": [
                             {
                               "name": null,
                               "value": {
                                 "node": "stream_ref",
+                                "target": "input/raw",
                                 "stream_type": {
+                                  "value_kind": "scalar",
                                   "dimensions": {
                                     "time": 0,
                                     "voltage": 1
                                   },
-                                  "value_kind": "scalar",
                                   "vector_size": null
-                                },
-                                "target": "input/raw"
+                                }
                               }
                             },
                             {
                               "name": "band",
                               "value": {
+                                "node": "tuple",
                                 "elements": [
                                   {
+                                    "node": "number",
+                                    "value": 12.0,
                                     "dims": {
                                       "time": -1,
                                       "voltage": 0
                                     },
-                                    "node": "number",
-                                    "unit": "Hz",
-                                    "value": 12.0
+                                    "unit": "Hz"
                                   },
                                   {
+                                    "node": "number",
+                                    "value": 15.0,
                                     "dims": {
                                       "time": -1,
                                       "voltage": 0
                                     },
-                                    "node": "number",
-                                    "unit": "Hz",
-                                    "value": 15.0
+                                    "unit": "Hz"
                                   }
-                                ],
-                                "node": "tuple"
+                                ]
                               }
                             },
                             {
                               "name": "order",
                               "value": {
+                                "node": "number",
+                                "value": 4.0,
                                 "dims": {
                                   "time": 0,
                                   "voltage": 0
                                 },
-                                "node": "number",
-                                "unit": null,
-                                "value": 4.0
+                                "unit": null
                               }
                             }
                           ],
-                          "callee": "bandpass",
+                          "stream_type": {
+                            "value_kind": "scalar",
+                            "dimensions": {
+                              "time": 0,
+                              "voltage": 1
+                            },
+                            "vector_size": null
+                          },
                           "coeffs": {
                             "sos": [
                               [
@@ -110,20 +201,18 @@
                                 0.974950612677361
                               ]
                             ]
-                          },
-                          "node": "call",
-                          "stream_type": {
-                            "dimensions": {
-                              "time": 0,
-                              "voltage": 1
-                            },
-                            "value_kind": "scalar",
-                            "vector_size": null
                           }
                         }
                       }
                     ],
-                    "callee": "hilbert",
+                    "stream_type": {
+                      "value_kind": "complex",
+                      "dimensions": {
+                        "time": 0,
+                        "voltage": 1
+                      },
+                      "vector_size": null
+                    },
                     "coeffs": {
                       "fir_taps": [
                         0.0,
@@ -193,27 +282,16 @@
                         0.0
                       ],
                       "group_delay": 32
-                    },
-                    "node": "call",
-                    "stream_type": {
-                      "dimensions": {
-                        "time": 0,
-                        "voltage": 1
-                      },
-                      "value_kind": "complex",
-                      "vector_size": null
                     }
                   }
                 }
               ],
-              "callee": "magnitude",
-              "node": "call",
               "stream_type": {
+                "value_kind": "scalar",
                 "dimensions": {
                   "time": 0,
                   "voltage": 1
                 },
-                "value_kind": "scalar",
                 "vector_size": null
               }
             }
@@ -221,132 +299,54 @@
           {
             "name": "tau",
             "value": {
+              "node": "number",
+              "value": 250.0,
               "dims": {
                 "time": 1,
                 "voltage": 0
               },
-              "node": "number",
-              "unit": "ms",
-              "value": 250.0
+              "unit": "ms"
             }
           }
         ],
-        "callee": "smooth",
-        "coeffs": {
-          "alpha": 0.015503562994591547
-        },
-        "node": "call",
         "stream_type": {
+          "value_kind": "scalar",
           "dimensions": {
             "time": 0,
             "voltage": 1
           },
-          "value_kind": "scalar",
           "vector_size": null
-        }
-      },
-      "stream_type": {
-        "dimensions": {
-          "time": 0,
-          "voltage": 1
         },
-        "value_kind": "scalar",
-        "vector_size": null
+        "coeffs": {
+          "alpha": 0.015503562994591547
+        }
       },
       "upstream": [
         "input/raw"
       ]
     }
   },
-  "extends": null,
+  "thresholds": {},
   "inhibits": {},
-  "inputs": {
-    "raw": {
-      "canonical_name": "input/raw",
-      "montage": {
-        "args": [
-          {
-            "name": "active",
-            "value": {
-              "node": "string",
-              "value": "Cz"
-            }
-          },
-          {
-            "name": "reference",
-            "value": {
-              "node": "string",
-              "value": "linked_ears"
-            }
-          }
-        ],
-        "callee": "referential",
-        "node": "call",
-        "stream_type": {
-          "dimensions": {
-            "time": 0,
-            "voltage": 1
-          },
-          "value_kind": "scalar",
-          "vector_size": null
-        }
-      },
-      "stream_type": {
-        "dimensions": {
-          "time": 0,
-          "voltage": 1
-        },
-        "value_kind": "scalar",
-        "vector_size": null
-      }
-    }
-  },
-  "meta": {
-    "description": {
-      "node": "string",
-      "value": "Bench: bandpass -> hilbert -> magnitude -> smooth"
-    },
-    "evidence": {
-      "node": "string",
-      "value": "demo"
-    },
-    "version": {
-      "node": "string",
-      "value": "0.1.0"
-    }
-  },
-  "name": "micro_03_envelope",
-  "output": {
-    "audio_gain": {
-      "dims": {
-        "time": 0,
-        "voltage": 0
-      },
-      "node": "number",
-      "unit": null,
-      "value": 0.0
-    }
-  },
-  "refrain_ir_version": "0.1",
-  "requires": {
-    "channels": [
-      "Cz"
-    ],
-    "coupling": null,
-    "impedance": "not_required",
-    "markers": "not_required",
-    "sample_rate_chosen_hz": 2048,
-    "sample_rate_min_hz": 256
-  },
   "reward": {
     "continuous": null,
     "event": null
   },
-  "sample_rate_hz": 256.0,
+  "output": {
+    "audio_gain": {
+      "node": "number",
+      "value": 0.0,
+      "dims": {
+        "time": 0,
+        "voltage": 0
+      },
+      "unit": null
+    }
+  },
+  "controls": {},
   "session": {
     "phases": []
   },
-  "thresholds": {},
   "topological_order": [
     "input/raw",
     "derive/smr_envelope"

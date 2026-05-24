@@ -1,153 +1,155 @@
 {
+  "refrain_ir_version": "0.1",
+  "name": "micro_08_bandpower",
+  "extends": null,
+  "sample_rate_hz": 256.0,
   "channels": [
     "Cz",
     "A1"
   ],
-  "controls": {},
-  "derives": {
-    "emg_norm": {
-      "canonical_name": "derive/emg_norm",
-      "expression": {
+  "requires": {
+    "coupling": null,
+    "sample_rate_min_hz": 256,
+    "sample_rate_chosen_hz": 2048,
+    "channels": [
+      "Cz",
+      "A1"
+    ],
+    "impedance": "not_required",
+    "markers": "not_required"
+  },
+  "meta": {
+    "version": {
+      "node": "string",
+      "value": "0.1.0"
+    },
+    "evidence": {
+      "node": "string",
+      "value": "demo"
+    },
+    "description": {
+      "node": "string",
+      "value": "Bench: bandpower derive + auto_range + inside condition"
+    }
+  },
+  "inputs": {
+    "raw": {
+      "canonical_name": "input/raw",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "montage": {
+        "node": "call",
+        "callee": "referential",
         "args": [
           {
-            "name": null,
+            "name": "active",
             "value": {
-              "node": "stream_ref",
-              "stream_type": {
-                "dimensions": {
-                  "time": 0,
-                  "voltage": 2
-                },
-                "value_kind": "scalar",
-                "vector_size": null
-              },
-              "target": "derive/emg_power"
+              "node": "string",
+              "value": "Cz"
             }
           },
           {
-            "name": "window",
+            "name": "reference",
             "value": {
-              "dims": {
-                "time": 1,
-                "voltage": 0
-              },
-              "node": "number",
-              "unit": "s",
-              "value": 4.0
-            }
-          },
-          {
-            "name": "percentile",
-            "value": {
-              "elements": [
-                {
-                  "dims": {
-                    "time": 0,
-                    "voltage": 0
-                  },
-                  "node": "number",
-                  "unit": null,
-                  "value": 5.0
-                },
-                {
-                  "dims": {
-                    "time": 0,
-                    "voltage": 0
-                  },
-                  "node": "number",
-                  "unit": null,
-                  "value": 95.0
-                }
-              ],
-              "node": "tuple"
+              "node": "string",
+              "value": "linked_ears"
             }
           }
         ],
-        "callee": "auto_range",
-        "coeffs": {
-          "window_samples": 1024
-        },
-        "node": "call",
         "stream_type": {
+          "value_kind": "scalar",
           "dimensions": {
             "time": 0,
-            "voltage": 0
+            "voltage": 1
           },
-          "value_kind": "scalar",
           "vector_size": null
         }
-      },
-      "stream_type": {
-        "dimensions": {
-          "time": 0,
-          "voltage": 0
-        },
-        "value_kind": "scalar",
-        "vector_size": null
-      },
-      "upstream": [
-        "derive/emg_power"
-      ]
-    },
+      }
+    }
+  },
+  "derives": {
     "emg_power": {
       "canonical_name": "derive/emg_power",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 2
+        },
+        "vector_size": null
+      },
       "expression": {
+        "node": "call",
+        "callee": "bandpower",
         "args": [
           {
             "name": "input",
             "value": {
               "node": "stream_ref",
+              "target": "input/raw",
               "stream_type": {
+                "value_kind": "scalar",
                 "dimensions": {
                   "time": 0,
                   "voltage": 1
                 },
-                "value_kind": "scalar",
                 "vector_size": null
-              },
-              "target": "input/raw"
+              }
             }
           },
           {
             "name": "band",
             "value": {
+              "node": "tuple",
               "elements": [
                 {
+                  "node": "number",
+                  "value": 20.0,
                   "dims": {
                     "time": -1,
                     "voltage": 0
                   },
-                  "node": "number",
-                  "unit": "Hz",
-                  "value": 20.0
+                  "unit": "Hz"
                 },
                 {
+                  "node": "number",
+                  "value": 50.0,
                   "dims": {
                     "time": -1,
                     "voltage": 0
                   },
-                  "node": "number",
-                  "unit": "Hz",
-                  "value": 50.0
+                  "unit": "Hz"
                 }
-              ],
-              "node": "tuple"
+              ]
             }
           },
           {
             "name": "window",
             "value": {
+              "node": "number",
+              "value": 100.0,
               "dims": {
                 "time": 1,
                 "voltage": 0
               },
-              "node": "number",
-              "unit": "ms",
-              "value": 100.0
+              "unit": "ms"
             }
           }
         ],
-        "callee": "bandpower",
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 2
+          },
+          "vector_size": null
+        },
         "coeffs": {
           "sos": [
             [
@@ -184,234 +186,209 @@
             ]
           ],
           "window_samples": 26
-        },
-        "node": "call",
-        "stream_type": {
-          "dimensions": {
-            "time": 0,
-            "voltage": 2
-          },
-          "value_kind": "scalar",
-          "vector_size": null
         }
-      },
-      "stream_type": {
-        "dimensions": {
-          "time": 0,
-          "voltage": 2
-        },
-        "value_kind": "scalar",
-        "vector_size": null
       },
       "upstream": [
         "input/raw"
       ]
-    }
-  },
-  "extends": null,
-  "inhibits": {},
-  "inputs": {
-    "raw": {
-      "canonical_name": "input/raw",
-      "montage": {
+    },
+    "emg_norm": {
+      "canonical_name": "derive/emg_norm",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      },
+      "expression": {
+        "node": "call",
+        "callee": "auto_range",
         "args": [
           {
-            "name": "active",
+            "name": null,
             "value": {
-              "node": "string",
-              "value": "Cz"
+              "node": "stream_ref",
+              "target": "derive/emg_power",
+              "stream_type": {
+                "value_kind": "scalar",
+                "dimensions": {
+                  "time": 0,
+                  "voltage": 2
+                },
+                "vector_size": null
+              }
             }
           },
           {
-            "name": "reference",
+            "name": "window",
             "value": {
-              "node": "string",
-              "value": "linked_ears"
+              "node": "number",
+              "value": 4.0,
+              "dims": {
+                "time": 1,
+                "voltage": 0
+              },
+              "unit": "s"
+            }
+          },
+          {
+            "name": "percentile",
+            "value": {
+              "node": "tuple",
+              "elements": [
+                {
+                  "node": "number",
+                  "value": 5.0,
+                  "dims": {
+                    "time": 0,
+                    "voltage": 0
+                  },
+                  "unit": null
+                },
+                {
+                  "node": "number",
+                  "value": 95.0,
+                  "dims": {
+                    "time": 0,
+                    "voltage": 0
+                  },
+                  "unit": null
+                }
+              ]
             }
           }
         ],
-        "callee": "referential",
-        "node": "call",
         "stream_type": {
+          "value_kind": "scalar",
           "dimensions": {
             "time": 0,
-            "voltage": 1
+            "voltage": 0
           },
-          "value_kind": "scalar",
           "vector_size": null
+        },
+        "coeffs": {
+          "window_samples": 1024
         }
       },
-      "stream_type": {
-        "dimensions": {
-          "time": 0,
-          "voltage": 1
-        },
-        "value_kind": "scalar",
-        "vector_size": null
-      }
+      "upstream": [
+        "derive/emg_power"
+      ]
     }
   },
-  "meta": {
-    "description": {
-      "node": "string",
-      "value": "Bench: bandpower derive + auto_range + inside condition"
-    },
-    "evidence": {
-      "node": "string",
-      "value": "demo"
-    },
-    "version": {
-      "node": "string",
-      "value": "0.1.0"
-    }
-  },
-  "name": "micro_08_bandpower",
-  "output": {
-    "audio_chime": {
-      "field_path": "event",
-      "node": "reward_field",
-      "stream_type": {
-        "dimensions": {
-          "time": 0,
-          "voltage": 0
-        },
-        "value_kind": "event",
-        "vector_size": null
-      }
-    },
-    "audio_gain": {
-      "field_path": "continuous",
-      "node": "reward_field",
-      "stream_type": {
-        "dimensions": {
-          "time": 0,
-          "voltage": 0
-        },
-        "value_kind": "scalar",
-        "vector_size": null
-      }
-    }
-  },
-  "refrain_ir_version": "0.1",
-  "requires": {
-    "channels": [
-      "Cz",
-      "A1"
-    ],
-    "coupling": null,
-    "impedance": "not_required",
-    "markers": "not_required",
-    "sample_rate_chosen_hz": 2048,
-    "sample_rate_min_hz": 256
-  },
+  "thresholds": {},
+  "inhibits": {},
   "reward": {
     "continuous": {
+      "node": "call",
+      "callee": "sigmoid",
       "args": [
         {
           "name": null,
           "value": {
             "node": "stream_ref",
+            "target": "derive/emg_norm",
             "stream_type": {
+              "value_kind": "scalar",
               "dimensions": {
                 "time": 0,
                 "voltage": 0
               },
-              "value_kind": "scalar",
               "vector_size": null
-            },
-            "target": "derive/emg_norm"
+            }
           }
         },
         {
           "name": "midpoint",
           "value": {
+            "node": "number",
+            "value": 0.5,
             "dims": {
               "time": 0,
               "voltage": 0
             },
-            "node": "number",
-            "unit": null,
-            "value": 0.5
+            "unit": null
           }
         },
         {
           "name": "steepness",
           "value": {
+            "node": "number",
+            "value": 4.0,
             "dims": {
               "time": 0,
               "voltage": 0
             },
-            "node": "number",
-            "unit": null,
-            "value": 4.0
+            "unit": null
           }
         }
       ],
-      "callee": "sigmoid",
-      "node": "call",
       "stream_type": {
+        "value_kind": "scalar",
         "dimensions": {
           "time": 0,
           "voltage": 0
         },
-        "value_kind": "scalar",
         "vector_size": null
       }
     },
     "event": {
+      "node": "call",
+      "callee": "dwell",
       "args": [
         {
           "name": "condition",
           "value": {
+            "node": "call",
+            "callee": "inside",
             "args": [
               {
                 "name": null,
                 "value": {
                   "node": "stream_ref",
+                  "target": "derive/emg_norm",
                   "stream_type": {
+                    "value_kind": "scalar",
                     "dimensions": {
                       "time": 0,
                       "voltage": 0
                     },
-                    "value_kind": "scalar",
                     "vector_size": null
-                  },
-                  "target": "derive/emg_norm"
+                  }
                 }
               },
               {
                 "name": "low",
                 "value": {
+                  "node": "number",
+                  "value": 0.2,
                   "dims": {
                     "time": 0,
                     "voltage": 0
                   },
-                  "node": "number",
-                  "unit": null,
-                  "value": 0.2
+                  "unit": null
                 }
               },
               {
                 "name": "high",
                 "value": {
+                  "node": "number",
+                  "value": 0.9,
                   "dims": {
                     "time": 0,
                     "voltage": 0
                   },
-                  "node": "number",
-                  "unit": null,
-                  "value": 0.9
+                  "unit": null
                 }
               }
             ],
-            "callee": "inside",
-            "node": "call",
             "stream_type": {
+              "value_kind": "boolean",
               "dimensions": {
                 "time": 0,
                 "voltage": 0
               },
-              "value_kind": "boolean",
               "vector_size": null
             }
           }
@@ -419,36 +396,59 @@
         {
           "name": "duration",
           "value": {
+            "node": "number",
+            "value": 250.0,
             "dims": {
               "time": 1,
               "voltage": 0
             },
-            "node": "number",
-            "unit": "ms",
-            "value": 250.0
+            "unit": "ms"
           }
         }
       ],
-      "callee": "dwell",
-      "coeffs": {
-        "dwell_samples": 64
-      },
-      "node": "call",
       "stream_type": {
+        "value_kind": "event",
         "dimensions": {
           "time": 0,
           "voltage": 0
         },
+        "vector_size": null
+      },
+      "coeffs": {
+        "dwell_samples": 64
+      }
+    }
+  },
+  "output": {
+    "audio_chime": {
+      "node": "reward_field",
+      "field_path": "event",
+      "stream_type": {
         "value_kind": "event",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      }
+    },
+    "audio_gain": {
+      "node": "reward_field",
+      "field_path": "continuous",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
         "vector_size": null
       }
     }
   },
-  "sample_rate_hz": 256.0,
+  "controls": {},
   "session": {
     "phases": []
   },
-  "thresholds": {},
   "topological_order": [
     "input/raw",
     "derive/emg_power",

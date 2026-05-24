@@ -163,8 +163,13 @@ def generate(stem: str) -> None:
     ir = resolve(parse_file(REPO / "bench" / "protocols" / f"{stem}.refrain"), AMP)
     # Bake at the rate the runtime actually uses (a host choice >= the
     # protocol minimum), which can differ from the resolver's default.
+    # Match the production wire format emitted by `ir_to_json` (sort_keys is
+    # intentionally False there so the `output` section keeps declaration
+    # order — see ir_json.py). Generating golden vectors with a *different*
+    # serialization would let the Rust golden suite drift from the canonical
+    # transformation it is meant to pin. `indent` only affects readability.
     (FIX / f"{stem}.ir.json").write_text(
-        json.dumps(ir_to_json_obj(ir, sample_rate_hz=SAMPLE_RATE_HZ), indent=2, sort_keys=True)
+        json.dumps(ir_to_json_obj(ir, sample_rate_hz=SAMPLE_RATE_HZ), indent=2)
     )
 
     rng = np.random.default_rng(SEED)
