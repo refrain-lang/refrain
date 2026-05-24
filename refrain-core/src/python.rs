@@ -87,13 +87,46 @@ impl RustEvaluator {
 
     /// Process one `(n_samples, n_channels)` chunk and return the feedback
     /// `Event`s, matching the Python evaluator's `step_chunk` return value.
+    /// Also caches the per-chunk streams map into `self.inner.last_streams`
+    /// so `last_streams()` can surface it without a second `eval_chunk` call.
+    /// Raises `RuntimeError` if called after `stop()`, matching the Python
+    /// evaluator's behaviour (rather than panicking).
     fn step_chunk_events<'py>(
         &mut self,
         chunk: PyReadonlyArray2<'py, f64>,
     ) -> PyResult<Vec<Event>> {
+        use crate::eval::State;
+        if self.inner.state() == State::Stopped {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "Evaluator.step_chunk() called after stop()",
+            ));
+        }
         let arr = chunk.as_array();
         let rows: Vec<Vec<f64>> = arr.outer_iter().map(|r| r.to_vec()).collect();
         Ok(self.inner.step_chunk_events(&rows).into_iter().map(Event::from).collect())
+    }
+
+    /// Clinician-observation snapshot from the most recent `step_chunk_events`
+    /// call. Returns `{canonical_name: f64}` — booleans stored as 0.0/1.0.
+    /// The Python wrapper coerces known-boolean keys back to `bool`.
+    /// Empty before the first `step_chunk_events` call. Returns a copy.
+    fn last_taps<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let out = PyDict::new(py);
+        for (k, v) in self.inner.last_taps() {
+            out.set_item(k, v)?;
+        }
+        Ok(out)
+    }
+
+    /// Per-chunk stream snapshot cached by the most recent `step_chunk_events`
+    /// call. Returns `{stream_name: ndarray}` matching `last_streams()` in
+    /// the Python evaluator. Empty before the first call.
+    fn last_streams<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let out = PyDict::new(py);
+        for (k, v) in self.inner.last_streams() {
+            out.set_item(k, v.into_pyarray(py))?;
+        }
+        Ok(out)
     }
 }
 

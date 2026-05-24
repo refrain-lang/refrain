@@ -464,6 +464,12 @@ pub struct Evaluator {
     /// 0.0/1.0 in this single map for the golden-vector compare. Empty before
     /// the first chunk; repopulated by `eval_chunk` in every lifecycle state.
     last_taps: BTreeMap<String, f64>,
+    /// Per-chunk stream snapshot cached by `step_chunk_events`, mirroring the
+    /// Python `last_streams()` convention. Keys: bare names for inputs/derives/
+    /// thresholds (prefix stripped), `reward.continuous`, `reward.event`,
+    /// `reward.event.holds`, `output/<channel>`. Empty before the first
+    /// `step_chunk_events` call. Repopulated after every call via `coerce_streams`.
+    last_streams: BTreeMap<String, Vec<f64>>,
     /// Live-control registry: `control/<name>` → the bound stage parameters
     /// that consumed it at build time. Mirrors `Evaluator._control_deps`;
     /// `set_control` forwards a change to every binding here. Each `Control`
@@ -574,6 +580,7 @@ impl Evaluator {
             samples_pushed: 0,
             warmup_samples,
             last_taps: BTreeMap::new(),
+            last_streams: BTreeMap::new(),
             controls: ctx.controls,
             declared_controls: p
                 .controls
@@ -770,14 +777,31 @@ impl Evaluator {
         self.last_taps.clone()
     }
 
-    /// Process one chunk and return `{stream: values}`, matching the Python
-    /// evaluator's `last_streams()` contract. Output channels are coerced to
-    /// floats (booleans → 0/1, floats clamped to [0, 1]); the streams API is
-    /// stateless w.r.t. the warmup lifecycle, mirroring tap capture which
-    /// runs in every state.
-    pub fn step_chunk(&mut self, chunk: &[Vec<f64>]) -> BTreeMap<String, Vec<f64>> {
-        let (env, muted, outs) = self.eval_chunk(chunk);
+    /// Per-chunk stream snapshot cached by `step_chunk_events`, mirroring the
+    /// Python `last_streams()` contract. Keys follow the same convention as
+    /// `step_chunk`: bare names for inputs/derives/thresholds (prefix stripped),
+    /// `reward.continuous`, `reward.event`, `reward.event.holds`, and
+    /// `output/<channel>`. Empty before the first `step_chunk_events` call.
+    /// Returns a copy so callers may persist it.
+    pub fn last_streams(&self) -> BTreeMap<String, Vec<f64>> {
+        self.last_streams.clone()
+    }
 
+    /// Coerce the `eval_chunk` results into the `last_streams` format and
+    /// cache them in `self.last_streams`. Shared by `step_chunk` (which
+    /// returns immediately) and `step_chunk_events` (which caches for
+    /// `last_streams()` access). Mirrors the Python `_process_chunk`'s
+    /// `self._last_streams` population block.
+    ///
+    /// Keys: bare stream names (prefix stripped via `split_once('/').map(…)`),
+    /// `reward.continuous`, `reward.event`, `reward.event.holds`,
+    /// `output/<channel>`. Output vals are gated+clamped exactly like
+    /// `step_chunk` so both callers see identical per-sample values.
+    fn coerce_streams(
+        env: HashMap<String, Val>,
+        muted: &[bool],
+        outs: Vec<(String, Val)>,
+    ) -> BTreeMap<String, Vec<f64>> {
         let mut result: BTreeMap<String, Vec<f64>> = BTreeMap::new();
         for (k, v) in env {
             result.insert(k, v.into_f());
@@ -803,11 +827,29 @@ impl Evaluator {
         result
     }
 
+    /// Process one chunk and return `{stream: values}`, matching the Python
+    /// evaluator's `last_streams()` contract. Output channels are coerced to
+    /// floats (booleans → 0/1, floats clamped to [0, 1]); the streams API is
+    /// stateless w.r.t. the warmup lifecycle, mirroring tap capture which
+    /// runs in every state.
+    ///
+    /// NOTE: The bench `ChunkedRunner` uses this method directly. Do NOT remove.
+    /// It does NOT advance the lifecycle cursor — call `step_chunk_events` for
+    /// the lifecycle-aware path (events + cursor advance + last_streams cache).
+    pub fn step_chunk(&mut self, chunk: &[Vec<f64>]) -> BTreeMap<String, Vec<f64>> {
+        let (env, muted, outs) = self.eval_chunk(chunk);
+        Self::coerce_streams(env, &muted, outs)
+    }
+
     /// Process one chunk and emit feedback `Event`s, mirroring
     /// `eval_.Evaluator.step_chunk` / `_process_chunk`. The same per-chunk
     /// computation runs in every state (so primitive state stays current),
     /// but during `warmup` events are suppressed. Advances `samples_pushed`
     /// and transitions `warmup → run` once the warmup window is satisfied.
+    ///
+    /// Also caches the per-chunk streams map into `self.last_streams` (via
+    /// `coerce_streams`) so `last_streams()` can surface it without a second
+    /// `eval_chunk` call — which would double-step DSP state.
     pub fn step_chunk_events(&mut self, chunk: &[Vec<f64>]) -> Vec<Event> {
         if self.state == State::Ready {
             self.start(false);
@@ -823,7 +865,35 @@ impl Evaluator {
         // `muted` is the combined inhibit gate (`_compute_muted`), computed in
         // `eval_chunk`. Inhibit state advances even during warmup; only event
         // emission below is warmup-suppressed.
-        let (_env, muted, outs) = self.eval_chunk(chunk);
+        let (env, muted, outs) = self.eval_chunk(chunk);
+
+        // Cache streams for `last_streams()` access — same eval_chunk pass,
+        // no second traversal. We must consume env+outs here before we iterate
+        // outs for events below, so cache first then rebuild the events-specific
+        // view from the cached map. To avoid double-consuming outs, collect
+        // event data before caching.
+        //
+        // Strategy: split the outs into event-producing and value-producing
+        // channels, collect both, cache streams, then emit events.
+        let mut event_channels: Vec<(String, Vec<bool>)> = Vec::new();
+        let mut value_channels: Vec<(String, Vec<f64>)> = Vec::new();
+        let mut outs_for_streams: Vec<(String, Val)> = Vec::new();
+
+        for (channel, v) in outs {
+            match v {
+                Val::B(values) => {
+                    outs_for_streams.push((channel.clone(), Val::B(values.clone())));
+                    event_channels.push((channel, values));
+                }
+                Val::F(values) => {
+                    outs_for_streams.push((channel.clone(), Val::F(values.clone())));
+                    value_channels.push((channel, values));
+                }
+            }
+        }
+
+        // Cache the streams map (same coercion as step_chunk).
+        self.last_streams = Self::coerce_streams(env, &muted, outs_for_streams);
 
         let mut events: Vec<Event> = Vec::new();
         if suppress_output {
@@ -832,43 +902,38 @@ impl Evaluator {
             return events;
         }
 
-        for (channel, v) in outs {
-            match v {
-                Val::B(values) => {
-                    // Event channel: gated bool = values & ~muted; one Event
-                    // per true sample.
-                    for (i, &on) in values.iter().enumerate() {
-                        if on && !muted[i] {
-                            events.push(Event {
-                                timestamp_s: t0_s + i as f64 / self.sample_rate_hz,
-                                channel: channel.clone(),
-                                kind: "event".to_string(),
-                                value: None,
-                            });
-                        }
-                    }
-                }
-                Val::F(values) => {
-                    // Value channel: clamp to [0, 1], zero where muted, emit
-                    // one Event per chunk carrying the mean.
-                    let gated: Vec<f64> = values
-                        .iter()
-                        .enumerate()
-                        .map(|(i, &x)| if muted[i] { 0.0 } else { x.clamp(0.0, 1.0) })
-                        .collect();
-                    let mean = if gated.is_empty() {
-                        0.0
-                    } else {
-                        gated.iter().sum::<f64>() / gated.len() as f64
-                    };
+        for (channel, values) in event_channels {
+            // Event channel: gated bool = values & ~muted; one Event per true sample.
+            for (i, &on) in values.iter().enumerate() {
+                if on && !muted[i] {
                     events.push(Event {
-                        timestamp_s: t0_s,
+                        timestamp_s: t0_s + i as f64 / self.sample_rate_hz,
                         channel: channel.clone(),
-                        kind: "value".to_string(),
-                        value: Some(mean),
+                        kind: "event".to_string(),
+                        value: None,
                     });
                 }
             }
+        }
+        for (channel, values) in value_channels {
+            // Value channel: clamp to [0, 1], zero where muted, emit
+            // one Event per chunk carrying the mean.
+            let gated: Vec<f64> = values
+                .iter()
+                .enumerate()
+                .map(|(i, &x)| if muted[i] { 0.0 } else { x.clamp(0.0, 1.0) })
+                .collect();
+            let mean = if gated.is_empty() {
+                0.0
+            } else {
+                gated.iter().sum::<f64>() / gated.len() as f64
+            };
+            events.push(Event {
+                timestamp_s: t0_s,
+                channel: channel.clone(),
+                kind: "value".to_string(),
+                value: Some(mean),
+            });
         }
 
         self.advance(n);
