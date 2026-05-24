@@ -105,7 +105,9 @@ fn welch_msc_matches_scipy_on_fixture() {
 
 **→ SIGNAL-PATH PARITY COMPLETE:** the Rust core reproduces the full evaluator (montage → derives → thresholds → inhibits → reward → outputs → events) at machine precision across the corpus. 14 Rust tests, 401 Python tests, drift gates green.
 
-**M3b/c REMAINING:** `set_control` + `last_taps` over the bindings; then `Evaluator` delegation + full Python suite.
+**M3b DONE (commits d4adaf1, b84d389):** `last_taps` (canonical-keyed observation snapshot — key-sets match Python exactly, values ≤1.3e-13) and `set_control` (live retuning **in place, state preserved** — a test proves the percentile buffer isn't reset; events match to 2e-15). Exposed on PyO3 + uniffi. Wire change: control args now emit `control_ref{target,default}` (baked coeffs byte-identical). **→ FULL EMBEDDING API SURFACE COMPLETE** (live/start/step_chunk→events/set_control/stop/last_taps), all machine-precision vs Python. 19 Rust tests; drift gate runs the whole suite.
+
+**M3c REMAINING:** wire `Evaluator.live(..., backend="rust")` so the Python evaluator *delegates* to the Rust core, then run the full Python suite through it (the "literally one implementation" finale).
 
 **Files:** `src/refrain/ir_json.py` (control-default resolution), `refrain-core/src/eval.rs` + `dsp.rs` (remaining primitives), `tools/gen_fixtures.py`, `tests/equivalence.rs`.
 
