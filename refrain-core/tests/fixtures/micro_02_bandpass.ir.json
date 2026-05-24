@@ -1,0 +1,218 @@
+{
+  "channels": [
+    "Cz"
+  ],
+  "controls": {},
+  "derives": {
+    "smr_bp": {
+      "canonical_name": "derive/smr_bp",
+      "expression": {
+        "args": [
+          {
+            "name": null,
+            "value": {
+              "node": "stream_ref",
+              "stream_type": {
+                "dimensions": {
+                  "time": 0,
+                  "voltage": 1
+                },
+                "value_kind": "scalar",
+                "vector_size": null
+              },
+              "target": "input/raw"
+            }
+          },
+          {
+            "name": "band",
+            "value": {
+              "elements": [
+                {
+                  "dims": {
+                    "time": -1,
+                    "voltage": 0
+                  },
+                  "node": "number",
+                  "unit": "Hz",
+                  "value": 12.0
+                },
+                {
+                  "dims": {
+                    "time": -1,
+                    "voltage": 0
+                  },
+                  "node": "number",
+                  "unit": "Hz",
+                  "value": 15.0
+                }
+              ],
+              "node": "tuple"
+            }
+          },
+          {
+            "name": "order",
+            "value": {
+              "dims": {
+                "time": 0,
+                "voltage": 0
+              },
+              "node": "number",
+              "unit": null,
+              "value": 4.0
+            }
+          }
+        ],
+        "callee": "bandpass",
+        "coeffs": {
+          "sos": [
+            [
+              1.6715446089233602e-06,
+              3.3430892178467204e-06,
+              1.6715446089233602e-06,
+              1.0,
+              -1.8185096561303429,
+              0.9315627107642395
+            ],
+            [
+              1.0,
+              2.0,
+              1.0,
+              1.0,
+              -1.8412452919491165,
+              0.9368353820975004
+            ],
+            [
+              1.0,
+              -2.0,
+              1.0,
+              1.0,
+              -1.839707340181905,
+              0.9695237593944186
+            ],
+            [
+              1.0,
+              -2.0,
+              1.0,
+              1.0,
+              -1.8884806674118457,
+              0.974950612677361
+            ]
+          ]
+        },
+        "node": "call",
+        "stream_type": {
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "value_kind": "scalar",
+          "vector_size": null
+        }
+      },
+      "stream_type": {
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "value_kind": "scalar",
+        "vector_size": null
+      },
+      "upstream": [
+        "input/raw"
+      ]
+    }
+  },
+  "extends": null,
+  "inhibits": {},
+  "inputs": {
+    "raw": {
+      "canonical_name": "input/raw",
+      "montage": {
+        "args": [
+          {
+            "name": "active",
+            "value": {
+              "node": "string",
+              "value": "Cz"
+            }
+          },
+          {
+            "name": "reference",
+            "value": {
+              "node": "string",
+              "value": "linked_ears"
+            }
+          }
+        ],
+        "callee": "referential",
+        "node": "call",
+        "stream_type": {
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "value_kind": "scalar",
+          "vector_size": null
+        }
+      },
+      "stream_type": {
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "value_kind": "scalar",
+        "vector_size": null
+      }
+    }
+  },
+  "meta": {
+    "description": {
+      "node": "string",
+      "value": "Bench: single bandpass, no envelope"
+    },
+    "evidence": {
+      "node": "string",
+      "value": "demo"
+    },
+    "version": {
+      "node": "string",
+      "value": "0.1.0"
+    }
+  },
+  "name": "micro_02_bandpass",
+  "output": {
+    "audio_gain": {
+      "dims": {
+        "time": 0,
+        "voltage": 0
+      },
+      "node": "number",
+      "unit": null,
+      "value": 0.0
+    }
+  },
+  "refrain_ir_version": "0.1",
+  "requires": {
+    "channels": [
+      "Cz"
+    ],
+    "coupling": null,
+    "impedance": "not_required",
+    "markers": "not_required",
+    "sample_rate_chosen_hz": 2048,
+    "sample_rate_min_hz": 256
+  },
+  "reward": {
+    "continuous": null,
+    "event": null
+  },
+  "sample_rate_hz": 256.0,
+  "session": {
+    "phases": []
+  },
+  "thresholds": {},
+  "topological_order": [
+    "input/raw",
+    "derive/smr_bp"
+  ]
+}
