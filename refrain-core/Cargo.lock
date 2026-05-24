@@ -562,6 +562,7 @@ dependencies = [
 name = "refrain-core"
 version = "0.1.0"
 dependencies = [
+ "indexmap",
  "numpy",
  "pyo3",
  "realfft",

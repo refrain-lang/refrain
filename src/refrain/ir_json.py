@@ -366,8 +366,17 @@ def ir_to_json_obj(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> di
 
 
 def ir_to_json(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> str:
-    """Serialize a resolved protocol into a JSON string."""
-    return json.dumps(ir_to_json_obj(ir, sample_rate_hz=sample_rate_hz), indent=2, sort_keys=True)
+    """Serialize a resolved protocol into a JSON string.
+
+    ``sort_keys`` is intentionally left ``False`` so the ``output`` section
+    preserves the IR declaration order of output channels. The Rust runtime
+    must emit events in that declaration order, matching Python's
+    ``_process_chunk`` which iterates ``per_channel_output.items()`` in
+    insertion order.  All other top-level dicts (inputs, derives, …) have
+    no order-sensitive semantics and are sorted by their BTreeMap key order
+    in the Rust deserialiser anyway.
+    """
+    return json.dumps(ir_to_json_obj(ir, sample_rate_hz=sample_rate_hz), indent=2)
 
 
 __all__ = ["ir_to_json", "ir_to_json_obj", "IR_JSON_VERSION"]

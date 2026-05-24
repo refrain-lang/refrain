@@ -834,8 +834,9 @@ impl Evaluator {
     /// runs in every state.
     ///
     /// NOTE: The bench `ChunkedRunner` uses this method directly. Do NOT remove.
-    /// It does NOT advance the lifecycle cursor — call `step_chunk_events` for
-    /// the lifecycle-aware path (events + cursor advance + last_streams cache).
+    /// It does NOT advance the lifecycle cursor/state machine and does NOT
+    /// cache `last_streams` — call `step_chunk_events` for the
+    /// lifecycle-aware path (events + cursor advance + last_streams cache).
     pub fn step_chunk(&mut self, chunk: &[Vec<f64>]) -> BTreeMap<String, Vec<f64>> {
         let (env, muted, outs) = self.eval_chunk(chunk);
         Self::coerce_streams(env, &muted, outs)
@@ -850,6 +851,14 @@ impl Evaluator {
     /// Also caches the per-chunk streams map into `self.last_streams` (via
     /// `coerce_streams`) so `last_streams()` can surface it without a second
     /// `eval_chunk` call — which would double-step DSP state.
+    ///
+    /// IMPORTANT: events are emitted in IR output-channel declaration order,
+    /// interleaving event-kind and value-kind channels exactly as the Python
+    /// `_process_chunk` does — do NOT split into separate event/value passes.
+    ///
+    /// NOTE: pure-Rust callers must not call this after `stop()` — the
+    /// Python/FFI layer converts the panic to a RuntimeError before it
+    /// reaches user code.
     pub fn step_chunk_events(&mut self, chunk: &[Vec<f64>]) -> Vec<Event> {
         if self.state == State::Ready {
             self.start(false);
@@ -867,32 +876,11 @@ impl Evaluator {
         // emission below is warmup-suppressed.
         let (env, muted, outs) = self.eval_chunk(chunk);
 
-        // Cache streams for `last_streams()` access — same eval_chunk pass,
-        // no second traversal. We must consume env+outs here before we iterate
-        // outs for events below, so cache first then rebuild the events-specific
-        // view from the cached map. To avoid double-consuming outs, collect
-        // event data before caching.
-        //
-        // Strategy: split the outs into event-producing and value-producing
-        // channels, collect both, cache streams, then emit events.
-        let mut event_channels: Vec<(String, Vec<bool>)> = Vec::new();
-        let mut value_channels: Vec<(String, Vec<f64>)> = Vec::new();
-        let mut outs_for_streams: Vec<(String, Val)> = Vec::new();
-
-        for (channel, v) in outs {
-            match v {
-                Val::B(values) => {
-                    outs_for_streams.push((channel.clone(), Val::B(values.clone())));
-                    event_channels.push((channel, values));
-                }
-                Val::F(values) => {
-                    outs_for_streams.push((channel.clone(), Val::F(values.clone())));
-                    value_channels.push((channel, values));
-                }
-            }
-        }
-
-        // Cache the streams map (same coercion as step_chunk).
+        // Clone outs for stream coercion so we can still iterate outs below
+        // in IR declaration order for event emission. No second eval_chunk =
+        // no double-stepping of DSP state.
+        let outs_for_streams: Vec<(String, Val)> =
+            outs.iter().map(|(ch, v)| (ch.clone(), v.clone())).collect();
         self.last_streams = Self::coerce_streams(env, &muted, outs_for_streams);
 
         let mut events: Vec<Event> = Vec::new();
@@ -902,38 +890,45 @@ impl Evaluator {
             return events;
         }
 
-        for (channel, values) in event_channels {
-            // Event channel: gated bool = values & ~muted; one Event per true sample.
-            for (i, &on) in values.iter().enumerate() {
-                if on && !muted[i] {
+        // Iterate outs in IR declaration order — mirrors Python's
+        // `for channel, (out_chunk, is_event) in per_channel_output.items()`.
+        for (channel, v) in outs {
+            match v {
+                Val::B(values) => {
+                    // Event channel: gated bool = values & ~muted; one Event
+                    // per true sample.
+                    for (i, &on) in values.iter().enumerate() {
+                        if on && !muted[i] {
+                            events.push(Event {
+                                timestamp_s: t0_s + i as f64 / self.sample_rate_hz,
+                                channel: channel.clone(),
+                                kind: "event".to_string(),
+                                value: None,
+                            });
+                        }
+                    }
+                }
+                Val::F(values) => {
+                    // Value channel: clamp to [0, 1], zero where muted, emit
+                    // one Event per chunk carrying the mean.
+                    let gated: Vec<f64> = values
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &x)| if muted[i] { 0.0 } else { x.clamp(0.0, 1.0) })
+                        .collect();
+                    let mean = if gated.is_empty() {
+                        0.0
+                    } else {
+                        gated.iter().sum::<f64>() / gated.len() as f64
+                    };
                     events.push(Event {
-                        timestamp_s: t0_s + i as f64 / self.sample_rate_hz,
+                        timestamp_s: t0_s,
                         channel: channel.clone(),
-                        kind: "event".to_string(),
-                        value: None,
+                        kind: "value".to_string(),
+                        value: Some(mean),
                     });
                 }
             }
-        }
-        for (channel, values) in value_channels {
-            // Value channel: clamp to [0, 1], zero where muted, emit
-            // one Event per chunk carrying the mean.
-            let gated: Vec<f64> = values
-                .iter()
-                .enumerate()
-                .map(|(i, &x)| if muted[i] { 0.0 } else { x.clamp(0.0, 1.0) })
-                .collect();
-            let mean = if gated.is_empty() {
-                0.0
-            } else {
-                gated.iter().sum::<f64>() / gated.len() as f64
-            };
-            events.push(Event {
-                timestamp_s: t0_s,
-                channel: channel.clone(),
-                kind: "value".to_string(),
-                value: Some(mean),
-            });
         }
 
         self.advance(n);

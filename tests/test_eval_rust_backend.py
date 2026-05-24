@@ -16,7 +16,7 @@ import pytest
 
 from refrain.amp_profile import load_amp_profile
 from refrain.eval_ import Evaluator, Event
-from refrain.parser import parse_file
+from refrain.parser import parse, parse_file
 from refrain.resolver import resolve
 
 
@@ -245,3 +245,120 @@ def test_rust_backend_last_streams_record_on(smr_ir):
     assert len(streams) > 0, "record_streams=True must capture streams"
     assert "raw" in streams, f"'raw' not in streams: {list(streams.keys())}"
     assert streams["raw"].shape[0] == CHUNK_SIZE
+
+
+# ---------------------------------------------------------------------------
+# FIX 2: event-ordering regression guard — value-before-event declaration order
+# ---------------------------------------------------------------------------
+
+# Minimal inline protocol: declares a VALUE-kind output FIRST, then an EVENT-
+# kind output SECOND.  The dwell duration (4 ms = 1 sample at 256 Hz) means
+# any chunk whose condition is always-true fires an event on the rising edge at
+# sample 0.  `below(raw, t_huge)` with t_huge=99999 uV is trivially true for
+# any normal EEG-scale signal, so events always fire.
+_VALUE_BEFORE_EVENT_SRC = """
+protocol "ordering_test" {
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels = ["Cz"]
+  }
+  input "raw" {
+    montage = referential(active: "Cz", reference: "linked_ears")
+  }
+  threshold "t_huge" {
+    signal = "raw"
+    type   = absolute(99999 uV)
+  }
+  reward {
+    event      = dwell(
+      condition: below("raw", "t_huge"),
+      duration: 4 ms
+    )
+    continuous = sigmoid("raw" / "t_huge", midpoint: 1.0, steepness: 1)
+  }
+  output {
+    gain  = reward.continuous   // value-kind  (FIRST in declaration order)
+    chime = reward.event        // event-kind  (SECOND in declaration order)
+  }
+}
+"""
+
+
+@pytest.fixture(scope="module")
+def ordering_ir():
+    return resolve(parse(_VALUE_BEFORE_EVENT_SRC))
+
+
+def test_rust_event_ordering_value_before_event(ordering_ir):
+    """Rust backend must emit events in IR declaration order.
+
+    Regression guard for the FIX 1 ordering bug: the pre-fix implementation
+    emitted all event-kind channels before all value-kind channels regardless
+    of IR declaration order.  This protocol declares a VALUE-kind output
+    (gain) before an EVENT-kind output (chime), so the wrong order was
+    gain-kind=value before chime-kind=event → WRONG (chime then gain).
+
+    The correct order is:
+      [0] channel='gain',  kind='value'   (declared first)
+      [1] channel='chime', kind='event'   (declared second)
+
+    Both backends must agree element-by-element, and at least one
+    kind=='event' event must fire (so the test cannot silently pass with
+    zero events — that was the original blind spot).
+    """
+    pytest.importorskip("refrain_core", reason="refrain_core wheel not installed")
+    rng = np.random.default_rng(42)
+    chunk = rng.standard_normal((CHUNK_SIZE, 1))
+
+    py_ev = Evaluator.live(
+        ordering_ir, sample_rate_hz=SAMPLE_RATE, channel_names=("Cz",), backend="python",
+    )
+    py_ev.start(skip_warmup=True)
+    py_events = py_ev.step_chunk(chunk.copy())
+
+    rust_ev = Evaluator.live(
+        ordering_ir, sample_rate_hz=SAMPLE_RATE, channel_names=("Cz",), backend="rust",
+    )
+    rust_ev.start(skip_warmup=True)
+    rust_events = rust_ev.step_chunk(chunk.copy())
+
+    # At least one discrete event must have fired — guards against a chunk
+    # that yields zero events and lets the ordering assertion vacuously pass.
+    assert any(e.kind == "event" for e in rust_events), (
+        "No kind=='event' event fired from the Rust backend; "
+        "the dwell condition (below raw < 99999 uV) should always be true. "
+        f"Rust events: {rust_events}"
+    )
+    assert any(e.kind == "event" for e in py_events), (
+        "No kind=='event' event fired from the Python backend either; "
+        f"Python events: {py_events}"
+    )
+
+    # Both backends must produce the same number of events.
+    assert len(py_events) == len(rust_events), (
+        f"Event count mismatch: Python={len(py_events)}, Rust={len(rust_events)}\n"
+        f"Python: {py_events}\nRust: {rust_events}"
+    )
+
+    # Every event must match element-by-element in declaration order.
+    for i, (pe, re) in enumerate(zip(py_events, rust_events)):
+        assert pe.channel == re.channel, (
+            f"event[{i}] channel mismatch (ordering regression?): "
+            f"Python={pe.channel!r} Rust={re.channel!r}\n"
+            f"Python events: {py_events}\nRust events: {rust_events}"
+        )
+        assert pe.kind == re.kind, (
+            f"event[{i}] kind mismatch: Python={pe.kind!r} Rust={re.kind!r}"
+        )
+        assert abs(pe.timestamp_s - re.timestamp_s) < 1e-6, (
+            f"event[{i}] timestamp_s mismatch: {pe.timestamp_s} vs {re.timestamp_s}"
+        )
+        if pe.value is None:
+            assert re.value is None, f"event[{i}] value: Python=None, Rust={re.value}"
+        else:
+            assert re.value is not None, (
+                f"event[{i}] value: Python={pe.value}, Rust=None"
+            )
+            assert abs(pe.value - re.value) < 1e-6, (
+                f"event[{i}] value mismatch: {pe.value} vs {re.value}"
+            )

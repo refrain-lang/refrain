@@ -332,6 +332,11 @@ class Evaluator:
         self._backend: str = "python"
         self._rust: Any = None  # refrain_core.RustEvaluator | None
         self._rust_bool_tap_keys: frozenset[str] = frozenset()
+        # Stream keys (last_streams) that should be coerced to bool dtype when
+        # bridging from Rust (Rust stores all streams as f64 0.0/1.0).
+        # Distinct from _rust_bool_tap_keys: stream keys use "reward.event"
+        # (dot-separated) while tap keys use "reward/event" (slash-separated).
+        self._rust_bool_stream_keys: frozenset[str] = frozenset()
 
     # -- Live-mode factory --------------------------------------------------
 
@@ -374,6 +379,11 @@ class Evaluator:
             # as Python booleans. Rust stores all taps as f64 (0.0/1.0 for
             # booleans); we coerce them back at the Python boundary.
             ev._rust_bool_tap_keys = _rust_bool_tap_keys(ir)
+            # Pre-compute stream keys that need bool coercion.  Reuses the
+            # event-channel set from _rust_bool_tap_keys (which already
+            # determined which output channels are event-kind) but maps them
+            # to the stream key namespace (output/<channel>, reward.event, …).
+            ev._rust_bool_stream_keys = _rust_bool_stream_keys(ir)
         return ev
 
     # -- Lifecycle ----------------------------------------------------------
@@ -905,7 +915,17 @@ class Evaluator:
             if not self._record_streams:
                 return {}
             raw: dict[str, Any] = dict(self._rust.last_streams())
-            return {k: np.asarray(v) for k, v in raw.items()}
+            # Rust stores all streams as f64 (0.0/1.0 for booleans). Coerce
+            # known-boolean stream keys back to numpy bool dtype so the return
+            # type is identical to the Python backend. Boolean streams are:
+            # "reward.event", "reward.event.holds", and "output/<channel>"
+            # for event-kind output channels. Value/derive/input streams
+            # remain float64.
+            bool_keys = self._rust_bool_stream_keys
+            return {
+                k: np.asarray(v).astype(bool) if k in bool_keys else np.asarray(v)
+                for k, v in raw.items()
+            }
         return dict(self._last_streams)
 
     # -- Mid-session control tuning (SPEC §7.7) ----------------------------
@@ -1302,6 +1322,30 @@ def _rust_bool_tap_keys(ir: IRProtocol) -> frozenset[str]:
             keys.add(f"reward/condition[{i}]")
 
     # output/<channel> — event channels are bound to reward.event
+    for channel, expr in ir.output.items():
+        if isinstance(expr, IRRewardField) and expr.field_path == "event":
+            keys.add(f"output/{channel}")
+
+    return frozenset(keys)
+
+
+def _rust_bool_stream_keys(ir: IRProtocol) -> frozenset[str]:
+    """Compute the set of `last_streams()` keys whose arrays must be coerced
+    to numpy ``bool`` dtype when bridging from the Rust evaluator.
+
+    Uses a dot-separated key convention (``"reward.event"``) matching
+    the Python ``_process_chunk``'s ``captured`` dict, distinct from the
+    slash-separated tap keys in ``_rust_bool_tap_keys``.  Reuses the same
+    event-output-channel determination logic to avoid duplication.
+    """
+    keys: set[str] = set()
+
+    # reward.event and reward.event.holds are always bool when a dwell exists.
+    if ir.reward.event is not None:
+        keys.add("reward.event")
+        keys.add("reward.event.holds")
+
+    # output/<channel> for event-kind (reward.event) output channels.
     for channel, expr in ir.output.items():
         if isinstance(expr, IRRewardField) and expr.field_path == "event":
             keys.add(f"output/{channel}")

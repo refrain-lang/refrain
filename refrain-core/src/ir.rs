@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 
+use indexmap::IndexMap;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -20,8 +21,11 @@ pub struct Protocol {
     pub inhibits: BTreeMap<String, Inhibit>,
     #[serde(default)]
     pub reward: Option<Reward>,
+    /// Output channels in IR declaration order. Serde deserializes JSON
+    /// object keys in their wire order; IndexMap preserves that order so
+    /// `eval_chunk` emits events in the same sequence as the Python evaluator.
     #[serde(default)]
-    pub output: BTreeMap<String, Expr>,
+    pub output: IndexMap<String, Expr>,
     #[serde(default)]
     pub session: Option<Session>,
     #[serde(default)]
