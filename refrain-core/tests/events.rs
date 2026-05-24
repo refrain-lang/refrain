@@ -113,6 +113,14 @@ fn micro_05_reward_events_equivalent() {
 }
 
 #[test]
+fn micro_09_inhibit_events_equivalent() {
+    // The `audio_gain` value events carry the per-chunk mean of the muted/
+    // clamped continuous output; matching them pins the inhibit gate's effect
+    // on the value-channel emission path.
+    run_events("micro_09_inhibit");
+}
+
+#[test]
 fn realistic_smr_events_equivalent() {
     run_events("realistic_smr");
 }

@@ -17,6 +17,8 @@ pub struct Protocol {
     #[serde(default)]
     pub thresholds: BTreeMap<String, Threshold>,
     #[serde(default)]
+    pub inhibits: BTreeMap<String, Inhibit>,
+    #[serde(default)]
     pub reward: Option<Reward>,
     #[serde(default)]
     pub output: BTreeMap<String, Expr>,
@@ -46,6 +48,20 @@ pub struct Phase {
 pub struct Threshold {
     pub signal: String, // canonical name of the source stream
     pub threshold_call: Expr,
+}
+
+/// `inhibit` block (`_emit_inhibit`): a `metric` expression (typically a
+/// `bandpower(...)` call) compared `>` a `threshold` constructor call
+/// (`absolute(...)`/`percentile(...)`, the same shape as a threshold block's
+/// `threshold_call`). `action_kind` selects the output-gate behaviour;
+/// `action_release_ms` is the hangover (null → 200 ms default).
+#[derive(Debug, Deserialize)]
+pub struct Inhibit {
+    pub metric: Expr,
+    pub threshold: Expr,
+    pub action_kind: String,
+    #[serde(default)]
+    pub action_release_ms: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]

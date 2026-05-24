@@ -1,0 +1,549 @@
+{
+  "channels": [
+    "Cz",
+    "A1"
+  ],
+  "controls": {},
+  "derives": {
+    "smr_envelope": {
+      "canonical_name": "derive/smr_envelope",
+      "expression": {
+        "args": [
+          {
+            "name": null,
+            "value": {
+              "args": [
+                {
+                  "name": null,
+                  "value": {
+                    "args": [
+                      {
+                        "name": null,
+                        "value": {
+                          "args": [
+                            {
+                              "name": null,
+                              "value": {
+                                "node": "stream_ref",
+                                "stream_type": {
+                                  "dimensions": {
+                                    "time": 0,
+                                    "voltage": 1
+                                  },
+                                  "value_kind": "scalar",
+                                  "vector_size": null
+                                },
+                                "target": "input/raw"
+                              }
+                            },
+                            {
+                              "name": "band",
+                              "value": {
+                                "elements": [
+                                  {
+                                    "dims": {
+                                      "time": -1,
+                                      "voltage": 0
+                                    },
+                                    "node": "number",
+                                    "unit": "Hz",
+                                    "value": 12.0
+                                  },
+                                  {
+                                    "dims": {
+                                      "time": -1,
+                                      "voltage": 0
+                                    },
+                                    "node": "number",
+                                    "unit": "Hz",
+                                    "value": 15.0
+                                  }
+                                ],
+                                "node": "tuple"
+                              }
+                            },
+                            {
+                              "name": "order",
+                              "value": {
+                                "dims": {
+                                  "time": 0,
+                                  "voltage": 0
+                                },
+                                "node": "number",
+                                "unit": null,
+                                "value": 4.0
+                              }
+                            }
+                          ],
+                          "callee": "bandpass",
+                          "coeffs": {
+                            "sos": [
+                              [
+                                1.6715446089233602e-06,
+                                3.3430892178467204e-06,
+                                1.6715446089233602e-06,
+                                1.0,
+                                -1.8185096561303429,
+                                0.9315627107642395
+                              ],
+                              [
+                                1.0,
+                                2.0,
+                                1.0,
+                                1.0,
+                                -1.8412452919491165,
+                                0.9368353820975004
+                              ],
+                              [
+                                1.0,
+                                -2.0,
+                                1.0,
+                                1.0,
+                                -1.839707340181905,
+                                0.9695237593944186
+                              ],
+                              [
+                                1.0,
+                                -2.0,
+                                1.0,
+                                1.0,
+                                -1.8884806674118457,
+                                0.974950612677361
+                              ]
+                            ]
+                          },
+                          "node": "call",
+                          "stream_type": {
+                            "dimensions": {
+                              "time": 0,
+                              "voltage": 1
+                            },
+                            "value_kind": "scalar",
+                            "vector_size": null
+                          }
+                        }
+                      }
+                    ],
+                    "callee": "hilbert",
+                    "coeffs": {
+                      "fir_taps": [
+                        0.0,
+                        -0.0016883777730945177,
+                        0.0,
+                        -0.0021910135612077217,
+                        0.0,
+                        -0.0031669763104787965,
+                        0.0,
+                        -0.004696094288160902,
+                        0.0,
+                        -0.006869378927253657,
+                        0.0,
+                        -0.009796593083986657,
+                        0.0,
+                        -0.013619275426681525,
+                        0.0,
+                        -0.01853357872227764,
+                        0.0,
+                        -0.024831901058551206,
+                        0.0,
+                        -0.03298331700384915,
+                        0.0,
+                        -0.043801899944842564,
+                        0.0,
+                        -0.058839293203350435,
+                        0.0,
+                        -0.08144957099328076,
+                        0.0,
+                        -0.1204081987548121,
+                        0.0,
+                        -0.20800332029398802,
+                        0.0,
+                        -0.6352096431910579,
+                        0.0,
+                        0.6352096431910579,
+                        0.0,
+                        0.20800332029398802,
+                        0.0,
+                        0.1204081987548121,
+                        0.0,
+                        0.08144957099328076,
+                        0.0,
+                        0.058839293203350435,
+                        0.0,
+                        0.043801899944842564,
+                        0.0,
+                        0.03298331700384915,
+                        0.0,
+                        0.024831901058551206,
+                        0.0,
+                        0.01853357872227764,
+                        0.0,
+                        0.013619275426681525,
+                        0.0,
+                        0.009796593083986657,
+                        0.0,
+                        0.006869378927253657,
+                        0.0,
+                        0.004696094288160902,
+                        0.0,
+                        0.0031669763104787965,
+                        0.0,
+                        0.0021910135612077217,
+                        0.0,
+                        0.0016883777730945177,
+                        0.0
+                      ],
+                      "group_delay": 32
+                    },
+                    "node": "call",
+                    "stream_type": {
+                      "dimensions": {
+                        "time": 0,
+                        "voltage": 1
+                      },
+                      "value_kind": "complex",
+                      "vector_size": null
+                    }
+                  }
+                }
+              ],
+              "callee": "magnitude",
+              "node": "call",
+              "stream_type": {
+                "dimensions": {
+                  "time": 0,
+                  "voltage": 1
+                },
+                "value_kind": "scalar",
+                "vector_size": null
+              }
+            }
+          },
+          {
+            "name": "tau",
+            "value": {
+              "dims": {
+                "time": 1,
+                "voltage": 0
+              },
+              "node": "number",
+              "unit": "ms",
+              "value": 250.0
+            }
+          }
+        ],
+        "callee": "smooth",
+        "coeffs": {
+          "alpha": 0.015503562994591547
+        },
+        "node": "call",
+        "stream_type": {
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "value_kind": "scalar",
+          "vector_size": null
+        }
+      },
+      "stream_type": {
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "value_kind": "scalar",
+        "vector_size": null
+      },
+      "upstream": [
+        "input/raw"
+      ]
+    }
+  },
+  "extends": null,
+  "inhibits": {
+    "emg": {
+      "action_kind": "mute",
+      "action_release_ms": 200.0,
+      "canonical_name": "inhibit/emg",
+      "final": false,
+      "metric": {
+        "args": [
+          {
+            "name": "input",
+            "value": {
+              "node": "stream_ref",
+              "stream_type": {
+                "dimensions": {
+                  "time": 0,
+                  "voltage": 1
+                },
+                "value_kind": "scalar",
+                "vector_size": null
+              },
+              "target": "input/raw"
+            }
+          },
+          {
+            "name": "band",
+            "value": {
+              "elements": [
+                {
+                  "dims": {
+                    "time": -1,
+                    "voltage": 0
+                  },
+                  "node": "number",
+                  "unit": "Hz",
+                  "value": 20.0
+                },
+                {
+                  "dims": {
+                    "time": -1,
+                    "voltage": 0
+                  },
+                  "node": "number",
+                  "unit": "Hz",
+                  "value": 50.0
+                }
+              ],
+              "node": "tuple"
+            }
+          },
+          {
+            "name": "window",
+            "value": {
+              "dims": {
+                "time": 1,
+                "voltage": 0
+              },
+              "node": "number",
+              "unit": "ms",
+              "value": 100.0
+            }
+          }
+        ],
+        "callee": "bandpower",
+        "coeffs": {
+          "sos": [
+            [
+              0.008236395931269876,
+              0.016472791862539752,
+              0.008236395931269876,
+              1.0,
+              -0.7989514101802615,
+              0.42620087558510944
+            ],
+            [
+              1.0,
+              2.0,
+              1.0,
+              1.0,
+              -1.241446317642265,
+              0.5495835790049188
+            ],
+            [
+              1.0,
+              -2.0,
+              1.0,
+              1.0,
+              -0.6180073059423377,
+              0.7067495077416912
+            ],
+            [
+              1.0,
+              -2.0,
+              1.0,
+              1.0,
+              -1.6075055770331703,
+              0.8363597990827116
+            ]
+          ],
+          "window_samples": 26
+        },
+        "node": "call",
+        "stream_type": {
+          "dimensions": {
+            "time": 0,
+            "voltage": 2
+          },
+          "value_kind": "scalar",
+          "vector_size": null
+        }
+      },
+      "threshold": {
+        "args": [
+          {
+            "name": null,
+            "value": {
+              "dims": {
+                "time": 0,
+                "voltage": 2
+              },
+              "node": "number",
+              "unit": "uV2",
+              "value": 55.0
+            }
+          }
+        ],
+        "callee": "absolute",
+        "node": "call",
+        "stream_type": {
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "value_kind": "scalar",
+          "vector_size": null
+        }
+      }
+    }
+  },
+  "inputs": {
+    "raw": {
+      "canonical_name": "input/raw",
+      "montage": {
+        "args": [
+          {
+            "name": "active",
+            "value": {
+              "node": "string",
+              "value": "Cz"
+            }
+          },
+          {
+            "name": "reference",
+            "value": {
+              "node": "string",
+              "value": "linked_ears"
+            }
+          }
+        ],
+        "callee": "referential",
+        "node": "call",
+        "stream_type": {
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "value_kind": "scalar",
+          "vector_size": null
+        }
+      },
+      "stream_type": {
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "value_kind": "scalar",
+        "vector_size": null
+      }
+    }
+  },
+  "meta": {
+    "description": {
+      "node": "string",
+      "value": "Bench: bandpower inhibit metric + absolute threshold + mute action"
+    },
+    "evidence": {
+      "node": "string",
+      "value": "demo"
+    },
+    "version": {
+      "node": "string",
+      "value": "0.1.0"
+    }
+  },
+  "name": "micro_09_inhibit",
+  "output": {
+    "audio_gain": {
+      "field_path": "continuous",
+      "node": "reward_field",
+      "stream_type": {
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "value_kind": "scalar",
+        "vector_size": null
+      }
+    }
+  },
+  "refrain_ir_version": "0.1",
+  "requires": {
+    "channels": [
+      "Cz",
+      "A1"
+    ],
+    "coupling": null,
+    "impedance": "not_required",
+    "markers": "not_required",
+    "sample_rate_chosen_hz": 2048,
+    "sample_rate_min_hz": 256
+  },
+  "reward": {
+    "continuous": {
+      "args": [
+        {
+          "name": null,
+          "value": {
+            "node": "stream_ref",
+            "stream_type": {
+              "dimensions": {
+                "time": 0,
+                "voltage": 1
+              },
+              "value_kind": "scalar",
+              "vector_size": null
+            },
+            "target": "derive/smr_envelope"
+          }
+        },
+        {
+          "name": "midpoint",
+          "value": {
+            "dims": {
+              "time": 0,
+              "voltage": 0
+            },
+            "node": "number",
+            "unit": null,
+            "value": 5.0
+          }
+        },
+        {
+          "name": "steepness",
+          "value": {
+            "dims": {
+              "time": 0,
+              "voltage": 0
+            },
+            "node": "number",
+            "unit": null,
+            "value": 0.5
+          }
+        }
+      ],
+      "callee": "sigmoid",
+      "node": "call",
+      "stream_type": {
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "value_kind": "scalar",
+        "vector_size": null
+      }
+    },
+    "event": null
+  },
+  "sample_rate_hz": 256.0,
+  "session": {
+    "phases": []
+  },
+  "thresholds": {},
+  "topological_order": [
+    "input/raw",
+    "derive/smr_envelope",
+    "inhibit/emg"
+  ]
+}

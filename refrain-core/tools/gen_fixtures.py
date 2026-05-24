@@ -68,7 +68,7 @@ def _reference(ir, signal: np.ndarray) -> tuple[dict[str, np.ndarray], list[dict
 
 # Protocols whose output channels actually emit events (the others are
 # pure-DSP micro corpora with no `output` bindings to compare).
-EVENT_BEARING = frozenset({"micro_05_reward", "realistic_smr"})
+EVENT_BEARING = frozenset({"micro_05_reward", "realistic_smr", "micro_09_inhibit"})
 
 
 def generate(stem: str) -> None:
@@ -126,6 +126,7 @@ if __name__ == "__main__":
         "micro_06_coherence",
         "micro_07_ilf",
         "micro_08_bandpower",
+        "micro_09_inhibit",
         "realistic_smr",
     ):
         generate(stem)

@@ -113,6 +113,14 @@ fn micro_08_bandpower_equivalent() {
 }
 
 #[test]
+fn micro_09_inhibit_equivalent() {
+    // bandpower inhibit metric + absolute threshold + mute action: the gated
+    // `output/audio_gain` stream must reproduce Python's muting (zeroed
+    // samples while the inhibit is active, plus the release hangover).
+    run_protocol("micro_09_inhibit");
+}
+
+#[test]
 fn realistic_smr_equivalent() {
     run_protocol("realistic_smr");
 }

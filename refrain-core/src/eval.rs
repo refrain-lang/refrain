@@ -295,12 +295,81 @@ fn apply_binop(op: &str, x: f64, y: f64) -> f64 {
     }
 }
 
+// --- Inhibit gate ---------------------------------------------------------
+
+/// Output-mute hangover state machine, mirroring `MuteAction`/`FreezeAction`
+/// in `primitive_impls.py` (both use the identical gate for output-muting).
+/// Modeled on the stateful `Dwell` tracker: per sample, an active inhibit
+/// arms the hangover to `release_samples`; thereafter the gate stays asserted
+/// while the hangover counts down. State persists across chunks.
+struct InhibitGate {
+    release_samples: usize,
+    hangover: usize,
+}
+
+impl InhibitGate {
+    fn new(release_ms: f64, sample_rate_hz: f64) -> Self {
+        // `max(0, round(...))` — matches MuteAction.__init__.
+        let release_samples = (release_ms / 1000.0 * sample_rate_hz).round().max(0.0) as usize;
+        InhibitGate { release_samples, hangover: 0 }
+    }
+
+    /// Given the per-sample `inhibit_active` stream, return the per-sample
+    /// gate (`true` ⇒ output muted): `active OR within release hangover`.
+    fn gate(&mut self, active: &[bool]) -> Vec<bool> {
+        let n = active.len();
+        let mut muted = vec![false; n];
+        for i in 0..n {
+            if active[i] {
+                self.hangover = self.release_samples;
+                muted[i] = true;
+            } else if self.hangover > 0 {
+                self.hangover -= 1;
+                muted[i] = true;
+            }
+        }
+        muted
+    }
+}
+
+/// An inhibit's threshold. The metric chunk is computed once (in `eval_chunk`)
+/// and the threshold is derived from it — mirroring the Python evaluator,
+/// which feeds the already-computed `metric_chunk` to a percentile tracker
+/// (and zeros to an absolute threshold). Holding the percentile tracker here
+/// (rather than as a `CNode` wrapping the metric) avoids re-evaluating — and
+/// thus double-advancing — the stateful metric pipeline.
+enum InhibitThreshold {
+    Const(f64),
+    Pct(Percentile),
+}
+
+impl InhibitThreshold {
+    /// Threshold values for this chunk, given the metric chunk.
+    fn eval(&mut self, metric: &[f64]) -> Vec<f64> {
+        match self {
+            InhibitThreshold::Const(v) => vec![*v; metric.len()],
+            InhibitThreshold::Pct(p) => p.step(metric),
+        }
+    }
+}
+
+/// One compiled inhibit: its `metric` expression node, the threshold derived
+/// from the metric chunk, and the output-gate state. `flag` inhibits set
+/// `gate = None` so they contribute nothing to `muted` (telemetry-only,
+/// matching `FlagAction`).
+struct CompiledInhibit {
+    metric: CNode,
+    threshold: InhibitThreshold,
+    gate: Option<InhibitGate>,
+}
+
 // --- Evaluator ------------------------------------------------------------
 
 pub struct Evaluator {
     inputs: Vec<(String, Montage)>, // (bare input name, montage)
     derives: Vec<(String, CNode)>,
     thresholds: Vec<(String, CNode)>,
+    inhibits: Vec<CompiledInhibit>,
     reward_continuous: Option<CNode>,
     reward_event: Option<(Dwell, CNode)>,
     outputs: Vec<(String, CNode)>,
@@ -334,6 +403,17 @@ impl Evaluator {
             .map(|(name, t)| (name.clone(), build_threshold(t, sample_rate_hz)))
             .collect();
 
+        // Inhibits (BTreeMap order, matching the Python evaluator's dict
+        // iteration / `_compute_muted` OR-fold — order is immaterial for OR
+        // but kept deterministic). Each pairs a metric node with a threshold
+        // node (built via the SHARED `build_threshold_call`, with the metric
+        // as the threshold's tracked signal) and an action gate.
+        let inhibits = p
+            .inhibits
+            .values()
+            .map(|ih| build_inhibit(ih, sample_rate_hz))
+            .collect();
+
         let (mut reward_continuous, mut reward_event) = (None, None);
         if let Some(r) = &p.reward {
             reward_continuous = r.continuous.as_ref().map(|e| build_node(e, sample_rate_hz));
@@ -352,6 +432,7 @@ impl Evaluator {
             inputs,
             derives,
             thresholds,
+            inhibits,
             reward_continuous,
             reward_event,
             outputs,
@@ -383,12 +464,16 @@ impl Evaluator {
         self.state
     }
 
-    /// Shared per-chunk computation: runs inputs/derives/thresholds/reward and
-    /// every output channel, returning the populated `env` and the per-output
-    /// channel `Val` (boolean → event channel, float → value channel). Both
-    /// `step_chunk` (streams) and `step_chunk_events` (events) build on this so
-    /// the interpreter runs exactly once per output and is never duplicated.
-    fn eval_chunk(&mut self, chunk: &[Vec<f64>]) -> (HashMap<String, Val>, Vec<(String, Val)>) {
+    /// Shared per-chunk computation: runs inputs/derives/thresholds/inhibits/
+    /// reward and every output channel, returning the populated `env`, the
+    /// combined per-sample `muted` gate, and the per-output channel `Val`
+    /// (boolean → event channel, float → value channel). Both `step_chunk`
+    /// (streams) and `step_chunk_events` (events) build on this so the
+    /// interpreter runs exactly once per output and is never duplicated.
+    fn eval_chunk(
+        &mut self,
+        chunk: &[Vec<f64>],
+    ) -> (HashMap<String, Val>, Vec<bool>, Vec<(String, Val)>) {
         let n = chunk.len();
         let mut env: HashMap<String, Val> = HashMap::new();
         for (name, montage) in self.inputs.iter() {
@@ -403,6 +488,25 @@ impl Evaluator {
             let v = node.eval(&env, n);
             env.insert(name.clone(), v);
         }
+
+        // Inhibits → combined `muted` gate (`_compute_muted`). Evaluated every
+        // chunk regardless of warmup so gate/threshold state stays current
+        // (only event *emission* is warmup-suppressed). Empty → all-false.
+        let mut muted = vec![false; n];
+        for ih in self.inhibits.iter_mut() {
+            let metric = ih.metric.eval(&env, n).into_f();
+            let thresh = ih.threshold.eval(&metric);
+            let active: Vec<bool> =
+                metric.iter().zip(&thresh).map(|(m, t)| m > t).collect();
+            // flag actions (`gate == None`) contribute nothing to `muted`.
+            if let Some(gate) = ih.gate.as_mut() {
+                let g = gate.gate(&active);
+                for i in 0..n {
+                    muted[i] |= g[i];
+                }
+            }
+        }
+
         if let Some(node) = self.reward_continuous.as_mut() {
             let v = node.eval(&env, n);
             env.insert("reward.continuous".to_string(), v);
@@ -419,7 +523,7 @@ impl Evaluator {
             let v = node.eval(&env, n);
             outs.push((ch.clone(), v));
         }
-        (env, outs)
+        (env, muted, outs)
     }
 
     /// Process one chunk and return `{stream: values}`, matching the Python
@@ -428,21 +532,27 @@ impl Evaluator {
     /// stateless w.r.t. the warmup lifecycle, mirroring tap capture which
     /// runs in every state.
     pub fn step_chunk(&mut self, chunk: &[Vec<f64>]) -> BTreeMap<String, Vec<f64>> {
-        let (env, outs) = self.eval_chunk(chunk);
+        let (env, muted, outs) = self.eval_chunk(chunk);
 
         let mut result: BTreeMap<String, Vec<f64>> = BTreeMap::new();
         for (k, v) in env {
             result.insert(k, v.into_f());
         }
         for (ch, v) in outs {
+            // Gating mirrors `_process_chunk`'s `per_channel_output` (and thus
+            // the recorded `output/<channel>` streams): event channels are
+            // `values & ~muted`; value channels are `where(muted, 0, clip)`.
             let f = match v {
-                Val::B(b) => b.iter().map(|&x| if x { 1.0 } else { 0.0 }).collect(),
-                Val::F(mut f) => {
-                    for x in f.iter_mut() {
-                        *x = x.clamp(0.0, 1.0); // value channels clamp to [0, 1]
-                    }
-                    f
-                }
+                Val::B(b) => b
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &x)| if x && !muted[i] { 1.0 } else { 0.0 })
+                    .collect(),
+                Val::F(f) => f
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &x)| if muted[i] { 0.0 } else { x.clamp(0.0, 1.0) })
+                    .collect(),
             };
             result.insert(format!("output/{ch}"), f);
         }
@@ -466,12 +576,10 @@ impl Evaluator {
         let t0_s = self.samples_pushed as f64 / self.sample_rate_hz;
         let suppress_output = self.state == State::Warmup;
 
-        // `muted` comes from inhibits; the current corpus has none, so it is
-        // all-false. The gating below is structured so inhibits can plug in
-        // here later without touching the emission logic.
-        let muted = vec![false; n];
-
-        let (_env, outs) = self.eval_chunk(chunk);
+        // `muted` is the combined inhibit gate (`_compute_muted`), computed in
+        // `eval_chunk`. Inhibit state advances even during warmup; only event
+        // emission below is warmup-suppressed.
+        let (_env, muted, outs) = self.eval_chunk(chunk);
 
         let mut events: Vec<Event> = Vec::new();
         if suppress_output {
@@ -827,7 +935,57 @@ fn build_compute_call(
 
 fn build_threshold(t: &crate::ir::Threshold, sample_rate_hz: f64) -> CNode {
     let signal = CNode::Stream(bare(&t.signal));
-    match &t.threshold_call {
+    build_threshold_call(&t.threshold_call, signal, sample_rate_hz)
+}
+
+/// Compile one `inhibit` block: a metric node, a threshold node (REUSES
+/// `build_threshold_call`, feeding the metric as the threshold's tracked
+/// signal — exactly as the Python evaluator does), and an action gate.
+/// `flag` → `gate = None` (telemetry-only). `action_release_ms` defaults to
+/// 200 ms when null (matching `_build_inhibit_actions`).
+fn build_inhibit(ih: &crate::ir::Inhibit, sample_rate_hz: f64) -> CompiledInhibit {
+    let metric = build_node(&ih.metric, sample_rate_hz);
+    let threshold = build_inhibit_threshold(&ih.threshold);
+    let release_ms = ih.action_release_ms.unwrap_or(200.0);
+    let gate = match ih.action_kind.as_str() {
+        "mute" | "freeze" => Some(InhibitGate::new(release_ms, sample_rate_hz)),
+        "flag" => None,
+        other => panic!("PoC: unsupported inhibit action {other:?}"),
+    };
+    CompiledInhibit { metric, threshold, gate }
+}
+
+/// Parse an inhibit's threshold-constructor call (`absolute(...)` /
+/// `percentile(...)`) into an `InhibitThreshold` fed by the metric chunk.
+/// Shares the exact constructor parsing (`absolute` value, `percentile`
+/// target_pct + baked window_samples) with `build_threshold_call`.
+fn build_inhibit_threshold(call: &Expr) -> InhibitThreshold {
+    match call {
+        Expr::Call { callee, args, coeffs } if callee == "percentile" => {
+            let target_pct = num_named(args, "target_pct")
+                .expect("percentile threshold needs a literal target_pct (control-ref is Phase-B)");
+            let window_samples = coeffs
+                .as_ref()
+                .and_then(|c| c.window_samples)
+                .expect("percentile: missing baked window_samples");
+            InhibitThreshold::Pct(Percentile::new(target_pct, window_samples))
+        }
+        Expr::Call { callee, args, .. } if callee == "absolute" => {
+            let v = absolute_value(args);
+            InhibitThreshold::Const(v)
+        }
+        _ => panic!("PoC: unsupported inhibit threshold constructor"),
+    }
+}
+
+/// Compile a threshold-constructor call (`absolute(...)` / `percentile(...)`)
+/// over a pre-built `signal` node, for threshold blocks (signal = the tracked
+/// stream). Inhibits parse the same constructors via `build_inhibit_threshold`
+/// (sharing `absolute_value` + the same percentile fields) but bind the
+/// percentile tracker to the metric chunk rather than re-evaluating a signal
+/// node, so a stateful metric pipeline is not double-advanced.
+fn build_threshold_call(call: &Expr, signal: CNode, sample_rate_hz: f64) -> CNode {
+    match call {
         Expr::Call { callee, args, coeffs } if callee == "percentile" => {
             let target_pct = num_named(args, "target_pct")
                 .expect("percentile threshold needs a literal target_pct (control-ref is Phase-B)");
@@ -839,17 +997,21 @@ fn build_threshold(t: &crate::ir::Threshold, sample_rate_hz: f64) -> CNode {
             CNode::Pct(Percentile::new(target_pct, window_samples), Box::new(signal))
         }
         Expr::Call { callee, args, .. } if callee == "absolute" => {
-            // absolute(value) — constant threshold.
-            let v = num_named(args, "value")
-                .or_else(|| match positional(args, 0) {
-                    Expr::Number { value } => Some(*value),
-                    _ => None,
-                })
-                .expect("absolute: numeric value");
-            CNode::Const(v)
+            CNode::Const(absolute_value(args))
         }
         _ => panic!("PoC: unsupported threshold constructor"),
     }
+}
+
+/// `absolute(value)` — read the constant threshold value (named `value:` or
+/// the first positional number). Shared by threshold blocks and inhibits.
+fn absolute_value(args: &[crate::ir::Arg]) -> f64 {
+    num_named(args, "value")
+        .or_else(|| match positional(args, 0) {
+            Expr::Number { value } => Some(*value),
+            _ => None,
+        })
+        .expect("absolute: numeric value")
 }
 
 fn build_dwell(event_expr: &Expr, sample_rate_hz: f64) -> (Dwell, CNode) {
