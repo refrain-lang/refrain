@@ -22,6 +22,9 @@ from refrain.resolver import resolve
 from refrain.sources import SyntheticSource
 from refrain.synthetic import SignalGenerator, SMRBurst
 
+# conftest.py provides the ``backend`` fixture and RUST_BACKEND_ACTIVE flag.
+from tests.conftest import RUST_BACKEND_ACTIVE
+
 
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
@@ -46,30 +49,37 @@ def smr_bb_ir():
 # ---------------------------------------------------------------------------
 
 
-def test_live_constructor_skips_source(smr_bb_ir):
+def test_live_constructor_skips_source(smr_bb_ir, backend):
     ev = Evaluator.live(
         smr_bb_ir, sample_rate_hz=250, channel_names=("Cz", "F3", "F4", "Pz"),
+        backend=backend,
     )
     assert ev.source is None
     assert ev.sample_rate_hz == 250.0
     assert ev.channel_names == ("Cz", "F3", "F4", "Pz")
 
 
-def test_live_constructor_state_is_ready(smr_bb_ir):
+def test_live_constructor_state_is_ready(smr_bb_ir, backend):
     ev = Evaluator.live(
         smr_bb_ir, sample_rate_hz=250, channel_names=("Cz", "F3", "F4", "Pz"),
+        backend=backend,
     )
     assert ev.state == "ready"
 
 
-def test_run_without_source_raises(smr_bb_ir):
+def test_run_without_source_raises(smr_bb_ir, backend):
     ev = Evaluator.live(
         smr_bb_ir, sample_rate_hz=250, channel_names=("Cz", "F3", "F4", "Pz"),
+        backend=backend,
     )
     with pytest.raises(RuntimeError, match="requires a Source"):
         list(ev.run())
 
 
+@pytest.mark.skipif(
+    RUST_BACKEND_ACTIVE,
+    reason="pull-mode constructor arg-validation; not a live/rust path",
+)
 def test_evaluator_rejects_both_source_and_explicit_args(smr_bb_ir):
     gen = SignalGenerator(sample_rate_hz=250, channels=("Cz",))
     src = SyntheticSource(gen, duration_s=1.0)
@@ -77,6 +87,10 @@ def test_evaluator_rejects_both_source_and_explicit_args(smr_bb_ir):
         Evaluator(smr_bb_ir, src, sample_rate_hz=250, channel_names=("Cz",))
 
 
+@pytest.mark.skipif(
+    RUST_BACKEND_ACTIVE,
+    reason="constructor arg-validation; not a live/rust path",
+)
 def test_push_mode_requires_both_rate_and_channels(smr_bb_ir):
     with pytest.raises(ValueError, match="both"):
         Evaluator(smr_bb_ir, sample_rate_hz=250)
@@ -87,6 +101,10 @@ def test_push_mode_requires_both_rate_and_channels(smr_bb_ir):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    RUST_BACKEND_ACTIVE,
+    reason="asserts on Python-only `_warmup_samples` internal",
+)
 def test_start_enters_warmup_when_protocol_has_muted_phase(smr_bb_ir):
     ev = Evaluator.live(
         smr_bb_ir, sample_rate_hz=250, channel_names=("Cz", "F3", "F4", "Pz"),
@@ -98,16 +116,17 @@ def test_start_enters_warmup_when_protocol_has_muted_phase(smr_bb_ir):
     assert ev.warmup_remaining_s == pytest.approx(90.0, abs=0.01)
 
 
-def test_start_skip_warmup_jumps_to_run(smr_bb_ir):
+def test_start_skip_warmup_jumps_to_run(smr_bb_ir, backend):
     ev = Evaluator.live(
         smr_bb_ir, sample_rate_hz=250, channel_names=("Cz", "F3", "F4", "Pz"),
+        backend=backend,
     )
     ev.start(skip_warmup=True)
     assert ev.state == "run"
     assert ev.warmup_remaining_s == 0.0
 
 
-def test_protocol_with_no_warmup_phase_starts_in_run():
+def test_protocol_with_no_warmup_phase_starts_in_run(backend):
     src = '''
         protocol "no_warmup" {
           meta { version = "1.0" }
@@ -118,23 +137,25 @@ def test_protocol_with_no_warmup_phase_starts_in_run():
         }
     '''
     ir = resolve(parse(src))
-    ev = Evaluator.live(ir, sample_rate_hz=250, channel_names=("T3", "T4"))
+    ev = Evaluator.live(ir, sample_rate_hz=250, channel_names=("T3", "T4"), backend=backend)
     ev.start()
     assert ev.state == "run"
 
 
-def test_start_twice_raises(smr_bb_ir):
+def test_start_twice_raises(smr_bb_ir, backend):
     ev = Evaluator.live(
         smr_bb_ir, sample_rate_hz=250, channel_names=("Cz", "F3", "F4", "Pz"),
+        backend=backend,
     )
     ev.start(skip_warmup=True)
     with pytest.raises(RuntimeError, match="state 'run'"):
         ev.start()
 
 
-def test_stop_blocks_further_step_chunk(smr_bb_ir):
+def test_stop_blocks_further_step_chunk(smr_bb_ir, backend):
     ev = Evaluator.live(
         smr_bb_ir, sample_rate_hz=250, channel_names=("Cz", "F3", "F4", "Pz"),
+        backend=backend,
     )
     ev.start(skip_warmup=True)
     ev.stop()
@@ -148,7 +169,7 @@ def test_stop_blocks_further_step_chunk(smr_bb_ir):
 # ---------------------------------------------------------------------------
 
 
-def test_push_mode_matches_pull_mode_event_for_event():
+def test_push_mode_matches_pull_mode_event_for_event(backend):
     src_text = '''
         protocol "P" {
           input "raw" { montage = bipolar(plus: "T3", minus: "T4") }
@@ -175,7 +196,7 @@ def test_push_mode_matches_pull_mode_event_for_event():
     pull_src = SyntheticSource(gen(), duration_s=4.0)
     pull_events = list(eval_protocol(ir, pull_src, chunk_size=64, skip_warmup=True))
 
-    push_ev = Evaluator.live(ir, sample_rate_hz=250, channel_names=("T3", "T4"))
+    push_ev = Evaluator.live(ir, sample_rate_hz=250, channel_names=("T3", "T4"), backend=backend)
     push_ev.start(skip_warmup=True)
     push_gen = gen()
     push_events: list = []
@@ -196,11 +217,12 @@ def test_push_mode_matches_pull_mode_event_for_event():
             assert a.value == pytest.approx(b.value)
 
 
-def test_step_chunk_accepts_variable_chunk_sizes(smr_bb_ir):
+def test_step_chunk_accepts_variable_chunk_sizes(smr_bb_ir, backend):
     """Live amps deliver chunks at whatever cadence they choose; the
     evaluator must accept arbitrary sizes without state corruption."""
     ev = Evaluator.live(
         smr_bb_ir, sample_rate_hz=250, channel_names=("Cz", "F3", "F4", "Pz"),
+        backend=backend,
     )
     ev.start(skip_warmup=True)
     gen = SignalGenerator(sample_rate_hz=250, channels=("Cz", "F3", "F4", "Pz"), seed=1)
@@ -210,9 +232,10 @@ def test_step_chunk_accepts_variable_chunk_sizes(smr_bb_ir):
         assert all(0.0 <= (e.value or 0.0) <= 1.0 for e in events if e.kind == "value")
 
 
-def test_step_chunk_rejects_wrong_channel_count(smr_bb_ir):
+def test_step_chunk_rejects_wrong_channel_count(smr_bb_ir, backend):
     ev = Evaluator.live(
         smr_bb_ir, sample_rate_hz=250, channel_names=("Cz", "F3", "F4", "Pz"),
+        backend=backend,
     )
     ev.start(skip_warmup=True)
     # Wrong column count (3 instead of 4) should error clearly.
@@ -225,11 +248,12 @@ def test_step_chunk_rejects_wrong_channel_count(smr_bb_ir):
 # ---------------------------------------------------------------------------
 
 
-def test_output_suppressed_during_warmup(smr_bb_ir):
+def test_output_suppressed_during_warmup(smr_bb_ir, backend):
     """While the evaluator is in `warmup` state, no Events should be
     emitted (filter state still updates internally)."""
     ev = Evaluator.live(
         smr_bb_ir, sample_rate_hz=250, channel_names=("Cz", "F3", "F4", "Pz"),
+        backend=backend,
     )
     ev.start()  # default: enters warmup
     assert ev.state == "warmup"
@@ -246,6 +270,10 @@ def test_output_suppressed_during_warmup(smr_bb_ir):
     assert all_events == [], f"warmup should suppress all output; got {len(all_events)} events"
 
 
+@pytest.mark.skipif(
+    RUST_BACKEND_ACTIVE,
+    reason="uses Python-only `_warmup_samples` internal to size the chunk",
+)
 def test_warmup_transitions_to_run_after_window(smr_bb_ir):
     """Once enough samples have been pushed to satisfy the warmup
     window, the next step_chunk transitions to `run` and starts
@@ -267,14 +295,19 @@ def test_warmup_transitions_to_run_after_window(smr_bb_ir):
 # ---------------------------------------------------------------------------
 
 
-def test_set_control_unknown_name_raises(smr_bb_ir):
+def test_set_control_unknown_name_raises(smr_bb_ir, backend):
     ev = Evaluator.live(
         smr_bb_ir, sample_rate_hz=250, channel_names=("Cz", "F3", "F4", "Pz"),
+        backend=backend,
     )
     with pytest.raises(KeyError, match="no control named"):
         ev.set_control("nonexistent", 0.5)
 
 
+@pytest.mark.skipif(
+    RUST_BACKEND_ACTIVE,
+    reason="asserts on Python-only `_controls` internal (rust forwards set_control to the core, not the Python dict)",
+)
 def test_set_control_updates_dict(smr_bb_ir):
     ev = Evaluator.live(
         smr_bb_ir, sample_rate_hz=250, channel_names=("Cz", "F3", "F4", "Pz"),
@@ -284,6 +317,10 @@ def test_set_control_updates_dict(smr_bb_ir):
     assert ev._controls["control/smr_target_pct"] == 55.0
 
 
+@pytest.mark.skipif(
+    RUST_BACKEND_ACTIVE,
+    reason="inspects Python-only `_impls` / PercentileImpl internals",
+)
 def test_set_control_propagates_to_percentile_impls(smr_bb_ir):
     """The BrainBit SMR protocol wires smr_target_pct into the smr_t
     threshold's percentile. set_control should forward the new value

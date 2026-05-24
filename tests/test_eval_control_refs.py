@@ -23,6 +23,14 @@ from refrain.resolver import resolve
 from refrain.sources import SyntheticSource
 from refrain.synthetic import SignalGenerator
 
+from tests.conftest import RUST_BACKEND_ACTIVE
+
+# The whole file is pull-mode or inspects Python-only internals; skip under rust run.
+pytestmark = pytest.mark.skipif(
+    RUST_BACKEND_ACTIVE,
+    reason="control-ref tests are pull-mode / Python-internal",
+)
+
 
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
