@@ -113,6 +113,10 @@ fn welch_msc_matches_scipy_on_fixture() {
 
 ## M3 — PyO3 desktop-first: Python delegates to the Rust core (SHIP #1)
 
+**M3a DONE (commit d0592b6):** the streams→`list[Event]` stage + warmup lifecycle are ported. Rust `step_chunk_events` reproduces the Python evaluator's feedback events exactly — micro_05 128/128 (max value diff 8.8e-15), realistic_smr 256/256 (exact), timestamps exact. PyO3 exposes `start`/`stop`/`step_chunk_events` + an `Event` pyclass; the streams `step_chunk` API is unchanged (shared private `eval_chunk()`, no duplicate interpreter). 10/10 Rust tests, 0 warnings, drift gate PASS. **The Rust core now has the full feedback pipeline (streams + events).** Remaining M3b/c below.
+
+**M3b/c REMAINING:** `set_control` + `last_taps` parity over PyO3; then `Evaluator.live(..., backend="rust")` delegation + run the full Python suite through it.
+
 **Why:** ship the lowest-risk target first *and* collapse to one implementation. After this, `refrain.Evaluator` is a thin wrapper over `refrain-core`; the pure-Python evaluator becomes the reference/spec oracle used only by the equivalence gate.
 
 **Files:** `refrain-core/` (PyO3 surface: `RustEvaluator` gains `set_control`, `last_taps`, lifecycle), `src/refrain/eval_.py` (optional `backend="rust"` path), `pyproject.toml` (maturin build), CI wheel-build job.
