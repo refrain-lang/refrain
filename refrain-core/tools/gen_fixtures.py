@@ -37,17 +37,21 @@ WARMUP_SAMPLES = 512
 SEED = 0
 
 
-def _reference(ir, signal: np.ndarray) -> tuple[dict[str, np.ndarray], list[dict]]:
-    """Drive the canonical Python evaluator once over `signal`, capturing both
-    the reference output *streams* (ground truth for `equivalence.rs`) and the
-    `list[Event]` returned per chunk (ground truth for `events.rs`). One run,
-    same seeded signal — no duplicated signal generation or evaluator setup."""
+def _reference(
+    ir, signal: np.ndarray
+) -> tuple[dict[str, np.ndarray], list[dict], list[dict]]:
+    """Drive the canonical Python evaluator once over `signal`, capturing the
+    reference output *streams* (ground truth for `equivalence.rs`), the
+    `list[Event]` returned per chunk (ground truth for `events.rs`), and the
+    per-chunk `last_taps()` snapshot (ground truth for `taps.rs`). One run,
+    same seeded signal/evaluator — no duplicated signal generation or setup."""
     ev = Evaluator.live(
         ir, sample_rate_hz=SAMPLE_RATE_HZ, channel_names=CHANNELS, record_streams=True
     )
     ev.start(skip_warmup=True)
 
     events: list[dict] = []
+    taps: list[dict] = []
 
     class _Adapter:
         def step(self, raw_chunk):
@@ -60,15 +64,23 @@ def _reference(ir, signal: np.ndarray) -> tuple[dict[str, np.ndarray], list[dict
                         "value": e.value,
                     }
                 )
+            # Tap snapshot for this chunk, cast to float so bool → 0.0/1.0 —
+            # the single-map form the Rust `last_taps()` golden-vector uses.
+            taps.append({k: float(v) for k, v in ev.last_taps().items()})
             return {k: np.asarray(v).copy() for k, v in ev.last_streams().items()}
 
     streams = ChunkedRunner(chunk_size=CHUNK_SIZE).run(_Adapter(), signal).streams
-    return streams, events
+    return streams, events, taps
 
 
 # Protocols whose output channels actually emit events (the others are
 # pure-DSP micro corpora with no `output` bindings to compare).
 EVENT_BEARING = frozenset({"micro_05_reward", "realistic_smr", "micro_09_inhibit"})
+
+# Tap-rich protocols for the `taps.rs` golden-vector compare. `realistic_smr`
+# exercises input/derive/threshold/reward/condition/output taps;
+# `micro_09_inhibit` adds inhibit/<name> and the combined `muted` gate.
+TAP_BEARING = frozenset({"realistic_smr", "micro_09_inhibit"})
 
 
 def generate(stem: str) -> None:
@@ -81,7 +93,7 @@ def generate(stem: str) -> None:
 
     rng = np.random.default_rng(SEED)
     signal = rng.standard_normal((N_SAMPLES, len(CHANNELS))) * 10.0
-    streams, events = _reference(ir, signal)
+    streams, events, taps = _reference(ir, signal)
 
     io = {
         "sample_rate_hz": SAMPLE_RATE_HZ,
@@ -109,6 +121,13 @@ def generate(stem: str) -> None:
         )
     else:
         print(f"{stem}: ir+io written; reference streams = {sorted(streams)}")
+
+    # Tap-rich protocols also capture the per-chunk `last_taps()` snapshots the
+    # Rust core must reproduce (taps.rs): a list of {key: float} per chunk.
+    if stem in TAP_BEARING:
+        (FIX / f"{stem}.taps.json").write_text(json.dumps(taps))
+        keyset = sorted({k for chunk in taps for k in chunk})
+        print(f"{stem}: taps written; {len(taps)} chunks; tap keys = {keyset}")
 
 
 if __name__ == "__main__":

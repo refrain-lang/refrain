@@ -353,11 +353,12 @@ impl InhibitThreshold {
     }
 }
 
-/// One compiled inhibit: its `metric` expression node, the threshold derived
-/// from the metric chunk, and the output-gate state. `flag` inhibits set
-/// `gate = None` so they contribute nothing to `muted` (telemetry-only,
-/// matching `FlagAction`).
+/// One compiled inhibit: its canonical name (tap key, e.g. `inhibit/emg`), its
+/// `metric` expression node, the threshold derived from the metric chunk, and
+/// the output-gate state. `flag` inhibits set `gate = None` so they contribute
+/// nothing to `muted` (telemetry-only, matching `FlagAction`).
 struct CompiledInhibit {
+    canonical_name: String,
     metric: CNode,
     threshold: InhibitThreshold,
     gate: Option<InhibitGate>,
@@ -371,12 +372,43 @@ pub struct Evaluator {
     thresholds: Vec<(String, CNode)>,
     inhibits: Vec<CompiledInhibit>,
     reward_continuous: Option<CNode>,
-    reward_event: Option<(Dwell, CNode)>,
+    reward_event: Option<RewardEvent>,
     outputs: Vec<(String, CNode)>,
+    /// Canonical tap names per stream entity, parallel to the env's bare names.
+    /// `input/<name>`, `derive/<name>`, `threshold/<name>` — the prefixed keys
+    /// `last_taps` exposes (the env / streams maps use the bare names).
+    input_canon: Vec<String>,
+    derive_canon: Vec<String>,
+    threshold_canon: Vec<String>,
     sample_rate_hz: f64,
     state: State,
     samples_pushed: usize,
     warmup_samples: usize,
+    /// Clinician-observation snapshot from the most recent chunk, mirroring
+    /// `Evaluator.last_taps()` / `_capture_taps`. Booleans are stored as
+    /// 0.0/1.0 in this single map for the golden-vector compare. Empty before
+    /// the first chunk; repopulated by `eval_chunk` in every lifecycle state.
+    last_taps: BTreeMap<String, f64>,
+}
+
+/// Compiled reward-event source. Mirrors `_eval_reward_event`: a `dwell`
+/// machine fed a recombined condition, plus the per-sub-condition nodes the
+/// `all_of` / `any_of` expands to (single-condition dwells keep one element,
+/// exposed as `reward/condition[0]`). `combine` says how the sub-conditions
+/// recombine into the dwell's input.
+struct RewardEvent {
+    dwell: Dwell,
+    sub_conditions: Vec<CNode>,
+    combine: SubCombine,
+}
+
+/// How `RewardEvent` recombines its sub-conditions into the dwell's input
+/// (matching `all_of` → AND, `any_of` → OR; a lone condition is `All` over the
+/// single element, semantically identical).
+#[derive(Clone, Copy)]
+enum SubCombine {
+    All,
+    Any,
 }
 
 impl Evaluator {
@@ -397,7 +429,7 @@ impl Evaluator {
         // (defensive) is appended in map order.
         let derives = order_derives(p, sample_rate_hz);
 
-        let thresholds = p
+        let thresholds: Vec<(String, CNode)> = p
             .thresholds
             .iter()
             .map(|(name, t)| (name.clone(), build_threshold(t, sample_rate_hz)))
@@ -417,7 +449,7 @@ impl Evaluator {
         let (mut reward_continuous, mut reward_event) = (None, None);
         if let Some(r) = &p.reward {
             reward_continuous = r.continuous.as_ref().map(|e| build_node(e, sample_rate_hz));
-            reward_event = r.event.as_ref().map(|e| build_dwell(e, sample_rate_hz));
+            reward_event = r.event.as_ref().map(|e| build_reward_event(e, sample_rate_hz));
         }
 
         let outputs = p
@@ -425,6 +457,16 @@ impl Evaluator {
             .iter()
             .map(|(ch, e)| (ch.clone(), build_node(e, sample_rate_hz)))
             .collect();
+
+        // Canonical tap names, parallel to each entity's compiled list above
+        // (same iteration order — BTreeMap / topo for derives). These are the
+        // prefixed keys `last_taps` exposes; the env uses the bare names.
+        let input_canon: Vec<String> =
+            inputs.iter().map(|(n, _)| p.inputs[n].canonical_name.clone()).collect();
+        let derive_canon: Vec<String> =
+            derives.iter().map(|(n, _)| p.derives[n].canonical_name.clone()).collect();
+        let threshold_canon: Vec<String> =
+            thresholds.iter().map(|(n, _)| p.thresholds[n].canonical_name.clone()).collect();
 
         let warmup_samples = compute_warmup_samples(p, sample_rate_hz);
 
@@ -436,10 +478,14 @@ impl Evaluator {
             reward_continuous,
             reward_event,
             outputs,
+            input_canon,
+            derive_canon,
+            threshold_canon,
             sample_rate_hz,
             state: State::Ready,
             samples_pushed: 0,
             warmup_samples,
+            last_taps: BTreeMap::new(),
         }
     }
 
@@ -476,6 +522,12 @@ impl Evaluator {
     ) -> (HashMap<String, Val>, Vec<bool>, Vec<(String, Val)>) {
         let n = chunk.len();
         let mut env: HashMap<String, Val> = HashMap::new();
+
+        // Taps snapshot for this chunk (mirrors `_capture_taps`). Built
+        // alongside the per-chunk computation — booleans stored as 0.0/1.0.
+        // Populated identically in warmup and run (NOT warmup-suppressed).
+        let mut taps: BTreeMap<String, f64> = BTreeMap::new();
+
         for (name, montage) in self.inputs.iter() {
             env.insert(name.clone(), Val::F(montage.run(chunk)));
         }
@@ -489,6 +541,17 @@ impl Evaluator {
             env.insert(name.clone(), v);
         }
 
+        // input/derive/threshold taps — last sample of each canonical stream.
+        for (i, (name, _)) in self.inputs.iter().enumerate() {
+            last_f(&mut taps, &self.input_canon[i], env.get(name));
+        }
+        for (i, (name, _)) in self.derives.iter().enumerate() {
+            last_f(&mut taps, &self.derive_canon[i], env.get(name));
+        }
+        for (i, (name, _)) in self.thresholds.iter().enumerate() {
+            last_f(&mut taps, &self.threshold_canon[i], env.get(name));
+        }
+
         // Inhibits → combined `muted` gate (`_compute_muted`). Evaluated every
         // chunk regardless of warmup so gate/threshold state stays current
         // (only event *emission* is warmup-suppressed). Empty → all-false.
@@ -498,6 +561,10 @@ impl Evaluator {
             let thresh = ih.threshold.eval(&metric);
             let active: Vec<bool> =
                 metric.iter().zip(&thresh).map(|(m, t)| m > t).collect();
+            // `inhibit/<name>` tap: last-sample active boolean.
+            if let Some(&last) = active.last() {
+                taps.insert(ih.canonical_name.clone(), bool_f(last));
+            }
             // flag actions (`gate == None`) contribute nothing to `muted`.
             if let Some(gate) = ih.gate.as_mut() {
                 let g = gate.gate(&active);
@@ -506,14 +573,41 @@ impl Evaluator {
                 }
             }
         }
+        // `muted` tap: combined gate last sample; false when there are no
+        // inhibits (the all-false vector's last sample).
+        taps.insert("muted".to_string(), bool_f(muted.last().copied().unwrap_or(false)));
 
         if let Some(node) = self.reward_continuous.as_mut() {
             let v = node.eval(&env, n);
+            // `reward/continuous` tap: pre-gating last sample.
+            last_f(&mut taps, "reward/continuous", Some(&v));
             env.insert("reward.continuous".to_string(), v);
         }
-        if let Some((dwell, cond)) = self.reward_event.as_mut() {
-            let c = cond.eval(&env, n);
-            let (events, holds) = dwell.step(c.as_b());
+        if let Some(re) = self.reward_event.as_mut() {
+            // Evaluate each sub-condition (the `all_of`/`any_of` elements, or a
+            // single condition exposed as `[0]`) and tap its last sample, then
+            // recombine into the dwell's input — identical to `_eval_reward_event`.
+            let mut sub_streams: Vec<Vec<bool>> = Vec::with_capacity(re.sub_conditions.len());
+            for (i, sub) in re.sub_conditions.iter_mut().enumerate() {
+                let s = sub.eval(&env, n).as_b().to_vec();
+                if let Some(&last) = s.last() {
+                    taps.insert(format!("reward/condition[{i}]"), bool_f(last));
+                }
+                sub_streams.push(s);
+            }
+            let condition: Vec<bool> = (0..n)
+                .map(|i| match re.combine {
+                    SubCombine::All => sub_streams.iter().all(|s| s[i]),
+                    SubCombine::Any => sub_streams.iter().any(|s| s[i]),
+                })
+                .collect();
+            let (events, holds) = re.dwell.step(&condition);
+            // `reward/event`: did the dwell fire ANY sample this chunk.
+            taps.insert("reward/event".to_string(), bool_f(events.iter().any(|&b| b)));
+            // `reward/event.holds`: last sample.
+            if let Some(&last) = holds.last() {
+                taps.insert("reward/event.holds".to_string(), bool_f(last));
+            }
             env.insert("reward.event".to_string(), Val::B(events));
             env.insert("reward.event.holds".to_string(), Val::B(holds));
         }
@@ -523,7 +617,40 @@ impl Evaluator {
             let v = node.eval(&env, n);
             outs.push((ch.clone(), v));
         }
+
+        // output taps — post-gate/clamp. Event channels: `any fired this chunk`
+        // (after the `& ~muted` gate). Value channels: last sample of the
+        // clamped/muted value. Mirrors `_capture_taps`'s per-channel block.
+        for (ch, v) in outs.iter() {
+            let key = format!("output/{ch}");
+            match v {
+                Val::B(b) => {
+                    if !b.is_empty() {
+                        let any = b.iter().enumerate().any(|(i, &x)| x && !muted[i]);
+                        taps.insert(key, bool_f(any));
+                    }
+                }
+                Val::F(f) => {
+                    if let Some((i, &last)) = f.iter().enumerate().last() {
+                        let gated = if muted[i] { 0.0 } else { last.clamp(0.0, 1.0) };
+                        taps.insert(key, gated);
+                    }
+                }
+            }
+        }
+
+        self.last_taps = taps;
         (env, muted, outs)
+    }
+
+    /// Clinician-observation snapshot from the most recent `step_chunk` /
+    /// `step_chunk_events`, mirroring `Evaluator.last_taps()`. Keys are the
+    /// canonical prefixed names (`input/raw`, `derive/<name>`,
+    /// `threshold/<name>`, `inhibit/<name>`, `muted`, `reward/...`,
+    /// `output/<channel>`); booleans are represented as 0.0/1.0. Empty before
+    /// the first chunk. Returns a copy so callers may persist it.
+    pub fn last_taps(&self) -> BTreeMap<String, f64> {
+        self.last_taps.clone()
     }
 
     /// Process one chunk and return `{stream: values}`, matching the Python
@@ -683,6 +810,35 @@ fn order_derives(p: &Protocol, sample_rate_hz: f64) -> Vec<(String, CNode)> {
 
 fn bare(canonical: &str) -> String {
     canonical.split_once('/').map(|(_, n)| n).unwrap_or(canonical).to_string()
+}
+
+/// bool → tap float (`0.0`/`1.0`), matching the Python taps' `float(bool)`.
+fn bool_f(b: bool) -> f64 {
+    if b {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+/// Insert the last sample of `val` (as f64) under `key`, mirroring
+/// `_capture_taps`'s `if chunk is not None and chunk.size`. No-op when the
+/// stream is absent or empty.
+fn last_f(taps: &mut BTreeMap<String, f64>, key: &str, val: Option<&Val>) {
+    if let Some(v) = val {
+        match v {
+            Val::F(f) => {
+                if let Some(&last) = f.last() {
+                    taps.insert(key.to_string(), last);
+                }
+            }
+            Val::B(b) => {
+                if let Some(&last) = b.last() {
+                    taps.insert(key.to_string(), bool_f(last));
+                }
+            }
+        }
+    }
 }
 
 fn is_dsp(callee: &str) -> bool {
@@ -952,7 +1108,7 @@ fn build_inhibit(ih: &crate::ir::Inhibit, sample_rate_hz: f64) -> CompiledInhibi
         "flag" => None,
         other => panic!("PoC: unsupported inhibit action {other:?}"),
     };
-    CompiledInhibit { metric, threshold, gate }
+    CompiledInhibit { canonical_name: ih.canonical_name.clone(), metric, threshold, gate }
 }
 
 /// Parse an inhibit's threshold-constructor call (`absolute(...)` /
@@ -1014,20 +1170,43 @@ fn absolute_value(args: &[crate::ir::Arg]) -> f64 {
         .expect("absolute: numeric value")
 }
 
-fn build_dwell(event_expr: &Expr, sample_rate_hz: f64) -> (Dwell, CNode) {
-    match event_expr {
-        Expr::Call { callee, args, coeffs } if callee == "dwell" => {
-            let dwell_samples = coeffs
-                .as_ref()
-                .and_then(|c| c.dwell_samples)
-                .expect("dwell: missing baked dwell_samples");
-            let cond = args
-                .iter()
-                .find(|a| a.name.as_deref() == Some("condition"))
-                .map(|a| build_node(&a.value, sample_rate_hz))
-                .expect("dwell needs a `condition` arg");
-            (Dwell::new(dwell_samples), cond)
+/// Compile `reward.event` (a `dwell(...)` call) into a `RewardEvent`. Mirrors
+/// `_eval_reward_event`: the dwell's `condition` is expanded into its `all_of`
+/// / `any_of` sub-conditions (each exposed as a `reward/condition[i]` tap and
+/// recombined for the dwell input); a lone condition becomes a single-element
+/// `All` (exposed as `reward/condition[0]`). REUSES `build_node` for the
+/// sub-condition CNodes — same compiler path as every other expression.
+fn build_reward_event(event_expr: &Expr, sample_rate_hz: f64) -> RewardEvent {
+    let Expr::Call { callee, args, coeffs } = event_expr else {
+        panic!("reward.event must be a dwell(...) call");
+    };
+    assert_eq!(callee, "dwell", "reward.event must be a dwell(...) call");
+    let dwell_samples = coeffs
+        .as_ref()
+        .and_then(|c| c.dwell_samples)
+        .expect("dwell: missing baked dwell_samples");
+    let condition = args
+        .iter()
+        .find(|a| a.name.as_deref() == Some("condition"))
+        .map(|a| &a.value)
+        .expect("dwell needs a `condition` arg");
+
+    // Sub-condition expansion (matches the Python tap API): an `all_of` /
+    // `any_of` over an array exposes each element; otherwise the single
+    // condition is exposed as `reward/condition[0]`.
+    let (sub_conditions, combine) = match condition {
+        Expr::Call { callee, args, .. } if callee == "all_of" || callee == "any_of" => {
+            if let Expr::Array { elements } = positional(args, 0) {
+                let nodes = elements.iter().map(|e| build_node(e, sample_rate_hz)).collect();
+                let combine =
+                    if callee == "all_of" { SubCombine::All } else { SubCombine::Any };
+                (nodes, combine)
+            } else {
+                (vec![build_node(condition, sample_rate_hz)], SubCombine::All)
+            }
         }
-        _ => panic!("reward.event must be a dwell(...) call"),
-    }
+        _ => (vec![build_node(condition, sample_rate_hz)], SubCombine::All),
+    };
+
+    RewardEvent { dwell: Dwell::new(dwell_samples), sub_conditions, combine }
 }

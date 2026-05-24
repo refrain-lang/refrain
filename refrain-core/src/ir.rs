@@ -46,6 +46,8 @@ pub struct Phase {
 
 #[derive(Debug, Deserialize)]
 pub struct Threshold {
+    /// Canonical prefixed name (e.g. `threshold/smr_t`) — used as the tap key.
+    pub canonical_name: String,
     pub signal: String, // canonical name of the source stream
     pub threshold_call: Expr,
 }
@@ -57,6 +59,8 @@ pub struct Threshold {
 /// `action_release_ms` is the hangover (null → 200 ms default).
 #[derive(Debug, Deserialize)]
 pub struct Inhibit {
+    /// Canonical prefixed name (e.g. `inhibit/emg`) — used as the tap key.
+    pub canonical_name: String,
     pub metric: Expr,
     pub threshold: Expr,
     pub action_kind: String,
