@@ -174,6 +174,53 @@ The Kotlin bindings use **JNA**, so the AAR's Gradle module must depend on
 
 ---
 
+## CI
+
+The three jobs in `.github/workflows/mobile.yml` automate the steps above:
+
+### `bindings-verify` (ubuntu-latest — Mac-free gate)
+
+Runs on every push/PR. Cross-compiles the staticlib for `aarch64-apple-ios`
+and `aarch64-linux-android`, regenerates Swift + Kotlin bindings into a temp
+dir, and diffs them against the committed files in `bindings/swift` and
+`bindings/kotlin`.  Fails (exit non-zero) if the committed bindings are stale.
+
+The script that drives this is `refrain-core/tools/check_bindings.py`
+(modelled after `check_equivalence.py`).  It can be validated on any Linux or
+macOS host with the two cross-compile targets installed:
+
+```sh
+. "$HOME/.cargo/env"
+rustup target add aarch64-apple-ios aarch64-linux-android
+PYTHONPATH="$PWD" python refrain-core/tools/check_bindings.py
+```
+
+### `ios-xcframework` (self-hosted macOS runner — UNVALIDATED in CI)
+
+**Requires a self-hosted macOS runner with Xcode.**  Adjust the
+`runs-on: [self-hosted, macOS]` labels in `mobile.yml` to match the Mac mini
+runner labels on the farm before enabling this job.
+
+Builds device (`aarch64-apple-ios`) and simulator (`aarch64-apple-ios-sim`)
+static libs, then assembles them with the generated header + module map into
+`RefrainCore.xcframework` via `xcodebuild -create-xcframework`.  Uploads the
+framework as a GitHub Actions artifact.
+
+### `android-aar` (ubuntu-latest — UNVALIDATED in CI)
+
+**Requires the Android NDK and `cargo-ndk` on the runner.**  Neither is
+assumed present on the CI farm — provision them before enabling this job.
+Uses `nttld/setup-ndk@v1` (NDK r27c) and `cargo ndk` to build JNI `.so`
+files for `arm64-v8a`, `armeabi-v7a`, and `x86_64`.
+
+The job currently uploads the per-ABI `.so` files and the generated Kotlin
+source as a build artifact.  Full Gradle AAR assembly (see
+"Android — AAR" section above) is not yet wired in CI because no Android
+Gradle module exists in this repo yet.  When that module is added, extend
+the job with `./gradlew :refrain-core:assembleRelease` and upload the `.aar`.
+
+---
+
 ## What ran here vs. deferred to CI
 
 | Step | Where |
