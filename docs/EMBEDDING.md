@@ -170,6 +170,148 @@ delay-line state — SPEC §7.7's warm-restart — land in Phase 0e-c.
 
 ---
 
+## Research mode (CRED-nf-grade allocation concealment)
+
+For research studies that need blinded comparison of a real protocol
+against one or more sham conditions, Refrain can take ownership of the
+randomization, signal substitution, and cryptographic concealment. See
+SPEC §7.9 for the language-level contract and `docs/RESEARCH-MODE.md`
+for the full threat model.
+
+The host has two integration paths:
+
+### Simple: host-owned sham via `chunk_transformer`
+
+Pass any `ChunkTransformer` to `Evaluator.live(...)` and Refrain pipes
+every chunk through it before the eval pipeline sees the data. The
+patient experiences whatever the transformer emits; tap values and
+output events all reflect the transformed signal.
+
+```python
+from refrain.research import TimeShiftedSelf
+
+evaluator = Evaluator.live(
+    ir, sample_rate_hz=250, channel_names=("Cz",),
+    chunk_transformer=TimeShiftedSelf(delay_s=30.0),
+)
+```
+
+The host decides which condition each session is in — fine for
+non-blinded designs (pilot studies, methodology development), not
+adequate for CRED-nf-grade allocation concealment because the host
+*knows* the condition.
+
+### Full: sealed allocation with `ShamConfig`
+
+For CRED-nf-grade designs, hand the randomization decision to Refrain
+and receive an encrypted token the host stores but cannot decrypt.
+
+```python
+from refrain.research import (
+    ShamConfig, TimeShiftedSelf, PhaseScrambled, YokedReplay,
+    open_sealed_token,
+)
+from refrain.sources import FifSource
+
+# Independent statistician generates an X25519 keypair; the public key
+# travels with the study, the private key is held in the unblinding
+# vault.
+PUBLIC_KEY = bytes.fromhex("…")   # 32 bytes
+
+evaluator = Evaluator.live(
+    ir, sample_rate_hz=250, channel_names=("Cz",),
+    sham=ShamConfig(
+        candidates=[
+            TimeShiftedSelf(delay_s=30.0),
+            PhaseScrambled(window_s=10.0),
+            YokedReplay(candidates=[FifSource(p) for p in control_recordings]),
+        ],
+        sham_probability=0.5,        # default; host-overridable
+        seal_to=PUBLIC_KEY,
+    ),
+)
+sealed_token = evaluator.allocation_token   # opaque bytes
+
+# Host stores `sealed_token` alongside the session record. The host
+# never learns which condition was chosen.
+```
+
+After the study completes, the holder of the matching X25519 private
+key (typically an independent statistician using the unblinding vault)
+decrypts each session's token:
+
+```python
+PRIVATE_KEY = bytes.fromhex("…")   # 32 bytes
+
+allocation = open_sealed_token(sealed_token, PRIVATE_KEY)
+# {
+#   "version": 1,
+#   "condition": "sham",
+#   "sham_type": "phase_scrambled",
+#   "sham_params": {"window_s": 10.0},
+#   "candidate_index": 1,
+#   "seed": "0x1f2e3d...",
+#   "timestamp": "2026-05-12T14:23:11Z",
+#   "refrain_version": "0.0.5",
+#   "protocol_id": "smr_cz_brainbit_v1",
+#   "protocol_hash": "sha256:abc123..."
+# }
+```
+
+The plaintext schema is fixed at the language level (SPEC §7.9.3) so
+cross-runtime tokens are interoperable. The `protocol_hash` captures
+the resolved IR — two sessions with the same hash ran the same
+computation regardless of source-file arrangement.
+
+### Whitelist enforcement
+
+The protocol's `meta.sham_strategies` whitelist controls which sham
+types are permitted (SPEC §4.1):
+
+```refrain
+meta {
+  sham_strategies = ["time_shifted_self", "phase_scrambled"]
+}
+```
+
+`ShamConfig` candidates whose type isn't on the list are rejected at
+`Evaluator.live(...)` time with a clear diagnostic. Absent or empty
+list = no sham permitted (strict-by-default).
+
+Static probe before instantiation:
+
+```python
+allowed = ir.meta.fields.get("sham_strategies", [])
+# host UI greys out sham options the protocol doesn't permit
+```
+
+### Constant-time guarantees
+
+By default, Refrain guarantees *within-session* constant time —
+clinicians observing the patient cannot distinguish real from sham via
+timing patterns inside one session.
+
+For threat models that also worry about *cross-session* timing
+attacks, opt into strict mode:
+
+```python
+sham=ShamConfig(..., strict_constant_time=True)
+```
+
+In strict mode the evaluator runs all candidate transformers on every
+chunk and selects the output internally. ~3× CPU cost; chunk-time is
+the slowest candidate's chunk-time regardless of condition. See
+`docs/RESEARCH-MODE.md` for the full threat-model discussion.
+
+### Reproducibility
+
+The sealed token's `seed` field is sufficient to re-run a session
+deterministically given the same recording (or the same yoked-replay
+candidate) and the same protocol. Useful for re-analysis and for
+catching evaluator bugs that affect a specific allocation.
+
+---
+
 ## Introspection: live taps
 
 For host applications that render a clinician observation window —
