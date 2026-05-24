@@ -251,7 +251,10 @@ def _emit_derive(d: IRDerive, ctx: _EmitCtx) -> dict:
         "canonical_name": d.canonical_name,
         "stream_type": _emit_stream_type(d.stream_type),
         "expression": _emit_expr(d.expression, ctx),
-        "upstream": list(d.upstream),
+        # Sorted for a deterministic wire format (upstream derives from a set
+        # upstream; order is irrelevant to evaluation but matters for
+        # reproducible, diff-stable IR-JSON).
+        "upstream": sorted(d.upstream),
     }
 
 
