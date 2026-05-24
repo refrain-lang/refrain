@@ -5,7 +5,7 @@ Usage (from worktree root):
 
 Exits 0 only when BOTH steps succeed:
   1. gen_fixtures.py regenerates all fixtures from the current Python evaluator.
-  2. `cargo test --test equivalence` and `--test ir_deser` pass in refrain-core/.
+  2. `cargo test` (equivalence + events + taps + ir_deser) passes in refrain-core/.
 
 REUSE: calls the existing gen_fixtures.py as a subprocess; does not duplicate
        fixture-generation logic.  The Rust tests already exist in
@@ -55,17 +55,12 @@ def main() -> int:
         extra_env={"PYTHONPATH": str(WORKTREE)},
     )
 
-    # Step 2a — Rust equivalence tests (compare Rust output vs. Python golden vectors).
-    results["cargo_equivalence"] = _run(
-        "Rust equivalence tests (cargo test --test equivalence)",
-        ["cargo", "test", "--test", "equivalence"],
-        cwd=REFRAIN_CORE,
-    )
-
-    # Step 2b — IR deserialisation smoke test.
-    results["cargo_ir_deser"] = _run(
-        "Rust IR deserialisation test (cargo test --test ir_deser)",
-        ["cargo", "test", "--test", "ir_deser"],
+    # Step 2 — all Rust tests against the freshly regenerated fixtures
+    # (equivalence, events, taps, ir_deser). Running the whole suite makes
+    # the gate catch drift in every golden-vector family, not just streams.
+    results["cargo_test"] = _run(
+        "Rust tests vs. regenerated golden vectors (cargo test)",
+        ["cargo", "test"],
         cwd=REFRAIN_CORE,
     )
 
