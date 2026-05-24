@@ -81,7 +81,9 @@ fn welch_msc_matches_scipy_on_fixture() {
 
 **Exit criteria:** Rust `coherence` matches `scipy.signal.coherence` within 1e-6 on a real EEG-like fixture. If parity proves stubborn after ~2 days, fall back: keep coherence Python-only for mobile v1 (most consumer NF protocols are single-band envelope/percentile) and document the gap.
 
-## M1b — Equivalence as a CI gate (kill the drift risk)
+## M1b — Equivalence as a CI gate (kill the drift risk)  ✅ DONE (commit c5b690d)
+
+**Result:** `refrain-core/tools/check_equivalence.py` regenerates fixtures from the current Python evaluator (reusing `gen_fixtures.py`) then runs the Rust equivalence tests — one command, validated locally (PASS). A `rust-equivalence` job was added to `.github/workflows/test.yml` (flagged: needs a real CI run to confirm toolchain wiring). Original plan below.
 
 **Files:**
 - Modify: `.github/workflows/test.yml` (add a `rust-equivalence` job)
@@ -93,7 +95,11 @@ fn welch_msc_matches_scipy_on_fixture() {
 
 **Exit criteria:** a deliberately-introduced 1-sample discrepancy in either implementation turns CI red.
 
-## M2 — Complete core parity (→ 6/6 + remaining primitives)
+## M2 — Complete core parity (→ remaining primitives)
+
+**M2a DONE (commit 35cb87b + 1535301):** control-ref resolution landed — `ir_json.py` resolves control defaults (reused `control_defaults` extracted from `_resolve_controls`, + `_substitute_controls`) so `realistic_smr` (3 bands, percentile+absolute thresholds, dwell+all_of, sigmoid, conditional outputs) reproduces at machine precision (worst 1.35e-13) with **no Rust change**. Corpus now 7/7 (micro_01–06 + realistic_smr). Emitter made deterministic (sorted `upstream`).
+
+**M2b/M2c REMAINING:** the primitives + lifecycle below are not yet exercised by any committed protocol; port each with a golden-vector test when a protocol needs it.
 
 **Files:** `src/refrain/ir_json.py` (control-default resolution), `refrain-core/src/eval.rs` + `dsp.rs` (remaining primitives), `tools/gen_fixtures.py`, `tests/equivalence.rs`.
 
