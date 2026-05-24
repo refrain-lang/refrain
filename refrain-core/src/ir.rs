@@ -90,6 +90,8 @@ pub struct Coeffs {
     #[serde(default)]
     pub alpha: Option<f64>,
     #[serde(default)]
+    pub dt: Option<f64>,
+    #[serde(default)]
     pub window_samples: Option<usize>,
     #[serde(default)]
     pub dwell_samples: Option<usize>,

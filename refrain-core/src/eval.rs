@@ -12,7 +12,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::dsp::{Biquad, Coherence, Dwell, HilbertFir, Magnitude, Percentile, Signal, Smooth, Stage};
+use crate::dsp::{
+    AutoRange, Bandpower, Biquad, Coherence, Differentiate, Dwell, HilbertFir, Magnitude,
+    Percentile, Signal, Smooth, Stage,
+};
 use crate::ir::{Coeffs, Expr, Protocol};
 
 /// One unit of evaluator output, mirroring `eval_.Event`. `value` is the
@@ -81,14 +84,48 @@ impl Val {
 
 // --- Montage --------------------------------------------------------------
 
-struct Montage {
+enum Montage {
+    Referential(Referential),
+    Bipolar { plus_idx: usize, minus_idx: usize }, // BipolarImpl: plus - minus
+}
+
+struct Referential {
     active_idx: usize,
     device: bool,                    // "device" => active as-recorded, no subtraction
     ref_indices: Option<Vec<usize>>, // None => common-average over all channels
 }
 
 impl Montage {
+    /// `bipolar(plus, minus)` — `samples[:, plus] - samples[:, minus]`
+    /// (mirrors `BipolarImpl`).
+    fn bipolar(plus: &str, minus: &str, channels: &[String]) -> Self {
+        let plus_idx = channels
+            .iter()
+            .position(|c| c == plus)
+            .unwrap_or_else(|| panic!("bipolar: plus {plus:?} not in source"));
+        let minus_idx = channels
+            .iter()
+            .position(|c| c == minus)
+            .unwrap_or_else(|| panic!("bipolar: minus {minus:?} not in source"));
+        Montage::Bipolar { plus_idx, minus_idx }
+    }
+
     fn referential(active: &str, reference: &str, channels: &[String]) -> Self {
+        Montage::Referential(Referential::new(active, reference, channels))
+    }
+
+    fn run(&self, chunk: &[Vec<f64>]) -> Vec<f64> {
+        match self {
+            Montage::Referential(r) => r.run(chunk),
+            Montage::Bipolar { plus_idx, minus_idx } => {
+                chunk.iter().map(|row| row[*plus_idx] - row[*minus_idx]).collect()
+            }
+        }
+    }
+}
+
+impl Referential {
+    fn new(active: &str, reference: &str, channels: &[String]) -> Self {
         let active_idx = channels
             .iter()
             .position(|c| c == active)
@@ -96,7 +133,7 @@ impl Montage {
         if reference == "device" {
             // Hardware reference baked into the channel values: no software
             // re-referencing (matches ReferentialImpl's `use_hardware_reference`).
-            return Montage { active_idx, device: true, ref_indices: None };
+            return Referential { active_idx, device: true, ref_indices: None };
         }
         let ref_indices = match reference {
             "linked_ears" => {
@@ -121,7 +158,7 @@ impl Montage {
                 Some(vec![i])
             }
         };
-        Montage { active_idx, device: false, ref_indices }
+        Referential { active_idx, device: false, ref_indices }
     }
 
     fn run(&self, chunk: &[Vec<f64>]) -> Vec<f64> {
@@ -155,6 +192,7 @@ enum CNode {
     Coherence { coh: Coherence, a: Box<CNode>, b: Box<CNode> }, // 2-input, per-chunk scalar
     Above(Box<CNode>, Box<CNode>),
     Below(Box<CNode>, Box<CNode>),
+    Inside { input: Box<CNode>, low: f64, high: f64 }, // low <= x <= high
     AllOf(Vec<CNode>),
     AnyOf(Vec<CNode>),
     Sigmoid { midpoint: f64, steepness: f64, input: Box<CNode> },
@@ -199,6 +237,10 @@ impl CNode {
             CNode::Below(l, r) => {
                 let (a, b) = (l.eval(env, n), r.eval(env, n));
                 Val::B(a.as_f().iter().zip(b.as_f()).map(|(x, y)| x < y).collect())
+            }
+            CNode::Inside { input, low, high } => {
+                let x = input.eval(env, n).into_f();
+                Val::B(x.iter().map(|v| *v >= *low && *v <= *high).collect())
             }
             CNode::AllOf(items) => {
                 let parts: Vec<Val> = items.iter_mut().map(|c| c.eval(env, n)).collect();
@@ -278,11 +320,13 @@ impl Evaluator {
             .map(|(name, inp)| (name.clone(), build_montage(&inp.montage, channels)))
             .collect();
 
-        let derives = p
-            .derives
-            .iter()
-            .map(|(name, d)| (name.clone(), build_node(&d.expression, sample_rate_hz)))
-            .collect();
+        // Build derives in dependency order. A derive may consume another
+        // derive's output (e.g. `auto_range` over a `bandpower` derive), so we
+        // honor the resolver's `topological_order` rather than the BTreeMap's
+        // alphabetical order; otherwise a downstream derive can be evaluated
+        // before its upstream is bound. Any derive missing from the topo list
+        // (defensive) is appended in map order.
+        let derives = order_derives(p, sample_rate_hz);
 
         let thresholds = p
             .thresholds
@@ -504,6 +548,29 @@ fn compute_warmup_samples(p: &Protocol, sample_rate_hz: f64) -> usize {
     (first.duration_ms / 1000.0 * sample_rate_hz).round() as usize
 }
 
+/// Compile every derive into a `(bare_name, CNode)` list ordered so each
+/// derive's upstreams are bound before it runs. Follows the resolver's
+/// `topological_order` (entries like `"derive/<name>"`); derives absent from
+/// the topo list are appended in BTreeMap order as a fallback.
+fn order_derives(p: &Protocol, sample_rate_hz: f64) -> Vec<(String, CNode)> {
+    let mut emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out: Vec<(String, CNode)> = Vec::new();
+    for entry in &p.topological_order {
+        let name = bare(entry);
+        if let Some(d) = p.derives.get(&name) {
+            if emitted.insert(name.clone()) {
+                out.push((name.clone(), build_node(&d.expression, sample_rate_hz)));
+            }
+        }
+    }
+    for (name, d) in p.derives.iter() {
+        if emitted.insert(name.clone()) {
+            out.push((name.clone(), build_node(&d.expression, sample_rate_hz)));
+        }
+    }
+    out
+}
+
 // --- Compilation helpers --------------------------------------------------
 
 fn bare(canonical: &str) -> String {
@@ -513,7 +580,14 @@ fn bare(canonical: &str) -> String {
 fn is_dsp(callee: &str) -> bool {
     matches!(
         callee,
-        "bandpass" | "hilbert" | "magnitude" | "rectify" | "smooth" | "differentiate" | "bandpower"
+        "bandpass"
+            | "hilbert"
+            | "magnitude"
+            | "rectify"
+            | "smooth"
+            | "differentiate"
+            | "auto_range"
+            | "bandpower"
     )
 }
 
@@ -539,6 +613,37 @@ fn string_arg<'a>(args: &'a [crate::ir::Arg], name: &str) -> Option<&'a str> {
     })
 }
 
+/// Read a named 2-tuple/2-array of numbers (e.g. `auto_range`'s
+/// `percentile: (low, high)`). Returns None when the arg is absent.
+fn tuple2_named(args: &[crate::ir::Arg], name: &str) -> Option<(f64, f64)> {
+    let val = args.iter().find(|a| a.name.as_deref() == Some(name)).map(|a| &a.value)?;
+    match val {
+        Expr::Tuple { elements } | Expr::Array { elements } if elements.len() == 2 => {
+            let num = |e: &Expr| match e {
+                Expr::Number { value } => *value,
+                _ => panic!("{name}: tuple bounds must be numbers"),
+            };
+            Some((num(&elements[0]), num(&elements[1])))
+        }
+        _ => panic!("{name}: must be a 2-tuple of numbers"),
+    }
+}
+
+/// Resolve the upstream input expression for a DSP-pipeline call. Most
+/// pipeline stages thread the previous stage as positional arg 0; `bandpower`
+/// (used standalone as a derive formula) takes its input as a named `input:`
+/// arg.
+fn dsp_input<'a>(callee: &str, args: &'a [crate::ir::Arg]) -> &'a Expr {
+    if callee == "bandpower" {
+        return args
+            .iter()
+            .find(|a| a.name.as_deref() == Some("input"))
+            .map(|a| &a.value)
+            .unwrap_or_else(|| panic!("bandpower: missing `input` arg"));
+    }
+    positional(args, 0)
+}
+
 fn build_montage(expr: &Expr, channels: &[String]) -> Montage {
     match expr {
         Expr::Call { callee, args, .. } if callee == "referential" => Montage::referential(
@@ -546,14 +651,19 @@ fn build_montage(expr: &Expr, channels: &[String]) -> Montage {
             string_arg(args, "reference").expect("referential needs `reference`"),
             channels,
         ),
-        _ => panic!("PoC supports only a referential montage"),
+        Expr::Call { callee, args, .. } if callee == "bipolar" => Montage::bipolar(
+            string_arg(args, "plus").expect("bipolar needs `plus`"),
+            string_arg(args, "minus").expect("bipolar needs `minus`"),
+            channels,
+        ),
+        _ => panic!("PoC supports only referential and bipolar montages"),
     }
 }
 
-fn build_stage(callee: &str, coeffs: Option<&Coeffs>) -> Box<dyn Stage> {
+fn build_stage(callee: &str, args: &[crate::ir::Arg], coeffs: Option<&Coeffs>) -> Box<dyn Stage> {
     let need = || coeffs.unwrap_or_else(|| panic!("{callee}: missing baked coeffs"));
     match callee {
-        "bandpass" | "bandpower" => Box::new(Biquad::new(need().sos.as_ref().expect("sos"))),
+        "bandpass" => Box::new(Biquad::new(need().sos.as_ref().expect("sos"))),
         "hilbert" => {
             let c = need();
             Box::new(HilbertFir::new(
@@ -563,6 +673,22 @@ fn build_stage(callee: &str, coeffs: Option<&Coeffs>) -> Box<dyn Stage> {
         }
         "magnitude" | "rectify" => Box::new(Magnitude),
         "smooth" => Box::new(Smooth::new(need().alpha.expect("alpha"))),
+        "differentiate" => Box::new(Differentiate::new(need().dt.expect("dt"))),
+        "auto_range" => {
+            // window_samples is baked; low/high percentiles come from the
+            // `percentile: (low, high)` call arg (defaults 5/95).
+            let window_samples = need().window_samples.expect("auto_range window_samples");
+            let (low_pct, high_pct) = tuple2_named(args, "percentile").unwrap_or((5.0, 95.0));
+            Box::new(AutoRange::new(window_samples, low_pct, high_pct))
+        }
+        "bandpower" => {
+            // Biquad bandpass (REUSE) + rolling mean-of-squares over window.
+            let c = need();
+            Box::new(Bandpower::new(
+                c.sos.as_ref().expect("sos"),
+                c.window_samples.expect("bandpower window_samples"),
+            ))
+        }
         other => panic!("PoC: unsupported DSP primitive {other:?}"),
     }
 }
@@ -593,8 +719,8 @@ fn build_node(e: &Expr, sample_rate_hz: f64) -> CNode {
                 if !is_dsp(callee) {
                     break;
                 }
-                stages.push(build_stage(callee, coeffs.as_ref()));
-                cur = positional(args, 0);
+                stages.push(build_stage(callee, args, coeffs.as_ref()));
+                cur = dsp_input(callee, args);
             }
             let _ = (args, coeffs);
             stages.reverse();
@@ -653,6 +779,11 @@ fn build_compute_call(
             Box::new(build_node(positional(args, 0), sample_rate_hz)),
             Box::new(build_node(positional(args, 1), sample_rate_hz)),
         ),
+        "inside" => CNode::Inside {
+            input: Box::new(build_node(positional(args, 0), sample_rate_hz)),
+            low: num_named(args, "low").expect("inside needs `low`"),
+            high: num_named(args, "high").expect("inside needs `high`"),
+        },
         "all_of" | "any_of" => {
             let arr = positional(args, 0);
             let elements = match arr {

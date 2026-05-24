@@ -101,6 +101,18 @@ fn coherence_pair_equivalent() {
 }
 
 #[test]
+fn micro_07_ilf_equivalent() {
+    // bipolar montage + differentiate + auto_range + inside reward sub-condition.
+    run_protocol("micro_07_ilf");
+}
+
+#[test]
+fn micro_08_bandpower_equivalent() {
+    // bandpower derive (Biquad -> square -> rolling-mean) + auto_range + inside.
+    run_protocol("micro_08_bandpower");
+}
+
+#[test]
 fn realistic_smr_equivalent() {
     run_protocol("realistic_smr");
 }

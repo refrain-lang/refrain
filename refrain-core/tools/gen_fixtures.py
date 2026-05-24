@@ -124,6 +124,8 @@ if __name__ == "__main__":
         "micro_04_threshold",
         "micro_05_reward",
         "micro_06_coherence",
+        "micro_07_ilf",
+        "micro_08_bandpower",
         "realistic_smr",
     ):
         generate(stem)

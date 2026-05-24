@@ -197,6 +197,121 @@ impl Percentile {
     }
 }
 
+/// `auto_range(window, percentile)` — rolling normalisation to [0, 1]
+/// (mirrors `AutoRangeImpl`): a bounded buffer of the last `window` samples;
+/// per sample append, compute the `low_pct`/`high_pct` quantiles over the
+/// current buffer, then `clip((x - low) / max(high - low, 1e-9), 0, 1)`.
+/// REUSES `percentile_linear` (called once per quantile, matching numpy's
+/// two-quantile `np.percentile(arr, [low, high])`).
+pub struct AutoRange {
+    low_pct: f64,
+    high_pct: f64,
+    cap: usize,
+    buf: VecDeque<f64>,
+}
+
+impl AutoRange {
+    pub fn new(window_samples: usize, low_pct: f64, high_pct: f64) -> Self {
+        let cap = window_samples.max(1);
+        AutoRange { low_pct, high_pct, cap, buf: VecDeque::with_capacity(cap) }
+    }
+}
+
+impl Stage for AutoRange {
+    fn process(&mut self, input: Signal) -> Signal {
+        let x = input.into_real();
+        let mut out = Vec::with_capacity(x.len());
+        for &v in &x {
+            if self.buf.len() == self.cap {
+                self.buf.pop_front();
+            }
+            self.buf.push_back(v);
+            let low = percentile_linear(&self.buf, self.low_pct);
+            let high = percentile_linear(&self.buf, self.high_pct);
+            let span = (high - low).max(1e-9);
+            out.push(((v - low) / span).clamp(0.0, 1.0));
+        }
+        Signal::Real(out)
+    }
+}
+
+/// `differentiate()` — centered finite differences (mirrors
+/// `DifferentiateImpl`): per chunk, prepend the two carried-over samples
+/// `[prev2, prev]`, then `y[i] = (ext[i+2] - ext[i]) / (2*dt)`. `dt` is baked
+/// (`1 / sample_rate`) so the runtime never threads the sample rate.
+pub struct Differentiate {
+    dt: f64,
+    prev: f64,
+    prev2: f64,
+}
+
+impl Differentiate {
+    pub fn new(dt: f64) -> Self {
+        Differentiate { dt, prev: 0.0, prev2: 0.0 }
+    }
+}
+
+impl Stage for Differentiate {
+    fn process(&mut self, input: Signal) -> Signal {
+        let x = input.into_real();
+        let n = x.len();
+        // ext = [prev2, prev, x[0], x[1], ...]; y[i] = (ext[i+2]-ext[i])/(2*dt).
+        let mut out = Vec::with_capacity(n);
+        let denom = 2.0 * self.dt;
+        for i in 0..n {
+            let lag = match i {
+                0 => self.prev2,
+                1 => self.prev,
+                _ => x[i - 2],
+            };
+            out.push((x[i] - lag) / denom);
+        }
+        if n >= 2 {
+            self.prev2 = x[n - 2];
+            self.prev = x[n - 1];
+        } else if n == 1 {
+            self.prev2 = self.prev;
+            self.prev = x[0];
+        }
+        Signal::Real(out)
+    }
+}
+
+/// `bandpower(input, band, window)` — sliding-window mean of squared,
+/// band-limited samples (mirrors `BandpowerImpl`): a Butterworth bandpass
+/// (REUSES `Biquad` with the baked `sos`), then square, then a rolling mean
+/// over the last `window_samples` squared values. The mean is computed over
+/// the current (possibly short) buffer to match numpy's `np.mean(deque)`.
+pub struct Bandpower {
+    filter: Biquad,
+    cap: usize,
+    buf: VecDeque<f64>,
+}
+
+impl Bandpower {
+    pub fn new(sos: &[Vec<f64>], window_samples: usize) -> Self {
+        let cap = window_samples.max(1);
+        Bandpower { filter: Biquad::new(sos), cap, buf: VecDeque::with_capacity(cap) }
+    }
+}
+
+impl Stage for Bandpower {
+    fn process(&mut self, input: Signal) -> Signal {
+        let filtered = self.filter.run(&input.into_real());
+        let mut out = Vec::with_capacity(filtered.len());
+        for &v in &filtered {
+            let sq = v * v;
+            if self.buf.len() == self.cap {
+                self.buf.pop_front();
+            }
+            self.buf.push_back(sq);
+            let mean = self.buf.iter().sum::<f64>() / self.buf.len() as f64;
+            out.push(mean);
+        }
+        Signal::Real(out)
+    }
+}
+
 /// `np.percentile(..., method="linear")` over the current buffer.
 ///
 /// Uses selection (`select_nth_unstable`), not a full sort, to match NumPy's

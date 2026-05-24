@@ -100,6 +100,8 @@ def _extract_coeffs(impl: object) -> dict | None:
         c["group_delay"] = int(impl.group_delay)
     if hasattr(impl, "alpha"):
         c["alpha"] = float(impl.alpha)
+    if hasattr(impl, "dt"):
+        c["dt"] = float(impl.dt)
     if hasattr(impl, "window_samples"):
         c["window_samples"] = int(impl.window_samples)
     if hasattr(impl, "dwell_samples"):
