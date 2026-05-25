@@ -1007,3 +1007,49 @@ def test_group_name_collides_with_control_rejected():
     '''
     with pytest.raises(ResolveError, match="collides"):
         resolve(parse(src))
+
+
+# ---------------------------------------------------------------------------
+# Named groups — Task 3: expand group refs in placement allowed
+# ---------------------------------------------------------------------------
+
+
+def test_group_expands_in_active_allowed():
+    src = '''
+        protocol "p" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          groups { smr = ["C3","Cz","C4"] }
+          controls { site = placement { kind = "active"; default = "Cz"; allowed = smr } }
+          input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+          reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+          output { audio_gain = reward.continuous }
+        }
+    '''
+    ir = resolve(parse(src))
+    assert ir.controls["site"].allowed == ("C3", "Cz", "C4")
+
+
+def test_group_allowed_matches_inline_form():
+    base = '''
+        protocol "p" {{
+          meta {{ version = "1.0"; evidence = "clinical"; description = "x" }}
+          {groups}controls {{ site = placement {{ kind = "active"; default = "Cz"; allowed = {allowed} }} }}
+          input "raw" {{ montage = referential(active: "Cz", reference: "linked_ears") }}
+          reward {{ continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }}
+          output {{ audio_gain = reward.continuous }}
+        }}
+    '''
+    grouped = resolve(parse(base.format(groups='groups { smr = ["C3","Cz","C4"] } ', allowed="smr")))
+    inline = resolve(parse(base.format(groups="", allowed='["C3","Cz","C4"]')))
+    assert grouped.controls["site"].allowed == inline.controls["site"].allowed
+
+
+def test_unknown_group_in_allowed_rejected():
+    src = '''
+        protocol "p" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          controls { site = placement { kind = "active"; default = "Cz"; allowed = nosuch } }
+        }
+    '''
+    with pytest.raises(ResolveError, match="unknown group 'nosuch'"):
+        resolve(parse(src))

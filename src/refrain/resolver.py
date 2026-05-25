@@ -809,7 +809,8 @@ class _Resolver:
         # "pair" reuses bipolar's 2-tuple value parsing (same shape: (a, b)).
         parse_kind = "bipolar" if place_kind == "pair" else place_kind
 
-        allowed = self._parse_placement_allowed(name, parse_kind, fields.get("allowed"), loc)
+        allowed_expr = self._expand_group_ref(fields.get("allowed"))
+        allowed = self._parse_placement_allowed(name, parse_kind, allowed_expr, loc)
         default = self._parse_placement_value(name, parse_kind, fields.get("default"), loc)
 
         if default is None:
@@ -936,6 +937,18 @@ class _Resolver:
             set_max=set_max,
             loc=loc,
         )
+
+    def _expand_group_ref(self, expr):
+        """If `expr` is a bare NameRef in allowed/default position, it names a
+        group; expand it to an Array of StringLits. Else return it unchanged."""
+        if isinstance(expr, A.NameRef):
+            if expr.name not in self.groups:
+                raise ResolveError(f"unknown group {expr.name!r}", loc=expr.loc)
+            return A.Array(
+                elements=tuple(A.StringLit(value=c, loc=expr.loc) for c in self.groups[expr.name]),
+                loc=expr.loc,
+            )
+        return expr
 
     def _parse_placement_value(self, name: str, place_kind: str, expr, loc):
         """Parse a single placement value (default or an element of allowed).
