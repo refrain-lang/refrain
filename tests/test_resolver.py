@@ -663,7 +663,7 @@ def test_placement_default_must_be_in_allowed():
           output { audio_gain = reward.continuous }
         }
     '''
-    with pytest.raises(ResolveError, match="default.*not in allowed|allowed"):
+    with pytest.raises(ResolveError, match="not in allowed"):
         resolve(parse(src))
 
 
@@ -724,6 +724,13 @@ def test_placement_binding_not_device_capable_fails():
     src = _SITE_PROTO.replace('allowed = ["Cz","C3","C4"]', 'allowed = "any"')
     with pytest.raises(ResolveError, match="missing|capable|channel"):
         resolve(parse(src), _AMP, bindings={"site": "ZZ9"})
+
+
+def test_placement_binding_non_string_rejected():
+    # A non-string active binding (e.g. an int from a JSON deserializer) must
+    # fail with a clear error, not silently flow into the channel name.
+    with pytest.raises(ResolveError, match="must be a channel-name string|string"):
+        resolve(parse(_SITE_PROTO), _AMP, bindings={"site": 42})
 
 
 def test_final_placement_rejects_override():

@@ -810,6 +810,13 @@ class _Resolver:
             # Use default: for active, default_placement is a 1-tuple.
             channel = ctrl.default_placement[0]
 
+        if not isinstance(channel, str):
+            raise ResolveError(
+                f"placement {name!r} (active): binding value must be a channel-name "
+                f"string, got {type(channel).__name__}",
+                loc=loc,
+            )
+
         # allowed = () means "any"; only validate when non-empty.
         self._check_placement_in_allowed(name, channel, ctrl.allowed, loc)
 
