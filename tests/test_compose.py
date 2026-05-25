@@ -378,6 +378,26 @@ def test_final_false_is_not_a_lock():
     )
 
 
+def test_final_control_blocks_child_override():
+    # Parent declares a final placement control; child trying to redeclare it must error.
+    parent = '''
+        protocol "base" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          controls { site = placement { kind = "active"; default = "F3"; allowed = ["F3"]; final = true } }
+          input "raw" { montage = referential(active: "F3", reference: "linked_ears") }
+          reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+          output { audio_gain = reward.continuous }
+        }
+    '''
+    child = '''
+        protocol "v2" extends "library/base@1" {
+          controls { site = placement { kind = "active"; default = "Cz"; allowed = ["Cz"] } }
+        }
+    '''
+    with pytest.raises(ComposeError, match="final"):
+        compose(parse(child), _dict_loader({"library/base@1": parent}))
+
+
 # ---------------------------------------------------------------------------
 # Chained inheritance
 # ---------------------------------------------------------------------------

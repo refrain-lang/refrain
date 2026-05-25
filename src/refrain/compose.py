@@ -285,14 +285,30 @@ _FIELD_MERGE_SECTIONS = {"meta", "requires", "controls"}
 
 def _merge_section_fields(parent: A.SectionBlock, overlay: A.SectionBlock) -> A.SectionBlock:
     """Field-level merge of two section blocks: child fields override
-    parent same-named fields; unmentioned parent fields inherit."""
+    parent same-named fields; unmentioned parent fields inherit.
+
+    For the `controls` section, assignments whose value body contains
+    `final = true` are protected: a child that redeclares such a control
+    raises `ComposeError` (SPEC §11.4).
+    """
     fields: dict[str, A.Assignment] = {}
     for stmt in parent.body:
         if isinstance(stmt, A.Assignment):
             fields[stmt.target] = stmt
+
     for stmt in overlay.body:
         if isinstance(stmt, A.Assignment):
+            if (
+                parent.keyword == "controls"
+                and stmt.target in fields
+                and _control_assignment_is_final(fields[stmt.target])
+            ):
+                raise ComposeError(
+                    f"cannot override final control {stmt.target!r}",
+                    loc=stmt.loc,
+                )
             fields[stmt.target] = stmt
+
     return A.SectionBlock(
         keyword=parent.keyword,
         body=tuple(fields.values()),
@@ -320,6 +336,26 @@ def _merge_named_decl(parent: A.NamedDecl, amend: A.AmendDecl) -> A.NamedDecl:
 def _has_final_true(decl: A.NamedDecl) -> bool:
     """Check for `final = true` in a parent named decl's body (SPEC §11.4)."""
     for stmt in decl.body:
+        if (
+            isinstance(stmt, A.Assignment)
+            and stmt.target == "final"
+            and isinstance(stmt.value, A.BoolLit)
+            and stmt.value.value is True
+        ):
+            return True
+    return False
+
+
+def _control_assignment_is_final(assignment: A.Assignment) -> bool:
+    """Check for `final = true` inside a control-section assignment's BlockExpr body.
+
+    A controls-section assignment has the form `name = <type> { ... }` where the
+    value is a `BlockExpr`.  This is the parallel of `_has_final_true` for
+    named decls, but scans the `BlockExpr` body of a `controls` field assignment.
+    """
+    if not isinstance(assignment.value, A.BlockExpr):
+        return False
+    for stmt in assignment.value.body:
         if (
             isinstance(stmt, A.Assignment)
             and stmt.target == "final"
