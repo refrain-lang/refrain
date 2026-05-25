@@ -1,0 +1,245 @@
+{
+  "refrain_ir_version": "0.1",
+  "name": "micro_06_coherence",
+  "extends": null,
+  "sample_rate_hz": 256.0,
+  "channels": [
+    "Cz",
+    "A1"
+  ],
+  "requires": {
+    "coupling": null,
+    "sample_rate_min_hz": 256,
+    "sample_rate_chosen_hz": 2048,
+    "channels": [
+      "Cz",
+      "A1"
+    ],
+    "impedance": "not_required",
+    "markers": "not_required"
+  },
+  "meta": {
+    "version": {
+      "node": "string",
+      "value": "0.1.0"
+    },
+    "evidence": {
+      "node": "string",
+      "value": "demo"
+    },
+    "description": {
+      "node": "string",
+      "value": "Bench: alpha-band coherence between two streams"
+    }
+  },
+  "inputs": {
+    "raw_a": {
+      "canonical_name": "input/raw_a",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "montage": {
+        "node": "call",
+        "callee": "referential",
+        "args": [
+          {
+            "name": "active",
+            "value": {
+              "node": "string",
+              "value": "Cz"
+            }
+          },
+          {
+            "name": "reference",
+            "value": {
+              "node": "string",
+              "value": "device"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        }
+      }
+    },
+    "raw_b": {
+      "canonical_name": "input/raw_b",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "montage": {
+        "node": "call",
+        "callee": "referential",
+        "args": [
+          {
+            "name": "active",
+            "value": {
+              "node": "string",
+              "value": "A1"
+            }
+          },
+          {
+            "name": "reference",
+            "value": {
+              "node": "string",
+              "value": "device"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        }
+      }
+    }
+  },
+  "derives": {
+    "alpha_coh": {
+      "canonical_name": "derive/alpha_coh",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      },
+      "expression": {
+        "node": "call",
+        "callee": "coherence",
+        "args": [
+          {
+            "name": "input_a",
+            "value": {
+              "node": "stream_ref",
+              "target": "input/raw_a",
+              "stream_type": {
+                "value_kind": "scalar",
+                "dimensions": {
+                  "time": 0,
+                  "voltage": 1
+                },
+                "vector_size": null
+              }
+            }
+          },
+          {
+            "name": "input_b",
+            "value": {
+              "node": "stream_ref",
+              "target": "input/raw_b",
+              "stream_type": {
+                "value_kind": "scalar",
+                "dimensions": {
+                  "time": 0,
+                  "voltage": 1
+                },
+                "vector_size": null
+              }
+            }
+          },
+          {
+            "name": "band",
+            "value": {
+              "node": "tuple",
+              "elements": [
+                {
+                  "node": "number",
+                  "value": 8.0,
+                  "dims": {
+                    "time": -1,
+                    "voltage": 0
+                  },
+                  "unit": "Hz"
+                },
+                {
+                  "node": "number",
+                  "value": 12.0,
+                  "dims": {
+                    "time": -1,
+                    "voltage": 0
+                  },
+                  "unit": "Hz"
+                }
+              ]
+            }
+          },
+          {
+            "name": "window",
+            "value": {
+              "node": "number",
+              "value": 2.0,
+              "dims": {
+                "time": 1,
+                "voltage": 0
+              },
+              "unit": "s"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 0
+          },
+          "vector_size": null
+        },
+        "coeffs": {
+          "window_samples": 512,
+          "nperseg": 64,
+          "noverlap": 32
+        }
+      },
+      "upstream": [
+        "input/raw_a",
+        "input/raw_b"
+      ]
+    }
+  },
+  "thresholds": {},
+  "inhibits": {},
+  "reward": {
+    "continuous": null,
+    "event": null
+  },
+  "output": {
+    "audio_gain": {
+      "node": "number",
+      "value": 0.0,
+      "dims": {
+        "time": 0,
+        "voltage": 0
+      },
+      "unit": null
+    }
+  },
+  "controls": {},
+  "session": {
+    "phases": []
+  },
+  "topological_order": [
+    "input/raw_a",
+    "input/raw_b",
+    "derive/alpha_coh"
+  ]
+}

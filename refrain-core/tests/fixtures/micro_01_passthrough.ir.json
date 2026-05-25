@@ -1,15 +1,49 @@
 {
+  "refrain_ir_version": "0.1",
+  "name": "micro_01_passthrough",
+  "extends": null,
+  "sample_rate_hz": 256.0,
   "channels": [
     "Cz"
   ],
-  "controls": {},
-  "derives": {},
-  "extends": null,
-  "inhibits": {},
+  "requires": {
+    "coupling": null,
+    "sample_rate_min_hz": 256,
+    "sample_rate_chosen_hz": 2048,
+    "channels": [
+      "Cz"
+    ],
+    "impedance": "not_required",
+    "markers": "not_required"
+  },
+  "meta": {
+    "version": {
+      "node": "string",
+      "value": "0.1.0"
+    },
+    "evidence": {
+      "node": "string",
+      "value": "demo"
+    },
+    "description": {
+      "node": "string",
+      "value": "Bench: passthrough \u2014 input stage only, no derives"
+    }
+  },
   "inputs": {
     "raw": {
       "canonical_name": "input/raw",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
       "montage": {
+        "node": "call",
+        "callee": "referential",
         "args": [
           {
             "name": "active",
@@ -26,73 +60,39 @@
             }
           }
         ],
-        "callee": "referential",
-        "node": "call",
         "stream_type": {
+          "value_kind": "scalar",
           "dimensions": {
             "time": 0,
             "voltage": 1
           },
-          "value_kind": "scalar",
           "vector_size": null
         }
-      },
-      "stream_type": {
-        "dimensions": {
-          "time": 0,
-          "voltage": 1
-        },
-        "value_kind": "scalar",
-        "vector_size": null
       }
     }
   },
-  "meta": {
-    "description": {
-      "node": "string",
-      "value": "Bench: passthrough \u2014 input stage only, no derives"
-    },
-    "evidence": {
-      "node": "string",
-      "value": "demo"
-    },
-    "version": {
-      "node": "string",
-      "value": "0.1.0"
-    }
-  },
-  "name": "micro_01_passthrough",
-  "output": {
-    "audio_gain": {
-      "dims": {
-        "time": 0,
-        "voltage": 0
-      },
-      "node": "number",
-      "unit": null,
-      "value": 0.0
-    }
-  },
-  "refrain_ir_version": "0.1",
-  "requires": {
-    "channels": [
-      "Cz"
-    ],
-    "coupling": null,
-    "impedance": "not_required",
-    "markers": "not_required",
-    "sample_rate_chosen_hz": 2048,
-    "sample_rate_min_hz": 256
-  },
+  "derives": {},
+  "thresholds": {},
+  "inhibits": {},
   "reward": {
     "continuous": null,
     "event": null
   },
-  "sample_rate_hz": 256.0,
+  "output": {
+    "audio_gain": {
+      "node": "number",
+      "value": 0.0,
+      "dims": {
+        "time": 0,
+        "voltage": 0
+      },
+      "unit": null
+    }
+  },
+  "controls": {},
   "session": {
     "phases": []
   },
-  "thresholds": {},
   "topological_order": [
     "input/raw"
   ]

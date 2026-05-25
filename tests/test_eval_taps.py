@@ -6,6 +6,8 @@ The host application embedding Refrain wants per-chunk visibility into
 internal values — envelopes, threshold values, dwell sub-conditions,
 pre-gating reward, post-gating output — to plot a clinician observation
 window. These tests pin down what `last_taps()` exposes.
+
+Push-mode (live) tests declare the `backend` fixture so they run on both the Python and Rust backends (see tests/conftest.py); set REFRAIN_EVAL_BACKEND=rust to exercise the Rust core.
 """
 
 from __future__ import annotations
@@ -22,6 +24,9 @@ from refrain.parser import parse, parse_file
 from refrain.resolver import resolve
 from refrain.synthetic import SignalGenerator
 
+# conftest.py provides the ``backend`` fixture and RUST_BACKEND_ACTIVE flag.
+from tests.conftest import RUST_BACKEND_ACTIVE
+
 
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
@@ -35,9 +40,13 @@ def smr_bb_ir():
                    load_amp_profile(AMP_BB))
 
 
-def _live_bb(ir):
+def _live_bb(ir, backend="python"):
+    # Tests that should run on BOTH backends must receive `backend` from the
+    # `backend` fixture and pass it here. The "python" default exists only for
+    # the skipif(RUST_BACKEND_ACTIVE) tests that omit the fixture.
     return Evaluator.live(
         ir, sample_rate_hz=250, channel_names=("Cz", "F3", "F4", "Pz"),
+        backend=backend,
     )
 
 
@@ -51,13 +60,13 @@ def _push_one(ev, *, channels=("Cz", "F3", "F4", "Pz"), seed=1, size=64):
 # ---------------------------------------------------------------------------
 
 
-def test_last_taps_empty_before_first_step_chunk(smr_bb_ir):
-    ev = _live_bb(smr_bb_ir)
+def test_last_taps_empty_before_first_step_chunk(smr_bb_ir, backend):
+    ev = _live_bb(smr_bb_ir, backend)
     assert ev.last_taps() == {}
 
 
-def test_last_taps_returns_a_copy(smr_bb_ir):
-    ev = _live_bb(smr_bb_ir)
+def test_last_taps_returns_a_copy(smr_bb_ir, backend):
+    ev = _live_bb(smr_bb_ir, backend)
     ev.start(skip_warmup=True)
     _push_one(ev)
     snap = ev.last_taps()
@@ -74,10 +83,10 @@ def test_last_taps_returns_a_copy(smr_bb_ir):
 # ---------------------------------------------------------------------------
 
 
-def test_smr_bb_last_taps_key_set(smr_bb_ir):
+def test_smr_bb_last_taps_key_set(smr_bb_ir, backend):
     """SMR Cz on BrainBit has all the canonical tap categories
     (no inhibits, both continuous + event reward, 3 sub-conditions)."""
-    ev = _live_bb(smr_bb_ir)
+    ev = _live_bb(smr_bb_ir, backend)
     ev.start(skip_warmup=True)
     _push_one(ev)
     keys = set(ev.last_taps())
@@ -94,9 +103,9 @@ def test_smr_bb_last_taps_key_set(smr_bb_ir):
     assert keys == expected, f"missing: {expected - keys}; extra: {keys - expected}"
 
 
-def test_smr_bb_tap_value_types(smr_bb_ir):
+def test_smr_bb_tap_value_types(smr_bb_ir, backend):
     """Float for analog/envelope/threshold; bool for conditions/events/muted."""
-    ev = _live_bb(smr_bb_ir)
+    ev = _live_bb(smr_bb_ir, backend)
     ev.start(skip_warmup=True)
     _push_one(ev)
     taps = ev.last_taps()
@@ -123,10 +132,10 @@ def test_smr_bb_tap_value_types(smr_bb_ir):
 # ---------------------------------------------------------------------------
 
 
-def test_taps_populate_during_warmup(smr_bb_ir):
+def test_taps_populate_during_warmup(smr_bb_ir, backend):
     """Hosts plotting a warmup observation window need envelope and
     threshold values during the warmup state."""
-    ev = _live_bb(smr_bb_ir)
+    ev = _live_bb(smr_bb_ir, backend)
     ev.start()  # default: enters warmup (90s on SMR BB)
     assert ev.state == "warmup"
     _push_one(ev)
@@ -161,11 +170,11 @@ protocol "single_cond" {
 """
 
 
-def test_single_condition_dwell_emits_condition_zero():
+def test_single_condition_dwell_emits_condition_zero(backend):
     """Single-condition dwells emit `reward/condition[0]` (not bare
     `reward/condition`) for uniform host iteration."""
     ir = resolve(parse(_SINGLE_CONDITION_PROTOCOL))
-    ev = Evaluator.live(ir, sample_rate_hz=250, channel_names=("Cz",))
+    ev = Evaluator.live(ir, sample_rate_hz=250, channel_names=("Cz",), backend=backend)
     ev.start(skip_warmup=True)
     _push_one(ev, channels=("Cz",))
     taps = ev.last_taps()
@@ -194,9 +203,9 @@ protocol "cont_only" {
 """
 
 
-def test_continuous_only_protocol_omits_event_taps():
+def test_continuous_only_protocol_omits_event_taps(backend):
     ir = resolve(parse(_CONTINUOUS_ONLY))
-    ev = Evaluator.live(ir, sample_rate_hz=250, channel_names=("Cz",))
+    ev = Evaluator.live(ir, sample_rate_hz=250, channel_names=("Cz",), backend=backend)
     ev.start(skip_warmup=True)
     _push_one(ev, channels=("Cz",))
     taps = ev.last_taps()
@@ -220,9 +229,9 @@ protocol "event_only" {
 """
 
 
-def test_event_only_protocol_omits_continuous_tap():
+def test_event_only_protocol_omits_continuous_tap(backend):
     ir = resolve(parse(_EVENT_ONLY))
-    ev = Evaluator.live(ir, sample_rate_hz=250, channel_names=("Cz",))
+    ev = Evaluator.live(ir, sample_rate_hz=250, channel_names=("Cz",), backend=backend)
     ev.start(skip_warmup=True)
     _push_one(ev, channels=("Cz",))
     taps = ev.last_taps()
@@ -237,10 +246,10 @@ def test_event_only_protocol_omits_continuous_tap():
 # ---------------------------------------------------------------------------
 
 
-def test_set_control_threshold_change_shows_in_next_taps(smr_bb_ir):
+def test_set_control_threshold_change_shows_in_next_taps(smr_bb_ir, backend):
     """Changing smr_target_pct via set_control should change the
     `threshold/smr_t` tap value on the next chunk."""
-    ev = _live_bb(smr_bb_ir)
+    ev = _live_bb(smr_bb_ir, backend)
     ev.start(skip_warmup=True)
     gen = SignalGenerator(sample_rate_hz=250, channels=("Cz", "F3", "F4", "Pz"), seed=1)
     # Push enough chunks for the percentile window to populate so the
@@ -264,12 +273,12 @@ def test_set_control_threshold_change_shows_in_next_taps(smr_bb_ir):
 # ---------------------------------------------------------------------------
 
 
-def test_inhibit_taps_present_for_othmer():
+def test_inhibit_taps_present_for_othmer(backend):
     """Othmer ILF declares an `emg` inhibit — verify the tap shows up
     and `muted` reflects the combined gate."""
     ir = resolve(parse_file(EXAMPLES / "othmer_ilf_t3t4.refrain"),
                  load_amp_profile(AMP_Q21))
-    ev = Evaluator.live(ir, sample_rate_hz=2048, channel_names=("T3", "T4"))
+    ev = Evaluator.live(ir, sample_rate_hz=2048, channel_names=("T3", "T4"), backend=backend)
     ev.start(skip_warmup=True)
     gen = SignalGenerator(sample_rate_hz=2048, channels=("T3", "T4"), seed=1)
     ev.step_chunk(gen.next_chunk(64))
@@ -285,7 +294,7 @@ def test_inhibit_taps_present_for_othmer():
 # ---------------------------------------------------------------------------
 
 
-def test_composed_protocol_emits_taps():
+def test_composed_protocol_emits_taps(backend):
     """The cz-pz Othmer variant extends a base — verify taps work
     through composition. (Resolver applies composition before the
     Evaluator sees the IR, so this should be transparent.)"""
@@ -296,7 +305,7 @@ def test_composed_protocol_emits_taps():
         load_amp_profile(AMP_Q21),
         parent_loader=loader,
     )
-    ev = Evaluator.live(ir, sample_rate_hz=2048, channel_names=("Cz", "Pz"))
+    ev = Evaluator.live(ir, sample_rate_hz=2048, channel_names=("Cz", "Pz"), backend=backend)
     ev.start(skip_warmup=True)
     gen = SignalGenerator(sample_rate_hz=2048, channels=("Cz", "Pz"), seed=1)
     ev.step_chunk(gen.next_chunk(64))
@@ -327,10 +336,10 @@ protocol "inside_dwell" {
 """
 
 
-def test_dwell_with_inside_condition():
+def test_dwell_with_inside_condition(backend):
     """Sub-condition can be `inside(...)` not just above/below."""
     ir = resolve(parse(_INSIDE_DWELL))
-    ev = Evaluator.live(ir, sample_rate_hz=250, channel_names=("Cz",))
+    ev = Evaluator.live(ir, sample_rate_hz=250, channel_names=("Cz",), backend=backend)
     ev.start(skip_warmup=True)
     _push_one(ev, channels=("Cz",))
     taps = ev.last_taps()
@@ -343,10 +352,10 @@ def test_dwell_with_inside_condition():
 # ---------------------------------------------------------------------------
 
 
-def test_taps_repopulate_each_chunk(smr_bb_ir):
+def test_taps_repopulate_each_chunk(smr_bb_ir, backend):
     """Each step_chunk should fully refresh the tap dict — no stale
     values from a previous chunk."""
-    ev = _live_bb(smr_bb_ir)
+    ev = _live_bb(smr_bb_ir, backend)
     ev.start(skip_warmup=True)
     gen = SignalGenerator(sample_rate_hz=250, channels=("Cz", "F3", "F4", "Pz"), seed=1)
     ev.step_chunk(gen.next_chunk(64))
@@ -362,6 +371,10 @@ def test_taps_repopulate_each_chunk(smr_bb_ir):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    RUST_BACKEND_ACTIVE,
+    reason="perf threshold (<200µs) is Python-impl-specific; Rust perf is covered by tools/latency.py",
+)
 def test_tap_collection_perf_overhead(smr_bb_ir):
     """Tap collection itself should be cheap relative to the rest of
     step_chunk. We can't easily disable tap collection (and shouldn't —

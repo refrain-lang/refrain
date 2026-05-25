@@ -6,8 +6,39 @@ use numpy::{IntoPyArray, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use crate::eval::Evaluator;
+use crate::eval::{Evaluator, Event as CoreEvent, State};
 use crate::ir::Protocol;
+
+/// Map the Rust `State` enum to the string values Python expects, matching
+/// `eval_.Evaluator.state` (`"ready"` | `"warmup"` | `"run"` | `"stopped"`).
+fn state_str(s: State) -> &'static str {
+    match s {
+        State::Ready => "ready",
+        State::Warmup => "warmup",
+        State::Run => "run",
+        State::Stopped => "stopped",
+    }
+}
+
+/// Mirror of `eval_.Event`: one unit of evaluator output.
+#[pyclass]
+#[derive(Clone)]
+struct Event {
+    #[pyo3(get)]
+    timestamp_s: f64,
+    #[pyo3(get)]
+    channel: String,
+    #[pyo3(get)]
+    kind: String,
+    #[pyo3(get)]
+    value: Option<f64>,
+}
+
+impl From<CoreEvent> for Event {
+    fn from(e: CoreEvent) -> Self {
+        Event { timestamp_s: e.timestamp_s, channel: e.channel, kind: e.kind, value: e.value }
+    }
+}
 
 #[pyclass]
 struct RustEvaluator {
@@ -43,10 +74,87 @@ impl RustEvaluator {
         }
         Ok(out)
     }
+
+    /// `eval_.Evaluator.start`: enter warmup (or run). Call before the first
+    /// `step_chunk_events`.
+    #[pyo3(signature = (skip_warmup = false))]
+    fn start(&mut self, skip_warmup: bool) {
+        self.inner.start(skip_warmup);
+    }
+
+    /// `eval_.Evaluator.stop`: end the session.
+    fn stop(&mut self) {
+        self.inner.stop();
+    }
+
+    /// `eval_.Evaluator.set_control`: live-retune a clinician control in place,
+    /// preserving streaming state. An unknown name raises `KeyError`, matching
+    /// the Python evaluator.
+    fn set_control(&mut self, name: &str, value: f64) -> PyResult<()> {
+        self.inner
+            .set_control(name, value)
+            .map_err(pyo3::exceptions::PyKeyError::new_err)
+    }
+
+    /// Process one `(n_samples, n_channels)` chunk and return the feedback
+    /// `Event`s, matching the Python evaluator's `step_chunk` return value.
+    /// Also caches the per-chunk streams map into `self.inner.last_streams`
+    /// so `last_streams()` can surface it without a second `eval_chunk` call.
+    /// Raises `RuntimeError` if called after `stop()`, matching the Python
+    /// evaluator's behaviour (rather than panicking).
+    fn step_chunk_events<'py>(
+        &mut self,
+        chunk: PyReadonlyArray2<'py, f64>,
+    ) -> PyResult<Vec<Event>> {
+        if self.inner.state() == State::Stopped {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "Evaluator.step_chunk() called after stop()",
+            ));
+        }
+        let arr = chunk.as_array();
+        let rows: Vec<Vec<f64>> = arr.outer_iter().map(|r| r.to_vec()).collect();
+        Ok(self.inner.step_chunk_events(&rows).into_iter().map(Event::from).collect())
+    }
+
+    /// Current lifecycle state, mirroring `eval_.Evaluator.state`.
+    /// Returns `"ready"` | `"warmup"` | `"run"` | `"stopped"`.
+    fn state(&self) -> &'static str {
+        state_str(self.inner.state())
+    }
+
+    /// Seconds of warmup remaining, mirroring `eval_.Evaluator.warmup_remaining_s`.
+    /// Returns 0.0 unless the evaluator is in `warmup` state.
+    fn warmup_remaining_s(&self) -> f64 {
+        self.inner.warmup_remaining_s()
+    }
+
+    /// Clinician-observation snapshot from the most recent `step_chunk_events`
+    /// call. Returns `{canonical_name: f64}` — booleans stored as 0.0/1.0.
+    /// The Python wrapper coerces known-boolean keys back to `bool`.
+    /// Empty before the first `step_chunk_events` call. Returns a copy.
+    fn last_taps<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let out = PyDict::new(py);
+        for (k, v) in self.inner.last_taps() {
+            out.set_item(k, v)?;
+        }
+        Ok(out)
+    }
+
+    /// Per-chunk stream snapshot cached by the most recent `step_chunk_events`
+    /// call. Returns `{stream_name: ndarray}` matching `last_streams()` in
+    /// the Python evaluator. Empty before the first call.
+    fn last_streams<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let out = PyDict::new(py);
+        for (k, v) in self.inner.last_streams() {
+            out.set_item(k, v.into_pyarray(py))?;
+        }
+        Ok(out)
+    }
 }
 
 #[pymodule]
 fn refrain_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustEvaluator>()?;
+    m.add_class::<Event>()?;
     Ok(())
 }

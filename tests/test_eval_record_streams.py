@@ -11,6 +11,8 @@ from refrain.eval_ import Evaluator
 from refrain.parser import parse_file
 from refrain.resolver import resolve
 
+# (backend fixture provided by tests/conftest.py)
+
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
 AMP_Q21 = REPO / "src" / "refrain" / "amp_profiles" / "q21.json"
@@ -23,17 +25,18 @@ def _smr_ir():
                    load_amp_profile(AMP_Q21))
 
 
-def test_record_streams_default_off():
-    ev = Evaluator.live(_smr_ir(), sample_rate_hz=256, channel_names=CHANNELS)
+def test_record_streams_default_off(backend):
+    ev = Evaluator.live(_smr_ir(), sample_rate_hz=256, channel_names=CHANNELS, backend=backend)
     ev.start(skip_warmup=True)
     ev.step_chunk(np.zeros((32, 3), dtype=np.float64))
     assert ev.last_streams() == {}, "default mode must not record"
 
 
-def test_record_streams_captures_chunk():
+def test_record_streams_captures_chunk(backend):
     ev = Evaluator.live(
         _smr_ir(), sample_rate_hz=256, channel_names=CHANNELS,
         record_streams=True,
+        backend=backend,
     )
     ev.start(skip_warmup=True)
     chunk = np.random.default_rng(0).standard_normal((32, 3))
@@ -48,10 +51,11 @@ def test_record_streams_captures_chunk():
     assert any(k.startswith("output/") for k in streams), "output streams must be captured"
 
 
-def test_record_streams_overwrites_each_chunk():
+def test_record_streams_overwrites_each_chunk(backend):
     ev = Evaluator.live(
         _smr_ir(), sample_rate_hz=256, channel_names=CHANNELS,
         record_streams=True,
+        backend=backend,
     )
     ev.start(skip_warmup=True)
     rng = np.random.default_rng(1)

@@ -13,8 +13,23 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+indexmap = { version = "2", features = ["serde"] }
+realfft = "3.5"
 pyo3 = { version = "0.24", features = ["extension-module", "abi3-py310"], optional = true }
 numpy = { version = "0.24", optional = true }
+uniffi = { version = "0.29.5", optional = true }
 
 [features]
 python = ["dep:pyo3", "dep:numpy"]
+# Mobile (Swift + Kotlin) bindings via uniffi. Gated so default `cargo test`
+# and the `python` feature are untouched (no pyo3/uniffi scaffolding collision).
+# `cli` pulls in uniffi's bindings generator so the in-tree `uniffi-bindgen`
+# bin (and `--library` mode) work at the pinned version.
+uniffi = ["dep:uniffi", "uniffi/cli"]
+
+# Tiny bin target that re-exports uniffi's CLI so the generator version always
+# matches the pinned library version. Only built under `--features uniffi`.
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["uniffi"]

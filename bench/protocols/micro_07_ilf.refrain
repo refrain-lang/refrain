@@ -1,0 +1,53 @@
+// micro_07_ilf.refrain
+// Bench micro: Othmer-style ILF acquisition on the bench channel set.
+// Exercises the bipolar montage, differentiate, and auto_range primitives
+// (the genuinely-missing time-series stack) plus an `inside`-band reward
+// sub-condition. Adapted from examples/library/othmer/ilf_base.refrain with
+// literal args so it bakes fully and runs standalone.
+
+protocol "micro_07_ilf" {
+  meta {
+    version  = "0.1.0"
+    evidence = "demo"
+    description = "Bench: bipolar -> bandpass -> differentiate -> rectify -> smooth -> auto_range, inside-band reward"
+  }
+
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels    = ["Cz", "A1"]
+  }
+
+  input "ilf" {
+    montage = bipolar(plus: "Cz", minus: "A1")
+  }
+
+  derive "band" {
+    from = "ilf"
+    pipeline = [
+      bandpass(band: (1 Hz, 4 Hz), order: 4),
+      differentiate(),
+      rectify(),
+      smooth(tau: 250 ms),
+    ]
+  }
+
+  derive "reward_signal" {
+    from = "band"
+    pipeline = [
+      auto_range(window: 4 s, percentile: (5, 95)),
+    ]
+  }
+
+  reward {
+    event = dwell(
+      condition: inside("reward_signal", low: 0.4, high: 0.8),
+      duration: 250 ms
+    )
+    continuous = sigmoid("reward_signal", midpoint: 0.5, steepness: 4)
+  }
+
+  output {
+    audio_chime = reward.event
+    audio_gain  = reward.continuous
+  }
+}

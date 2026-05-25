@@ -1,0 +1,525 @@
+{
+  "refrain_ir_version": "0.1",
+  "name": "micro_07_ilf",
+  "extends": null,
+  "sample_rate_hz": 256.0,
+  "channels": [
+    "Cz",
+    "A1"
+  ],
+  "requires": {
+    "coupling": null,
+    "sample_rate_min_hz": 256,
+    "sample_rate_chosen_hz": 2048,
+    "channels": [
+      "Cz",
+      "A1"
+    ],
+    "impedance": "not_required",
+    "markers": "not_required"
+  },
+  "meta": {
+    "version": {
+      "node": "string",
+      "value": "0.1.0"
+    },
+    "evidence": {
+      "node": "string",
+      "value": "demo"
+    },
+    "description": {
+      "node": "string",
+      "value": "Bench: bipolar -> bandpass -> differentiate -> rectify -> smooth -> auto_range, inside-band reward"
+    }
+  },
+  "inputs": {
+    "ilf": {
+      "canonical_name": "input/ilf",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "montage": {
+        "node": "call",
+        "callee": "bipolar",
+        "args": [
+          {
+            "name": "plus",
+            "value": {
+              "node": "string",
+              "value": "Cz"
+            }
+          },
+          {
+            "name": "minus",
+            "value": {
+              "node": "string",
+              "value": "A1"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        }
+      }
+    }
+  },
+  "derives": {
+    "band": {
+      "canonical_name": "derive/band",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": -1,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "expression": {
+        "node": "call",
+        "callee": "smooth",
+        "args": [
+          {
+            "name": null,
+            "value": {
+              "node": "call",
+              "callee": "rectify",
+              "args": [
+                {
+                  "name": null,
+                  "value": {
+                    "node": "call",
+                    "callee": "differentiate",
+                    "args": [
+                      {
+                        "name": null,
+                        "value": {
+                          "node": "call",
+                          "callee": "bandpass",
+                          "args": [
+                            {
+                              "name": null,
+                              "value": {
+                                "node": "stream_ref",
+                                "target": "input/ilf",
+                                "stream_type": {
+                                  "value_kind": "scalar",
+                                  "dimensions": {
+                                    "time": 0,
+                                    "voltage": 1
+                                  },
+                                  "vector_size": null
+                                }
+                              }
+                            },
+                            {
+                              "name": "band",
+                              "value": {
+                                "node": "tuple",
+                                "elements": [
+                                  {
+                                    "node": "number",
+                                    "value": 1.0,
+                                    "dims": {
+                                      "time": -1,
+                                      "voltage": 0
+                                    },
+                                    "unit": "Hz"
+                                  },
+                                  {
+                                    "node": "number",
+                                    "value": 4.0,
+                                    "dims": {
+                                      "time": -1,
+                                      "voltage": 0
+                                    },
+                                    "unit": "Hz"
+                                  }
+                                ]
+                              }
+                            },
+                            {
+                              "name": "order",
+                              "value": {
+                                "node": "number",
+                                "value": 4.0,
+                                "dims": {
+                                  "time": 0,
+                                  "voltage": 0
+                                },
+                                "unit": null
+                              }
+                            }
+                          ],
+                          "stream_type": {
+                            "value_kind": "scalar",
+                            "dimensions": {
+                              "time": 0,
+                              "voltage": 1
+                            },
+                            "vector_size": null
+                          },
+                          "coeffs": {
+                            "sos": [
+                              [
+                                1.671544608923359e-06,
+                                3.343089217846718e-06,
+                                1.671544608923359e-06,
+                                1.0,
+                                -1.907207284061695,
+                                0.912023226337549
+                              ],
+                              [
+                                1.0,
+                                2.0,
+                                1.0,
+                                1.0,
+                                -1.9476135642046601,
+                                0.9564845722331148
+                              ],
+                              [
+                                1.0,
+                                -2.0,
+                                1.0,
+                                1.0,
+                                -1.9557785499197677,
+                                0.9569064502789281
+                              ],
+                              [
+                                1.0,
+                                -2.0,
+                                1.0,
+                                1.0,
+                                -1.9876055048513104,
+                                0.9882415364212197
+                              ]
+                            ]
+                          }
+                        }
+                      }
+                    ],
+                    "stream_type": {
+                      "value_kind": "scalar",
+                      "dimensions": {
+                        "time": -1,
+                        "voltage": 1
+                      },
+                      "vector_size": null
+                    },
+                    "coeffs": {
+                      "dt": 0.00390625
+                    }
+                  }
+                }
+              ],
+              "stream_type": {
+                "value_kind": "scalar",
+                "dimensions": {
+                  "time": -1,
+                  "voltage": 1
+                },
+                "vector_size": null
+              }
+            }
+          },
+          {
+            "name": "tau",
+            "value": {
+              "node": "number",
+              "value": 250.0,
+              "dims": {
+                "time": 1,
+                "voltage": 0
+              },
+              "unit": "ms"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": -1,
+            "voltage": 1
+          },
+          "vector_size": null
+        },
+        "coeffs": {
+          "alpha": 0.015503562994591547
+        }
+      },
+      "upstream": [
+        "input/ilf"
+      ]
+    },
+    "reward_signal": {
+      "canonical_name": "derive/reward_signal",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      },
+      "expression": {
+        "node": "call",
+        "callee": "auto_range",
+        "args": [
+          {
+            "name": null,
+            "value": {
+              "node": "stream_ref",
+              "target": "derive/band",
+              "stream_type": {
+                "value_kind": "scalar",
+                "dimensions": {
+                  "time": -1,
+                  "voltage": 1
+                },
+                "vector_size": null
+              }
+            }
+          },
+          {
+            "name": "window",
+            "value": {
+              "node": "number",
+              "value": 4.0,
+              "dims": {
+                "time": 1,
+                "voltage": 0
+              },
+              "unit": "s"
+            }
+          },
+          {
+            "name": "percentile",
+            "value": {
+              "node": "tuple",
+              "elements": [
+                {
+                  "node": "number",
+                  "value": 5.0,
+                  "dims": {
+                    "time": 0,
+                    "voltage": 0
+                  },
+                  "unit": null
+                },
+                {
+                  "node": "number",
+                  "value": 95.0,
+                  "dims": {
+                    "time": 0,
+                    "voltage": 0
+                  },
+                  "unit": null
+                }
+              ]
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 0
+          },
+          "vector_size": null
+        },
+        "coeffs": {
+          "window_samples": 1024
+        }
+      },
+      "upstream": [
+        "derive/band"
+      ]
+    }
+  },
+  "thresholds": {},
+  "inhibits": {},
+  "reward": {
+    "continuous": {
+      "node": "call",
+      "callee": "sigmoid",
+      "args": [
+        {
+          "name": null,
+          "value": {
+            "node": "stream_ref",
+            "target": "derive/reward_signal",
+            "stream_type": {
+              "value_kind": "scalar",
+              "dimensions": {
+                "time": 0,
+                "voltage": 0
+              },
+              "vector_size": null
+            }
+          }
+        },
+        {
+          "name": "midpoint",
+          "value": {
+            "node": "number",
+            "value": 0.5,
+            "dims": {
+              "time": 0,
+              "voltage": 0
+            },
+            "unit": null
+          }
+        },
+        {
+          "name": "steepness",
+          "value": {
+            "node": "number",
+            "value": 4.0,
+            "dims": {
+              "time": 0,
+              "voltage": 0
+            },
+            "unit": null
+          }
+        }
+      ],
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      }
+    },
+    "event": {
+      "node": "call",
+      "callee": "dwell",
+      "args": [
+        {
+          "name": "condition",
+          "value": {
+            "node": "call",
+            "callee": "inside",
+            "args": [
+              {
+                "name": null,
+                "value": {
+                  "node": "stream_ref",
+                  "target": "derive/reward_signal",
+                  "stream_type": {
+                    "value_kind": "scalar",
+                    "dimensions": {
+                      "time": 0,
+                      "voltage": 0
+                    },
+                    "vector_size": null
+                  }
+                }
+              },
+              {
+                "name": "low",
+                "value": {
+                  "node": "number",
+                  "value": 0.4,
+                  "dims": {
+                    "time": 0,
+                    "voltage": 0
+                  },
+                  "unit": null
+                }
+              },
+              {
+                "name": "high",
+                "value": {
+                  "node": "number",
+                  "value": 0.8,
+                  "dims": {
+                    "time": 0,
+                    "voltage": 0
+                  },
+                  "unit": null
+                }
+              }
+            ],
+            "stream_type": {
+              "value_kind": "boolean",
+              "dimensions": {
+                "time": 0,
+                "voltage": 0
+              },
+              "vector_size": null
+            }
+          }
+        },
+        {
+          "name": "duration",
+          "value": {
+            "node": "number",
+            "value": 250.0,
+            "dims": {
+              "time": 1,
+              "voltage": 0
+            },
+            "unit": "ms"
+          }
+        }
+      ],
+      "stream_type": {
+        "value_kind": "event",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      },
+      "coeffs": {
+        "dwell_samples": 64
+      }
+    }
+  },
+  "output": {
+    "audio_chime": {
+      "node": "reward_field",
+      "field_path": "event",
+      "stream_type": {
+        "value_kind": "event",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      }
+    },
+    "audio_gain": {
+      "node": "reward_field",
+      "field_path": "continuous",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      }
+    }
+  },
+  "controls": {},
+  "session": {
+    "phases": []
+  },
+  "topological_order": [
+    "input/ilf",
+    "derive/band",
+    "derive/reward_signal"
+  ]
+}

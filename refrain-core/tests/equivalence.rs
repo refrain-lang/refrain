@@ -94,3 +94,33 @@ fn micro_04_threshold_equivalent() {
 fn micro_05_reward_equivalent() {
     run_protocol("micro_05_reward");
 }
+
+#[test]
+fn coherence_pair_equivalent() {
+    run_protocol("micro_06_coherence");
+}
+
+#[test]
+fn micro_07_ilf_equivalent() {
+    // bipolar montage + differentiate + auto_range + inside reward sub-condition.
+    run_protocol("micro_07_ilf");
+}
+
+#[test]
+fn micro_08_bandpower_equivalent() {
+    // bandpower derive (Biquad -> square -> rolling-mean) + auto_range + inside.
+    run_protocol("micro_08_bandpower");
+}
+
+#[test]
+fn micro_09_inhibit_equivalent() {
+    // bandpower inhibit metric + absolute threshold + mute action: the gated
+    // `output/audio_gain` stream must reproduce Python's muting (zeroed
+    // samples while the inhibit is active, plus the release hangover).
+    run_protocol("micro_09_inhibit");
+}
+
+#[test]
+fn realistic_smr_equivalent() {
+    run_protocol("realistic_smr");
+}

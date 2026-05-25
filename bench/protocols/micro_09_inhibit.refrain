@@ -1,0 +1,46 @@
+// micro_09_inhibit.refrain
+// Bench micro: the inhibit gate. A bandpower EMG metric over an absolute
+// threshold drives a mute action; when the metric trips the threshold the
+// output (audio_gain) is muted to zero (plus a release hangover). Exercises
+// the full inhibit → action → muted → output-gating path in the Rust core.
+
+protocol "micro_09_inhibit" {
+  meta {
+    version  = "0.1.0"
+    evidence = "demo"
+    description = "Bench: bandpower inhibit metric + absolute threshold + mute action"
+  }
+
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels    = ["Cz", "A1"]
+  }
+
+  input "raw" {
+    montage = referential(active: "Cz", reference: "linked_ears")
+  }
+
+  derive "smr_envelope" {
+    from = "raw"
+    pipeline = [
+      bandpass(band: (12 Hz, 15 Hz), order: 4),
+      hilbert(),
+      magnitude(),
+      smooth(tau: 250 ms),
+    ]
+  }
+
+  inhibit "emg" {
+    metric    = bandpower(input: "raw", band: (20 Hz, 50 Hz), window: 100 ms)
+    threshold = absolute(55 uV2)
+    action    = mute(release: 200 ms)
+  }
+
+  reward {
+    continuous = sigmoid("smr_envelope", midpoint: 5.0, steepness: 0.5)
+  }
+
+  output {
+    audio_gain = reward.continuous
+  }
+}

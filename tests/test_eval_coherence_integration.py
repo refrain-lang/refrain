@@ -18,6 +18,8 @@ from refrain.eval_ import Evaluator
 from refrain.parser import parse
 from refrain.resolver import resolve
 
+# (backend fixture provided by tests/conftest.py)
+
 
 SR = 250
 
@@ -51,7 +53,7 @@ def _coherent_then_incoherent(
     return out
 
 
-def test_coherence_runs_end_to_end_and_tracks_input_coherence():
+def test_coherence_runs_end_to_end_and_tracks_input_coherence(backend):
     """The protocol declares `coherence(input_a, input_b, band, window)`
     as a derive; the evaluator wires it correctly; audio_gain output
     reflects the actual coherence state of the input."""
@@ -97,7 +99,7 @@ def test_coherence_runs_end_to_end_and_tracks_input_coherence():
         sample_rate_hz=SR, n_samples=n_samples, channels=("C3", "C4"), seed=42,
     )
 
-    ev = Evaluator.live(ir, sample_rate_hz=SR, channel_names=("C3", "C4"))
+    ev = Evaluator.live(ir, sample_rate_hz=SR, channel_names=("C3", "C4"), backend=backend)
     ev.start(skip_warmup=True)
 
     # Push 64-sample chunks. Track audio_gain values per chunk.
@@ -136,7 +138,7 @@ def test_coherence_runs_end_to_end_and_tracks_input_coherence():
     assert coherent_gain > incoherent_gain + 0.3
 
 
-def test_coherence_in_tap_api():
+def test_coherence_in_tap_api(backend):
     """The introspection tap API should expose the coherence derive's
     last-sample value under `derive/<name>`."""
     src = """
@@ -155,7 +157,7 @@ def test_coherence_in_tap_api():
         }
     """
     ir = resolve(parse(src))
-    ev = Evaluator.live(ir, sample_rate_hz=SR, channel_names=("C3", "C4"))
+    ev = Evaluator.live(ir, sample_rate_hz=SR, channel_names=("C3", "C4"), backend=backend)
     ev.start(skip_warmup=True)
 
     # Push enough data for the buffer to fill (2 s window = 500 samples).

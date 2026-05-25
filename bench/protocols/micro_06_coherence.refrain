@@ -1,0 +1,38 @@
+// micro_06_coherence.refrain
+// Bench micro: band-averaged magnitude-squared coherence between two
+// referential streams via streaming Welch's method. A two-input primitive
+// that emits a constant scalar per chunk.
+
+protocol "micro_06_coherence" {
+  meta {
+    version  = "0.1.0"
+    evidence = "demo"
+    description = "Bench: alpha-band coherence between two streams"
+  }
+
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels    = ["Cz", "A1"]
+  }
+
+  input "raw_a" {
+    montage = referential(active: "Cz", reference: "device")
+  }
+
+  input "raw_b" {
+    montage = referential(active: "A1", reference: "device")
+  }
+
+  derive "alpha_coh" {
+    formula = coherence(
+      input_a: "raw_a",
+      input_b: "raw_b",
+      band:    (8 Hz, 12 Hz),
+      window:  2 s
+    )
+  }
+
+  output {
+    audio_gain = 0
+  }
+}

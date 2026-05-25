@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .eval_ import _classify_call
+from .eval_ import _classify_call, _substitute_controls, control_defaults
 from .ir import (
     IRArray,
     IRBinaryOp,
@@ -59,6 +59,7 @@ class _EmitCtx:
 
     sample_rate_hz: float | None
     channel_names: tuple[str, ...]
+    controls: dict[str, float]
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +100,8 @@ def _extract_coeffs(impl: object) -> dict | None:
         c["group_delay"] = int(impl.group_delay)
     if hasattr(impl, "alpha"):
         c["alpha"] = float(impl.alpha)
+    if hasattr(impl, "dt"):
+        c["dt"] = float(impl.dt)
     if hasattr(impl, "window_samples"):
         c["window_samples"] = int(impl.window_samples)
     if hasattr(impl, "dwell_samples"):
@@ -120,8 +123,13 @@ def _bake_coeffs(call: IRCall, ctx: _EmitCtx) -> dict | None:
         return None
     try:
         static, _dynamic = _classify_call(call)
-        # A non-literal argument (e.g. a control reference) can't be baked
-        # ahead of time; leave it for the runtime to resolve.
+        # Resolve control references to their default value (the value the
+        # runtime uses by default) so control-parameterized coefficients —
+        # e.g. percentile `window_samples` alongside a control-ref
+        # `target_pct` — bake. REUSE the evaluator's substitution walker.
+        static = _substitute_controls(static, ctx.controls)
+        # A remaining non-literal argument (an unresolvable dynamic expr)
+        # can't be baked ahead of time; leave it for the runtime to resolve.
         if any(isinstance(v, IRExpr) for v in static.values()):
             return None
         impl = make_filter_impl(
@@ -170,7 +178,21 @@ def _emit_expr(expr: IRExpr, ctx: _EmitCtx) -> dict:
             "stream_type": _emit_stream_type(expr.stream_type),
         }
     if isinstance(expr, IRControlRef):
-        return {"node": "control_ref", "target": expr.target, "dims": _emit_dims(expr.dims)}
+        # Emit a `control_ref` node carrying BOTH the canonical control target
+        # AND the resolved default value. The default is the value the runtime
+        # uses until a `set_control(...)` arrives (so behaviour with no live
+        # retuning is identical to baking the literal number, as before), while
+        # the `target` preserves the binding "control X feeds this param" so a
+        # non-Python runtime can route `set_control` to the right impl. Missing
+        # default → 0.0, matching `control_defaults`. NB: coefficient *baking*
+        # (`_bake_coeffs`) substitutes controls to literals on its own internal
+        # path, so this change does not perturb any baked coefficient.
+        return {
+            "node": "control_ref",
+            "target": expr.target,
+            "default": ctx.controls.get(expr.target, 0.0),
+            "dims": _emit_dims(expr.dims),
+        }
     if isinstance(expr, IRRewardField):
         return {
             "node": "reward_field",
@@ -235,7 +257,10 @@ def _emit_derive(d: IRDerive, ctx: _EmitCtx) -> dict:
         "canonical_name": d.canonical_name,
         "stream_type": _emit_stream_type(d.stream_type),
         "expression": _emit_expr(d.expression, ctx),
-        "upstream": list(d.upstream),
+        # Sorted for a deterministic wire format (upstream derives from a set
+        # upstream; order is irrelevant to evaluation but matters for
+        # reproducible, diff-stable IR-JSON).
+        "upstream": sorted(d.upstream),
     }
 
 
@@ -318,6 +343,7 @@ def ir_to_json_obj(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> di
     ctx = _EmitCtx(
         sample_rate_hz=rate,
         channel_names=tuple(ir.requires.channels),
+        controls=control_defaults(ir),
     )
     return {
         "refrain_ir_version": IR_JSON_VERSION,
@@ -340,8 +366,17 @@ def ir_to_json_obj(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> di
 
 
 def ir_to_json(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> str:
-    """Serialize a resolved protocol into a JSON string."""
-    return json.dumps(ir_to_json_obj(ir, sample_rate_hz=sample_rate_hz), indent=2, sort_keys=True)
+    """Serialize a resolved protocol into a JSON string.
+
+    ``sort_keys`` is intentionally left ``False`` so the ``output`` section
+    preserves the IR declaration order of output channels. The Rust runtime
+    must emit events in that declaration order, matching Python's
+    ``_process_chunk`` which iterates ``per_channel_output.items()`` in
+    insertion order.  All other top-level dicts (inputs, derives, …) have
+    no order-sensitive semantics and are sorted by their BTreeMap key order
+    in the Rust deserialiser anyway.
+    """
+    return json.dumps(ir_to_json_obj(ir, sample_rate_hz=sample_rate_hz), indent=2)
 
 
 __all__ = ["ir_to_json", "ir_to_json_obj", "IR_JSON_VERSION"]

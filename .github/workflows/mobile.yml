@@ -1,0 +1,174 @@
+name: mobile
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: bindings-verify
+  # Mac-free gate — runs on standard ubuntu-latest.
+  # Validates that:
+  #   (a) the staticlib cross-compiles for aarch64-apple-ios and
+  #       aarch64-linux-android with --features uniffi, and
+  #   (b) the committed bindings/swift and bindings/kotlin are up-to-date
+  #       (no diff vs freshly regenerated output).
+  # This job CAN be validated by CI on first push.
+  # ---------------------------------------------------------------------------
+  bindings-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Mirror test.yml's install so scipy/numpy/lark are present and the
+      # PYTHONPATH environment matches the equivalence gate job.
+      - name: Install package + eval extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[eval,dev]"
+
+      - name: Show installed versions
+        run: |
+          python --version
+          pip list
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add mobile cross-compile targets
+        run: rustup target add aarch64-apple-ios aarch64-linux-android
+
+      - name: Run bindings drift gate
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python refrain-core/tools/check_bindings.py
+
+  # ---------------------------------------------------------------------------
+  # Job 2: ios-xcframework
+  #
+  # UNVALIDATED — requires a self-hosted macOS runner with Xcode; adjust the
+  # `runs-on` labels below to match the farm's Mac mini runner labels before
+  # enabling this job. The steps are verbatim from bindings/README.md.
+  # ---------------------------------------------------------------------------
+  ios-xcframework:
+    runs-on: [self-hosted, macOS]
+    needs: bindings-verify
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add iOS cross-compile targets
+        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+
+      # Build device staticlib (aarch64-apple-ios).
+      - name: Cross-compile staticlib — aarch64-apple-ios (device)
+        working-directory: refrain-core
+        run: |
+          cargo rustc --release --lib \
+            --target aarch64-apple-ios \
+            --crate-type staticlib \
+            --features uniffi
+
+      # Build simulator staticlib (aarch64-apple-ios-sim).
+      - name: Cross-compile staticlib — aarch64-apple-ios-sim (simulator)
+        working-directory: refrain-core
+        run: |
+          cargo rustc --release --lib \
+            --target aarch64-apple-ios-sim \
+            --crate-type staticlib \
+            --features uniffi
+
+      # Assemble xcframework.  uniffi emits refrain_coreFFI.modulemap;
+      # xcodebuild expects it named `module.modulemap` inside a headers dir.
+      - name: Assemble RefrainCore.xcframework
+        working-directory: refrain-core
+        run: |
+          mkdir -p Headers
+          cp bindings/swift/refrain_coreFFI.h Headers/
+          cp bindings/swift/refrain_coreFFI.modulemap Headers/module.modulemap
+
+          xcodebuild -create-xcframework \
+            -library target/aarch64-apple-ios/release/librefrain_core.a \
+            -headers Headers \
+            -library target/aarch64-apple-ios-sim/release/librefrain_core.a \
+            -headers Headers \
+            -output RefrainCore.xcframework
+
+      - name: Upload RefrainCore.xcframework artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RefrainCore.xcframework
+          path: refrain-core/RefrainCore.xcframework
+
+  # ---------------------------------------------------------------------------
+  # Job 3: android-aar
+  #
+  # UNVALIDATED — requires Android NDK and cargo-ndk on the runner.
+  # Neither is assumed present on the CI farm — provision them before enabling
+  # this job.  The NDK version below (r27c) is a reasonable current choice;
+  # adjust to match whatever version the farm installs.
+  #
+  # Note: a full Gradle AAR assembly requires a Gradle project wrapping the
+  # generated Kotlin.  That project does not yet exist in this repo.  This job
+  # therefore produces the per-ABI .so files + generated Kotlin source as a
+  # build artifact, and documents the remaining Gradle/AAR assembly step in
+  # bindings/README.md.  Wire the Gradle step here once the Android module is
+  # set up.
+  # ---------------------------------------------------------------------------
+  android-aar:
+    runs-on: ubuntu-latest
+    needs: bindings-verify
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Android cross-compile targets
+        run: rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+
+      # Set up the Android NDK.
+      # nttld/setup-ndk is the standard community action for this.
+      # UNVALIDATED — the NDK is likely not yet provisioned on the farm;
+      # confirm the action is available and the version is acceptable.
+      - name: Set up Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27c
+          add-to-path: true
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      # Build per-ABI .so files using the layout cargo-ndk expects.
+      - name: Build Android JNI .so files (arm64-v8a, armeabi-v7a, x86_64)
+        working-directory: refrain-core
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          cargo ndk \
+            -t arm64-v8a -t armeabi-v7a -t x86_64 \
+            -o android/src/main/jniLibs \
+            build --release --lib --features uniffi
+
+      # Upload the .so files + generated Kotlin as the artifact.
+      # Gradle AAR assembly is documented in bindings/README.md under
+      # "Android — AAR"; wire it here once the Android Gradle module exists.
+      - name: Upload Android native + Kotlin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-jni-libs
+          path: |
+            refrain-core/android/src/main/jniLibs/
+            refrain-core/bindings/kotlin/

@@ -1,0 +1,46 @@
+// micro_08_bandpower.refrain
+// Bench micro: sliding-window bandpower derive. Exercises the bandpower
+// primitive (Biquad bandpass -> square -> rolling-mean-of-squares) as a
+// derive formula, plus an `inside`-band condition over its auto-ranged
+// output. Confirms the bandpower stage is distinct from a plain bandpass.
+
+protocol "micro_08_bandpower" {
+  meta {
+    version  = "0.1.0"
+    evidence = "demo"
+    description = "Bench: bandpower derive + auto_range + inside condition"
+  }
+
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels    = ["Cz", "A1"]
+  }
+
+  input "raw" {
+    montage = referential(active: "Cz", reference: "linked_ears")
+  }
+
+  derive "emg_power" {
+    formula = bandpower(input: "raw", band: (20 Hz, 50 Hz), window: 100 ms)
+  }
+
+  derive "emg_norm" {
+    from = "emg_power"
+    pipeline = [
+      auto_range(window: 4 s, percentile: (5, 95)),
+    ]
+  }
+
+  reward {
+    event = dwell(
+      condition: inside("emg_norm", low: 0.2, high: 0.9),
+      duration: 250 ms
+    )
+    continuous = sigmoid("emg_norm", midpoint: 0.5, steepness: 4)
+  }
+
+  output {
+    audio_chime = reward.event
+    audio_gain  = reward.continuous
+  }
+}

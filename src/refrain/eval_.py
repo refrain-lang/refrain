@@ -327,6 +327,17 @@ class Evaluator:
         self._record_streams: bool = bool(record_streams)
         self._last_streams: dict[str, np.ndarray] = {}
 
+        # Rust backend delegation (set by Evaluator.live when backend="rust").
+        # When not None, all public push-mode methods forward to _rust.
+        self._backend: str = "python"
+        self._rust: Any = None  # refrain_core.RustEvaluator | None
+        self._rust_bool_tap_keys: frozenset[str] = frozenset()
+        # Stream keys (last_streams) that should be coerced to bool dtype when
+        # bridging from Rust (Rust stores all streams as f64 0.0/1.0).
+        # Distinct from _rust_bool_tap_keys: stream keys use "reward.event"
+        # (dot-separated) while tap keys use "reward/event" (slash-separated).
+        self._rust_bool_stream_keys: frozenset[str] = frozenset()
+
     # -- Live-mode factory --------------------------------------------------
 
     @classmethod
@@ -337,26 +348,58 @@ class Evaluator:
         sample_rate_hz: float,
         channel_names: tuple[str, ...],
         record_streams: bool = False,
+        backend: str = "python",
     ) -> Evaluator:
         """Construct a push-mode evaluator. The host calls `start()`,
-        then `step_chunk(chunk)` per arriving sample chunk, then `stop()`."""
-        return cls(
+        then `step_chunk(chunk)` per arriving sample chunk, then `stop()`.
+
+        `backend="rust"` delegates all evaluation to the compiled Rust core
+        (`refrain_core.RustEvaluator`). The wheel must be installed (run
+        `maturin develop --release` in `refrain-core/`). All public methods
+        (`start`, `stop`, `step_chunk`, `set_control`, `last_taps`,
+        `last_streams`) forward transparently to Rust; return types are
+        identical to the Python backend. Default `backend="python"` is
+        unchanged.
+        """
+        if backend not in ("python", "rust"):
+            raise ValueError(
+                f"Evaluator.live: unknown backend {backend!r}. "
+                "Valid values: 'python', 'rust'."
+            )
+        ev = cls(
             ir,
             sample_rate_hz=sample_rate_hz,
             channel_names=channel_names,
             record_streams=record_streams,
         )
+        if backend == "rust":
+            ev._backend = "rust"
+            ev._rust = _build_rust_evaluator(ir, sample_rate_hz, channel_names)
+            # Pre-compute the set of tap keys whose values should be returned
+            # as Python booleans. Rust stores all taps as f64 (0.0/1.0 for
+            # booleans); we coerce them back at the Python boundary.
+            ev._rust_bool_tap_keys = _rust_bool_tap_keys(ir)
+            # Pre-compute stream keys that need bool coercion.  Reuses the
+            # event-channel set from _rust_bool_tap_keys (which already
+            # determined which output channels are event-kind) but maps them
+            # to the stream key namespace (output/<channel>, reward.event, …).
+            ev._rust_bool_stream_keys = _rust_bool_stream_keys(ir)
+        return ev
 
     # -- Lifecycle ----------------------------------------------------------
 
     @property
     def state(self) -> str:
         """`"ready"` | `"warmup"` | `"run"` | `"stopped"`."""
+        if self._rust is not None:
+            return self._rust.state()
         return self._state
 
     @property
     def warmup_remaining_s(self) -> float:
         """Seconds of warmup left, or 0 if not in warmup."""
+        if self._rust is not None:
+            return self._rust.warmup_remaining_s()
         if self._state != "warmup":
             return 0.0
         remaining = max(0, self._warmup_samples - self._samples_pushed)
@@ -373,6 +416,12 @@ class Evaluator:
         warmup window to populate, and the patient would hear settling
         transients without it.
         """
+        if self._rust is not None:
+            rust_state = self._rust.state()
+            if rust_state != "ready":
+                raise RuntimeError(f"Evaluator.start() called in state {rust_state!r}")
+            self._rust.start(skip_warmup)
+            return
         if self._state != "ready":
             raise RuntimeError(f"Evaluator.start() called in state {self._state!r}")
         self._samples_pushed = 0
@@ -383,6 +432,9 @@ class Evaluator:
 
     def stop(self) -> None:
         """End the session. Subsequent `step_chunk` calls raise."""
+        if self._rust is not None:
+            self._rust.stop()
+            return
         self._state = "stopped"
 
     def _compute_warmup_samples(self) -> int:
@@ -401,23 +453,7 @@ class Evaluator:
     def _resolve_controls(self) -> dict[str, float]:
         """Read each control's `default` value at session start. Phase 0d
         keeps controls static; runtime tuning is Phase 0e."""
-        out: dict[str, float] = {}
-        for control in self.ir.controls.values():
-            if control.default is not None and isinstance(control.default, IRNumberLit):
-                # Default is in surface units; convert duration→ms when
-                # relevant. For frequency / voltage / percent, raw value
-                # is fine.
-                val = float(control.default.value)
-                if control.default.unit == "ms":
-                    pass
-                elif control.default.unit == "s":
-                    val *= 1000.0
-                elif control.default.unit == "min":
-                    val *= 60_000.0
-                out[control.canonical_name] = val
-            else:
-                out[control.canonical_name] = 0.0
-        return out
+        return control_defaults(self.ir)
 
     def _build_pipeline(self) -> None:
         # Inputs: each has a single montage call.
@@ -543,6 +579,28 @@ class Evaluator:
 
         Re-shapes a 1-D chunk to (n, 1) for single-channel sources.
         """
+        if self._rust is not None:
+            # Ensure chunk is C-contiguous float64 2-D array.
+            raw_chunk = np.asarray(raw_chunk, dtype=np.float64)
+            if raw_chunk.ndim == 1:
+                raw_chunk = raw_chunk[:, None]
+            raw_chunk = np.ascontiguousarray(raw_chunk)
+            # Validate channel count before forwarding to Rust (matches the
+            # Python branch check so both backends raise the same ValueError).
+            _validate_chunk_channels(raw_chunk, self.channel_names)
+            # step_chunk_events is the lifecycle-aware path (handles warmup
+            # suppression, cursor advance, and caches last_streams).
+            rust_events = self._rust.step_chunk_events(raw_chunk)
+            # Wrap Rust Event objects into the Python Event dataclass.
+            return [
+                Event(
+                    timestamp_s=e.timestamp_s,
+                    channel=e.channel,
+                    kind=e.kind,
+                    value=e.value,
+                )
+                for e in rust_events
+            ]
         if self._state == "ready":
             self.start()
         if self._state == "stopped":
@@ -550,12 +608,7 @@ class Evaluator:
 
         if raw_chunk.ndim == 1:
             raw_chunk = raw_chunk[:, None]
-        if raw_chunk.shape[1] != len(self.channel_names):
-            raise ValueError(
-                f"step_chunk: chunk has {raw_chunk.shape[1]} channels "
-                f"but evaluator was configured for {len(self.channel_names)} "
-                f"({self.channel_names!r})"
-            )
+        _validate_chunk_channels(raw_chunk, self.channel_names)
 
         actual_chunk_size = raw_chunk.shape[0]
         t0_s = self._samples_pushed / self.sample_rate_hz
@@ -830,6 +883,18 @@ class Evaluator:
         Populated identically during `warmup` and `run` states — hosts
         legitimately want to plot warmup progress.
         """
+        if self._rust is not None:
+            # Rust stores all taps as f64 (0.0/1.0 for booleans). Coerce
+            # known-boolean keys back to Python bool so the return type is
+            # identical to the Python backend.
+            raw: dict[str, float] = dict(self._rust.last_taps())
+            result: dict[str, float | bool] = {}
+            for k, v in raw.items():
+                if k in self._rust_bool_tap_keys:
+                    result[k] = bool(v)
+                else:
+                    result[k] = float(v)
+            return result
         return dict(self._last_taps)
 
     def last_streams(self) -> dict[str, np.ndarray]:
@@ -848,6 +913,24 @@ class Evaluator:
             ``.events`` boolean array), ``"reward.event.holds"``
           - outputs → ``"output/<channel>"``
         """
+        if self._rust is not None:
+            # When record_streams=False, return {} to match the Python backend.
+            # When record_streams=True, return the streams cached by
+            # step_chunk_events (same eval_chunk pass, no double-step).
+            if not self._record_streams:
+                return {}
+            raw: dict[str, Any] = dict(self._rust.last_streams())
+            # Rust stores all streams as f64 (0.0/1.0 for booleans). Coerce
+            # known-boolean stream keys back to numpy bool dtype so the return
+            # type is identical to the Python backend. Boolean streams are:
+            # "reward.event", "reward.event.holds", and "output/<channel>"
+            # for event-kind output channels. Value/derive/input streams
+            # remain float64.
+            bool_keys = self._rust_bool_stream_keys
+            return {
+                k: np.asarray(v).astype(bool) if k in bool_keys else np.asarray(v)
+                for k, v in raw.items()
+            }
         return dict(self._last_streams)
 
     # -- Mid-session control tuning (SPEC §7.7) ----------------------------
@@ -865,6 +948,10 @@ class Evaluator:
         (midpoint/steepness), SmoothImpl (tau). Other impls receiving a
         control change silently ignore — Phase 0e-c extends this.
         """
+        if self._rust is not None:
+            # Rust raises KeyError on unknown control names; propagate it.
+            self._rust.set_control(name, float(value))
+            return
         target = f"control/{name}"
         if target not in self._controls:
             raise KeyError(f"no control named {name!r}")
@@ -1064,6 +1151,50 @@ class Evaluator:
 # ---------------------------------------------------------------------------
 
 
+def _validate_chunk_channels(
+    raw_chunk: np.ndarray, channel_names: tuple[str, ...]
+) -> None:
+    """Raise `ValueError` if the chunk's column count doesn't match the
+    configured channel count. Called by both the Python and Rust branches
+    of `step_chunk` so the error message is identical for both backends.
+
+    Assumes the caller has already reshaped a 1-D input to (n, 1).
+    """
+    if raw_chunk.shape[1] != len(channel_names):
+        raise ValueError(
+            f"step_chunk: chunk has {raw_chunk.shape[1]} channels "
+            f"but evaluator was configured for {len(channel_names)} "
+            f"({channel_names!r})"
+        )
+
+
+def control_defaults(ir: IRProtocol) -> dict[str, float]:
+    """Resolve each control's `default` to a `{canonical_name: float}` map.
+
+    Default values carry surface units; durations are converted to ms while
+    frequency / voltage / percent keep their raw value. A control with no
+    numeric default resolves to 0.0. Shared by the `Evaluator` (session-start
+    control values) and the IR-JSON emitter (so control-refs in inline
+    expressions and coefficient baking resolve to a literal numeric value)."""
+    out: dict[str, float] = {}
+    for control in ir.controls.values():
+        if control.default is not None and isinstance(control.default, IRNumberLit):
+            # Default is in surface units; convert duration→ms when
+            # relevant. For frequency / voltage / percent, raw value
+            # is fine.
+            val = float(control.default.value)
+            if control.default.unit == "ms":
+                pass
+            elif control.default.unit == "s":
+                val *= 1000.0
+            elif control.default.unit == "min":
+                val *= 60_000.0
+            out[control.canonical_name] = val
+        else:
+            out[control.canonical_name] = 0.0
+    return out
+
+
 def _collect_control_targets(value: Any) -> list[str]:
     """Walk a static-args structure looking for IRControlRefs; return
     the list of canonical control names they reference. Used by the
@@ -1142,6 +1273,109 @@ def _scale_to_ms_if_duration(n: IRNumberLit) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Rust backend helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_rust_evaluator(
+    ir: IRProtocol,
+    sample_rate_hz: float,
+    channel_names: tuple[str, ...],
+) -> Any:
+    """Lazily import `refrain_core` and construct a `RustEvaluator`.
+
+    Raises a clear `ImportError` if the wheel is not installed — the user
+    must run `maturin develop --release` inside `refrain-core/` first.
+    """
+    try:
+        import refrain_core  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise ImportError(
+            "Evaluator.live(backend='rust') requires the refrain_core wheel. "
+            "Build it with: cd refrain-core && maturin develop --release"
+        ) from exc
+
+    from .ir_json import ir_to_json
+    ir_json = ir_to_json(ir, sample_rate_hz=sample_rate_hz)
+    return refrain_core.RustEvaluator(
+        ir_json, float(sample_rate_hz), list(channel_names)
+    )
+
+
+def _rust_bool_tap_keys(ir: IRProtocol) -> frozenset[str]:
+    """Compute the set of tap keys whose values must be coerced to Python
+    `bool` when bridging from the Rust evaluator (which stores all taps as
+    `f64`, 0.0/1.0 for booleans).
+
+    Boolean tap keys are: `inhibit/<name>`, `muted`, `reward/event`,
+    `reward/event.holds`, `reward/condition[i]` (for all i), and
+    `output/<channel>` for event-type output channels.
+    """
+    keys: set[str] = {"muted"}
+
+    # inhibit/<name>
+    for ih in ir.inhibits:
+        keys.add(f"inhibit/{ih}")
+
+    # reward booleans
+    if ir.reward.event is not None:
+        keys.add("reward/event")
+        keys.add("reward/event.holds")
+        # Determine number of sub-conditions to add reward/condition[i] keys.
+        # Mirrors _eval_reward_event: all_of/any_of over an array expands;
+        # single condition → condition[0].
+        event_expr = ir.reward.event
+        n_sub = 1  # default: single condition
+        if (
+            isinstance(event_expr, IRCall)
+            and event_expr.callee == "dwell"
+        ):
+            # Find the condition arg.
+            condition = next(
+                (a.value for a in event_expr.args if a.name == "condition"),
+                None,
+            )
+            if condition is not None and isinstance(condition, IRCall):
+                if condition.callee in ("all_of", "any_of") and condition.args:
+                    arr = condition.args[0].value
+                    if isinstance(arr, IRArray):
+                        n_sub = len(arr.elements)
+        for i in range(n_sub):
+            keys.add(f"reward/condition[{i}]")
+
+    # output/<channel> — event channels are bound to reward.event
+    for channel, expr in ir.output.items():
+        if isinstance(expr, IRRewardField) and expr.field_path == "event":
+            keys.add(f"output/{channel}")
+
+    return frozenset(keys)
+
+
+def _rust_bool_stream_keys(ir: IRProtocol) -> frozenset[str]:
+    """Compute the set of `last_streams()` keys whose arrays must be coerced
+    to numpy ``bool`` dtype when bridging from the Rust evaluator.
+
+    Uses a dot-separated key convention (``"reward.event"``) matching
+    the Python ``_process_chunk``'s ``captured`` dict, distinct from the
+    slash-separated tap keys in ``_rust_bool_tap_keys``.  Reuses the same
+    event-output-channel determination logic to avoid duplication.
+    """
+    keys: set[str] = set()
+
+    # reward.event and reward.event.holds are always bool when a dwell exists.
+    if ir.reward.event is not None:
+        keys.add("reward.event")
+        keys.add("reward.event.holds")
+
+    # output/<channel> for event-kind (reward.event) output channels.
+    for channel, expr in ir.output.items():
+        if isinstance(expr, IRRewardField) and expr.field_path == "event":
+            keys.add(f"output/{channel}")
+
+    return frozenset(keys)
+
+
+# ---------------------------------------------------------------------------
 # Convenience entry point
 # ---------------------------------------------------------------------------
 
@@ -1163,4 +1397,4 @@ def eval_protocol(
     yield from Evaluator(ir, source).run(chunk_size=chunk_size, skip_warmup=skip_warmup)
 
 
-__all__ = ["Evaluator", "Event", "eval_protocol"]
+__all__ = ["Evaluator", "Event", "control_defaults", "eval_protocol"]
