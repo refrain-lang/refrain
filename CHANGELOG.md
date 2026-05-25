@@ -19,6 +19,13 @@ bumps are additive; major bumps may break compatibility.
 
 ## [Unreleased]
 
+### Changed
+- `Evaluator.live(...)` default backend is now `"auto"`: prefer the compiled
+  Rust core when the `refrain_core` wheel is importable, otherwise fall back to
+  the pure-Python engine. Non-breaking — the wheel is not a hard dependency, and
+  the two backends are gated to machine precision in CI. Pass `backend="python"`
+  or `backend="rust"` to force a specific engine.
+
 ### Added (M5 — IR-JSON wire spec + conformance)
 - `docs/IR-JSON.md` — normative IR-JSON wire format specification: field
   layout for every node family (filter, envelope, threshold, reward, inhibit,
