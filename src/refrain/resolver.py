@@ -1805,9 +1805,14 @@ def resolve(
     to compute the chosen sample rate. Pass `None` to skip those checks.
 
     Pass ``bindings`` to override placement control values at resolve time.
-    Keys are control names; values are concrete channel strings (for
-    ``active`` placements).  Omitted names fall back to the control's
-    declared ``default``.
+    Keys are control names; the value's shape matches the control's ``kind``:
+    a channel string for ``active``; a 2-tuple of channel strings for
+    ``bipolar`` and ``pair``; a list of channel strings for ``set`` (binding a
+    ``set`` into an input montage drives Mode 2a per-site replication). Omitted
+    names fall back to the control's declared ``default``. Each bound site is
+    validated against the control's ``allowed`` set and the amp's channels, and
+    a ``final`` control rejects any override. See ``docs/EMBEDDING.md`` for the
+    host deploy-binding recipe.
 
     Pass a `parent_loader` (typically built via
     `refrain.compose.filesystem_loader([...])`) if the protocol uses

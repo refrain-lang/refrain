@@ -99,6 +99,78 @@ That's the whole surface. Five `Evaluator` methods: `live`, `start`,
 
 ---
 
+## Deploy-time: binding a parameterized protocol
+
+A protocol can declare `placement` controls so a *single* `.refrain` artifact
+deploys at clinician-chosen sites without re-authoring (SPEC §4.9). Binding
+happens once, at **resolve time** — off the realtime path and independent of
+`backend=`. The resolved IR is identical in shape to a hand-written fixed-site
+protocol, so the wire format (`IR_JSON_VERSION` stays `0.1`) and the Rust core
+never see "placement" at all. `backend="rust"` and parameterized placement are
+orthogonal and compose freely.
+
+**1. Discover what a protocol exposes.** Resolve once (defaults bound) and read
+the placement controls straight off the in-memory IR — they're retained on
+`ir.controls` even though the IR-JSON emitter omits them:
+
+```python
+ir = resolve(protocol_ast, amp)                 # defaults bound; no overrides yet
+
+placements = {n: c for n, c in ir.controls.items() if c.type_kind == "placement"}
+for name, c in placements.items():
+    print(name, c.kind, repr(c.label),
+          "allowed:", c.allowed or "any",        # () means "any"
+          "default:", c.default_placement,
+          "locked" if c.final else "")
+```
+
+Each placement control carries `.kind` (`"active" | "bipolar" | "pair" | "set"`),
+`.allowed` (a tuple of channel names — or of 2-tuples for `bipolar`/`pair`; `()`
+means "any device channel"), `.default_placement`, `.label`, `.final`, and for
+`set` the size bounds `.set_min` / `.set_max`. Build the clinician's site-picker
+UI from exactly these fields.
+
+**2. Bind the clinician's choices and re-resolve.** The value shape matches the
+control's `kind`:
+
+```python
+ir = resolve(protocol_ast, amp, bindings={
+    "site":  "C4",                  # active   → a channel string
+    "motor": ("C3", "C4"),          # bipolar  → 2-tuple (active, reference)
+    "coh":   ("F3", "F4"),          # pair     → 2-tuple (coherence legs .a/.b)
+    "sites": ["C3", "Cz", "C4"],    # set      → list of channels
+})
+evaluator = Evaluator.live(ir, sample_rate_hz=250, channel_names=layout)
+```
+
+- **active** — the bound channel substitutes into the montage and `requires.channels`.
+- **bipolar** — `(active, reference)`; **pair** — the two coherence legs referenced as `coh.a` / `coh.b`.
+- **set** — each bound site replicates the input's dependent pipeline (derives,
+  thresholds, reward *condition*), and the reward combines the per-site conditions
+  with `all`/`any` per the protocol's `reward.combine` (Mode 2a). The resolved IR
+  is a flat N-site graph the core runs unchanged.
+
+**3. Validation is fail-fast, at deploy — never mid-session.** Every bound site
+is checked against the control's `allowed` set intersected with the amp's actual
+channels (and, for `set`, against `min`/`max`). A site the device can't provide,
+a value outside `allowed`, or any override of a `final` (locked) control raises
+`ResolveError` from `resolve(...)` — before `Evaluator.live(...)`, so a bad
+placement can't reach a running session:
+
+```python
+from refrain.resolver import ResolveError
+try:
+    ir = resolve(protocol_ast, amp, bindings={"site": "Fz"})
+except ResolveError as e:
+    show_clinician_error(str(e))   # e.g. "site 'Fz' not in allowed {...}" / not on this amp
+```
+
+A `set` placement also gates `reward.continuous`: a continuous reward over a
+replicated set raises `ResolveError` (it needs aggregation — Mode 2b). See SPEC
+§4.9 for the language-side declaration syntax.
+
+---
+
 ## The lifecycle
 
 Refrain's evaluator transitions through these states (SPEC §7.1):
