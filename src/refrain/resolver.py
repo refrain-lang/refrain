@@ -717,13 +717,22 @@ class _Resolver:
         """Parse the `allowed` field of a placement control.
 
         "any" (StringLit) or absent → () (sentinel meaning any channel is allowed).
-        Array of channel values → tuple of parsed values.
+        A non-empty array of channel values → tuple of parsed values. An empty
+        array is rejected: () is reserved for "any", so `allowed = []` (which would
+        otherwise silently mean "accept anything") is almost certainly an authoring
+        mistake.
         """
         if expr is None:
             return ()
         if isinstance(expr, A.StringLit) and expr.value == "any":
             return ()
         if isinstance(expr, A.Array):
+            if not expr.elements:
+                raise ResolveError(
+                    f"placement control {name!r}: allowed must be non-empty "
+                    "(use \"any\" to allow any channel)",
+                    loc=loc,
+                )
             result = []
             for elt in expr.elements:
                 val = self._parse_placement_value(name, place_kind, elt, loc)

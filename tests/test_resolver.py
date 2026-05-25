@@ -636,6 +636,21 @@ def test_placement_control_active_resolves():
     assert c.kind == "active"
     assert c.allowed == ("Cz", "C3", "C4")
     assert c.final is False
+    assert c.default_placement == ("Cz",)
+
+
+def test_placement_empty_allowed_rejected():
+    src = '''
+        protocol "p" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          controls { site = placement { kind = "active"; default = "Cz"; allowed = [] } }
+          input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+          reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+          output { audio_gain = reward.continuous }
+        }
+    '''
+    with pytest.raises(ResolveError, match="non-empty|any"):
+        resolve(parse(src))
 
 
 def test_placement_default_must_be_in_allowed():
