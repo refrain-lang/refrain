@@ -7,6 +7,28 @@ bumps are additive; major bumps may break compatibility.
 
 ## [Unreleased]
 
+### Added (M5 — IR-JSON wire spec + conformance)
+- `docs/IR-JSON.md` — normative IR-JSON wire format specification: field
+  layout for every node family (filter, envelope, threshold, reward, inhibit,
+  controls, taps), versioning, and the baked-coefficient contract that keeps
+  the portable runtime free of filter-design dependencies.
+- `refrain-core/schema/ir-json-v0.1.schema.json` — machine-readable JSON
+  Schema for `ir-json/v0.1`; validated in CI against every committed
+  `*.ir.json` golden vector via `tests/test_ir_json_schema.py`.
+- `docs/CONFORMANCE.md` — published conformance suite: required and optional
+  capabilities, golden-vector families, how to claim conformance, and the
+  tolerance budget for floating-point comparisons across runtimes.
+- `docs/REPRODUCIBILITY.md` — reproducibility contract: deterministic
+  fixture regeneration, schema-pinning policy, and the guarantee that
+  `gen_fixtures.py → IR-JSON → cargo test` round-trips are stable across
+  Python and Rust re-runs given the same seed and SciPy version.
+- `docs/DESIGN-NOTES.md` §5a — note on the filter-coefficient baking
+  boundary: SciPy runs at design time, baked coefficients travel in IR-JSON,
+  the portable runtime never links SciPy/BLAS.
+- Drift gate (`refrain-core/tools/check_equivalence.py`) extended to five
+  steps: schema-validation step added after dual-backend pytest, gating every
+  CI run on `test_ir_json_schema.py`.
+
 ## [0.1.0] — 2026-05-13
 
 ### Added
