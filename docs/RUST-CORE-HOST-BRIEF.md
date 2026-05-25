@@ -139,7 +139,13 @@ Save it where this app keeps design docs. Cover:
 3. **Asset pipeline.** How do IR-JSON protocol assets get into the app bundle,
    and how do you guarantee the bundled rate matches the device's actual stream
    rate? (One asset per supported rate? Resample host-side to a single baked
-   rate?) This is the #1 correctness trap — design it explicitly.
+   rate?) This is the #1 correctness trap — design it explicitly. Note: if a
+   protocol uses parameterized `placement` (clinician-chosen sites), that
+   binding is resolved **off-device** in the Python front-end (the build that
+   emits IR-JSON) — the core only ever loads a fully site-bound IR-JSON. So
+   either bundle one pre-bound asset per site configuration, or run the front-end
+   server-side and deliver the resolved IR-JSON; the on-device core never binds
+   placement.
 4. **Channel mapping.** How do you map the headset's electrode layout to the
    `channelNames` you pass, including reference electrodes? How do you surface a
    placement mismatch to the clinician?

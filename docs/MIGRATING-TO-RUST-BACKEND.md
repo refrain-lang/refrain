@@ -21,6 +21,13 @@ Everything else stays the same. `start()`, `stop()`, `step_chunk()` (same
 backends are gated against each other in CI (`check_equivalence.py`), so outputs
 match to ~1e-13; boolean event/condition streams match exactly.
 
+> **Parameterized placement is orthogonal to the backend.** If your protocols
+> use `placement` controls (added since v0.3.0) to deploy at clinician-chosen
+> sites, that binding is a **resolve-time** step — `resolve(ast, amp,
+> bindings={...})` — that runs in the Python front-end and is unaffected by
+> `backend=`. The resolved IR is identical either way. See the deploy-binding
+> recipe in `docs/EMBEDDING.md`.
+
 ## 1. Install the `refrain_core` wheel
 
 `backend="rust"` lazily imports `refrain_core`; if it isn't installed you get a
@@ -99,7 +106,7 @@ equivalent check against its own protocols.)
 
 ## See also
 
-- `docs/EMBEDDING.md` — the host division-of-labour and the five-method embedding model.
+- `docs/EMBEDDING.md` — the host division-of-labour, the five-method embedding model, and the deploy-time placement-binding recipe.
 - `docs/IR-JSON.md` — the wire format + the sample-rate-baked / channels-are-runtime rules.
 - `docs/CONFORMANCE.md` — golden-vector conformance suite + what the Rust core covers.
 - `docs/REPRODUCIBILITY.md` — why one core + the conformance suite gives reproducibility by construction.

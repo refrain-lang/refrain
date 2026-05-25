@@ -82,10 +82,13 @@ without them.
    block does. This is the protocol you're targeting for the first
    working version of the plugin.
 
-4. `/Users/jcroall/git/refrain/refrain/docs/SPEC.md` §4.7, §4.8, §7
-   — reward block shape, output bindings, and runtime semantics. You
-   need this to understand what events the evaluator will emit and how
-   inhibits gate them.
+4. `/Users/jcroall/git/refrain/refrain/docs/SPEC.md` §4.7, §4.8, §4.9, §7
+   — reward block shape, output bindings, parameterized `placement` controls
+   (if the plugin lets a clinician pick training sites), and runtime
+   semantics. You need this to understand what events the evaluator will emit
+   and how inhibits gate them. For the host-side site-binding recipe
+   (`resolve(ast, amp, bindings={...})` + building a site-picker UI), see the
+   deploy-time section of `docs/EMBEDDING.md`.
 
 5. `/Users/jcroall/git/refrain/refrain/src/refrain/amp_profiles/brainbit_flex.json`
    — the amp profile for the target hardware. The 4-channel layout
