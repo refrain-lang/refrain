@@ -861,3 +861,43 @@ def test_pair_legs_bind_override(amp):
 def test_pair_not_in_allowed_fails(amp):
     with pytest.raises(ResolveError, match="not in allowed|allowed"):
         resolve(parse(_PAIR_PROTO), amp, bindings={"coh": ("Cz", "Pz")})
+
+
+# ---------------------------------------------------------------------------
+# Task 2 (Mode 2): kind="set" — multi-site list declaration + binding
+# ---------------------------------------------------------------------------
+
+_SET_DECL = '''
+    protocol "ms" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls { sites = placement { kind = "set"; default = ["Cz"]; allowed = ["C3","Cz","C4","Pz"]; min = 1; max = 3 } }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+      output { audio_gain = reward.continuous }
+    }
+'''
+
+
+def test_set_control_resolves(amp):
+    ir = resolve(parse(_SET_DECL), amp)
+    c = ir.controls["sites"]
+    assert c.kind == "set"
+    assert c.allowed == ("C3", "Cz", "C4", "Pz")
+    assert c.set_min == 1 and c.set_max == 3
+    assert c.default_placement == ("Cz",)
+
+
+def test_set_count_below_min_fails(amp):
+    src = _SET_DECL.replace("min = 1", "min = 2")
+    with pytest.raises(ResolveError, match="at least|min"):
+        resolve(parse(src), amp, bindings={"sites": ["Cz"]})
+
+
+def test_set_count_above_max_fails(amp):
+    with pytest.raises(ResolveError, match="at most|max"):
+        resolve(parse(_SET_DECL), amp, bindings={"sites": ["C3", "Cz", "C4", "Pz"]})
+
+
+def test_set_member_not_in_allowed_fails(amp):
+    with pytest.raises(ResolveError, match="not in allowed|allowed"):
+        resolve(parse(_SET_DECL), amp, bindings={"sites": ["C3", "Fz"]})
