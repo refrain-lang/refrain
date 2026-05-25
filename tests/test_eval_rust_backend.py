@@ -62,6 +62,7 @@ def test_rust_backend_events_parity(smr_ir):
     Events must be Event instances and match within atol=1e-6 on timestamp_s
     and value. The test is events-only (no record_streams) for this task.
     """
+    pytest.importorskip("refrain_core", reason="refrain_core wheel not installed")
     chunk = _make_chunk()
 
     # Python reference run.
