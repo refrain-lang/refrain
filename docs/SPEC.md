@@ -548,7 +548,7 @@ Validation: each member ∈ `allowed` ∩ device-capable; `min ≤ count ≤ max
 **Common fields (all kinds):**
 - `kind` (required): `"active"`, `"bipolar"`, `"pair"`, or `"set"`.
 - `default` (required): the default site(s). Shape depends on `kind`. Must satisfy `allowed` and `min`/`max` constraints.
-- `allowed`: explicit allowlist or `"any"`. For `active`/`set`, elements are channel strings; for `bipolar`/`pair`, elements are 2-tuples. May also be a bare group name (see §4.10 `groups`).
+- `allowed`: explicit allowlist or `"any"`. For `active`/`set`, elements are channel strings; for `bipolar`/`pair`, elements are 2-tuples. For `active`/`set` it may also be a bare group name (see §4.9.2 `groups`); `bipolar`/`pair` allowlists must be written inline.
 - `label`: optional display name for the deploy UI.
 - `live_tunable`: must be `false` (or absent); placement is frozen per session.
 - `final`: when `true`, the site is locked — `bindings` overrides are rejected, and child protocols cannot redeclare this control (§11.4).
@@ -598,9 +598,9 @@ The fan-out computes the **per-site subgraph** as the transitive closure of deri
 
 **Wire format:** the fan-out-unrolled IR uses only existing IR-JSON node types. The `sites` control is omitted from the wire (resolve-time-only); the emitted IR is shaped identically to a hand-written multi-site protocol. IR-JSON schema version remains `0.1`.
 
-### 4.10 `groups`
+#### 4.9.2 `groups`
 
-A `groups` block declares **named channel-name lists** that can be referenced from placement controls. Groups are resolve-time aliases — they expand to the same channel tuples as an inline list and never appear in the IR-JSON wire format.
+A `groups` block is a **top-level block** (a sibling of `controls`) that declares **named channel-name lists** which can be referenced from placement controls. Groups are resolve-time aliases — they expand to the same channel tuples as an inline list and never appear in the IR-JSON wire format.
 
 #### Syntax
 
@@ -617,7 +617,7 @@ Each entry is `<ident> = [ <string-lit>, ... ]`: a non-empty, duplicate-free lis
 
 A group name may appear as a **bare identifier** in two positions:
 
-1. **`allowed`** of any `placement` control (`active`, `bipolar`, `pair`, or `set`):
+1. **`allowed`** of an `active` or `set` placement control (`bipolar`/`pair` allowlists are 2-tuple lists and must be written inline):
 
    ```refrain
    controls {
@@ -650,7 +650,7 @@ The `groups` block merges across `extends` using the same field-level merge as `
 
 Groups expand at resolve time. The IR-JSON wire format carries no `groups` key; `IR_JSON_VERSION` remains `0.1`. See also §4.9 `controls` for the placement control types that accept group references.
 
-### 4.11 `session`
+### 4.10 `session`
 
 Session structure. Phases, durations, breaks, schedule.
 
@@ -664,7 +664,7 @@ session {
 }
 ```
 
-### 4.12 `custom`
+### 4.11 `custom`
 
 Escape-hatch declaration of an external Python primitive.
 

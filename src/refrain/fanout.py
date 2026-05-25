@@ -142,7 +142,14 @@ def _find_set_placements(proto: A.Protocol) -> set[str]:
 
 
 def _groups_table(proto: A.Protocol) -> dict[str, list[str]]:
-    """Build the group name → channel list table from the protocol's `groups` block."""
+    """Build the group name → channel list table from the protocol's `groups` block.
+
+    This is the fan-out pre-pass's lenient read, used only to expand a set
+    placement's group-named ``default`` before replication. The authoritative,
+    validating table (empty/duplicate/collision checks) is built later by
+    ``resolver._Resolver._resolve_groups``; this runs unconditionally on the
+    same block, so a malformed group still raises there.
+    """
     for stmt in proto.body:
         if isinstance(stmt, A.SectionBlock) and stmt.keyword == "groups":
             result: dict[str, list[str]] = {}
@@ -177,8 +184,15 @@ def _set_default_sites(proto: A.Protocol, set_name: str) -> list[str]:
                             e.value for e in inner.value.elements if isinstance(e, A.StringLit)
                         ]
                     elif isinstance(inner.value, A.NameRef):
-                        # Group reference — expand using the groups table.
-                        return list(groups.get(inner.value.name, []))
+                        # Group reference — expand using the groups table. Raise
+                        # the same unknown-group error the resolver does, rather
+                        # than silently yielding [] (→ "no sites to replicate").
+                        gname = inner.value.name
+                        if gname not in groups:
+                            raise ResolveError(
+                                f"unknown group {gname!r}", loc=inner.value.loc
+                            )
+                        return list(groups[gname])
     return []
 
 
