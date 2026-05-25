@@ -875,10 +875,11 @@ class _Resolver:
         # Parse allowed: "any" or an A.Array of A.StringLit.
         # Reuse _parse_placement_allowed with place_kind="active" so each
         # element is parsed as a plain channel string.
-        allowed = self._parse_placement_allowed(name, "active", fields.get("allowed"), loc)
+        allowed_expr = self._expand_group_ref(fields.get("allowed"))
+        allowed = self._parse_placement_allowed(name, "active", allowed_expr, loc)
 
-        # Parse default: must be an A.Array of A.StringLit.
-        default_expr = fields.get("default")
+        # Parse default: must be an A.Array of A.StringLit (or a group NameRef).
+        default_expr = self._expand_group_ref(fields.get("default"))
         if default_expr is None:
             raise ResolveError(
                 f"placement control {name!r} (set) requires a default",

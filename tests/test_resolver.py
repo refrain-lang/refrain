@@ -1053,3 +1053,36 @@ def test_unknown_group_in_allowed_rejected():
     '''
     with pytest.raises(ResolveError, match="unknown group 'nosuch'"):
         resolve(parse(src))
+
+
+# ---------------------------------------------------------------------------
+# Named groups — Task 4: expand group refs in set default
+# ---------------------------------------------------------------------------
+
+
+def test_group_expands_in_set_default():
+    src = '''
+        protocol "p" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          groups { smr = ["C3","Cz","C4"] }
+          controls { sites = placement { kind = "set"; default = smr; allowed = smr; min = 1; max = 3 } }
+          input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+          reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+          output { audio_gain = reward.continuous }
+        }
+    '''
+    ir = resolve(parse(src))
+    assert ir.controls["sites"].default_placement == ("C3", "Cz", "C4")
+    assert ir.controls["sites"].allowed == ("C3", "Cz", "C4")
+
+
+def test_group_default_exceeding_max_rejected():
+    src = '''
+        protocol "p" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          groups { smr = ["C3","Cz","C4"] }
+          controls { sites = placement { kind = "set"; default = smr; allowed = smr; min = 1; max = 2 } }
+        }
+    '''
+    with pytest.raises(ResolveError):       # existing min/max count check fires on the expanded default
+        resolve(parse(src))
