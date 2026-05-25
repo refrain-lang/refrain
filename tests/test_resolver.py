@@ -954,3 +954,56 @@ def test_reward_combine_defaults_all(amp):
 def test_reward_combine_invalid_fails(amp):
     with pytest.raises(ResolveError):
         resolve(parse(_REWARD_COMBINE_INVALID_PROTO), amp)
+
+
+# ---------------------------------------------------------------------------
+# Named groups — Task 2: resolver builds + validates group table
+# ---------------------------------------------------------------------------
+
+
+def test_groups_table_built():
+    src = '''
+        protocol "p" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          groups { smr = ["C3","Cz","C4"] }
+          input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+          reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+          output { audio_gain = reward.continuous }
+        }
+    '''
+    ir = resolve(parse(src))           # resolving succeeds; group declared but unused is fine
+    assert ir is not None
+
+
+def test_groups_empty_rejected():
+    src = '''
+        protocol "p" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          groups { smr = [] }
+        }
+    '''
+    with pytest.raises(ResolveError, match="empty"):
+        resolve(parse(src))
+
+
+def test_groups_duplicate_channel_rejected():
+    src = '''
+        protocol "p" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          groups { smr = ["C3","C3"] }
+        }
+    '''
+    with pytest.raises(ResolveError, match="more than once"):
+        resolve(parse(src))
+
+
+def test_group_name_collides_with_control_rejected():
+    src = '''
+        protocol "p" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          groups { site = ["C3","C4"] }
+          controls { site = placement { kind = "active"; default = "C3"; allowed = ["C3","C4"] } }
+        }
+    '''
+    with pytest.raises(ResolveError, match="collides"):
+        resolve(parse(src))

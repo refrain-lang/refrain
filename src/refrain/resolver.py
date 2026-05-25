@@ -137,6 +137,8 @@ class _Resolver:
         self.output_ast: A.SectionBlock | None = None
         self.controls_ast: A.SectionBlock | None = None
         self.session_ast: A.SectionBlock | None = None
+        self.groups_ast: A.SectionBlock | None = None
+        self.groups: dict[str, tuple[str, ...]] = {}
 
         # Resolved named entities (filled in source order).
         self.inputs: dict[str, IRInput] = {}
@@ -189,6 +191,7 @@ class _Resolver:
         #     inhibits, customs)
         #   - reward / output / session last, since they reference
         #     everything declared above
+        self._resolve_groups()
         self._resolve_controls()
         requires_ir = self._resolve_requires()
         self._resolve_named_decls(proto)
@@ -233,6 +236,7 @@ class _Resolver:
                     "output": "output_ast",
                     "controls": "controls_ast",
                     "session": "session_ast",
+                    "groups": "groups_ast",
                 }.get(stmt.keyword)
                 if attr is None:
                     raise ResolveError(
@@ -667,6 +671,46 @@ class _Resolver:
             budget=ResourceBudget(state_kb=state_kb, worst_case_us=worst_case_us),
             loc=decl.loc,
         )
+
+    # -- Groups -------------------------------------------------------------
+
+    def _resolve_groups(self) -> None:
+        if self.groups_ast is None:
+            return
+        control_names = {
+            s.target for s in (self.controls_ast.body if self.controls_ast else [])
+            if isinstance(s, A.Assignment)
+        }
+        for stmt in self.groups_ast.body:
+            if not isinstance(stmt, A.Assignment):
+                raise ResolveError(
+                    "groups block may only contain `name = [channels]` entries",
+                    loc=getattr(stmt, "loc", None),
+                )
+            name = stmt.target
+            if name in control_names:
+                raise ResolveError(
+                    f"group {name!r} collides with a control of the same name",
+                    loc=stmt.loc,
+                )
+            if not isinstance(stmt.value, A.Array):
+                raise ResolveError(
+                    f"group {name!r} must be a list of channel names", loc=stmt.value.loc
+                )
+            channels: list[str] = []
+            for elt in stmt.value.elements:
+                if not isinstance(elt, A.StringLit):
+                    raise ResolveError(
+                        f"group {name!r}: channel names must be strings", loc=elt.loc
+                    )
+                if elt.value in channels:
+                    raise ResolveError(
+                        f"group {name!r} lists {elt.value!r} more than once", loc=elt.loc
+                    )
+                channels.append(elt.value)
+            if not channels:
+                raise ResolveError(f"group {name!r} is empty", loc=stmt.value.loc)
+            self.groups[name] = tuple(channels)
 
     # -- Controls -----------------------------------------------------------
 
