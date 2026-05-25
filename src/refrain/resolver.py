@@ -1824,6 +1824,13 @@ def resolve(
         if exc.loc is not None and msg.startswith(f"line {exc.loc.line}:{exc.loc.col}: "):
             msg = msg.split(": ", 1)[1]
         raise ResolveError(msg, loc=exc.loc) from exc
+    # Mode 2a set-replication fan-out: rewrites a bound `set` placement into a
+    # flat per-site protocol AST before resolution. Returns `composed`
+    # unchanged when no `set` placement is declared (the single-site path).
+    # Imported lazily to avoid a module-load cycle (fanout imports ResolveError).
+    from .fanout import fan_out
+
+    composed = fan_out(composed, bindings or {}, amp=amp)
     return _Resolver(composed, amp, bindings).resolve()
 
 
