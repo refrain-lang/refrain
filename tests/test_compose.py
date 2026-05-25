@@ -552,3 +552,35 @@ def test_shipped_othmer_cz_pz_variant_resolves():
 
     # Channels from the child amend.
     assert ir.requires.channels == ("Cz", "Pz")
+
+
+# ---------------------------------------------------------------------------
+# Named groups — Task 5: merge groups across extends
+# ---------------------------------------------------------------------------
+
+
+def test_groups_merge_across_extends():
+    # parent defines `smr` and `frontal`; child overrides `smr` and adds `occ`.
+    # The child uses `frontal` (inherited from parent) in a second control.
+    parent = '''
+        protocol "base" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          groups { smr = ["C3","Cz","C4"]; frontal = ["F3","Fz","F4"] }
+        }
+    '''
+    child = '''
+        protocol "p" extends "base" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          groups { smr = ["C3","C4"]; occ = ["O1","O2"] }
+          controls {
+            site  = placement { kind = "active"; default = "C3"; allowed = smr }
+            front = placement { kind = "active"; default = "Fz"; allowed = frontal }
+          }
+          input "raw" { montage = referential(active: "C3", reference: "linked_ears") }
+          reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+          output { audio_gain = reward.continuous }
+        }
+    '''
+    ir = resolve(parse(child), parent_loader=_dict_loader({"base": parent}))
+    assert ir.controls["site"].allowed == ("C3", "C4")            # child override won
+    assert ir.controls["front"].allowed == ("F3", "Fz", "F4")     # frontal inherited from parent
