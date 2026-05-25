@@ -54,12 +54,12 @@ jobs:
   # ---------------------------------------------------------------------------
   # Job 2: ios-xcframework
   #
-  # UNVALIDATED — requires a self-hosted macOS runner with Xcode; adjust the
-  # `runs-on` labels below to match the farm's Mac mini runner labels before
-  # enabling this job. The steps are verbatim from bindings/README.md.
+  # Runs on a GitHub-hosted macos-14 (Apple-silicon) runner — Xcode is
+  # pre-installed, so no self-hosted macOS farm is required. The steps are
+  # verbatim from bindings/README.md.
   # ---------------------------------------------------------------------------
   ios-xcframework:
-    runs-on: [self-hosted, macOS]
+    runs-on: macos-14
     needs: bindings-verify
     steps:
       - uses: actions/checkout@v4
