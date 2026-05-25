@@ -839,6 +839,32 @@ What's coarse:
 
 ---
 
+## 5a. Filter-coefficient baking and portable-runtime boundary (M5)
+
+Python (SciPy) is used exclusively at *filter-design time*: `bandpass`,
+`hilbert`, and `bandpower` compute their `sos` arrays, `fir_taps`, and
+group-delay offset once, during IR compilation, and record those
+pre-computed values into the IR-JSON representation.  See `docs/IR-JSON.md`
+for the field layout (`filter` node family).
+
+The portable runtime (Rust core, and any future conforming runtime) only
+runs the deterministic recurrence / convolution using those baked
+coefficients.  It never calls into SciPy, BLAS, or any filter-design
+library.  This is what keeps the core portable:
+
+- No filter-design dependency at runtime → no LAPACK / BLAS linkage
+- No scipy wheel at runtime → binary size stays small; embedded / WASM
+  targets remain feasible
+- Coefficient reproducibility is guaranteed by the IR-JSON wire spec rather
+  than by independent implementations agreeing on SciPy's internals
+
+The design constraint is: *anything that requires eigendecomposition,
+Chebyshev-node placement, or frequency-sampling runs in Python and bakes
+into IR; anything that runs per-sample in the hot loop runs in the portable
+core.*
+
+---
+
 ## 6. Things to revisit before v0.1
 
 - **Hyphenated identifiers** — drop or split into `position_lit`.

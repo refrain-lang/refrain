@@ -1,16 +1,19 @@
 """Drift gate: regenerate golden-vector fixtures, run Rust equivalence tests,
-build the refrain_core wheel, and run the behavioral evaluator suite through
-the Rust backend.
+build the refrain_core wheel, run the behavioral evaluator suite through
+the Rust backend, and validate IR-JSON golden vectors against the published
+JSON Schema.
 
 Usage (from worktree root):
     PYTHONPATH="$PWD" ./.venv/bin/python refrain-core/tools/check_equivalence.py
 
-Exits 0 only when ALL FOUR steps succeed:
+Exits 0 only when ALL FIVE steps succeed:
   1. gen_fixtures.py regenerates all fixtures from the current Python evaluator.
   2. `cargo test` (equivalence + events + taps + ir_deser) passes in refrain-core/.
   3. The refrain_core wheel is built and installed from current source.
   4. The behavioral evaluator suite (tests/test_eval_*.py) passes under
      REFRAIN_EVAL_BACKEND=rust — proving Python↔Rust behavioral parity.
+  5. IR-JSON golden vectors (tests/fixtures/*.ir.json) validate against the
+     published JSON Schema (refrain-core/schema/ir-json-v0.1.schema.json).
 
 REUSE: calls the existing gen_fixtures.py as a subprocess; does not duplicate
        fixture-generation logic.  The Rust tests already exist in
@@ -93,6 +96,14 @@ def main() -> int:
         extra_env={"REFRAIN_EVAL_BACKEND": "rust", "PYTHONPATH": str(WORKTREE)},
     )
 
+    # Step 5 — IR-JSON golden vectors validate against the published JSON Schema.
+    results["schema_validation"] = _run(
+        "IR-JSON golden vectors vs. JSON Schema (pytest)",
+        [sys.executable, "-m", "pytest", str(WORKTREE / "tests" / "test_ir_json_schema.py"), "-q"],
+        cwd=WORKTREE,
+        extra_env={"PYTHONPATH": str(WORKTREE)},
+    )
+
     # Summary
     print(f"\n{'='*60}")
     print("EQUIVALENCE + DUAL-BACKEND DRIFT GATE — SUMMARY")
@@ -106,7 +117,7 @@ def main() -> int:
 
     print(f"{'='*60}")
     if all_ok:
-        print("RESULT: PASS — fixtures current, Rust core equivalent, wheel built, dual-backend parity confirmed.")
+        print("RESULT: PASS — fixtures current, Rust core equivalent, wheel built, dual-backend parity confirmed, IR-JSON schema valid.")
     else:
         print("RESULT: FAIL — see step output above for details.")
     print(f"{'='*60}")

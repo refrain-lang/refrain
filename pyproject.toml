@@ -45,6 +45,7 @@ dev = [
   "mypy >= 1.0",
   "mne >= 1.4",
   "pyxdf >= 1.16",
+  "jsonschema >= 4.0",
 ]
 
 [project.scripts]
