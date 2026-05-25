@@ -206,10 +206,23 @@ _BIPOLAR = PrimitiveSpec(
     name="bipolar",
     category="signal",
     signatures=(
+        # Standard form: explicit plus and minus channel names.
         Signature(
             params=(
                 ParamSpec("plus", "channel_name"),
                 ParamSpec("minus", "channel_name"),
+            ),
+            output=_const_scalar(VOLTAGE),
+        ),
+        # Placement-pair form: a single `pair` arg whose value is a placement
+        # control (bipolar kind).  The resolver substitutes this into the
+        # standard plus/minus form at resolve time via _substitute_placement_args,
+        # so _resolve_call always sees the standard signature in the final IR.
+        # This overload exists so that `bipolar(pair: site)` type-checks during
+        # signature matching before substitution completes.
+        Signature(
+            params=(
+                ParamSpec("pair", "placement_pair"),
             ),
             output=_const_scalar(VOLTAGE),
         ),

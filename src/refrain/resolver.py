@@ -362,10 +362,13 @@ class _Resolver:
                 and self.controls[elt.name].type_kind == "placement"
             ):
                 # Expand a placement control reference to its bound channel(s).
-                # For active placements, _bound_placement_value returns one string.
-                # Bipolar expansion (both legs) is deferred to Task 4.
-                channel = self._bound_placement_value(elt.name)
-                out.append(channel)
+                # _bound_placement_value returns a str (active) or 2-tuple (bipolar).
+                bound = self._bound_placement_value(elt.name)
+                if isinstance(bound, str):
+                    out.append(bound)
+                else:
+                    # bipolar: extend with both legs
+                    out.extend(bound)
             else:
                 raise ResolveError(
                     "requires.channels entries must be string literals",
@@ -433,10 +436,51 @@ class _Resolver:
         )
 
     def _substitute_placement_args(self, call: A.Call) -> A.Call:
-        """Rewrite montage A.Call args: any NameRef naming an active placement
-        control is replaced by an A.StringLit of the bound concrete channel.
+        """Rewrite montage A.Call args for placement substitution.
+
+        Two cases are handled:
+
+        1. ``active`` placement NameRef in any slot:
+           ``referential(active: site)`` → ``referential(active: "Cz")``.
+           The NameRef is replaced by an A.StringLit of the bound channel.
+
+        2. ``bipolar(pair: <NameRef naming a bipolar placement>)`` form:
+           The entire ``pair:`` arg is expanded into two args:
+           ``bipolar(plus: "T3", minus: "T4")``.
+           This makes the IR identical to a literal ``bipolar(plus:, minus:)``,
+           so ``_resolve_call`` is unchanged.
+
         All other args are left unchanged.  Returns a (possibly new) A.Call.
         """
+        # Special case: bipolar(pair: <bipolar-placement NameRef>)
+        # Detect before iterating args so we can replace the whole call shape.
+        if call.callee == "bipolar":
+            pair_arg = None
+            for arg in call.args:
+                if (
+                    arg.name == "pair"
+                    and isinstance(arg.value, A.NameRef)
+                    and arg.value.name in self.controls
+                    and self.controls[arg.value.name].type_kind == "placement"
+                    and self.controls[arg.value.name].kind == "bipolar"
+                ):
+                    pair_arg = arg
+                    break
+            if pair_arg is not None:
+                pair = self._bound_placement_value(pair_arg.value.name)  # type: ignore[assignment]
+                plus_str, minus_str = pair  # 2-tuple guaranteed by _bound_placement_value
+                loc = pair_arg.value.loc
+                plus_arg = A.Arg(name="plus", value=A.StringLit(value=plus_str, loc=loc), loc=pair_arg.loc)
+                minus_arg = A.Arg(name="minus", value=A.StringLit(value=minus_str, loc=loc), loc=pair_arg.loc)
+                # Replace the pair: arg with plus: / minus:; keep any other args unchanged.
+                other_args = [a for a in call.args if a is not pair_arg]
+                return A.Call(
+                    callee=call.callee,
+                    args=tuple([plus_arg, minus_arg] + other_args),
+                    loc=call.loc,
+                )
+
+        # General case: rewrite active-placement NameRefs in individual slots.
         new_args = []
         changed = False
         for arg in call.args:
@@ -796,8 +840,12 @@ class _Resolver:
                 loc=loc,
             )
 
-    def _bound_placement_value(self, name: str) -> str:
-        """Return the concrete bound channel string for an active placement control.
+    def _bound_placement_value(self, name: str):
+        """Return the concrete bound value for a placement control.
+
+        Dispatches on ``ctrl.kind``:
+          - ``active``  → returns a channel-name string.
+          - ``bipolar`` → returns a 2-tuple ``(plus, minus)`` of channel-name strings.
 
         Looks up ``name`` in ``self.bindings`` (override) or falls back to the
         control's ``default_placement``.  Validates the result against ``allowed``
@@ -805,7 +853,7 @@ class _Resolver:
         Raises ``ResolveError`` if:
           - the control is ``final`` and an override is supplied;
           - the bound value is not in ``allowed`` (non-empty list means restrict);
-          - the amp does not have the channel.
+          - the amp does not have the channel (or either leg for bipolar).
         """
         ctrl = self.controls.get(name)
         if ctrl is None or ctrl.type_kind != "placement":
@@ -820,29 +868,54 @@ class _Resolver:
                     f"placement {name!r} is final and cannot be overridden",
                     loc=loc,
                 )
-            channel = self.bindings[name]
+            value = self.bindings[name]
         else:
-            # Use default: for active, default_placement is a 1-tuple.
-            channel = ctrl.default_placement[0]
+            # Use default: active default_placement is a 1-tuple; bipolar is already a 2-tuple.
+            if ctrl.kind == "active":
+                value = ctrl.default_placement[0]
+            else:
+                value = ctrl.default_placement  # 2-tuple (plus, minus)
 
-        if not isinstance(channel, str):
-            raise ResolveError(
-                f"placement {name!r} (active): binding value must be a channel-name "
-                f"string, got {type(channel).__name__}",
-                loc=loc,
-            )
-
-        # allowed = () means "any"; only validate when non-empty.
-        self._check_placement_in_allowed(name, channel, ctrl.allowed, loc)
-
-        # Device check: the amp must have the channel.
-        if self.amp is not None and not self.amp.has_channel(channel):
-            raise ResolveError(
-                f"amp {self.amp.model!r} is missing required channels: [{channel!r}]",
-                loc=loc,
-            )
-
-        return channel
+        if ctrl.kind == "active":
+            if not isinstance(value, str):
+                raise ResolveError(
+                    f"placement {name!r} (active): binding value must be a channel-name "
+                    f"string, got {type(value).__name__}",
+                    loc=loc,
+                )
+            # allowed = () means "any"; only validate when non-empty.
+            self._check_placement_in_allowed(name, value, ctrl.allowed, loc)
+            # Device check: the amp must have the channel.
+            if self.amp is not None and not self.amp.has_channel(value):
+                raise ResolveError(
+                    f"amp {self.amp.model!r} is missing required channels: [{value!r}]",
+                    loc=loc,
+                )
+            return value
+        else:
+            # bipolar: value must be a 2-tuple of strings
+            if (
+                not isinstance(value, tuple)
+                or len(value) != 2
+                or not isinstance(value[0], str)
+                or not isinstance(value[1], str)
+            ):
+                raise ResolveError(
+                    f"placement {name!r} (bipolar): binding value must be a 2-tuple of "
+                    f"channel-name strings, got {value!r}",
+                    loc=loc,
+                )
+            # allowed = () means "any"; only validate when non-empty.
+            self._check_placement_in_allowed(name, value, ctrl.allowed, loc)
+            # Device check: both legs must be present on the amp.
+            if self.amp is not None:
+                missing = [ch for ch in value if not self.amp.has_channel(ch)]
+                if missing:
+                    raise ResolveError(
+                        f"amp {self.amp.model!r} is missing required channels: {missing}",
+                        loc=loc,
+                    )
+            return value
 
     # -- Reward -------------------------------------------------------------
 

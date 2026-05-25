@@ -782,3 +782,41 @@ _SITE_PROTO_REQ = '''
 def test_requires_channels_from_placement():
     ir = resolve(parse(_SITE_PROTO_REQ), _AMP, bindings={"site": "C3"})
     assert ir.requires.channels == ("C3",)
+
+
+# ---------------------------------------------------------------------------
+# Task 4: bipolar placement + bipolar(pair: site) montage form
+# ---------------------------------------------------------------------------
+
+_BIPOLAR_PROTO = '''
+    protocol "ilf" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls { site = placement { kind = "bipolar"; default = ("T3","T4"); allowed = [("T3","T4"),("C3","C4")] } }
+      requires { channels = [site] }
+      input "raw" { montage = bipolar(pair: site) }
+      reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+      output { audio_gain = reward.continuous }
+    }
+'''
+
+
+def _bipolar_legs(ir):
+    call = ir.inputs["raw"].montage
+    args = {a.name: a.value.value for a in call.args}
+    return (args["plus"], args["minus"])
+
+
+def test_bipolar_placement_binds_default():
+    ir = resolve(parse(_BIPOLAR_PROTO), _AMP)
+    assert _bipolar_legs(ir) == ("T3", "T4")
+    assert ir.requires.channels == ("T3", "T4")
+
+
+def test_bipolar_placement_binds_override():
+    ir = resolve(parse(_BIPOLAR_PROTO), _AMP, bindings={"site": ("C3", "C4")})
+    assert _bipolar_legs(ir) == ("C3", "C4")
+
+
+def test_bipolar_pair_not_in_allowed_fails():
+    with pytest.raises(ResolveError, match="not in allowed|allowed"):
+        resolve(parse(_BIPOLAR_PROTO), _AMP, bindings={"site": ("F3", "F4")})
