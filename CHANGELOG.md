@@ -5,6 +5,18 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.5.0] — 2026-05-25
+
+### Added
+- **Named `allowed` groups** (`groups { … }` block): authors can declare named
+  channel-name lists and reference them by bare identifier in a placement
+  control's `allowed` and a `set` control's `default`. Groups expand at
+  resolve time to the same channel tuples as an inline list; the IR-JSON wire
+  format and `IR_JSON_VERSION` are unchanged. Validation: empty group, duplicate
+  channel within a group, unknown group reference, and group-name collision with
+  a control all raise `ResolveError`. The `groups` block merges across `extends`
+  (child overrides parent same-named group by re-declaration). See `docs/SPEC.md §4.10`.
+
 ## [Unreleased]
 
 ### Added (M5 — IR-JSON wire spec + conformance)

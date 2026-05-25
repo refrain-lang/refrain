@@ -548,7 +548,7 @@ Validation: each member ∈ `allowed` ∩ device-capable; `min ≤ count ≤ max
 **Common fields (all kinds):**
 - `kind` (required): `"active"`, `"bipolar"`, `"pair"`, or `"set"`.
 - `default` (required): the default site(s). Shape depends on `kind`. Must satisfy `allowed` and `min`/`max` constraints.
-- `allowed`: explicit allowlist or `"any"`. For `active`/`set`, elements are channel strings; for `bipolar`/`pair`, elements are 2-tuples.
+- `allowed`: explicit allowlist or `"any"`. For `active`/`set`, elements are channel strings; for `bipolar`/`pair`, elements are 2-tuples. May also be a bare group name (see §4.10 `groups`).
 - `label`: optional display name for the deploy UI.
 - `live_tunable`: must be `false` (or absent); placement is frozen per session.
 - `final`: when `true`, the site is locked — `bindings` overrides are rejected, and child protocols cannot redeclare this control (§11.4).
@@ -598,7 +598,59 @@ The fan-out computes the **per-site subgraph** as the transitive closure of deri
 
 **Wire format:** the fan-out-unrolled IR uses only existing IR-JSON node types. The `sites` control is omitted from the wire (resolve-time-only); the emitted IR is shaped identically to a hand-written multi-site protocol. IR-JSON schema version remains `0.1`.
 
-### 4.10 `session`
+### 4.10 `groups`
+
+A `groups` block declares **named channel-name lists** that can be referenced from placement controls. Groups are resolve-time aliases — they expand to the same channel tuples as an inline list and never appear in the IR-JSON wire format.
+
+#### Syntax
+
+```refrain
+groups {
+  sensorimotor = ["C3","Cz","C4","CP3","CP4"]
+  frontal      = ["F3","Fz","F4"]
+}
+```
+
+Each entry is `<ident> = [ <string-lit>, ... ]`: a non-empty, duplicate-free list of channel-name string literals.
+
+#### Reference sites
+
+A group name may appear as a **bare identifier** in two positions:
+
+1. **`allowed`** of any `placement` control (`active`, `bipolar`, `pair`, or `set`):
+
+   ```refrain
+   controls {
+     site = placement { kind = "active"; default = "Cz"; allowed = sensorimotor }
+   }
+   ```
+
+2. **`default`** of a `set` placement control:
+
+   ```refrain
+   controls {
+     sites = placement { kind = "set"; allowed = sensorimotor; default = sensorimotor; min = 1; max = 3 }
+   }
+   ```
+
+A bare identifier in either position that does not name a declared group raises `ResolveError` (`"unknown group 'x'"`).
+
+#### Validation
+
+- **Empty group** — a `groups` entry with `[]` raises `ResolveError`.
+- **Duplicate channel within a group** — listing the same channel string more than once raises `ResolveError`.
+- **Name collision** — a group name equal to a control name raises `ResolveError` (both share the bare-identifier namespace in `allowed`/`default` value position).
+- **Post-expansion checks** — the existing `allowed` and `min`/`max` validations run on the expanded value, so `default = <group>` whose size exceeds `max` is still rejected.
+
+#### Composition
+
+The `groups` block merges across `extends` using the same field-level merge as `controls`: child groups override parent same-named groups; unmentioned parent groups are inherited; the child may add new groups.
+
+#### Wire invariant
+
+Groups expand at resolve time. The IR-JSON wire format carries no `groups` key; `IR_JSON_VERSION` remains `0.1`. See also §4.9 `controls` for the placement control types that accept group references.
+
+### 4.11 `session`
 
 Session structure. Phases, durations, breaks, schedule.
 
@@ -612,7 +664,7 @@ session {
 }
 ```
 
-### 4.11 `custom`
+### 4.12 `custom`
 
 Escape-hatch declaration of an external Python primitive.
 
