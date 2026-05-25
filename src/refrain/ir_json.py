@@ -359,7 +359,11 @@ def ir_to_json_obj(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> di
         "inhibits": {name: _emit_inhibit(ih, ctx) for name, ih in ir.inhibits.items()},
         "reward": _emit_reward(ir.reward, ctx),
         "output": {name: _emit_expr(expr, ctx) for name, expr in ir.output.items()},
-        "controls": {name: _emit_control(c, ctx) for name, c in ir.controls.items()},
+        "controls": {
+            name: _emit_control(c, ctx)
+            for name, c in ir.controls.items()
+            if c.type_kind != "placement"
+        },
         "session": _emit_session(ir.session),
         "topological_order": list(ir.topological_order),
     }

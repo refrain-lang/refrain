@@ -29,6 +29,32 @@ bumps are additive; major bumps may break compatibility.
   steps: schema-validation step added after dual-backend pytest, gating every
   CI run on `test_ir_json_schema.py`.
 
+## [0.3.0] — 2026-05-25
+
+### Added
+- `placement` control type — resolve-time site binding; kinds `active` (single
+  electrode) and `bipolar` (coupled plus/minus pair). Mode 1 (default +
+  per-deploy override via `resolve(bindings=...)`) and Mode 3 (fixed site,
+  locked with `final = true`). One `.refrain` artifact, any compatible site.
+- `resolve(bindings=...)` keyword argument — binds placement controls to
+  concrete channel names at resolve time. Fail-fast validation: bound value
+  must be in `allowed` and present on the connected device.
+- `final` on controls — a `final` placement control cannot be overridden by
+  a `bindings` value, and child protocols cannot redeclare it via composition.
+- Placement references accepted in montage channel slots
+  (`referential(active: site, ...)`, `bipolar(plus: a, minus: b)`) and in
+  `requires.channels = [site]`; the `bipolar(pair: site)` montage form for
+  a coupled bipolar placement.
+
+### Notes
+- IR-JSON schema unchanged (v0.1). The emitter omits `placement` controls
+  from the wire `controls` section (they are resolve-time-only); a
+  placement-bound protocol's IR-JSON is byte-shaped identically to its
+  hardcoded-site equivalent. `IR_JSON_VERSION` and the JSON Schema are
+  unchanged; `check_equivalence` stays PASS.
+- 460 tests passing (5 skipped / infrastructure). No breaking changes.
+  Existing v0.0–v0.1 protocols continue to parse and resolve unchanged.
+
 ## [0.1.0] — 2026-05-13
 
 ### Added

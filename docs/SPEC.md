@@ -211,6 +211,13 @@ requires {
 }
 ```
 
+The `channels` array may include bare placement-control names alongside string literals. Each placement name is expanded at resolve time to its bound channel(s): one channel for `active` placements, both legs for `bipolar` placements. The expanded channels are then validated against the connected device (see §4.9 `placement`).
+
+```refrain
+controls { site = placement { kind = "active"; default = "Cz"; allowed = ["Cz","C3","C4"] } }
+requires { channels = [site] }   // expands to the bound channel at resolve time
+```
+
 ### 4.3 `input`
 
 Named input streams derived from raw amplifier channels.
@@ -230,6 +237,20 @@ An input has a stream type derived from its montage:
 - `referential(active: "X", ...)` → `stream<scalar uV>`
 - `referential(channels: [...], ...)` → `stream<vector uV>`
 - `source_project(...)` → `stream<vector uV>`
+
+Montage channel-name slots accept **placement-control names** (bare identifier, resolved to a concrete channel at resolve time) in addition to string literals. The bound concrete channel is substituted before IR-JSON emission, so the resolved IR is identical in shape to a hardcoded-site protocol.
+
+```refrain
+controls { site = placement { kind = "active"; default = "Cz"; allowed = ["Cz","C3","C4"] } }
+input "raw" { montage = referential(active: site, reference: "linked_ears") }
+```
+
+For `bipolar` placements a paired montage form is also available:
+
+```refrain
+controls { site = placement { kind = "bipolar"; default = ("T3","T4"); allowed = [("T3","T4"),("C3","C4")] } }
+input "raw" { montage = bipolar(pair: site) }  // expands to bipolar(plus: ..., minus: ...) at resolve time
+```
 
 ### 4.4 `derive` — pipeline stages
 
@@ -440,7 +461,45 @@ controls {
 }
 ```
 
-Control types: `frequency`, `duration`, `voltage`, `percent`, `enum`, `boolean`. Each value declared in `controls` is referenceable by name (e.g., `orf` in §4.4).
+Control types: `frequency`, `duration`, `voltage`, `percent`, `enum`, `boolean`, and `placement` (see below). Each value declared in `controls` is referenceable by name (e.g., `orf` in §4.4).
+
+#### `placement` control type
+
+A categorical/dimensionless control for electrode site binding. Unlike numeric controls, a placement control is **resolved at deploy time** (not live-tunable mid-session); the resolved concrete channel is substituted into montage slots and `requires.channels` before IR-JSON emission. The wire format carries no placement control — the emitted IR is identical in shape to a hardcoded-site protocol.
+
+```refrain
+controls {
+  site = placement {
+    kind         = "active"            // "active" | "bipolar"
+    default      = "Cz"               // active: a channel name; bipolar: a pair ("T3","T4")
+    allowed      = ["Cz","C3","C4"]   // explicit allowlist; or "any" to permit all device channels
+    label        = "Training site"    // optional, for the deploy UI
+    live_tunable = false              // always false for placement (frozen per session)
+    final        = false              // true → locked site; cannot be overridden (§11.4)
+  }
+}
+```
+
+Fields:
+- `kind` (required): `"active"` — one electrode; `"bipolar"` — a coupled plus/minus pair.
+- `default` (required): the default site. For `active`, a channel name string. For `bipolar`, a 2-tuple `("plus","minus")`. Must be in `allowed`.
+- `allowed`: an array of permitted values (channel strings for `active`; 2-tuples for `bipolar`), or the string `"any"`. Absent or `"any"` means any device-capable channel.
+- `label`: optional display name for the deploy UI.
+- `live_tunable`: must be `false` (or absent); placement is frozen per session. A `live_tunable = true` placement is a resolve error.
+- `final`: when `true`, the site is locked — `bindings` overrides are rejected, and child protocols cannot redeclare this control (§11.4).
+
+Binding placement at resolve time:
+
+```python
+ir = resolve(parse(src), amp, bindings={"site": "C3"})
+```
+
+Validation at resolve time (fail-fast):
+- Bound value must be in `allowed` (unless `"any"`).
+- Bound channel(s) must be present on the connected device (`amp.has_channel`).
+- A `bindings` entry for a `final` placement control is a `ResolveError`.
+
+The `placement` control is **omitted from the IR-JSON wire `controls` section**; IR-JSON schema version remains `0.1`.
 
 ### 4.10 `session`
 
@@ -855,7 +914,9 @@ remove derive "high_beta_envelope"
 
 ### 11.4 `final` — un-overridable parent declarations
 
-Parent protocols may mark declarations as `final`, preventing child override or removal:
+Parent protocols may mark declarations as `final`, preventing child override or removal. `final` applies to **named declarations** (`input`, `derive`, `threshold`, `inhibit`, `custom`) and to **controls** (including `placement` controls).
+
+**Named declarations:**
 
 ```refrain
 // In library/safety_base@1.0
@@ -868,6 +929,20 @@ inhibit "safety_emg" {
 ```
 
 Children attempting to redeclare, amend, or remove a `final` parent declaration produce a compile error. Useful for safety-critical artifact rejection that should survive composition.
+
+**Controls (including `placement`):**
+
+```refrain
+controls {
+  site = placement { kind = "active"; default = "F3"; allowed = ["F3"]; final = true }
+  //                                                                     ^^^^^^^^^^
+  // children cannot redeclare this control; bindings overrides are rejected at resolve time
+}
+```
+
+A `final` control is:
+- Protected from child redeclaration in composition (a compile error if a child redeclares it).
+- Protected from `bindings` override at resolve time: `resolve(..., bindings={"site": "Cz"})` raises `ResolveError` when `site` is `final`.
 
 ### 11.5 Schema version compatibility
 
