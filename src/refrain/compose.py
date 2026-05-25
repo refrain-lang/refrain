@@ -280,7 +280,7 @@ def _merge(parent: A.File, child: A.File) -> A.File:
 
 
 # Sections that field-merge (SPEC §11.1). Others replace wholesale.
-_FIELD_MERGE_SECTIONS = {"meta", "requires", "controls"}
+_FIELD_MERGE_SECTIONS = {"meta", "requires", "controls", "groups"}
 
 
 def _merge_section_fields(parent: A.SectionBlock, overlay: A.SectionBlock) -> A.SectionBlock:

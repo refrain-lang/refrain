@@ -261,3 +261,26 @@ def test_placement_bound_ir_json_matches_literal_site():
     # Same montage/input/output shape; placement control absent from wire in both cases.
     assert a["inputs"] == b["inputs"]
     assert a["output"] == b["output"]
+
+
+# ---------------------------------------------------------------------------
+# Named groups — Task 6: wire-invariant test
+# ---------------------------------------------------------------------------
+
+
+def test_groups_form_emits_identical_ir_json():
+    """A protocol using a group emits IR-JSON byte-identical to the inline-list form."""
+    base = '''
+        protocol "p" {{
+          meta {{ version = "1.0"; evidence = "clinical"; description = "x" }}
+          {groups}controls {{ site = placement {{ kind = "active"; default = "Cz"; allowed = {allowed} }} }}
+          input "raw" {{ montage = referential(active: "Cz", reference: "linked_ears") }}
+          reward {{ continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }}
+          output {{ audio_gain = reward.continuous }}
+        }}
+    '''
+    grouped = resolve(parse(base.format(groups='groups { smr = ["C3","Cz","C4"] } ', allowed="smr")))
+    inline = resolve(parse(base.format(groups="", allowed='["C3","Cz","C4"]')))
+    assert ir_to_json_obj(grouped) == ir_to_json_obj(inline)
+    # placement controls are omitted from IR-JSON either way; groups never appear
+    assert "groups" not in ir_to_json_obj(grouped)

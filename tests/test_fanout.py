@@ -162,3 +162,24 @@ def test_ambiguous_replication_boundary_rejected():
     # ("frontal"); the replication boundary is ambiguous → ResolveError.
     with pytest.raises(ResolveError, match="ambiguous|mixes"):
         resolve(parse(_AMBIGUOUS), _AMP, bindings={"sites": ["C3", "Cz"]})
+
+
+_UNKNOWN_GROUP_DEFAULT = """
+    protocol "p" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls { sites = placement { kind = "set"; default = nosuch; allowed = ["C3","Cz","C4"]; min = 1; max = 3 } }
+      input "raw" { montage = referential(active: sites, reference: "linked_ears") }
+      derive "smr" { from = "raw"; pipeline = [smooth(tau: 100 ms)] }
+      threshold "smr_t" { signal = "smr"; type = absolute(8 uV) }
+      reward { combine = "all"; event = dwell(condition: above("smr","smr_t"), duration: 100 ms) }
+      output { audio_chime = reward.event }
+    }
+"""
+
+
+def test_unknown_group_as_set_default_rejected():
+    # The set `default` names an undeclared group; the fan-out pre-pass (which
+    # reads the default before the resolver builds its group table) must raise
+    # the same "unknown group" error, not a misleading "no sites to replicate".
+    with pytest.raises(ResolveError, match="unknown group 'nosuch'"):
+        resolve(parse(_UNKNOWN_GROUP_DEFAULT), _AMP)

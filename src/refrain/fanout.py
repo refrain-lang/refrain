@@ -141,10 +141,36 @@ def _find_set_placements(proto: A.Protocol) -> set[str]:
     return out
 
 
+def _groups_table(proto: A.Protocol) -> dict[str, list[str]]:
+    """Build the group name → channel list table from the protocol's `groups` block.
+
+    This is the fan-out pre-pass's lenient read, used only to expand a set
+    placement's group-named ``default`` before replication. The authoritative,
+    validating table (empty/duplicate/collision checks) is built later by
+    ``resolver._Resolver._resolve_groups``; this runs unconditionally on the
+    same block, so a malformed group still raises there.
+    """
+    for stmt in proto.body:
+        if isinstance(stmt, A.SectionBlock) and stmt.keyword == "groups":
+            result: dict[str, list[str]] = {}
+            for inner in stmt.body:
+                if isinstance(inner, A.Assignment) and isinstance(inner.value, A.Array):
+                    result[inner.target] = [
+                        e.value for e in inner.value.elements if isinstance(e, A.StringLit)
+                    ]
+            return result
+    return {}
+
+
 def _set_default_sites(proto: A.Protocol, set_name: str) -> list[str]:
-    """Read the declared ``default = [...]`` site list for a set placement."""
+    """Read the declared ``default = [...]`` site list for a set placement.
+
+    Supports both a literal ``A.Array`` and a group ``A.NameRef`` (which is
+    expanded using the protocol's ``groups`` block).
+    """
     block = _controls_block(proto)
     assert block is not None  # caller only invokes after _find_set_placements
+    groups = _groups_table(proto)
     for stmt in block.body:
         if (
             isinstance(stmt, A.Assignment)
@@ -152,14 +178,21 @@ def _set_default_sites(proto: A.Protocol, set_name: str) -> list[str]:
             and isinstance(stmt.value, A.BlockExpr)
         ):
             for inner in stmt.value.body:
-                if (
-                    isinstance(inner, A.Assignment)
-                    and inner.target == "default"
-                    and isinstance(inner.value, A.Array)
-                ):
-                    return [
-                        e.value for e in inner.value.elements if isinstance(e, A.StringLit)
-                    ]
+                if isinstance(inner, A.Assignment) and inner.target == "default":
+                    if isinstance(inner.value, A.Array):
+                        return [
+                            e.value for e in inner.value.elements if isinstance(e, A.StringLit)
+                        ]
+                    elif isinstance(inner.value, A.NameRef):
+                        # Group reference — expand using the groups table. Raise
+                        # the same unknown-group error the resolver does, rather
+                        # than silently yielding [] (→ "no sites to replicate").
+                        gname = inner.value.name
+                        if gname not in groups:
+                            raise ResolveError(
+                                f"unknown group {gname!r}", loc=inner.value.loc
+                            )
+                        return list(groups[gname])
     return []
 
 

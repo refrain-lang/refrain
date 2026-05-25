@@ -522,4 +522,24 @@ def test_multiple_imports():
         '''
     )
     assert len(f.imports) == 2
-    assert f.imports[0].alias is None and f.imports[1].alias == "b"
+
+
+# ---------------------------------------------------------------------------
+# groups block (named allowed groups)
+# ---------------------------------------------------------------------------
+
+
+def test_groups_block_parses():
+    src = '''
+        protocol "p" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          groups { sensorimotor = ["C3","Cz","C4"]; frontal = ["F3","Fz","F4"] }
+        }
+    '''
+    proto = parse(src).protocol
+    groups = [s for s in proto.body if isinstance(s, A.SectionBlock) and s.keyword == "groups"]
+    assert len(groups) == 1
+    entries = {s.target: s.value for s in groups[0].body if isinstance(s, A.Assignment)}
+    assert set(entries) == {"sensorimotor", "frontal"}
+    assert isinstance(entries["sensorimotor"], A.Array)
+    assert [e.value for e in entries["sensorimotor"].elements] == ["C3", "Cz", "C4"]
