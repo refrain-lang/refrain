@@ -124,9 +124,10 @@ _KNOWN_OUTPUTS = _ANALOG_OUTPUTS | _EVENT_OUTPUTS
 class _Resolver:
     """Single-use resolver: instantiate with the file AST, call `resolve()`."""
 
-    def __init__(self, file_ast: A.File, amp: AmpProfile | None):
+    def __init__(self, file_ast: A.File, amp: AmpProfile | None, bindings: dict | None = None):
         self.file = file_ast
         self.amp = amp
+        self.bindings: dict = bindings or {}
 
         # Section-block AST snapshots (one each, last-wins per spec
         # composition default; composition isn't here yet so just first-wins).
@@ -402,6 +403,11 @@ class _Resolver:
                 f"input \"{decl.name}\".montage must be a call (bipolar/referential/...)",
                 loc=montage_ast.loc,
             )
+        # Placement substitution: rewrite any active-placement NameRef in the
+        # montage call's args to a concrete StringLit before passing to
+        # _resolve_call.  This keeps _resolve_call unchanged and produces an IR
+        # with a concrete channel string — identical to a literal-site protocol.
+        montage_ast = self._substitute_placement_args(montage_ast)
         montage_ir = self._resolve_call(montage_ast)
         return IRInput(
             name=decl.name,
@@ -410,6 +416,30 @@ class _Resolver:
             montage=montage_ir,
             loc=decl.loc,
         )
+
+    def _substitute_placement_args(self, call: A.Call) -> A.Call:
+        """Rewrite montage A.Call args: any NameRef naming an active placement
+        control is replaced by an A.StringLit of the bound concrete channel.
+        All other args are left unchanged.  Returns a (possibly new) A.Call.
+        """
+        new_args = []
+        changed = False
+        for arg in call.args:
+            if (
+                isinstance(arg.value, A.NameRef)
+                and arg.value.name in self.controls
+                and self.controls[arg.value.name].type_kind == "placement"
+                and self.controls[arg.value.name].kind == "active"
+            ):
+                channel = self._bound_placement_value(arg.value.name)
+                new_arg = A.Arg(name=arg.name, value=A.StringLit(value=channel, loc=arg.value.loc), loc=arg.loc)
+                new_args.append(new_arg)
+                changed = True
+            else:
+                new_args.append(arg)
+        if not changed:
+            return call
+        return A.Call(callee=call.callee, args=tuple(new_args), loc=call.loc)
 
     def _resolve_derive(self, decl: A.NamedDecl) -> IRDerive:
         fields = self._assignments_dict(decl.body)
@@ -747,9 +777,50 @@ class _Resolver:
         """Raise ResolveError if allowed is non-empty and value is not in it."""
         if allowed and value not in allowed:
             raise ResolveError(
-                f"placement {name!r}: default {value!r} not in allowed {list(allowed)}",
+                f"placement {name!r}: {value!r} not in allowed {list(allowed)}",
                 loc=loc,
             )
+
+    def _bound_placement_value(self, name: str) -> str:
+        """Return the concrete bound channel string for an active placement control.
+
+        Looks up ``name`` in ``self.bindings`` (override) or falls back to the
+        control's ``default_placement``.  Validates the result against ``allowed``
+        and, when an amp profile is set, against the device's channel list.
+        Raises ``ResolveError`` if:
+          - the control is ``final`` and an override is supplied;
+          - the bound value is not in ``allowed`` (non-empty list means restrict);
+          - the amp does not have the channel.
+        """
+        ctrl = self.controls.get(name)
+        if ctrl is None or ctrl.type_kind != "placement":
+            raise ResolveError(
+                f"internal: _bound_placement_value called for non-placement {name!r}",
+            )
+        loc = ctrl.loc
+
+        if name in self.bindings:
+            if ctrl.final:
+                raise ResolveError(
+                    f"placement {name!r} is final and cannot be overridden",
+                    loc=loc,
+                )
+            channel = self.bindings[name]
+        else:
+            # Use default: for active, default_placement is a 1-tuple.
+            channel = ctrl.default_placement[0]
+
+        # allowed = () means "any"; only validate when non-empty.
+        self._check_placement_in_allowed(name, channel, ctrl.allowed, loc)
+
+        # Device check: the amp must have the channel.
+        if self.amp is not None and not self.amp.has_channel(channel):
+            raise ResolveError(
+                f"amp {self.amp.model!r} is missing required channels: [{channel!r}]",
+                loc=loc,
+            )
+
+        return channel
 
     # -- Reward -------------------------------------------------------------
 
@@ -1437,12 +1508,18 @@ def resolve(
     file_ast: A.File,
     amp: AmpProfile | None = None,
     *,
+    bindings: dict[str, object] | None = None,
     parent_loader: ParentLoader | None = None,
 ) -> IRProtocol:
     """Resolve a parsed `File` AST into an `IRProtocol`.
 
     Pass an `AmpProfile` to validate hardware requirements (§6.3) and
     to compute the chosen sample rate. Pass `None` to skip those checks.
+
+    Pass ``bindings`` to override placement control values at resolve time.
+    Keys are control names; values are concrete channel strings (for
+    ``active`` placements).  Omitted names fall back to the control's
+    declared ``default``.
 
     Pass a `parent_loader` (typically built via
     `refrain.compose.filesystem_loader([...])`) if the protocol uses
@@ -1459,7 +1536,7 @@ def resolve(
         if exc.loc is not None and msg.startswith(f"line {exc.loc.line}:{exc.loc.col}: "):
             msg = msg.split(": ", 1)[1]
         raise ResolveError(msg, loc=exc.loc) from exc
-    return _Resolver(composed, amp).resolve()
+    return _Resolver(composed, amp, bindings).resolve()
 
 
 __all__ = ["resolve", "ResolveError"]

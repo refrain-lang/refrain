@@ -679,3 +679,78 @@ def test_placement_rejects_live_tunable():
     '''
     with pytest.raises(ResolveError, match="live_tunable|frozen"):
         resolve(parse(src))
+
+
+# ---------------------------------------------------------------------------
+# Placement control type — Task 2: resolve-time binding (active site, montage)
+# ---------------------------------------------------------------------------
+
+from refrain.amp_profile import load_amp_profile  # noqa: E402 (re-import OK; same object)
+_AMP = load_amp_profile(Path(__file__).resolve().parent.parent / "src" / "refrain" / "amp_profiles" / "q21.json")
+
+_SITE_PROTO = '''
+    protocol "poise" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls { site = placement { kind = "active"; default = "Cz"; allowed = ["Cz","C3","C4"] } }
+      input "raw" { montage = referential(active: site, reference: "linked_ears") }
+      reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+      output { audio_gain = reward.continuous }
+    }
+'''
+
+
+def _active_channel(ir):
+    """Read the bound channel string from the resolved montage IRCall."""
+    call = ir.inputs["raw"].montage
+    return next(a.value.value for a in call.args if a.name == "active")
+
+
+def test_placement_binds_default_site():
+    ir = resolve(parse(_SITE_PROTO), _AMP)
+    assert _active_channel(ir) == "Cz"
+
+
+def test_placement_binds_override_site():
+    ir = resolve(parse(_SITE_PROTO), _AMP, bindings={"site": "C3"})
+    assert _active_channel(ir) == "C3"
+
+
+def test_placement_binding_not_in_allowed_fails():
+    with pytest.raises(ResolveError, match="not in allowed|allowed"):
+        resolve(parse(_SITE_PROTO), _AMP, bindings={"site": "Fz"})
+
+
+def test_placement_binding_not_device_capable_fails():
+    src = _SITE_PROTO.replace('allowed = ["Cz","C3","C4"]', 'allowed = "any"')
+    with pytest.raises(ResolveError, match="missing|capable|channel"):
+        resolve(parse(src), _AMP, bindings={"site": "ZZ9"})
+
+
+def test_final_placement_rejects_override():
+    src = _SITE_PROTO.replace('allowed = ["Cz","C3","C4"]', 'allowed = ["Cz"]; final = true')
+    with pytest.raises(ResolveError, match="final|locked|cannot override"):
+        resolve(parse(src), _AMP, bindings={"site": "C3"})
+
+
+def test_coherence_two_active_placements_bind():
+    # Two inputs, each with its own active placement — exercises coherence of
+    # independent bindings without requiring Task 3 (requires.channels).
+    src = '''
+        protocol "coh" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          controls {
+            site_a = placement { kind = "active"; default = "C3"; allowed = ["C3","F3"] }
+            site_b = placement { kind = "active"; default = "C4"; allowed = ["C4","F4"] }
+          }
+          input "a" { montage = referential(active: site_a, reference: "linked_ears") }
+          input "b" { montage = referential(active: site_b, reference: "linked_ears") }
+          derive "coh" { formula = coherence("a", "b", band: (8 Hz, 12 Hz)) }
+          reward { continuous = sigmoid("coh", midpoint: 0.5, steepness: 1) }
+          output { audio_gain = reward.continuous }
+        }
+    '''
+    ir = resolve(parse(src), _AMP, bindings={"site_a": "F3", "site_b": "F4"})
+    a_call = ir.inputs["a"].montage
+    b_call = ir.inputs["b"].montage
+    assert next(x.value.value for x in a_call.args if x.name == "active") == "F3"
+    assert next(x.value.value for x in b_call.args if x.name == "active") == "F4"
