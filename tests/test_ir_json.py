@@ -202,6 +202,47 @@ def test_ir_json_omits_placement_controls():
     assert "gain_pct" in obj["controls"]      # numeric/live control still emitted
 
 
+_PAIR_PROTO = '''
+    protocol "coh" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls { coh = placement { kind = "pair"; default = ("C3","C4"); allowed = [("C3","C4"),("F3","F4")] } }
+      requires { channels = [coh] }
+      input "a" { montage = referential(active: coh.a, reference: "linked_ears") }
+      input "b" { montage = referential(active: coh.b, reference: "linked_ears") }
+      derive "c" { from = "a"; pipeline = [smooth(tau: 100 ms)] }
+      reward { continuous = sigmoid("c", midpoint: 0 uV, steepness: 1) }
+      output { audio_gain = reward.continuous }
+    }
+'''
+
+_REPL = """
+    protocol "poise_ms" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls { sites = placement { kind = "set"; default = ["Cz"]; allowed = ["C3","Cz","C4"]; min = 1; max = 3 } }
+      input "raw" { montage = referential(active: sites, reference: "linked_ears") }
+      derive "smr" { from = "raw"; pipeline = [smooth(tau: 100 ms)] }
+      threshold "smr_t" { signal = "smr"; type = absolute(8 uV) }
+      reward { combine = "all"; event = dwell(condition: above("smr","smr_t"), duration: 100 ms) }
+      output { audio_chime = reward.event }
+    }
+"""
+
+
+def test_pair_and_set_controls_omitted_from_ir_json():
+    # A pair-bound protocol emits NO placement control in ir_to_json_obj(ir)["controls"].
+    ir = resolve(parse(_PAIR_PROTO), _AMP)
+    obj = ir_to_json_obj(ir)
+    assert "coh" not in obj["controls"]
+
+
+def test_set_bound_ir_json_is_flat_multisite():
+    # A set-bound protocol's IR-JSON has per-site inputs and no "sites" placement control.
+    ir = resolve(parse(_REPL), _AMP, bindings={"sites": ["C3", "Cz", "C4"]})
+    obj = ir_to_json_obj(ir)
+    assert {"raw@C3", "raw@Cz", "raw@C4"} <= set(obj["inputs"])
+    assert "sites" not in obj["controls"]   # set placement omitted
+
+
 def test_placement_bound_ir_json_matches_literal_site():
     site_src = '''
         protocol "p" {

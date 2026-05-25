@@ -820,3 +820,137 @@ def test_bipolar_placement_binds_override():
 def test_bipolar_pair_not_in_allowed_fails():
     with pytest.raises(ResolveError, match="not in allowed|allowed"):
         resolve(parse(_BIPOLAR_PROTO), _AMP, bindings={"site": ("F3", "F4")})
+
+
+# ---------------------------------------------------------------------------
+# Task 1 (Mode 2): kind="pair" — coherence pairs with .a/.b leg member access
+# ---------------------------------------------------------------------------
+
+_PAIR_PROTO = '''
+    protocol "coh" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls { coh = placement { kind = "pair"; default = ("C3","C4"); allowed = [("C3","C4"),("F3","F4")] } }
+      requires { channels = [coh] }
+      input "a" { montage = referential(active: coh.a, reference: "linked_ears") }
+      input "b" { montage = referential(active: coh.b, reference: "linked_ears") }
+      derive "c" { from = "a"; pipeline = [smooth(tau: 100 ms)] }
+      reward { continuous = sigmoid("c", midpoint: 0 uV, steepness: 1) }
+      output { audio_gain = reward.continuous }
+    }
+'''
+
+
+def _active_of(ir, input_name):
+    call = ir.inputs[input_name].montage
+    return next(x.value.value for x in call.args if x.name == "active")
+
+
+def test_pair_legs_bind_default(amp):
+    ir = resolve(parse(_PAIR_PROTO), amp)
+    assert _active_of(ir, "a") == "C3"
+    assert _active_of(ir, "b") == "C4"
+    assert set(ir.requires.channels) == {"C3", "C4"}
+
+
+def test_pair_legs_bind_override(amp):
+    ir = resolve(parse(_PAIR_PROTO), amp, bindings={"coh": ("F3", "F4")})
+    assert _active_of(ir, "a") == "F3"
+    assert _active_of(ir, "b") == "F4"
+
+
+def test_pair_not_in_allowed_fails(amp):
+    with pytest.raises(ResolveError, match="not in allowed|allowed"):
+        resolve(parse(_PAIR_PROTO), amp, bindings={"coh": ("Cz", "Pz")})
+
+
+# ---------------------------------------------------------------------------
+# Task 2 (Mode 2): kind="set" — multi-site list declaration + binding
+# ---------------------------------------------------------------------------
+
+_SET_DECL = '''
+    protocol "ms" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls { sites = placement { kind = "set"; default = ["Cz"]; allowed = ["C3","Cz","C4","Pz"]; min = 1; max = 3 } }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+      output { audio_gain = reward.continuous }
+    }
+'''
+
+
+def test_set_control_resolves(amp):
+    ir = resolve(parse(_SET_DECL), amp)
+    c = ir.controls["sites"]
+    assert c.kind == "set"
+    assert c.allowed == ("C3", "Cz", "C4", "Pz")
+    assert c.set_min == 1 and c.set_max == 3
+    assert c.default_placement == ("Cz",)
+
+
+def test_set_count_below_min_fails(amp):
+    src = _SET_DECL.replace("min = 1", "min = 2")
+    with pytest.raises(ResolveError, match="at least|min"):
+        resolve(parse(src), amp, bindings={"sites": ["Cz"]})
+
+
+def test_set_count_above_max_fails(amp):
+    with pytest.raises(ResolveError, match="at most|max"):
+        resolve(parse(_SET_DECL), amp, bindings={"sites": ["C3", "Cz", "C4", "Pz"]})
+
+
+def test_set_member_not_in_allowed_fails(amp):
+    with pytest.raises(ResolveError, match="not in allowed|allowed"):
+        resolve(parse(_SET_DECL), amp, bindings={"sites": ["C3", "Fz"]})
+
+
+# ---------------------------------------------------------------------------
+# Task 3 (Mode 2): reward.combine field ("all" | "any")
+# ---------------------------------------------------------------------------
+
+_REWARD_COMBINE_PROTO = '''
+    protocol "p" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "env" { from = "raw"; pipeline = [smooth(tau: 100 ms)] }
+      threshold "t" { signal = "env"; type = absolute(8 uV) }
+      reward { combine = "any"; event = dwell(condition: above("env","t"), duration: 100 ms) }
+      output { audio_chime = reward.event }
+    }
+'''
+
+_REWARD_COMBINE_NO_COMBINE_PROTO = '''
+    protocol "p" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "env" { from = "raw"; pipeline = [smooth(tau: 100 ms)] }
+      threshold "t" { signal = "env"; type = absolute(8 uV) }
+      reward { event = dwell(condition: above("env","t"), duration: 100 ms) }
+      output { audio_chime = reward.event }
+    }
+'''
+
+_REWARD_COMBINE_INVALID_PROTO = '''
+    protocol "p" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "env" { from = "raw"; pipeline = [smooth(tau: 100 ms)] }
+      threshold "t" { signal = "env"; type = absolute(8 uV) }
+      reward { combine = "most"; event = dwell(condition: above("env","t"), duration: 100 ms) }
+      output { audio_chime = reward.event }
+    }
+'''
+
+
+def test_reward_combine_parsed(amp):
+    ir = resolve(parse(_REWARD_COMBINE_PROTO), amp)
+    assert ir.reward.combine == "any"
+
+
+def test_reward_combine_defaults_all(amp):
+    ir = resolve(parse(_REWARD_COMBINE_NO_COMBINE_PROTO), amp)
+    assert ir.reward.combine == "all"
+
+
+def test_reward_combine_invalid_fails(amp):
+    with pytest.raises(ResolveError):
+        resolve(parse(_REWARD_COMBINE_INVALID_PROTO), amp)

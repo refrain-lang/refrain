@@ -233,6 +233,7 @@ class IRReward:
 
     continuous: IRExpr | None
     event: IRExpr | None
+    combine: str = "all"    # "all" | "any" — consumed by Mode 2a fan-out (Task 4)
     loc: Loc | None = None
 
 
@@ -251,10 +252,12 @@ class IRControl:
     tune_strategy: str | None
     loc: Loc | None = None
     # Placement-control fields (all None/empty/False for numeric controls):
-    kind: str | None = None             # placement only: "active" | "bipolar"
+    kind: str | None = None             # placement only: "active" | "bipolar" | "pair" | "set"
     allowed: tuple = ()                  # placement only: tuple of channel names or pairs; () means "any"
     final: bool = False
-    default_placement: tuple = ()        # active: ("Cz",); bipolar: ("T3","T4"); () if none
+    default_placement: tuple = ()        # active: ("Cz",); bipolar/pair: ("T3","T4"); set: ("Cz",); () if none
+    set_min: int | None = None           # set only: minimum number of sites (default 1)
+    set_max: int | None = None           # set only: maximum number of sites (None = unlimited)
 
 
 @dataclass(frozen=True, slots=True)

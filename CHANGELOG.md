@@ -29,6 +29,44 @@ bumps are additive; major bumps may break compatibility.
   steps: schema-validation step added after dual-backend pytest, gating every
   CI run on `test_ir_json_schema.py`.
 
+## [0.4.0] — 2026-05-25
+
+### Added
+- Placement `kind="pair"` — coherence pairs; two-leg binding via `.a`/`.b`
+  member access (`coh.a`, `coh.b`) in montage channel slots. Default and
+  override are 2-tuples of channel strings; `allowed` is a list of pairs or
+  `"any"`. `requires.channels = [coh]` expands to both legs. Validation:
+  bound pair must be in `allowed` and both legs device-capable. The `final`
+  lock applies (Mode 3-compatible).
+- Placement `kind="set"` — multi-site set declaration; `default` is a list of
+  channel strings, `allowed` is a list of channels or `"any"`, optional `min`
+  and `max` bound the set size. Bound via `resolve(bindings={"sites": [...]})`.
+  Each member validated against `allowed` and the connected device; count
+  checked against `min`/`max`.
+- Mode 2a per-site replication (implicit fan-out) — binding a `set` placement
+  into an input montage slot triggers an AST-level fan-out pre-pass: the
+  protocol is rewritten to N per-site inputs, derives, and thresholds
+  (`<name>@<site>`) before resolution. The reward condition is combined as
+  `all_of`/`any_of` per the new `reward.combine = "all" | "any"` field
+  (default `"all"`). Single-site bindings degenerate cleanly. The emitted IR
+  is a flat N-input graph using only existing IR-JSON node types.
+- `reward.combine` field — `"all"` (default) or `"any"`, selects whether the
+  per-site reward conditions are combined with `all_of` or `any_of` during
+  Mode 2a fan-out replication.
+- Scoping guards: a `reward.continuous` expression that depends on a
+  per-site replicated stream raises `ResolveError` ("see Mode 2b"); an
+  ambiguous replication boundary (a derive mixing a per-site stream with a
+  non-replicated one) also raises `ResolveError`.
+
+### Notes
+- IR-JSON schema unchanged (v0.1). `pair`/`set` are placement controls →
+  the shipped `type_kind != "placement"` guard already omits them. The
+  fan-out-unrolled IR is a flat graph of existing node types; no new emitter
+  logic was required. `IR_JSON_VERSION` and the JSON Schema are unchanged;
+  `check_equivalence` stays PASS.
+- 481 tests passing (5 skipped / infrastructure). No breaking changes.
+  Existing v0.0–v0.3 protocols continue to parse and resolve unchanged.
+
 ## [0.3.0] — 2026-05-25
 
 ### Added
