@@ -372,8 +372,11 @@ The reward block has a single shape with two optional expression-valued fields. 
 reward {
   continuous = <expression producing stream<scalar>>      // optional
   event      = <expression producing event_stream>         // optional
+  combine    = "all"                                       // optional; "all" | "any" (Mode 2a only)
 }
 ```
+
+The `combine` field is used with Mode 2a per-site replication (§4.9.1). It selects how the per-site reward conditions are joined — `"all"` (every site must fire) or `"any"` (any site firing is sufficient). Default is `"all"`. This field has no effect unless a `kind="set"` placement is bound into the protocol.
 
 The reward block exposes:
 
@@ -467,6 +470,17 @@ Control types: `frequency`, `duration`, `voltage`, `percent`, `enum`, `boolean`,
 
 A categorical/dimensionless control for electrode site binding. Unlike numeric controls, a placement control is **resolved at deploy time** (not live-tunable mid-session); the resolved concrete channel is substituted into montage slots and `requires.channels` before IR-JSON emission. The wire format carries no placement control — the emitted IR is identical in shape to a hardcoded-site protocol.
 
+Four `kind` values are supported:
+
+| `kind` | Default shape | `allowed` element | Use case |
+|--------|--------------|-------------------|----------|
+| `"active"` | channel string | channel string | single-electrode site (Mode 1 & 3) |
+| `"bipolar"` | 2-tuple `("plus","minus")` | 2-tuple | subtracted bipolar pair (Mode 1 & 3) |
+| `"pair"` | 2-tuple `("a","b")` | 2-tuple | coherence pair — legs accessed via `.a`/`.b` (Mode 2) |
+| `"set"` | list of channel strings | channel string | multi-site set for per-site replication (Mode 2a) |
+
+**`kind="active"` and `kind="bipolar"` (Modes 1 & 3):**
+
 ```refrain
 controls {
   site = placement {
@@ -480,26 +494,109 @@ controls {
 }
 ```
 
-Fields:
-- `kind` (required): `"active"` — one electrode; `"bipolar"` — a coupled plus/minus pair.
-- `default` (required): the default site. For `active`, a channel name string. For `bipolar`, a 2-tuple `("plus","minus")`. Must be in `allowed`.
-- `allowed`: an array of permitted values (channel strings for `active`; 2-tuples for `bipolar`), or the string `"any"`. Absent or `"any"` means any device-capable channel.
-- `label`: optional display name for the deploy UI.
-- `live_tunable`: must be `false` (or absent); placement is frozen per session. A `live_tunable = true` placement is a resolve error.
-- `final`: when `true`, the site is locked — `bindings` overrides are rejected, and child protocols cannot redeclare this control (§11.4).
+**`kind="pair"` — coherence pairs (Mode 2):**
 
-Binding placement at resolve time:
+A coupled two-site pair whose two legs feed two separate inputs, for training the relationship between sites (e.g., inter-hemispheric coherence). The legs are accessed via `.a` and `.b` member access in montage channel slots.
 
-```python
-ir = resolve(parse(src), amp, bindings={"site": "C3"})
+```refrain
+controls {
+  coh = placement {
+    kind    = "pair"
+    default = ("F3","F4")
+    allowed = [("F3","F4"), ("C3","C4")]
+    label   = "Coherence pair"
+  }
+}
+input "a" { montage = referential(active: coh.a, reference: "linked_ears") }
+input "b" { montage = referential(active: coh.b, reference: "linked_ears") }
+requires { channels = [coh] }   // expands to both legs at resolve time
 ```
 
-Validation at resolve time (fail-fast):
+`coh.a` resolves to the first element of the bound pair; `coh.b` to the second. The distinction is symmetric — there is no plus/minus polarity for coherence pairs. Binding:
+
+```python
+ir = resolve(parse(src), amp, bindings={"coh": ("C3","C4")})
+```
+
+`requires.channels = [coh]` expands to both legs. Each leg is validated against the device and against `allowed`. The `final` lock applies.
+
+**`kind="set"` — multi-site set (Mode 2a):**
+
+A set of N sites (N chosen at deploy time), used to replicate a single-site protocol across all bound sites via implicit fan-out (see §4.9.1 below).
+
+```refrain
+controls {
+  sites = placement {
+    kind    = "set"
+    default = ["Cz"]
+    allowed = ["C3","Cz","C4","Pz"]   // or "any"
+    min     = 1                        // minimum set size (default 1)
+    max     = 4                        // maximum set size (default: unbounded)
+    label   = "Training sites"
+  }
+}
+```
+
+Binding:
+
+```python
+ir = resolve(parse(src), amp, bindings={"sites": ["C3","Cz","C4"]})
+```
+
+Validation: each member ∈ `allowed` ∩ device-capable; `min ≤ count ≤ max`.
+
+**Common fields (all kinds):**
+- `kind` (required): `"active"`, `"bipolar"`, `"pair"`, or `"set"`.
+- `default` (required): the default site(s). Shape depends on `kind`. Must satisfy `allowed` and `min`/`max` constraints.
+- `allowed`: explicit allowlist or `"any"`. For `active`/`pair`/`set`, elements are channel strings; for `bipolar`/`pair`, elements are 2-tuples.
+- `label`: optional display name for the deploy UI.
+- `live_tunable`: must be `false` (or absent); placement is frozen per session.
+- `final`: when `true`, the site is locked — `bindings` overrides are rejected, and child protocols cannot redeclare this control (§11.4).
+- `min`, `max`: integer size bounds, `"set"` only.
+
+Validation at resolve time (fail-fast, all kinds):
 - Bound value must be in `allowed` (unless `"any"`).
 - Bound channel(s) must be present on the connected device (`amp.has_channel`).
+- For `"set"`: `min ≤ len(bound) ≤ max`.
 - A `bindings` entry for a `final` placement control is a `ResolveError`.
 
-The `placement` control is **omitted from the IR-JSON wire `controls` section**; IR-JSON schema version remains `0.1`.
+**All placement kinds are omitted from the IR-JSON wire `controls` section**; IR-JSON schema version remains `0.1`.
+
+#### 4.9.1 Mode 2a — per-site replication (implicit fan-out)
+
+When a `kind="set"` placement is bound into an input montage channel slot, the resolver performs an **AST-level fan-out pre-pass** that rewrites the protocol to N per-site copies before resolution proceeds:
+
+```refrain
+controls { sites = placement { kind = "set"; default = ["Cz"]; allowed = ["C3","Cz","C4"]; min = 1; max = 3 } }
+input "raw" { montage = referential(active: sites, reference: "linked_ears") }
+derive "smr" { from = "raw"; pipeline = [smooth(tau: 100 ms)] }
+threshold "smr_t" { signal = "smr"; type = absolute(8 uV) }
+reward {
+  combine = "all"   // "all" (default) | "any"
+  event = dwell(condition: above("smr","smr_t"), duration: 250 ms)
+}
+output { audio_chime = reward.event }
+```
+
+When bound to `["C3","Cz","C4"]`, this resolves to a flat IR with:
+- Three inputs: `raw@C3`, `raw@Cz`, `raw@C4`, each with its own concrete montage.
+- Three derives: `smr@C3`, `smr@Cz`, `smr@C4`.
+- Three thresholds: `smr_t@C3`, `smr_t@Cz`, `smr_t@C4`.
+- One combined reward: `dwell(condition: all_of([above("smr@C3","smr_t@C3"), above("smr@Cz","smr_t@Cz"), above("smr@C4","smr_t@C4")]), ...)`.
+
+The fan-out computes the **per-site subgraph** as the transitive closure of derives and thresholds downstream of the set-bound input; only those entities are replicated. Entities that do not depend on the set-bound input (e.g., a fixed-channel inhibit) remain single.
+
+**`reward.combine`** selects how per-site conditions are joined:
+- `"all"` (default): `all_of([...])` — reward fires only when every site meets its condition.
+- `"any"`: `any_of([...])` — reward fires when any site meets its condition.
+
+**Scoping constraints (resolve-time errors):**
+- A `reward.continuous` expression that depends on a per-site replicated stream raises `ResolveError`. Continuous reward over a replicated set requires vector aggregation (Mode 2b, deferred). A continuous reward that depends only on non-replicated streams is permitted.
+- A derive that mixes a per-site stream with a non-replicated one (ambiguous replication boundary) raises `ResolveError`. The per-site subgraph boundary must be unambiguous.
+
+**Canonical naming:** per-site entities are named `<name>@<site>` (e.g., `derive/smr@C3`). These names flow through to `last_taps()` and event keys, enabling per-site state observation in clinician dashboards.
+
+**Wire format:** the fan-out-unrolled IR uses only existing IR-JSON node types. The `sites` control is omitted from the wire (resolve-time-only); the emitted IR is shaped identically to a hand-written multi-site protocol. IR-JSON schema version remains `0.1`.
 
 ### 4.10 `session`
 
