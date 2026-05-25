@@ -174,19 +174,23 @@ class _Resolver:
         self._hoist(proto)
 
         # Pass order matters:
-        #   - requires first (so amp validation feeds everything downstream)
-        #   - controls SECOND — they can be referenced as NameRefs from
-        #     any derive (e.g. `bandpass(center: orf, ...)` in the
-        #     Othmer ILF protocol). Per SPEC §3 NameRefs are a distinct
-        #     expression form from string-lit references; the §5.4
-        #     "previously declared" rule applies only to string-lits.
-        #     Controls are protocol-global parameters.
+        #   - controls FIRST — placement controls must be resolved before
+        #     requires so that requires.channels = [site] can expand the
+        #     bound placement via _bound_placement_value. Controls are
+        #     protocol-global parameters with no dependency on requires.
+        #   - requires SECOND (amp validation; uses resolved controls for
+        #     placement expansion in _parse_channel_list). Controls can
+        #     be referenced as NameRefs from any derive (e.g.
+        #     `bandpass(center: orf, ...)` in the Othmer ILF protocol).
+        #     Per SPEC §3 NameRefs are a distinct expression form from
+        #     string-lit references; the §5.4 "previously declared" rule
+        #     applies only to string-lits.
         #   - named decls in source order (inputs, derives, thresholds,
         #     inhibits, customs)
         #   - reward / output / session last, since they reference
         #     everything declared above
-        requires_ir = self._resolve_requires()
         self._resolve_controls()
+        requires_ir = self._resolve_requires()
         self._resolve_named_decls(proto)
         self._resolve_reward()
         output_ir = self._resolve_output()
@@ -350,12 +354,23 @@ class _Resolver:
             )
         out: list[str] = []
         for elt in arr.elements:
-            if not isinstance(elt, A.StringLit):
+            if isinstance(elt, A.StringLit):
+                out.append(elt.value)
+            elif (
+                isinstance(elt, A.NameRef)
+                and elt.name in self.controls
+                and self.controls[elt.name].type_kind == "placement"
+            ):
+                # Expand a placement control reference to its bound channel(s).
+                # For active placements, _bound_placement_value returns one string.
+                # Bipolar expansion (both legs) is deferred to Task 4.
+                channel = self._bound_placement_value(elt.name)
+                out.append(channel)
+            else:
                 raise ResolveError(
                     "requires.channels entries must be string literals",
                     loc=elt.loc,
                 )
-            out.append(elt.value)
         return out
 
     # -- Meta ---------------------------------------------------------------

@@ -761,3 +761,24 @@ def test_coherence_two_active_placements_bind():
     b_call = ir.inputs["b"].montage
     assert next(x.value.value for x in a_call.args if x.name == "active") == "F3"
     assert next(x.value.value for x in b_call.args if x.name == "active") == "F4"
+
+
+# ---------------------------------------------------------------------------
+# Task 3: requires.channels derives from bound placement
+# ---------------------------------------------------------------------------
+
+_SITE_PROTO_REQ = '''
+    protocol "poise" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls { site = placement { kind = "active"; default = "Cz"; allowed = ["Cz","C3"] } }
+      requires { channels = [site] }
+      input "raw" { montage = referential(active: site, reference: "linked_ears") }
+      reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+      output { audio_gain = reward.continuous }
+    }
+'''
+
+
+def test_requires_channels_from_placement():
+    ir = resolve(parse(_SITE_PROTO_REQ), _AMP, bindings={"site": "C3"})
+    assert ir.requires.channels == ("C3",)
