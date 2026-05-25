@@ -140,3 +140,25 @@ def test_unrelated_string_field_does_not_create_false_dependency():
     assert "fa" in ir.derives
     assert "fa@C3" not in ir.derives
     assert {"smr@C3", "smr@Cz"} <= set(ir.derives)
+
+
+_AMBIGUOUS = """
+    protocol "ms_ambig" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls { sites = placement { kind = "set"; default = ["Cz"]; allowed = ["C3","Cz","C4"]; min = 1; max = 3 } }
+      input "raw" { montage = referential(active: sites, reference: "linked_ears") }
+      derive "smr" { from = "raw"; pipeline = [smooth(tau: 100 ms)] }
+      threshold "smr_t" { signal = "smr"; type = absolute(8 uV) }
+      input "frontal" { montage = referential(active: "F3", reference: "linked_ears") }
+      derive "mix" { formula = "smr" / "frontal" }
+      reward { combine = "all"; event = dwell(condition: above("mix","smr_t"), duration: 100 ms) }
+      output { audio_chime = reward.event }
+    }
+"""
+
+
+def test_ambiguous_replication_boundary_rejected():
+    # `mix` consumes both a per-site stream ("smr") and a non-replicated one
+    # ("frontal"); the replication boundary is ambiguous → ResolveError.
+    with pytest.raises(ResolveError, match="ambiguous|mixes"):
+        resolve(parse(_AMBIGUOUS), _AMP, bindings={"sites": ["C3", "Cz"]})
