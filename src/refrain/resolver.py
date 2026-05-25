@@ -1113,6 +1113,17 @@ class _Resolver:
                 "reward block must declare `continuous`, `event`, or both",
                 loc=self.reward_ast.loc,
             )
+        # Parse optional `combine` field — must be "all" or "any" if present.
+        combine_expr = fields.get("combine")
+        if combine_expr is not None:
+            if not isinstance(combine_expr, A.StringLit) or combine_expr.value not in {"all", "any"}:
+                raise ResolveError(
+                    'reward.combine must be "all" or "any"',
+                    loc=combine_expr.loc if hasattr(combine_expr, "loc") else None,
+                )
+            combine = combine_expr.value
+        else:
+            combine = "all"
         cont_ir = self._resolve_stream_expr(cont_expr) if cont_expr is not None else None
         event_ir = self._resolve_stream_expr(event_expr) if event_expr is not None else None
         if event_ir is not None and _expr_stream_type(event_ir) != EVENT_STREAM:
@@ -1120,7 +1131,7 @@ class _Resolver:
                 f"reward.event must produce event_stream, got {_expr_stream_type(event_ir)}",
                 loc=event_expr.loc if event_expr else None,
             )
-        self.reward_ir = IRReward(continuous=cont_ir, event=event_ir, loc=self.reward_ast.loc)
+        self.reward_ir = IRReward(continuous=cont_ir, event=event_ir, combine=combine, loc=self.reward_ast.loc)
 
     # -- Output -------------------------------------------------------------
 

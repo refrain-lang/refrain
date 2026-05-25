@@ -901,3 +901,56 @@ def test_set_count_above_max_fails(amp):
 def test_set_member_not_in_allowed_fails(amp):
     with pytest.raises(ResolveError, match="not in allowed|allowed"):
         resolve(parse(_SET_DECL), amp, bindings={"sites": ["C3", "Fz"]})
+
+
+# ---------------------------------------------------------------------------
+# Task 3 (Mode 2): reward.combine field ("all" | "any")
+# ---------------------------------------------------------------------------
+
+_REWARD_COMBINE_PROTO = '''
+    protocol "p" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "env" { from = "raw"; pipeline = [smooth(tau: 100 ms)] }
+      threshold "t" { signal = "env"; type = absolute(8 uV) }
+      reward { combine = "any"; event = dwell(condition: above("env","t"), duration: 100 ms) }
+      output { audio_chime = reward.event }
+    }
+'''
+
+_REWARD_COMBINE_NO_COMBINE_PROTO = '''
+    protocol "p" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "env" { from = "raw"; pipeline = [smooth(tau: 100 ms)] }
+      threshold "t" { signal = "env"; type = absolute(8 uV) }
+      reward { event = dwell(condition: above("env","t"), duration: 100 ms) }
+      output { audio_chime = reward.event }
+    }
+'''
+
+_REWARD_COMBINE_INVALID_PROTO = '''
+    protocol "p" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "env" { from = "raw"; pipeline = [smooth(tau: 100 ms)] }
+      threshold "t" { signal = "env"; type = absolute(8 uV) }
+      reward { combine = "most"; event = dwell(condition: above("env","t"), duration: 100 ms) }
+      output { audio_chime = reward.event }
+    }
+'''
+
+
+def test_reward_combine_parsed(amp):
+    ir = resolve(parse(_REWARD_COMBINE_PROTO), amp)
+    assert ir.reward.combine == "any"
+
+
+def test_reward_combine_defaults_all(amp):
+    ir = resolve(parse(_REWARD_COMBINE_NO_COMBINE_PROTO), amp)
+    assert ir.reward.combine == "all"
+
+
+def test_reward_combine_invalid_fails(amp):
+    with pytest.raises(ResolveError):
+        resolve(parse(_REWARD_COMBINE_INVALID_PROTO), amp)

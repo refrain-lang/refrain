@@ -233,6 +233,7 @@ class IRReward:
 
     continuous: IRExpr | None
     event: IRExpr | None
+    combine: str = "all"    # "all" | "any" — consumed by Mode 2a fan-out (Task 4)
     loc: Loc | None = None
 
 
