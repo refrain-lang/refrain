@@ -266,17 +266,27 @@ def _expr_children(node: A.Node) -> Iterator[A.Expr]:
                 yield stmt.value
 
 
+# The only input/derive/threshold body fields that can carry a stream/threshold
+# reference (SPEC §5.4). `montage` references channels/placements (not entities;
+# the set-bound input is the seed, found via `_input_references_set`), and a
+# `threshold.type` carries control refs, not stream refs. Restricting the scan to
+# these fields avoids spuriously matching an unrelated string field (e.g. a
+# `label`) that happens to equal an entity name, which would otherwise create a
+# false dependency edge and trip the ambiguous-boundary guard.
+_REF_FIELDS = frozenset({"from", "pipeline", "formula", "signal"})
+
+
 def _referenced_entities(decl: A.NamedDecl, entity_names: set[str]) -> set[str]:
     """Names of input/derive/threshold entities this decl refers to (via StringLit).
 
-    SPEC §5.4: a string literal naming a declared block is semantically a
-    reference. We classify at the AST level by matching StringLit values against
-    the protocol's declared entity names — a sound over-approximation for the
-    dependency edges we need (``derive.from``/pipeline refs, ``threshold.signal``).
+    SPEC §5.4: a string literal in a reference-bearing field naming a declared
+    block is semantically a reference. We classify at the AST level by matching
+    StringLit values in the ref-bearing fields (`from`/`pipeline`/`formula`/
+    `signal`) against the protocol's declared entity names.
     """
     found: set[str] = set()
     for stmt in decl.body:
-        if isinstance(stmt, A.Assignment):
+        if isinstance(stmt, A.Assignment) and stmt.target in _REF_FIELDS:
             for s in _string_lits(stmt.value):
                 if s in entity_names:
                     found.add(s)
@@ -499,7 +509,15 @@ def _combine_callee(proto: A.Protocol) -> str:
 def _rewrite_reward(
     reward: A.SectionBlock, proto: A.Protocol, sites: list[str], per_site: set[str]
 ) -> A.SectionBlock:
-    """Replace the dwell ``condition`` with all_of/any_of over per-site conditions."""
+    """Replace the dwell ``condition`` with all_of/any_of over per-site conditions.
+
+    NOTE: only the ``event = dwell(...)`` form is rewritten — `dwell` is the only
+    event-producing form in the language today. A non-`dwell` `event=` that
+    references per-site streams would pass through un-rewritten and then fail at
+    resolve time (its dangling per-site refs become non-stream literals → type
+    error), never silently-wrong IR. Extend this dispatch if a new event form
+    that references streams is added.
+    """
     combine = _combine_callee(proto)
     new_body: list[A.Statement] = []
     for stmt in reward.body:

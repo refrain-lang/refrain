@@ -114,3 +114,29 @@ def test_continuous_reward_over_set_rejected():
     )
     with pytest.raises(ResolveError, match="continuous.*aggregat|Mode 2b|aggregation"):
         resolve(parse(src), _AMP, bindings={"sites": ["C3", "Cz"]})
+
+
+_LABEL_COLLISION = """
+    protocol "ms_label" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls { sites = placement { kind = "set"; default = ["Cz"]; allowed = ["C3","Cz","C4"]; min = 1; max = 3 } }
+      input "raw" { montage = referential(active: sites, reference: "linked_ears") }
+      derive "smr" { from = "raw"; pipeline = [smooth(tau: 100 ms)] }
+      threshold "smr_t" { signal = "smr"; type = absolute(8 uV) }
+      input "frontal" { montage = referential(active: "F3", reference: "linked_ears") }
+      derive "fa" { from = "frontal"; pipeline = [smooth(tau: 100 ms)]; label = "smr" }
+      reward { combine = "all"; event = dwell(condition: above("smr","smr_t"), duration: 100 ms) }
+      output { audio_chime = reward.event }
+    }
+"""
+
+
+def test_unrelated_string_field_does_not_create_false_dependency():
+    # `fa` is a fixed-channel derive whose `label` coincidentally equals the
+    # per-site entity name "smr". The label must NOT create a dependency edge
+    # (which would wrongly pull `fa` per-site and trip the ambiguous-boundary
+    # guard). `fa` stays single; the set chain still replicates.
+    ir = resolve(parse(_LABEL_COLLISION), _AMP, bindings={"sites": ["C3", "Cz"]})
+    assert "fa" in ir.derives
+    assert "fa@C3" not in ir.derives
+    assert {"smr@C3", "smr@Cz"} <= set(ir.derives)
