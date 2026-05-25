@@ -820,3 +820,44 @@ def test_bipolar_placement_binds_override():
 def test_bipolar_pair_not_in_allowed_fails():
     with pytest.raises(ResolveError, match="not in allowed|allowed"):
         resolve(parse(_BIPOLAR_PROTO), _AMP, bindings={"site": ("F3", "F4")})
+
+
+# ---------------------------------------------------------------------------
+# Task 1 (Mode 2): kind="pair" — coherence pairs with .a/.b leg member access
+# ---------------------------------------------------------------------------
+
+_PAIR_PROTO = '''
+    protocol "coh" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls { coh = placement { kind = "pair"; default = ("C3","C4"); allowed = [("C3","C4"),("F3","F4")] } }
+      requires { channels = [coh] }
+      input "a" { montage = referential(active: coh.a, reference: "linked_ears") }
+      input "b" { montage = referential(active: coh.b, reference: "linked_ears") }
+      derive "c" { from = "a"; pipeline = [smooth(tau: 100 ms)] }
+      reward { continuous = sigmoid("c", midpoint: 0 uV, steepness: 1) }
+      output { audio_gain = reward.continuous }
+    }
+'''
+
+
+def _active_of(ir, input_name):
+    call = ir.inputs[input_name].montage
+    return next(x.value.value for x in call.args if x.name == "active")
+
+
+def test_pair_legs_bind_default(amp):
+    ir = resolve(parse(_PAIR_PROTO), amp)
+    assert _active_of(ir, "a") == "C3"
+    assert _active_of(ir, "b") == "C4"
+    assert set(ir.requires.channels) == {"C3", "C4"}
+
+
+def test_pair_legs_bind_override(amp):
+    ir = resolve(parse(_PAIR_PROTO), amp, bindings={"coh": ("F3", "F4")})
+    assert _active_of(ir, "a") == "F3"
+    assert _active_of(ir, "b") == "F4"
+
+
+def test_pair_not_in_allowed_fails(amp):
+    with pytest.raises(ResolveError, match="not in allowed|allowed"):
+        resolve(parse(_PAIR_PROTO), amp, bindings={"coh": ("Cz", "Pz")})

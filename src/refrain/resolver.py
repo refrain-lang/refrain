@@ -480,7 +480,7 @@ class _Resolver:
                     loc=call.loc,
                 )
 
-        # General case: rewrite active-placement NameRefs in individual slots.
+        # General case: rewrite active-placement NameRefs and pair-leg MemberAccess in individual slots.
         new_args = []
         changed = False
         for arg in call.args:
@@ -492,6 +492,22 @@ class _Resolver:
             ):
                 channel = self._bound_placement_value(arg.value.name)
                 new_arg = A.Arg(name=arg.name, value=A.StringLit(value=channel, loc=arg.value.loc), loc=arg.loc)
+                new_args.append(new_arg)
+                changed = True
+            elif (
+                isinstance(arg.value, A.MemberAccess)
+                and isinstance(arg.value.target, A.NameRef)
+                and arg.value.target.name in self.controls
+                and self.controls[arg.value.target.name].type_kind == "placement"
+                and self.controls[arg.value.target.name].kind == "pair"
+                and arg.value.member in ("a", "b")
+            ):
+                # coh.a → bound leg[0]; coh.b → bound leg[1]
+                pair_name = arg.value.target.name
+                member = arg.value.member
+                legs = self._bound_placement_value(pair_name)  # 2-tuple (a, b)
+                leg = legs[0] if member == "a" else legs[1]
+                new_arg = A.Arg(name=arg.name, value=A.StringLit(value=leg, loc=arg.value.loc), loc=arg.loc)
                 new_args.append(new_arg)
                 changed = True
             else:
@@ -716,11 +732,11 @@ class _Resolver:
 
     def _resolve_placement_control(self, name: str, fields: dict, loc) -> IRControl:
         """Parse and validate a `placement { ... }` control block."""
-        # kind: "active" | "bipolar" — required
+        # kind: "active" | "bipolar" | "pair" | "set" — required
         kind_expr = fields.get("kind")
-        if not isinstance(kind_expr, A.StringLit) or kind_expr.value not in ("active", "bipolar"):
+        if not isinstance(kind_expr, A.StringLit) or kind_expr.value not in ("active", "bipolar", "pair", "set"):
             raise ResolveError(
-                f"placement control {name!r} needs kind = \"active\" or \"bipolar\"",
+                f"placement control {name!r} needs kind = \"active\", \"bipolar\", \"pair\", or \"set\"",
                 loc=loc,
             )
         place_kind = kind_expr.value
@@ -737,8 +753,11 @@ class _Resolver:
         label_expr = fields.get("label")
         label = label_expr.value if isinstance(label_expr, A.StringLit) else None
 
-        allowed = self._parse_placement_allowed(name, place_kind, fields.get("allowed"), loc)
-        default = self._parse_placement_value(name, place_kind, fields.get("default"), loc)
+        # "pair" reuses bipolar's 2-tuple value parsing (same shape: (a, b)).
+        parse_kind = "bipolar" if place_kind == "pair" else place_kind
+
+        allowed = self._parse_placement_allowed(name, parse_kind, fields.get("allowed"), loc)
+        default = self._parse_placement_value(name, parse_kind, fields.get("default"), loc)
 
         if default is None:
             raise ResolveError(
@@ -748,11 +767,11 @@ class _Resolver:
 
         self._check_placement_in_allowed(name, default, allowed, loc)
 
-        # Store default_placement: active → ("Cz",); bipolar → ("T3", "T4")
+        # Store default_placement: active → ("Cz",); bipolar/pair → ("leg_a", "leg_b")
         if place_kind == "active":
             default_placement = (default,)
         else:
-            default_placement = default  # already a tuple (plus, minus)
+            default_placement = default  # already a tuple (plus/a, minus/b)
 
         return IRControl(
             name=name,
@@ -891,6 +910,30 @@ class _Resolver:
                     f"amp {self.amp.model!r} is missing required channels: [{value!r}]",
                     loc=loc,
                 )
+            return value
+        elif ctrl.kind == "pair":
+            # pair: value must be a 2-tuple of strings (a, b) — symmetric legs.
+            if (
+                not isinstance(value, tuple)
+                or len(value) != 2
+                or not isinstance(value[0], str)
+                or not isinstance(value[1], str)
+            ):
+                raise ResolveError(
+                    f"placement {name!r} (pair): binding value must be a 2-tuple of "
+                    f"channel-name strings, got {value!r}",
+                    loc=loc,
+                )
+            # allowed = () means "any"; only validate when non-empty.
+            self._check_placement_in_allowed(name, value, ctrl.allowed, loc)
+            # Device check: both legs must be present on the amp.
+            if self.amp is not None:
+                missing = [ch for ch in value if not self.amp.has_channel(ch)]
+                if missing:
+                    raise ResolveError(
+                        f"amp {self.amp.model!r} is missing required channels: {missing}",
+                        loc=loc,
+                    )
             return value
         else:
             # bipolar: value must be a 2-tuple of strings
