@@ -119,9 +119,10 @@ PATH="$HOME/.cargo/bin:$PATH" PYTHONPATH="$PWD" .venv/bin/python refrain-core/to
   regenerates the Swift/Kotlin bindings, failing if the committed bindings are
   stale.
 
-CI: `.github/workflows/mobile.yml` runs `bindings-verify` (Linux), and the
-`ios-xcframework` (self-hosted macOS) + `android-aar` (Linux+NDK) packaging jobs
-(the latter two are flagged UNVALIDATED until the farm runners are provisioned).
+CI: `.github/workflows/mobile.yml` runs `bindings-verify` (Linux) and
+`ios-xcframework` (GitHub-hosted `macos-14`, Xcode pre-installed), plus the
+`android-aar` (Linux+NDK) packaging job — the latter flagged UNVALIDATED until
+the NDK + cargo-ndk + a Gradle AAR module are provisioned.
 
 ## Consuming it
 
