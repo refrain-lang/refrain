@@ -303,8 +303,13 @@ def test_set_control_unknown_name_raises(smr_bb_ir, backend):
     reason="asserts on Python-only `_controls` internal (rust forwards set_control to the core, not the Python dict)",
 )
 def test_set_control_updates_dict(smr_bb_ir):
+    # Pinned to python: asserts on the Python engine's `_controls` dict
+    # (rust forwards set_control to the core, not this dict). With the
+    # default backend="auto" a bare call would pick rust where the wheel
+    # is installed, so the backend must be explicit here.
     ev = Evaluator.live(
         smr_bb_ir, sample_rate_hz=250, channel_names=("Cz", "F3", "F4", "Pz"),
+        backend="python",
     )
     assert ev._controls["control/smr_target_pct"] == 70.0
     ev.set_control("smr_target_pct", 55)
@@ -321,8 +326,11 @@ def test_set_control_propagates_to_percentile_impls(smr_bb_ir):
     to the PercentileImpl backing that threshold."""
     from refrain.primitive_impls import PercentileImpl
 
+    # Pinned to python: inspects the Python engine's `_impls` internals; the
+    # default backend="auto" would otherwise pick rust where the wheel exists.
     ev = Evaluator.live(
         smr_bb_ir, sample_rate_hz=250, channel_names=("Cz", "F3", "F4", "Pz"),
+        backend="python",
     )
     # Find all PercentileImpls.
     pct_impls = [i for i in ev._impls.values() if isinstance(i, PercentileImpl)]
@@ -335,3 +343,31 @@ def test_set_control_propagates_to_percentile_impls(smr_bb_ir):
     # At least one impl should now have target_pct = 55.
     new_target_pcts = [p.target_pct for p in pct_impls]
     assert 55.0 in new_target_pcts
+
+
+# --- backend="auto" selection (Phase D1) -----------------------------------
+
+
+def test_auto_backend_falls_back_to_python_without_wheel(smr_bb_ir, monkeypatch):
+    # When refrain_core is not importable, the default backend="auto" resolves
+    # to the pure-Python engine — no ImportError. Simulated deterministically.
+    import refrain.eval_ as eval_mod
+
+    monkeypatch.setattr(eval_mod, "_refrain_core_available", lambda: False)
+    ev = Evaluator.live(smr_bb_ir, sample_rate_hz=250, channel_names=("Cz", "F3", "F4", "Pz"))
+    assert ev._backend == "python"
+
+
+def test_auto_backend_uses_rust_when_available(smr_bb_ir):
+    # Where the wheel is installed, the default backend="auto" picks rust.
+    pytest.importorskip("refrain_core")
+    ev = Evaluator.live(smr_bb_ir, sample_rate_hz=250, channel_names=("Cz", "F3", "F4", "Pz"))
+    assert ev._backend == "rust"
+
+
+def test_unknown_backend_raises(smr_bb_ir):
+    with pytest.raises(ValueError, match="auto.*python.*rust|unknown backend"):
+        Evaluator.live(
+            smr_bb_ir, sample_rate_hz=250, channel_names=("Cz", "F3", "F4", "Pz"),
+            backend="bogus",
+        )

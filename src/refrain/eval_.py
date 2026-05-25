@@ -348,24 +348,32 @@ class Evaluator:
         sample_rate_hz: float,
         channel_names: tuple[str, ...],
         record_streams: bool = False,
-        backend: str = "python",
+        backend: str = "auto",
     ) -> Evaluator:
         """Construct a push-mode evaluator. The host calls `start()`,
         then `step_chunk(chunk)` per arriving sample chunk, then `stop()`.
 
-        `backend="rust"` delegates all evaluation to the compiled Rust core
-        (`refrain_core.RustEvaluator`). The wheel must be installed (run
-        `maturin develop --release` in `refrain-core/`). All public methods
-        (`start`, `stop`, `step_chunk`, `set_control`, `last_taps`,
-        `last_streams`) forward transparently to Rust; return types are
-        identical to the Python backend. Default `backend="python"` is
-        unchanged.
+        `backend` selects the evaluation engine:
+
+        - `"auto"` (default): use the compiled Rust core if the `refrain_core`
+          wheel is importable, otherwise fall back to the pure-Python engine.
+          The two are gated to machine precision in CI, so the choice is
+          transparent; this prefers the faster single implementation when it
+          is available without making the wheel a hard dependency.
+        - `"rust"`: require the Rust core (`refrain_core.RustEvaluator`); raise
+          `ImportError` if the wheel is not installed.
+        - `"python"`: always use the pure-Python engine.
+
+        All public methods (`start`, `stop`, `step_chunk`, `set_control`,
+        `last_taps`, `last_streams`) behave identically across backends.
         """
-        if backend not in ("python", "rust"):
+        if backend not in ("auto", "python", "rust"):
             raise ValueError(
                 f"Evaluator.live: unknown backend {backend!r}. "
-                "Valid values: 'python', 'rust'."
+                "Valid values: 'auto', 'python', 'rust'."
             )
+        if backend == "auto":
+            backend = "rust" if _refrain_core_available() else "python"
         ev = cls(
             ir,
             sample_rate_hz=sample_rate_hz,
@@ -1275,6 +1283,18 @@ def _scale_to_ms_if_duration(n: IRNumberLit) -> float:
 # ---------------------------------------------------------------------------
 # Rust backend helpers
 # ---------------------------------------------------------------------------
+
+
+def _refrain_core_available() -> bool:
+    """True if the compiled `refrain_core` wheel is importable.
+
+    Used to resolve `backend="auto"`: prefer Rust when present, else Python.
+    Uses `find_spec` so we don't import the module until a Rust backend is
+    actually built (`_build_rust_evaluator` does the real import).
+    """
+    import importlib.util
+
+    return importlib.util.find_spec("refrain_core") is not None
 
 
 def _build_rust_evaluator(
