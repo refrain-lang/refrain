@@ -548,7 +548,7 @@ Validation: each member ∈ `allowed` ∩ device-capable; `min ≤ count ≤ max
 **Common fields (all kinds):**
 - `kind` (required): `"active"`, `"bipolar"`, `"pair"`, or `"set"`.
 - `default` (required): the default site(s). Shape depends on `kind`. Must satisfy `allowed` and `min`/`max` constraints.
-- `allowed`: explicit allowlist or `"any"`. For `active`/`pair`/`set`, elements are channel strings; for `bipolar`/`pair`, elements are 2-tuples.
+- `allowed`: explicit allowlist or `"any"`. For `active`/`set`, elements are channel strings; for `bipolar`/`pair`, elements are 2-tuples.
 - `label`: optional display name for the deploy UI.
 - `live_tunable`: must be `false` (or absent); placement is frozen per session.
 - `final`: when `true`, the site is locked — `bindings` overrides are rejected, and child protocols cannot redeclare this control (§11.4).
