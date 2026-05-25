@@ -613,3 +613,210 @@ def test_resource_budgets_summed(amp):
     assert ir.budget.worst_case_us > 0
     assert ir.budget.state_kb <= amp.resource_limits.max_state_kb
     assert ir.budget.worst_case_us <= amp.resource_limits.max_worst_case_us_per_step
+
+
+# ---------------------------------------------------------------------------
+# Placement control type (Task 1)
+# ---------------------------------------------------------------------------
+
+
+def test_placement_control_active_resolves():
+    src = '''
+        protocol "p" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          controls { site = placement { kind = "active"; default = "Cz"; allowed = ["Cz","C3","C4"]; label = "Training site" } }
+          input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+          reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+          output { audio_gain = reward.continuous }
+        }
+    '''
+    ir = resolve(parse(src))
+    c = ir.controls["site"]
+    assert c.type_kind == "placement"
+    assert c.kind == "active"
+    assert c.allowed == ("Cz", "C3", "C4")
+    assert c.final is False
+    assert c.default_placement == ("Cz",)
+
+
+def test_placement_empty_allowed_rejected():
+    src = '''
+        protocol "p" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          controls { site = placement { kind = "active"; default = "Cz"; allowed = [] } }
+          input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+          reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+          output { audio_gain = reward.continuous }
+        }
+    '''
+    with pytest.raises(ResolveError, match="non-empty|any"):
+        resolve(parse(src))
+
+
+def test_placement_default_must_be_in_allowed():
+    src = '''
+        protocol "p" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          controls { site = placement { kind = "active"; default = "Fz"; allowed = ["Cz","C3"] } }
+          input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+          reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+          output { audio_gain = reward.continuous }
+        }
+    '''
+    with pytest.raises(ResolveError, match="not in allowed"):
+        resolve(parse(src))
+
+
+def test_placement_rejects_live_tunable():
+    src = '''
+        protocol "p" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          controls { site = placement { kind = "active"; default = "Cz"; allowed = "any"; live_tunable = true } }
+          input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+          reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+          output { audio_gain = reward.continuous }
+        }
+    '''
+    with pytest.raises(ResolveError, match="live_tunable|frozen"):
+        resolve(parse(src))
+
+
+# ---------------------------------------------------------------------------
+# Placement control type — Task 2: resolve-time binding (active site, montage)
+# ---------------------------------------------------------------------------
+
+from refrain.amp_profile import load_amp_profile  # noqa: E402 (re-import OK; same object)
+_AMP = load_amp_profile(Path(__file__).resolve().parent.parent / "src" / "refrain" / "amp_profiles" / "q21.json")
+
+_SITE_PROTO = '''
+    protocol "poise" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls { site = placement { kind = "active"; default = "Cz"; allowed = ["Cz","C3","C4"] } }
+      input "raw" { montage = referential(active: site, reference: "linked_ears") }
+      reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+      output { audio_gain = reward.continuous }
+    }
+'''
+
+
+def _active_channel(ir):
+    """Read the bound channel string from the resolved montage IRCall."""
+    call = ir.inputs["raw"].montage
+    return next(a.value.value for a in call.args if a.name == "active")
+
+
+def test_placement_binds_default_site():
+    ir = resolve(parse(_SITE_PROTO), _AMP)
+    assert _active_channel(ir) == "Cz"
+
+
+def test_placement_binds_override_site():
+    ir = resolve(parse(_SITE_PROTO), _AMP, bindings={"site": "C3"})
+    assert _active_channel(ir) == "C3"
+
+
+def test_placement_binding_not_in_allowed_fails():
+    with pytest.raises(ResolveError, match="not in allowed|allowed"):
+        resolve(parse(_SITE_PROTO), _AMP, bindings={"site": "Fz"})
+
+
+def test_placement_binding_not_device_capable_fails():
+    src = _SITE_PROTO.replace('allowed = ["Cz","C3","C4"]', 'allowed = "any"')
+    with pytest.raises(ResolveError, match="missing|capable|channel"):
+        resolve(parse(src), _AMP, bindings={"site": "ZZ9"})
+
+
+def test_placement_binding_non_string_rejected():
+    # A non-string active binding (e.g. an int from a JSON deserializer) must
+    # fail with a clear error, not silently flow into the channel name.
+    with pytest.raises(ResolveError, match="must be a channel-name string|string"):
+        resolve(parse(_SITE_PROTO), _AMP, bindings={"site": 42})
+
+
+def test_final_placement_rejects_override():
+    src = _SITE_PROTO.replace('allowed = ["Cz","C3","C4"]', 'allowed = ["Cz"]; final = true')
+    with pytest.raises(ResolveError, match="final|locked|cannot override"):
+        resolve(parse(src), _AMP, bindings={"site": "C3"})
+
+
+def test_coherence_two_active_placements_bind():
+    # Two inputs, each with its own active placement — exercises coherence of
+    # independent bindings without requiring Task 3 (requires.channels).
+    src = '''
+        protocol "coh" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          controls {
+            site_a = placement { kind = "active"; default = "C3"; allowed = ["C3","F3"] }
+            site_b = placement { kind = "active"; default = "C4"; allowed = ["C4","F4"] }
+          }
+          input "a" { montage = referential(active: site_a, reference: "linked_ears") }
+          input "b" { montage = referential(active: site_b, reference: "linked_ears") }
+          derive "coh" { formula = coherence("a", "b", band: (8 Hz, 12 Hz)) }
+          reward { continuous = sigmoid("coh", midpoint: 0.5, steepness: 1) }
+          output { audio_gain = reward.continuous }
+        }
+    '''
+    ir = resolve(parse(src), _AMP, bindings={"site_a": "F3", "site_b": "F4"})
+    a_call = ir.inputs["a"].montage
+    b_call = ir.inputs["b"].montage
+    assert next(x.value.value for x in a_call.args if x.name == "active") == "F3"
+    assert next(x.value.value for x in b_call.args if x.name == "active") == "F4"
+
+
+# ---------------------------------------------------------------------------
+# Task 3: requires.channels derives from bound placement
+# ---------------------------------------------------------------------------
+
+_SITE_PROTO_REQ = '''
+    protocol "poise" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls { site = placement { kind = "active"; default = "Cz"; allowed = ["Cz","C3"] } }
+      requires { channels = [site] }
+      input "raw" { montage = referential(active: site, reference: "linked_ears") }
+      reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+      output { audio_gain = reward.continuous }
+    }
+'''
+
+
+def test_requires_channels_from_placement():
+    ir = resolve(parse(_SITE_PROTO_REQ), _AMP, bindings={"site": "C3"})
+    assert ir.requires.channels == ("C3",)
+
+
+# ---------------------------------------------------------------------------
+# Task 4: bipolar placement + bipolar(pair: site) montage form
+# ---------------------------------------------------------------------------
+
+_BIPOLAR_PROTO = '''
+    protocol "ilf" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls { site = placement { kind = "bipolar"; default = ("T3","T4"); allowed = [("T3","T4"),("C3","C4")] } }
+      requires { channels = [site] }
+      input "raw" { montage = bipolar(pair: site) }
+      reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+      output { audio_gain = reward.continuous }
+    }
+'''
+
+
+def _bipolar_legs(ir):
+    call = ir.inputs["raw"].montage
+    args = {a.name: a.value.value for a in call.args}
+    return (args["plus"], args["minus"])
+
+
+def test_bipolar_placement_binds_default():
+    ir = resolve(parse(_BIPOLAR_PROTO), _AMP)
+    assert _bipolar_legs(ir) == ("T3", "T4")
+    assert ir.requires.channels == ("T3", "T4")
+
+
+def test_bipolar_placement_binds_override():
+    ir = resolve(parse(_BIPOLAR_PROTO), _AMP, bindings={"site": ("C3", "C4")})
+    assert _bipolar_legs(ir) == ("C3", "C4")
+
+
+def test_bipolar_pair_not_in_allowed_fails():
+    with pytest.raises(ResolveError, match="not in allowed|allowed"):
+        resolve(parse(_BIPOLAR_PROTO), _AMP, bindings={"site": ("F3", "F4")})

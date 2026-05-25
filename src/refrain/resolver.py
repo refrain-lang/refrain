@@ -124,9 +124,10 @@ _KNOWN_OUTPUTS = _ANALOG_OUTPUTS | _EVENT_OUTPUTS
 class _Resolver:
     """Single-use resolver: instantiate with the file AST, call `resolve()`."""
 
-    def __init__(self, file_ast: A.File, amp: AmpProfile | None):
+    def __init__(self, file_ast: A.File, amp: AmpProfile | None, bindings: dict | None = None):
         self.file = file_ast
         self.amp = amp
+        self.bindings: dict = bindings or {}
 
         # Section-block AST snapshots (one each, last-wins per spec
         # composition default; composition isn't here yet so just first-wins).
@@ -173,19 +174,23 @@ class _Resolver:
         self._hoist(proto)
 
         # Pass order matters:
-        #   - requires first (so amp validation feeds everything downstream)
-        #   - controls SECOND — they can be referenced as NameRefs from
-        #     any derive (e.g. `bandpass(center: orf, ...)` in the
-        #     Othmer ILF protocol). Per SPEC §3 NameRefs are a distinct
-        #     expression form from string-lit references; the §5.4
-        #     "previously declared" rule applies only to string-lits.
-        #     Controls are protocol-global parameters.
+        #   - controls FIRST — placement controls must be resolved before
+        #     requires so that requires.channels = [site] can expand the
+        #     bound placement via _bound_placement_value. Controls are
+        #     protocol-global parameters with no dependency on requires.
+        #   - requires SECOND (amp validation; uses resolved controls for
+        #     placement expansion in _parse_channel_list). Controls can
+        #     be referenced as NameRefs from any derive (e.g.
+        #     `bandpass(center: orf, ...)` in the Othmer ILF protocol).
+        #     Per SPEC §3 NameRefs are a distinct expression form from
+        #     string-lit references; the §5.4 "previously declared" rule
+        #     applies only to string-lits.
         #   - named decls in source order (inputs, derives, thresholds,
         #     inhibits, customs)
         #   - reward / output / session last, since they reference
         #     everything declared above
-        requires_ir = self._resolve_requires()
         self._resolve_controls()
+        requires_ir = self._resolve_requires()
         self._resolve_named_decls(proto)
         self._resolve_reward()
         output_ir = self._resolve_output()
@@ -349,12 +354,26 @@ class _Resolver:
             )
         out: list[str] = []
         for elt in arr.elements:
-            if not isinstance(elt, A.StringLit):
+            if isinstance(elt, A.StringLit):
+                out.append(elt.value)
+            elif (
+                isinstance(elt, A.NameRef)
+                and elt.name in self.controls
+                and self.controls[elt.name].type_kind == "placement"
+            ):
+                # Expand a placement control reference to its bound channel(s).
+                # _bound_placement_value returns a str (active) or 2-tuple (bipolar).
+                bound = self._bound_placement_value(elt.name)
+                if isinstance(bound, str):
+                    out.append(bound)
+                else:
+                    # bipolar: extend with both legs
+                    out.extend(bound)
+            else:
                 raise ResolveError(
                     "requires.channels entries must be string literals",
                     loc=elt.loc,
                 )
-            out.append(elt.value)
         return out
 
     # -- Meta ---------------------------------------------------------------
@@ -402,6 +421,11 @@ class _Resolver:
                 f"input \"{decl.name}\".montage must be a call (bipolar/referential/...)",
                 loc=montage_ast.loc,
             )
+        # Placement substitution: rewrite any active-placement NameRef in the
+        # montage call's args to a concrete StringLit before passing to
+        # _resolve_call.  This keeps _resolve_call unchanged and produces an IR
+        # with a concrete channel string — identical to a literal-site protocol.
+        montage_ast = self._substitute_placement_args(montage_ast)
         montage_ir = self._resolve_call(montage_ast)
         return IRInput(
             name=decl.name,
@@ -410,6 +434,71 @@ class _Resolver:
             montage=montage_ir,
             loc=decl.loc,
         )
+
+    def _substitute_placement_args(self, call: A.Call) -> A.Call:
+        """Rewrite montage A.Call args for placement substitution.
+
+        Two cases are handled:
+
+        1. ``active`` placement NameRef in any slot:
+           ``referential(active: site)`` → ``referential(active: "Cz")``.
+           The NameRef is replaced by an A.StringLit of the bound channel.
+
+        2. ``bipolar(pair: <NameRef naming a bipolar placement>)`` form:
+           The entire ``pair:`` arg is expanded into two args:
+           ``bipolar(plus: "T3", minus: "T4")``.
+           This makes the IR identical to a literal ``bipolar(plus:, minus:)``,
+           so ``_resolve_call`` is unchanged.
+
+        All other args are left unchanged.  Returns a (possibly new) A.Call.
+        """
+        # Special case: bipolar(pair: <bipolar-placement NameRef>)
+        # Detect before iterating args so we can replace the whole call shape.
+        if call.callee == "bipolar":
+            pair_arg = None
+            for arg in call.args:
+                if (
+                    arg.name == "pair"
+                    and isinstance(arg.value, A.NameRef)
+                    and arg.value.name in self.controls
+                    and self.controls[arg.value.name].type_kind == "placement"
+                    and self.controls[arg.value.name].kind == "bipolar"
+                ):
+                    pair_arg = arg
+                    break
+            if pair_arg is not None:
+                pair = self._bound_placement_value(pair_arg.value.name)  # type: ignore[assignment]
+                plus_str, minus_str = pair  # 2-tuple guaranteed by _bound_placement_value
+                loc = pair_arg.value.loc
+                plus_arg = A.Arg(name="plus", value=A.StringLit(value=plus_str, loc=loc), loc=pair_arg.loc)
+                minus_arg = A.Arg(name="minus", value=A.StringLit(value=minus_str, loc=loc), loc=pair_arg.loc)
+                # Replace the pair: arg with plus: / minus:; keep any other args unchanged.
+                other_args = [a for a in call.args if a is not pair_arg]
+                return A.Call(
+                    callee=call.callee,
+                    args=tuple([plus_arg, minus_arg] + other_args),
+                    loc=call.loc,
+                )
+
+        # General case: rewrite active-placement NameRefs in individual slots.
+        new_args = []
+        changed = False
+        for arg in call.args:
+            if (
+                isinstance(arg.value, A.NameRef)
+                and arg.value.name in self.controls
+                and self.controls[arg.value.name].type_kind == "placement"
+                and self.controls[arg.value.name].kind == "active"
+            ):
+                channel = self._bound_placement_value(arg.value.name)
+                new_arg = A.Arg(name=arg.name, value=A.StringLit(value=channel, loc=arg.value.loc), loc=arg.loc)
+                new_args.append(new_arg)
+                changed = True
+            else:
+                new_args.append(arg)
+        if not changed:
+            return call
+        return A.Call(callee=call.callee, args=tuple(new_args), loc=call.loc)
 
     def _resolve_derive(self, decl: A.NamedDecl) -> IRDerive:
         fields = self._assignments_dict(decl.body)
@@ -584,6 +673,10 @@ class _Resolver:
         kind = block.name or ""
         dims = _control_kind_dims(kind, block.loc)
         fields = self._assignments_dict(block.body)
+
+        if kind == "placement":
+            return self._resolve_placement_control(name, fields, block.loc)
+
         default = self._resolve_value_expr(fields["default"]) if "default" in fields else None
         range_low: IRExpr | None = None
         range_high: IRExpr | None = None
@@ -620,6 +713,209 @@ class _Resolver:
             tune_strategy=tune_strategy,
             loc=block.loc,
         )
+
+    def _resolve_placement_control(self, name: str, fields: dict, loc) -> IRControl:
+        """Parse and validate a `placement { ... }` control block."""
+        # kind: "active" | "bipolar" — required
+        kind_expr = fields.get("kind")
+        if not isinstance(kind_expr, A.StringLit) or kind_expr.value not in ("active", "bipolar"):
+            raise ResolveError(
+                f"placement control {name!r} needs kind = \"active\" or \"bipolar\"",
+                loc=loc,
+            )
+        place_kind = kind_expr.value
+
+        # live_tunable = true is forbidden for placement (frozen per session)
+        if self._bool_field(fields, "live_tunable", default=False):
+            raise ResolveError(
+                f"placement control {name!r} cannot be live_tunable (site is frozen per session)",
+                loc=loc,
+            )
+
+        final = self._bool_field(fields, "final", default=False)
+
+        label_expr = fields.get("label")
+        label = label_expr.value if isinstance(label_expr, A.StringLit) else None
+
+        allowed = self._parse_placement_allowed(name, place_kind, fields.get("allowed"), loc)
+        default = self._parse_placement_value(name, place_kind, fields.get("default"), loc)
+
+        if default is None:
+            raise ResolveError(
+                f"placement control {name!r} requires a default",
+                loc=loc,
+            )
+
+        self._check_placement_in_allowed(name, default, allowed, loc)
+
+        # Store default_placement: active → ("Cz",); bipolar → ("T3", "T4")
+        if place_kind == "active":
+            default_placement = (default,)
+        else:
+            default_placement = default  # already a tuple (plus, minus)
+
+        return IRControl(
+            name=name,
+            canonical_name=f"control/{name}",
+            type_kind="placement",
+            dims=DIMENSIONLESS,
+            default=None,
+            range_low=None,
+            range_high=None,
+            log_scale=False,
+            label=label,
+            live_tunable=False,
+            tune_strategy=None,
+            kind=place_kind,
+            allowed=allowed,
+            final=final,
+            default_placement=default_placement,
+            loc=loc,
+        )
+
+    def _parse_placement_value(self, name: str, place_kind: str, expr, loc):
+        """Parse a single placement value (default or an element of allowed).
+
+        For active:  expects A.StringLit → returns the channel string.
+        For bipolar: expects A.Tuple of two A.StringLit → returns (plus, minus).
+        Returns None if expr is None.
+        """
+        if expr is None:
+            return None
+        if place_kind == "active":
+            if not isinstance(expr, A.StringLit):
+                raise ResolveError(
+                    f"placement control {name!r} (active): channel value must be a string literal",
+                    loc=loc,
+                )
+            return expr.value
+        else:  # bipolar
+            if (
+                not isinstance(expr, A.Tuple)
+                or len(expr.elements) != 2
+                or not isinstance(expr.elements[0], A.StringLit)
+                or not isinstance(expr.elements[1], A.StringLit)
+            ):
+                raise ResolveError(
+                    f"placement control {name!r} (bipolar): pair value must be a 2-tuple of strings",
+                    loc=loc,
+                )
+            return (expr.elements[0].value, expr.elements[1].value)
+
+    def _parse_placement_allowed(self, name: str, place_kind: str, expr, loc) -> tuple:
+        """Parse the `allowed` field of a placement control.
+
+        "any" (StringLit) or absent → () (sentinel meaning any channel is allowed).
+        A non-empty array of channel values → tuple of parsed values. An empty
+        array is rejected: () is reserved for "any", so `allowed = []` (which would
+        otherwise silently mean "accept anything") is almost certainly an authoring
+        mistake.
+        """
+        if expr is None:
+            return ()
+        if isinstance(expr, A.StringLit) and expr.value == "any":
+            return ()
+        if isinstance(expr, A.Array):
+            if not expr.elements:
+                raise ResolveError(
+                    f"placement control {name!r}: allowed must be non-empty "
+                    "(use \"any\" to allow any channel)",
+                    loc=loc,
+                )
+            result = []
+            for elt in expr.elements:
+                val = self._parse_placement_value(name, place_kind, elt, loc)
+                result.append(val)
+            return tuple(result)
+        raise ResolveError(
+            f"placement control {name!r}: allowed must be \"any\" or an array of channel names",
+            loc=loc,
+        )
+
+    def _check_placement_in_allowed(self, name: str, value, allowed: tuple, loc) -> None:
+        """Raise ResolveError if allowed is non-empty and value is not in it."""
+        if allowed and value not in allowed:
+            raise ResolveError(
+                f"placement {name!r}: {value!r} not in allowed {list(allowed)}",
+                loc=loc,
+            )
+
+    def _bound_placement_value(self, name: str):
+        """Return the concrete bound value for a placement control.
+
+        Dispatches on ``ctrl.kind``:
+          - ``active``  → returns a channel-name string.
+          - ``bipolar`` → returns a 2-tuple ``(plus, minus)`` of channel-name strings.
+
+        Looks up ``name`` in ``self.bindings`` (override) or falls back to the
+        control's ``default_placement``.  Validates the result against ``allowed``
+        and, when an amp profile is set, against the device's channel list.
+        Raises ``ResolveError`` if:
+          - the control is ``final`` and an override is supplied;
+          - the bound value is not in ``allowed`` (non-empty list means restrict);
+          - the amp does not have the channel (or either leg for bipolar).
+        """
+        ctrl = self.controls.get(name)
+        if ctrl is None or ctrl.type_kind != "placement":
+            raise ResolveError(
+                f"internal: _bound_placement_value called for non-placement {name!r}",
+            )
+        loc = ctrl.loc
+
+        if name in self.bindings:
+            if ctrl.final:
+                raise ResolveError(
+                    f"placement {name!r} is final and cannot be overridden",
+                    loc=loc,
+                )
+            value = self.bindings[name]
+        else:
+            # Use default: active default_placement is a 1-tuple; bipolar is already a 2-tuple.
+            if ctrl.kind == "active":
+                value = ctrl.default_placement[0]
+            else:
+                value = ctrl.default_placement  # 2-tuple (plus, minus)
+
+        if ctrl.kind == "active":
+            if not isinstance(value, str):
+                raise ResolveError(
+                    f"placement {name!r} (active): binding value must be a channel-name "
+                    f"string, got {type(value).__name__}",
+                    loc=loc,
+                )
+            # allowed = () means "any"; only validate when non-empty.
+            self._check_placement_in_allowed(name, value, ctrl.allowed, loc)
+            # Device check: the amp must have the channel.
+            if self.amp is not None and not self.amp.has_channel(value):
+                raise ResolveError(
+                    f"amp {self.amp.model!r} is missing required channels: [{value!r}]",
+                    loc=loc,
+                )
+            return value
+        else:
+            # bipolar: value must be a 2-tuple of strings
+            if (
+                not isinstance(value, tuple)
+                or len(value) != 2
+                or not isinstance(value[0], str)
+                or not isinstance(value[1], str)
+            ):
+                raise ResolveError(
+                    f"placement {name!r} (bipolar): binding value must be a 2-tuple of "
+                    f"channel-name strings, got {value!r}",
+                    loc=loc,
+                )
+            # allowed = () means "any"; only validate when non-empty.
+            self._check_placement_in_allowed(name, value, ctrl.allowed, loc)
+            # Device check: both legs must be present on the amp.
+            if self.amp is not None:
+                missing = [ch for ch in value if not self.amp.has_channel(ch)]
+                if missing:
+                    raise ResolveError(
+                        f"amp {self.amp.model!r} is missing required channels: {missing}",
+                        loc=loc,
+                    )
+            return value
 
     # -- Reward -------------------------------------------------------------
 
@@ -1267,6 +1563,8 @@ def _control_kind_dims(kind: str, loc: Loc | None) -> Dimensions:
         return DIMENSIONLESS
     if kind in ("boolean", "enum"):
         return DIMENSIONLESS
+    if kind == "placement":
+        return DIMENSIONLESS   # categorical (channel identifiers); no unit arithmetic
     raise ResolveError(f"unknown control type {kind!r}", loc=loc)
 
 
@@ -1305,12 +1603,18 @@ def resolve(
     file_ast: A.File,
     amp: AmpProfile | None = None,
     *,
+    bindings: dict[str, object] | None = None,
     parent_loader: ParentLoader | None = None,
 ) -> IRProtocol:
     """Resolve a parsed `File` AST into an `IRProtocol`.
 
     Pass an `AmpProfile` to validate hardware requirements (§6.3) and
     to compute the chosen sample rate. Pass `None` to skip those checks.
+
+    Pass ``bindings`` to override placement control values at resolve time.
+    Keys are control names; values are concrete channel strings (for
+    ``active`` placements).  Omitted names fall back to the control's
+    declared ``default``.
 
     Pass a `parent_loader` (typically built via
     `refrain.compose.filesystem_loader([...])`) if the protocol uses
@@ -1327,7 +1631,7 @@ def resolve(
         if exc.loc is not None and msg.startswith(f"line {exc.loc.line}:{exc.loc.col}: "):
             msg = msg.split(": ", 1)[1]
         raise ResolveError(msg, loc=exc.loc) from exc
-    return _Resolver(composed, amp).resolve()
+    return _Resolver(composed, amp, bindings).resolve()
 
 
 __all__ = ["resolve", "ResolveError"]

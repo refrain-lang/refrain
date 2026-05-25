@@ -19,7 +19,7 @@ import pytest
 
 from refrain.amp_profile import load_amp_profile
 from refrain.ir_json import ir_to_json, ir_to_json_obj
-from refrain.parser import parse_file
+from refrain.parser import parse, parse_file
 from refrain.primitive_impls import BandpassImpl, HilbertFirImpl, SmoothImpl
 from refrain.resolver import resolve
 
@@ -27,6 +27,8 @@ REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
 BENCH_PROTOCOLS = REPO / "bench" / "protocols"
 AMP_PATH = REPO / "src" / "refrain" / "amp_profiles" / "q21.json"
+
+_AMP = load_amp_profile(AMP_PATH)
 
 
 @pytest.fixture(scope="module")
@@ -174,3 +176,47 @@ def test_bench_corpus_emits_and_round_trips(protocol_path):
     assert json.loads(ir_to_json(ir)) == obj
     assert obj["name"] == ir.name
     assert obj["sample_rate_hz"] == ir.requires.sample_rate_chosen_hz
+
+
+# ---------------------------------------------------------------------------
+# Task 6: placement control omission — no-wire-change invariant
+# ---------------------------------------------------------------------------
+
+
+def test_ir_json_omits_placement_controls():
+    src = '''
+        protocol "poise" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          controls {
+            site = placement { kind = "active"; default = "Cz"; allowed = ["Cz","C3"] }
+            gain_pct = percent { default = 65 %; range = (50%, 90%); live_tunable = true }
+          }
+          input "raw" { montage = referential(active: site, reference: "linked_ears") }
+          reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+          output { audio_gain = reward.continuous }
+        }
+    '''
+    ir = resolve(parse(src), _AMP, bindings={"site": "C3"})
+    obj = ir_to_json_obj(ir)
+    assert "site" not in obj["controls"]      # placement omitted (resolve-time only)
+    assert "gain_pct" in obj["controls"]      # numeric/live control still emitted
+
+
+def test_placement_bound_ir_json_matches_literal_site():
+    site_src = '''
+        protocol "p" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          controls { site = placement { kind = "active"; default = "C3"; allowed = ["C3"] } }
+          input "raw" { montage = referential(active: site, reference: "linked_ears") }
+          reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+          output { audio_gain = reward.continuous }
+        }
+    '''
+    literal_src = site_src.replace(
+        'controls { site = placement { kind = "active"; default = "C3"; allowed = ["C3"] } }', ''
+    ).replace('referential(active: site,', 'referential(active: "C3",')
+    a = ir_to_json_obj(resolve(parse(site_src), _AMP, bindings={"site": "C3"}))
+    b = ir_to_json_obj(resolve(parse(literal_src), _AMP))
+    # Same montage/input/output shape; placement control absent from wire in both cases.
+    assert a["inputs"] == b["inputs"]
+    assert a["output"] == b["output"]
