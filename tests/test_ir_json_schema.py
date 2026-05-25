@@ -45,6 +45,36 @@ def test_golden_ir_json_validates(validator, ir_path):
     )
 
 
-def test_malformed_ir_json_is_rejected(validator):
-    bad = {"refrain_ir_version": "0.1", "output": {"x": {"node": "not_a_real_node"}}}
-    assert not validator.is_valid(bad)
+def _valid_envelope():
+    """Minimal structurally-valid IR-JSON (all required top-level fields present).
+    Lets the rejection tests below isolate a single downstream defect, so a
+    failure is attributable to the mutation rather than a missing envelope field."""
+    return {
+        "refrain_ir_version": "0.1",
+        "sample_rate_hz": 256,
+        "channels": ["Cz"],
+        "inputs": {},
+        "derives": {},
+        "output": {"x": {"node": "number", "value": 1.0}},
+        "topological_order": [],
+    }
+
+
+def test_valid_envelope_is_accepted(validator):
+    # Guards the rejection tests: the envelope alone must validate.
+    assert validator.is_valid(_valid_envelope())
+
+
+def test_unknown_expr_node_is_rejected(validator):
+    # Isolates the Expr oneOf discrimination: a doc whose ONLY defect is an
+    # unknown `node` tag must be rejected. This would pass even with a broken
+    # oneOf if the envelope were also malformed — hence the isolated envelope.
+    doc = _valid_envelope()
+    doc["output"]["x"] = {"node": "not_a_real_node"}
+    assert not validator.is_valid(doc)
+
+
+def test_missing_required_top_level_field_is_rejected(validator):
+    doc = _valid_envelope()
+    del doc["sample_rate_hz"]
+    assert not validator.is_valid(doc)

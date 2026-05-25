@@ -221,6 +221,8 @@
     },
 
     "Coeffs": {
+      "title": "Coeffs",
+      "description": "Baked filter/stat coefficients (designed by Python/SciPy; the runtime only runs the recurrence). All fields optional.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -246,6 +248,8 @@
     },
 
     "Expr": {
+      "title": "Expr",
+      "description": "IR expression node; a tagged union discriminated by the `node` field.",
       "type": "object",
       "required": ["node"],
       "additionalProperties": true,
