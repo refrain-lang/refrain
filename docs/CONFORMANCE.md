@@ -48,7 +48,7 @@ Top-level shape (from `realistic_smr.ir.json`):
   "name": "smr_cz_v1",
   "extends": null,
   "sample_rate_hz": 256.0,
-  "channels": ["Cz", "A1", "A2"],
+  "channels": ["Cz"],
   "requires": { ... },
   "meta": { ... },
   "inputs": { ... },

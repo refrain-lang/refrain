@@ -48,15 +48,24 @@ The host chooses any rate at or above that minimum, bakes the IR-JSON at that
 chosen rate, and passes that same rate to the runtime constructor. Shipping a
 mismatched rate silently mis-tunes every IIR/FIR filter.
 
-### Rule 2 — `channels` is the physical acquisition layout
+### Rule 2 — the runtime channel layout is a host input, not the wire `channels`
 
-The top-level `channels` array (and the matching array passed to the runtime
-constructor) is the complete physical electrode layout, including reference
-electrodes. For example, a protocol that only `require`s `["Cz"]` may use a
-`referential(active: "Cz", reference: "linked_ears")` montage that needs A1
-and A2 in the layout — so `channels = ["Cz", "A1", "A2"]`. The montage
-resolves electrode names against the layout; passing only the protocol's
-logical channels will cause a name-resolution failure.
+Two channel lists exist and are easy to confuse:
+
+- The IR-JSON **`channels`** field is the protocol's *declared required* (logical)
+  channels — `ir.requires.channels`. For `realistic_smr` this is `["Cz"]`.
+- The **physical acquisition layout** the host passes to the runtime constructor
+  (`Evaluator.live(..., channel_names=...)` / `RustEvaluator(ir_json,
+  sample_rate_hz, channels)`) is the complete electrode set, *including reference
+  electrodes*. A protocol that requires only `["Cz"]` but uses
+  `referential(active: "Cz", reference: "linked_ears")` needs A1 and A2 present, so
+  the host passes `["Cz", "A1", "A2"]`. Montages resolve electrode names against
+  this *runtime* layout; passing only the protocol's logical channels causes a
+  name-resolution failure.
+
+The physical layout is **not** stored in the `.ir.json` wire object — it is a
+runtime input. The conformance vectors record it separately in the `.io.json`
+`channels` field (see `docs/CONFORMANCE.md`).
 
 ---
 
@@ -71,7 +80,7 @@ present in the serialized output (verified against `realistic_smr.ir.json`):
 | `name` | `string \| null` | Protocol name (`smr_cz_v1`, etc.). |
 | `extends` | `string \| null` | Parent protocol name, if any. |
 | `sample_rate_hz` | number | Baked runtime sample rate (host choice, ≥ `requires.sample_rate_min_hz`). |
-| `channels` | array of string | Physical electrode layout (incl. references). |
+| `channels` | array of string | Protocol's declared *required* channels (`ir.requires.channels`), e.g. `["Cz"]` — NOT the host's physical electrode layout (that is a runtime input; see Rule 2). |
 | `requires` | object | Hardware requirements block (`coupling`, `sample_rate_min_hz`, `sample_rate_chosen_hz`, `channels`, `impedance`, `markers`). |
 | `meta` | object | Authoring metadata; values are `Expr` nodes (typically `string` or `array`). |
 | `inputs` | object | Named `Input` objects, keyed by user name. |
@@ -159,10 +168,11 @@ threshold, reward, and conditional output expressions.
   "refrain_ir_version": "0.1",
   "name": "smr_cz_v1",
   "sample_rate_hz": 256.0,
-  "channels": ["Cz", "A1", "A2"],
+  "channels": ["Cz"],              // protocol's required channels (ir.requires.channels)
   ...
 
-  // Physical montage: Cz re-referenced to linked ears
+  // Physical montage: Cz re-referenced to linked ears (the host passes the
+  // physical layout ["Cz","A1","A2"] to the runtime constructor — not shown here)
   "inputs": {
     "raw": {
       "canonical_name": "input/raw",
