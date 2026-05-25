@@ -584,6 +584,10 @@ class _Resolver:
         kind = block.name or ""
         dims = _control_kind_dims(kind, block.loc)
         fields = self._assignments_dict(block.body)
+
+        if kind == "placement":
+            return self._resolve_placement_control(name, fields, block.loc)
+
         default = self._resolve_value_expr(fields["default"]) if "default" in fields else None
         range_low: IRExpr | None = None
         range_high: IRExpr | None = None
@@ -620,6 +624,123 @@ class _Resolver:
             tune_strategy=tune_strategy,
             loc=block.loc,
         )
+
+    def _resolve_placement_control(self, name: str, fields: dict, loc) -> IRControl:
+        """Parse and validate a `placement { ... }` control block."""
+        # kind: "active" | "bipolar" — required
+        kind_expr = fields.get("kind")
+        if not isinstance(kind_expr, A.StringLit) or kind_expr.value not in ("active", "bipolar"):
+            raise ResolveError(
+                f"placement control {name!r} needs kind = \"active\" or \"bipolar\"",
+                loc=loc,
+            )
+        place_kind = kind_expr.value
+
+        # live_tunable = true is forbidden for placement (frozen per session)
+        if self._bool_field(fields, "live_tunable", default=False):
+            raise ResolveError(
+                f"placement control {name!r} cannot be live_tunable (site is frozen per session)",
+                loc=loc,
+            )
+
+        final = self._bool_field(fields, "final", default=False)
+
+        label_expr = fields.get("label")
+        label = label_expr.value if isinstance(label_expr, A.StringLit) else None
+
+        allowed = self._parse_placement_allowed(name, place_kind, fields.get("allowed"), loc)
+        default = self._parse_placement_value(name, place_kind, fields.get("default"), loc)
+
+        if default is None:
+            raise ResolveError(
+                f"placement control {name!r} requires a default",
+                loc=loc,
+            )
+
+        self._check_placement_in_allowed(name, default, allowed, loc)
+
+        # Store default_placement: active → ("Cz",); bipolar → ("T3", "T4")
+        if place_kind == "active":
+            default_placement = (default,)
+        else:
+            default_placement = default  # already a tuple (plus, minus)
+
+        return IRControl(
+            name=name,
+            canonical_name=f"control/{name}",
+            type_kind="placement",
+            dims=DIMENSIONLESS,
+            default=None,
+            range_low=None,
+            range_high=None,
+            log_scale=False,
+            label=label,
+            live_tunable=False,
+            tune_strategy=None,
+            kind=place_kind,
+            allowed=allowed,
+            final=final,
+            default_placement=default_placement,
+            loc=loc,
+        )
+
+    def _parse_placement_value(self, name: str, place_kind: str, expr, loc):
+        """Parse a single placement value (default or an element of allowed).
+
+        For active:  expects A.StringLit → returns the channel string.
+        For bipolar: expects A.Tuple of two A.StringLit → returns (plus, minus).
+        Returns None if expr is None.
+        """
+        if expr is None:
+            return None
+        if place_kind == "active":
+            if not isinstance(expr, A.StringLit):
+                raise ResolveError(
+                    f"placement control {name!r} (active): channel value must be a string literal",
+                    loc=loc,
+                )
+            return expr.value
+        else:  # bipolar
+            if (
+                not isinstance(expr, A.Tuple)
+                or len(expr.elements) != 2
+                or not isinstance(expr.elements[0], A.StringLit)
+                or not isinstance(expr.elements[1], A.StringLit)
+            ):
+                raise ResolveError(
+                    f"placement control {name!r} (bipolar): pair value must be a 2-tuple of strings",
+                    loc=loc,
+                )
+            return (expr.elements[0].value, expr.elements[1].value)
+
+    def _parse_placement_allowed(self, name: str, place_kind: str, expr, loc) -> tuple:
+        """Parse the `allowed` field of a placement control.
+
+        "any" (StringLit) or absent → () (sentinel meaning any channel is allowed).
+        Array of channel values → tuple of parsed values.
+        """
+        if expr is None:
+            return ()
+        if isinstance(expr, A.StringLit) and expr.value == "any":
+            return ()
+        if isinstance(expr, A.Array):
+            result = []
+            for elt in expr.elements:
+                val = self._parse_placement_value(name, place_kind, elt, loc)
+                result.append(val)
+            return tuple(result)
+        raise ResolveError(
+            f"placement control {name!r}: allowed must be \"any\" or an array of channel names",
+            loc=loc,
+        )
+
+    def _check_placement_in_allowed(self, name: str, value, allowed: tuple, loc) -> None:
+        """Raise ResolveError if allowed is non-empty and value is not in it."""
+        if allowed and value not in allowed:
+            raise ResolveError(
+                f"placement {name!r}: default {value!r} not in allowed {list(allowed)}",
+                loc=loc,
+            )
 
     # -- Reward -------------------------------------------------------------
 
@@ -1267,6 +1388,8 @@ def _control_kind_dims(kind: str, loc: Loc | None) -> Dimensions:
         return DIMENSIONLESS
     if kind in ("boolean", "enum"):
         return DIMENSIONLESS
+    if kind == "placement":
+        return DIMENSIONLESS   # categorical (channel identifiers); no unit arithmetic
     raise ResolveError(f"unknown control type {kind!r}", loc=loc)
 
 

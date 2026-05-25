@@ -613,3 +613,54 @@ def test_resource_budgets_summed(amp):
     assert ir.budget.worst_case_us > 0
     assert ir.budget.state_kb <= amp.resource_limits.max_state_kb
     assert ir.budget.worst_case_us <= amp.resource_limits.max_worst_case_us_per_step
+
+
+# ---------------------------------------------------------------------------
+# Placement control type (Task 1)
+# ---------------------------------------------------------------------------
+
+
+def test_placement_control_active_resolves():
+    src = '''
+        protocol "p" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          controls { site = placement { kind = "active"; default = "Cz"; allowed = ["Cz","C3","C4"]; label = "Training site" } }
+          input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+          reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+          output { audio_gain = reward.continuous }
+        }
+    '''
+    ir = resolve(parse(src))
+    c = ir.controls["site"]
+    assert c.type_kind == "placement"
+    assert c.kind == "active"
+    assert c.allowed == ("Cz", "C3", "C4")
+    assert c.final is False
+
+
+def test_placement_default_must_be_in_allowed():
+    src = '''
+        protocol "p" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          controls { site = placement { kind = "active"; default = "Fz"; allowed = ["Cz","C3"] } }
+          input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+          reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+          output { audio_gain = reward.continuous }
+        }
+    '''
+    with pytest.raises(ResolveError, match="default.*not in allowed|allowed"):
+        resolve(parse(src))
+
+
+def test_placement_rejects_live_tunable():
+    src = '''
+        protocol "p" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          controls { site = placement { kind = "active"; default = "Cz"; allowed = "any"; live_tunable = true } }
+          input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+          reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+          output { audio_gain = reward.continuous }
+        }
+    '''
+    with pytest.raises(ResolveError, match="live_tunable|frozen"):
+        resolve(parse(src))

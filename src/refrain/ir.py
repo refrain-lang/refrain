@@ -240,7 +240,7 @@ class IRReward:
 class IRControl:
     name: str
     canonical_name: str    # "control/<name>"
-    type_kind: str         # "frequency"|"duration"|"voltage"|"percent"|"boolean"|"enum"
+    type_kind: str         # "frequency"|"duration"|"voltage"|"percent"|"boolean"|"enum"|"placement"
     dims: Dimensions
     default: IRExpr | None
     range_low: IRExpr | None
@@ -250,6 +250,11 @@ class IRControl:
     live_tunable: bool
     tune_strategy: str | None
     loc: Loc | None = None
+    # Placement-control fields (all None/empty/False for numeric controls):
+    kind: str | None = None             # placement only: "active" | "bipolar"
+    allowed: tuple = ()                  # placement only: tuple of channel names or pairs; () means "any"
+    final: bool = False
+    default_placement: tuple = ()        # active: ("Cz",); bipolar: ("T3","T4"); () if none
 
 
 @dataclass(frozen=True, slots=True)
