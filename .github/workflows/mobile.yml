@@ -123,7 +123,8 @@ jobs:
   # therefore produces the per-ABI .so files + generated Kotlin source as a
   # build artifact, and documents the remaining Gradle/AAR assembly step in
   # bindings/README.md.  Wire the Gradle step here once the Android module is
-  # set up.
+  # set up — a turn-key plan (Gradle files, versions, CI step, prerequisites)
+  # is in docs/superpowers/plans/2026-05-25-android-aar-gradle-module.md.
   # ---------------------------------------------------------------------------
   android-aar:
     runs-on: ubuntu-latest
