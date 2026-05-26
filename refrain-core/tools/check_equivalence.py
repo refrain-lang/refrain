@@ -35,6 +35,12 @@ def _run(label: str, cmd: list[str], *, cwd: Path, extra_env: dict[str, str] | N
     """Run *cmd* in *cwd*, stream output, return True on success."""
     import os
     env = os.environ.copy()
+    # Ensure ~/.cargo/bin is on PATH so `cargo` is found even when the gate is
+    # launched from Python without the Cargo shims on the shell PATH.
+    cargo_bin = str(Path.home() / ".cargo" / "bin")
+    current_path = env.get("PATH", "")
+    if cargo_bin not in current_path:
+        env["PATH"] = cargo_bin + os.pathsep + current_path
     if extra_env:
         env.update(extra_env)
 
