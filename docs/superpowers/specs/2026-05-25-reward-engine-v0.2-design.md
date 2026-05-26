@@ -60,7 +60,11 @@ controls {
 
 reward  "smr"   { signal = sigmoid("smr_env",   midpoint: 6 uV, steepness: 1); weight = w_smr }
 inhibit "theta" { signal = sigmoid("theta_env", midpoint: 8 uV, steepness: 1); weight = w_theta }  // suppress band
-inhibit "emg"   { signal = "emg_env"; gate = mute(above: 20 uV) }   // hard artifact gate — no weight
+inhibit "emg" {                                      // hard artifact gate — no weight, existing v0.1 form
+  metric    = bandpower(input: "raw", band: (50 Hz, 100 Hz), window: 100 ms)
+  threshold = percentile(target_pct: 95, window: 2 min)
+  action    = mute(release: 200 ms)
+}
 
 reward {
   combine = "weighted"                                 // form the composite
@@ -74,9 +78,11 @@ output {
 
 - A **reward/inhibit component** is a named block with a `signal` (an expression
   producing a `[0,1]` success metric — typically `sigmoid(...)`) and an optional
-  `weight` (a numeric control ref; default 1.0). An `inhibit` component with a
-  `gate = mute/freeze/flag(...)` is a *hard gate* (existing semantics) and takes
-  no weight.
+  `weight` (a numeric control ref; default 1.0). An `inhibit` with the existing
+  `metric` + `threshold` + `action = mute/freeze/flag(...)` form is a *hard gate*
+  (v0.1 semantics) and takes no weight; the resolver disambiguates by field
+  presence (a `signal` field ⇒ suppress band, an `action` field ⇒ hard gate) and
+  rejects a block that mixes the two forms.
 - The top-level `reward { }` is the **aggregator**: `combine` selects the strategy
   and `event`/`continuous` define the patient-facing aggregate, referencing
   `reward.composite`.
@@ -119,8 +125,8 @@ are controls too (e.g. `w@<site>`, defaulted, deploy/live-overridable).
 
 ### 4. Hard gates (artifact rejection) — unchanged role, clarified scope
 
-`inhibit "<x>" { gate = mute|freeze|flag(...) }` keeps the v0.1 semantics and
-gates the **whole composite / all outputs**. It is orthogonal to weighting: a hard
+`inhibit "<x>" { metric = …; threshold = …; action = mute|freeze|flag(...) }`
+keeps the v0.1 semantics and gates the **whole composite / all outputs**. It is orthogonal to weighting: a hard
 gate produces a boolean that suppresses output; it never contributes a graded term.
 This keeps the composite interpretable ("low score = brain, not biceps").
 

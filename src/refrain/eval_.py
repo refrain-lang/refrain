@@ -728,6 +728,8 @@ class Evaluator:
             reward_event, reward_sub_chunks = self._eval_reward_event(
                 self.ir.reward.event,
                 stream_values, control_chunks_cache, actual_chunk_size,
+                reward_composite=reward_composite,
+                reward_component_signals=reward_component_signals,
             )
 
         # Combined inhibit gate — also exposed as the `muted` tap.
@@ -933,6 +935,11 @@ class Evaluator:
           - "reward/condition[i]"    boolean: i-th sub-condition. Uniform
                                      indexed form — single-condition
                                      dwells emit `reward/condition[0]`.
+          - "reward/composite"       weighted-composite success in [0,1]
+                                     (v0.2; present only when the protocol
+                                     declares named reward/suppress components)
+          - "reward/component[<n>]"  per-component [0,1] success signal
+                                     (v0.2; one key per named component)
           - "output/<channel>"       post-gating, post-clamp value of
                                      the patient-facing channel
 
@@ -970,6 +977,11 @@ class Evaluator:
             / ``"threshold/"`` prefix is stripped via ``split("/", 1)[-1]``.
           - reward → ``"reward.continuous"``, ``"reward.event"`` (rising-edge
             ``.events`` boolean array), ``"reward.event.holds"``
+          - reward composite (v0.2) → ``"reward.composite"`` and one
+            ``"reward.component.<name>"`` per named component (present only when
+            the protocol uses named reward/suppress components). Note the
+            stream namespace uses dots (``reward.component.<name>``) where the
+            ``last_taps`` namespace uses brackets (``reward/component[<name>]``).
           - outputs → ``"output/<channel>"``
         """
         if self._rust is not None:
@@ -1147,6 +1159,8 @@ class Evaluator:
         stream_values: dict[str, np.ndarray],
         control_chunks: dict[str, np.ndarray],
         chunk_size: int,
+        reward_composite: np.ndarray | None = None,
+        reward_component_signals: dict[str, np.ndarray] | None = None,
     ) -> tuple[impls.DwellResult, list[np.ndarray]]:
         """The reward.event expression's top-level call is `dwell` (or
         another event-producing primitive). Special-cased so we keep the
@@ -1184,7 +1198,11 @@ class Evaluator:
         ):
             arr = condition_expr.args[0].value
             sub_chunks = [
-                self._eval_expr(elt, stream_values, control_chunks, chunk_size)
+                self._eval_expr(
+                    elt, stream_values, control_chunks, chunk_size,
+                    reward_composite=reward_composite,
+                    reward_component_signals=reward_component_signals,
+                )
                 for elt in arr.elements
             ]
             stacked = np.stack(sub_chunks, axis=0)
@@ -1197,6 +1215,8 @@ class Evaluator:
             # so the host iteration loop is uniform.
             condition_chunk = self._eval_expr(
                 condition_expr, stream_values, control_chunks, chunk_size,
+                reward_composite=reward_composite,
+                reward_component_signals=reward_component_signals,
             )
             sub_chunks = [condition_chunk]
 

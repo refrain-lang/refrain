@@ -669,6 +669,19 @@ class _Resolver:
         numeric control ref or a literal; absent means an implicit 1.0.
         """
         fields = self._assignments_dict(decl.body)
+        extra = set(fields) - {"signal", "weight"}
+        if extra:
+            # Catch the footgun where a hard-gate field (e.g. `gate`, or a
+            # stray `action`) lands in a weighted component and would be
+            # silently dropped. A suppress band uses `signal` + `weight`; a
+            # hard-gate inhibit uses `metric` + `threshold` + `action`.
+            raise ResolveError(
+                f'{decl.keyword} "{decl.name}": unexpected field(s) '
+                f"{sorted(extra)} in a weighted reward/suppress component. Use "
+                "`signal` + `weight` for a suppress band, or `metric` + "
+                "`threshold` + `action` for a hard-gate inhibit — not both.",
+                loc=decl.loc,
+            )
         signal_expr = fields.get("signal")
         if signal_expr is None:
             raise ResolveError(

@@ -82,3 +82,43 @@ def test_composite_exposed_in_taps_and_streams(amp):
     assert "reward/component[theta]" in taps
     streams = ev.last_streams()
     assert "reward.composite" in streams
+
+
+# Regression: reward.composite used as a dwell *condition* must reach the event
+# path. The composite/component kwargs have to thread through _eval_reward_event
+# (and its all_of/any_of + single-condition branches), or the condition silently
+# evaluates to zeros and the event never fires.
+_EVENT_PROTO = _PROTO.replace(
+    'reward { combine = "weighted"; continuous = reward.composite }',
+    'reward { combine = "weighted"; event = dwell(condition: above(reward.composite, 0.3), duration: 10 ms) }',
+).replace(
+    "output { audio_gain = reward.composite }",
+    "output { audio_chime = reward.event }",
+)
+
+
+def test_composite_drives_dwell_event(amp):
+    ir = resolve(parse(_EVENT_PROTO), amp)
+    ev = Evaluator.live(ir, sample_rate_hz=256.0, channel_names=("Cz", "linked_ears"),
+                        record_streams=True, backend="python")
+    ev.start(skip_warmup=True)
+    # composite ≈ 0.5 > 0.3 held across the whole chunk → dwell (10 ms ≈ 3
+    # samples) fires and holds.
+    chunk = np.column_stack([np.full(64, 5.0), np.zeros(64)]).astype(np.float64)
+    events = ev.step_chunk(chunk)
+    assert ev.last_taps()["reward/event.holds"] is True
+    assert any(e.channel == "audio_chime" and e.kind == "event" for e in events)
+
+
+def test_composite_dwell_event_does_not_fire_below_threshold(amp):
+    # composite ≈ 0.5 < 0.7 → never crosses → event must not fire (guards
+    # against the condition being stuck "true"/ignored).
+    proto = _EVENT_PROTO.replace("above(reward.composite, 0.3)", "above(reward.composite, 0.7)")
+    ir = resolve(parse(proto), amp)
+    ev = Evaluator.live(ir, sample_rate_hz=256.0, channel_names=("Cz", "linked_ears"),
+                        record_streams=True, backend="python")
+    ev.start(skip_warmup=True)
+    chunk = np.column_stack([np.full(64, 5.0), np.zeros(64)]).astype(np.float64)
+    events = ev.step_chunk(chunk)
+    assert ev.last_taps()["reward/event.holds"] is False
+    assert not any(e.channel == "audio_chime" for e in events)
