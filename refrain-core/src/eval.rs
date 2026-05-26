@@ -910,6 +910,13 @@ impl Evaluator {
     ) -> BTreeMap<String, Vec<f64>> {
         let mut result: BTreeMap<String, Vec<f64>> = BTreeMap::new();
         for (k, v) in env {
+            // `reward.<name>.signal` is an internal CNode lookup key (the
+            // member-access form). It is NOT part of the last_streams contract:
+            // Python exposes a component's signal as `reward.component.<name>`.
+            // Skip it so the Rust stream key set matches the Python backend.
+            if k.starts_with("reward.") && k.ends_with(".signal") {
+                continue;
+            }
             result.insert(k, v.into_f());
         }
         for (ch, v) in outs {
@@ -1502,12 +1509,6 @@ fn absolute_value(args: &[crate::ir::Arg]) -> f64 {
         .expect("absolute: numeric value")
 }
 
-/// Compile `reward.event` (a `dwell(...)` call) into a `RewardEvent`. Mirrors
-/// `_eval_reward_event`: the dwell's `condition` is expanded into its `all_of`
-/// / `any_of` sub-conditions (each exposed as a `reward/condition[i]` tap and
-/// recombined for the dwell input); a lone condition becomes a single-element
-/// `All` (exposed as `reward/condition[0]`). REUSES `build_node` for the
-/// sub-condition CNodes — same compiler path as every other expression.
 /// Compile a v0.2 reward component (mirrors `_resolve_reward_component` +
 /// `_component_weight_chunk`). The `signal` reuses `build_node`; the `weight`
 /// reuses the literal-or-control-ref read used for sigmoid `midpoint`. An
@@ -1536,6 +1537,12 @@ fn build_component(c: &crate::ir::RewardComponent, ctx: &mut BuildCtx) -> Compil
     CompiledComponent { name: c.name.clone(), role, signal, weight }
 }
 
+/// Compile `reward.event` (a `dwell(...)` call) into a `RewardEvent`. Mirrors
+/// `_eval_reward_event`: the dwell's `condition` is expanded into its `all_of`
+/// / `any_of` sub-conditions (each exposed as a `reward/condition[i]` tap and
+/// recombined for the dwell input); a lone condition becomes a single-element
+/// `All` (exposed as `reward/condition[0]`). REUSES `build_node` for the
+/// sub-condition CNodes — same compiler path as every other expression.
 fn build_reward_event(event_expr: &Expr, ctx: &mut BuildCtx) -> RewardEvent {
     let Expr::Call { callee, args, coeffs } = event_expr else {
         panic!("reward.event must be a dwell(...) call");
