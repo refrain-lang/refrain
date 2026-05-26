@@ -340,3 +340,26 @@ def test_weighted_protocol_emits_v02_with_components():
     # The composite is reachable via the continuous binding as a reward_field.
     assert obj["reward"]["continuous"]["node"] == "reward_field"
     assert obj["reward"]["continuous"]["field_path"] == "composite"
+
+
+# ---------------------------------------------------------------------------
+# Task 9 (Stage 1): Back-compat byte-identity guard for shipped examples
+# ---------------------------------------------------------------------------
+
+
+def test_v01_emission_byte_identical_for_examples():
+    # Every shipped example is single-reward (v0.1). Their emitted JSON must
+    # be unchanged by the v0.2 work: version "0.1", reward has exactly
+    # continuous/event keys, and the doc validates against the v0.1 schema.
+    import jsonschema
+    schema_path = REPO / "refrain-core" / "schema" / "ir-json-v0.1.schema.json"
+    validator = jsonschema.Draft202012Validator(json.loads(schema_path.read_text()))
+    for path in sorted(EXAMPLES.glob("*.refrain")):
+        if path.name in {"othmer_ilf_cz_pz.refrain"}:  # needs a library loader (extends)
+            continue
+        ir = resolve(parse_file(path), _AMP)
+        obj = ir_to_json_obj(ir)
+        assert obj["refrain_ir_version"] == "0.1", path.name
+        assert set(obj["reward"]) == {"continuous", "event"}, path.name
+        errors = list(validator.iter_errors(obj))
+        assert not errors, f"{path.name}: {[e.message for e in errors]}"
