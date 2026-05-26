@@ -748,6 +748,65 @@ impl Evaluator {
         // inhibits (the all-false vector's last sample).
         taps.insert("muted".to_string(), bool_f(muted.last().copied().unwrap_or(false)));
 
+        // Weighted composite (v0.2). Computed BEFORE reward.continuous /
+        // reward.event so that `continuous = reward.composite` and a
+        // `dwell(condition: above(reward.composite, …))` can reference it.
+        // Mirrors `_process_chunk`'s composite block EXACTLY: per-component
+        // [0,1]-clipped signal, role rule (reward → signal, suppress → 1-signal),
+        // weighted average with the all-zero-weight guard → 0.0.
+        if !self.reward_components.is_empty() {
+            let mut num = vec![0.0_f64; n];
+            let mut weight_sum = vec![0.0_f64; n];
+            // Collect (name, signal) so we can bind component streams after the
+            // borrow of `self.reward_components` ends.
+            let mut component_signals: Vec<(String, Vec<f64>)> =
+                Vec::with_capacity(self.reward_components.len());
+            for comp in self.reward_components.iter_mut() {
+                let signal: Vec<f64> = comp
+                    .signal
+                    .eval(&env, n)
+                    .into_f()
+                    .iter()
+                    .map(|v| v.clamp(0.0, 1.0))
+                    .collect();
+                let w = *comp.weight.lock().unwrap();
+                for i in 0..n {
+                    let success = match comp.role {
+                        ComponentRole::Reward => signal[i],
+                        ComponentRole::Suppress => 1.0 - signal[i],
+                    };
+                    num[i] += w * success;
+                    weight_sum[i] += w;
+                }
+                component_signals.push((comp.name.clone(), signal));
+            }
+            let composite: Vec<f64> = (0..n)
+                .map(|i| if weight_sum[i] > 0.0 { num[i] / weight_sum[i] } else { 0.0 })
+                .collect();
+
+            // Taps: `reward/composite` + `reward/component[<name>]` (last sample),
+            // matching `_capture_taps`.
+            if let Some(&last) = composite.last() {
+                taps.insert("reward/composite".to_string(), last);
+            }
+            for (name, sig) in component_signals.iter() {
+                if let Some(&last) = sig.last() {
+                    taps.insert(format!("reward/component[{name}]"), last);
+                }
+            }
+
+            // env bindings: `reward.composite` (the CNode::Reward("composite")
+            // lookup key AND the Python stream key), `reward.<name>.signal`
+            // (the CNode::Reward("<name>.signal") lookup key), and
+            // `reward.component.<name>` (the Python *stream* key — a value-only
+            // binding for `coerce_streams`, never read by a CNode).
+            env.insert("reward.composite".to_string(), Val::F(composite));
+            for (name, sig) in component_signals {
+                env.insert(format!("reward.{name}.signal"), Val::F(sig.clone()));
+                env.insert(format!("reward.component.{name}"), Val::F(sig));
+            }
+        }
+
         if let Some(node) = self.reward_continuous.as_mut() {
             let v = node.eval(&env, n);
             // `reward/continuous` tap: pre-gating last sample.
