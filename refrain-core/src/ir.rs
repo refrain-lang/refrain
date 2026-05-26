@@ -86,12 +86,40 @@ pub struct Inhibit {
     pub action_release_ms: Option<f64>,
 }
 
+/// `reward { continuous?, event?, combine?, components? }`. For a v0.1
+/// single-reward protocol `combine` is absent (defaults to "all") and
+/// `components` is empty — byte-identical runtime to before. A v0.2
+/// weighted composite carries one `RewardComponent` per named reward/suppress
+/// block and `combine == "weighted"`.
 #[derive(Debug, Deserialize)]
 pub struct Reward {
     #[serde(default)]
     pub continuous: Option<Expr>,
     #[serde(default)]
     pub event: Option<Expr>,
+    #[serde(default = "default_combine")]
+    pub combine: String,
+    #[serde(default)]
+    pub components: Vec<RewardComponent>,
+}
+
+fn default_combine() -> String {
+    "all".to_string()
+}
+
+/// A named reward/suppress component of a v0.2 weighted composite
+/// (`_emit_reward`'s `components[]` entries). `role` is "reward" (contributes
+/// `signal`) or "suppress" (contributes `1 - signal`). `weight` is a
+/// `control_ref` or `number` Expr; `None` ⇒ implicit weight 1.0. `canonical_name`
+/// is in the wire JSON but the runtime keys taps/streams on `name`, so serde
+/// ignores it (additionalProperties).
+#[derive(Debug, Deserialize)]
+pub struct RewardComponent {
+    pub name: String,
+    pub role: String,
+    pub signal: Expr,
+    #[serde(default)]
+    pub weight: Option<Expr>,
 }
 
 #[derive(Debug, Deserialize)]

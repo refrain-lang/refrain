@@ -13,7 +13,8 @@ Exits 0 only when ALL FIVE steps succeed:
   4. The behavioral evaluator suite (tests/test_eval_*.py) passes under
      REFRAIN_EVAL_BACKEND=rust — proving Python↔Rust behavioral parity.
   5. IR-JSON golden vectors (tests/fixtures/*.ir.json) validate against the
-     published JSON Schema (refrain-core/schema/ir-json-v0.1.schema.json).
+     published JSON Schema matching each vector's `refrain_ir_version`
+     (refrain-core/schema/ir-json-v0.1.schema.json or ir-json-v0.2.schema.json).
 
 REUSE: calls the existing gen_fixtures.py as a subprocess; does not duplicate
        fixture-generation logic.  The Rust tests already exist in
@@ -35,6 +36,12 @@ def _run(label: str, cmd: list[str], *, cwd: Path, extra_env: dict[str, str] | N
     """Run *cmd* in *cwd*, stream output, return True on success."""
     import os
     env = os.environ.copy()
+    # Ensure ~/.cargo/bin is on PATH so `cargo` is found even when the gate is
+    # launched from Python without the Cargo shims on the shell PATH.
+    cargo_bin = str(Path.home() / ".cargo" / "bin")
+    current_path = env.get("PATH", "")
+    if cargo_bin not in current_path:
+        env["PATH"] = cargo_bin + os.pathsep + current_path
     if extra_env:
         env.update(extra_env)
 

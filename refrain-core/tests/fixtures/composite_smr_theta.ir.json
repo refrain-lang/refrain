@@ -1,0 +1,924 @@
+{
+  "refrain_ir_version": "0.2",
+  "name": "composite_smr_theta",
+  "extends": null,
+  "sample_rate_hz": 256.0,
+  "channels": [
+    "Cz"
+  ],
+  "requires": {
+    "coupling": null,
+    "sample_rate_min_hz": 256,
+    "sample_rate_chosen_hz": 2048,
+    "channels": [
+      "Cz"
+    ],
+    "impedance": "not_required",
+    "markers": "not_required"
+  },
+  "meta": {
+    "version": {
+      "node": "string",
+      "value": "1.0.0"
+    },
+    "evidence": {
+      "node": "string",
+      "value": "clinical"
+    },
+    "description": {
+      "node": "string",
+      "value": "SMR-up / theta-down weighted composite at Cz, linked-ears reference"
+    }
+  },
+  "inputs": {
+    "raw": {
+      "canonical_name": "input/raw",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "montage": {
+        "node": "call",
+        "callee": "referential",
+        "args": [
+          {
+            "name": "active",
+            "value": {
+              "node": "string",
+              "value": "Cz"
+            }
+          },
+          {
+            "name": "reference",
+            "value": {
+              "node": "string",
+              "value": "linked_ears"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        }
+      }
+    }
+  },
+  "derives": {
+    "smr_envelope": {
+      "canonical_name": "derive/smr_envelope",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "expression": {
+        "node": "call",
+        "callee": "smooth",
+        "args": [
+          {
+            "name": null,
+            "value": {
+              "node": "call",
+              "callee": "magnitude",
+              "args": [
+                {
+                  "name": null,
+                  "value": {
+                    "node": "call",
+                    "callee": "hilbert",
+                    "args": [
+                      {
+                        "name": null,
+                        "value": {
+                          "node": "call",
+                          "callee": "bandpass",
+                          "args": [
+                            {
+                              "name": null,
+                              "value": {
+                                "node": "stream_ref",
+                                "target": "input/raw",
+                                "stream_type": {
+                                  "value_kind": "scalar",
+                                  "dimensions": {
+                                    "time": 0,
+                                    "voltage": 1
+                                  },
+                                  "vector_size": null
+                                }
+                              }
+                            },
+                            {
+                              "name": "band",
+                              "value": {
+                                "node": "tuple",
+                                "elements": [
+                                  {
+                                    "node": "number",
+                                    "value": 12.0,
+                                    "dims": {
+                                      "time": -1,
+                                      "voltage": 0
+                                    },
+                                    "unit": "Hz"
+                                  },
+                                  {
+                                    "node": "number",
+                                    "value": 15.0,
+                                    "dims": {
+                                      "time": -1,
+                                      "voltage": 0
+                                    },
+                                    "unit": "Hz"
+                                  }
+                                ]
+                              }
+                            },
+                            {
+                              "name": "order",
+                              "value": {
+                                "node": "number",
+                                "value": 4.0,
+                                "dims": {
+                                  "time": 0,
+                                  "voltage": 0
+                                },
+                                "unit": null
+                              }
+                            }
+                          ],
+                          "stream_type": {
+                            "value_kind": "scalar",
+                            "dimensions": {
+                              "time": 0,
+                              "voltage": 1
+                            },
+                            "vector_size": null
+                          },
+                          "coeffs": {
+                            "sos": [
+                              [
+                                1.6715446089233602e-06,
+                                3.3430892178467204e-06,
+                                1.6715446089233602e-06,
+                                1.0,
+                                -1.8185096561303429,
+                                0.9315627107642395
+                              ],
+                              [
+                                1.0,
+                                2.0,
+                                1.0,
+                                1.0,
+                                -1.8412452919491165,
+                                0.9368353820975004
+                              ],
+                              [
+                                1.0,
+                                -2.0,
+                                1.0,
+                                1.0,
+                                -1.839707340181905,
+                                0.9695237593944186
+                              ],
+                              [
+                                1.0,
+                                -2.0,
+                                1.0,
+                                1.0,
+                                -1.8884806674118457,
+                                0.974950612677361
+                              ]
+                            ]
+                          }
+                        }
+                      }
+                    ],
+                    "stream_type": {
+                      "value_kind": "complex",
+                      "dimensions": {
+                        "time": 0,
+                        "voltage": 1
+                      },
+                      "vector_size": null
+                    },
+                    "coeffs": {
+                      "fir_taps": [
+                        0.0,
+                        -0.0016883777730945177,
+                        0.0,
+                        -0.0021910135612077217,
+                        0.0,
+                        -0.0031669763104787965,
+                        0.0,
+                        -0.004696094288160902,
+                        0.0,
+                        -0.006869378927253657,
+                        0.0,
+                        -0.009796593083986657,
+                        0.0,
+                        -0.013619275426681525,
+                        0.0,
+                        -0.01853357872227764,
+                        0.0,
+                        -0.024831901058551206,
+                        0.0,
+                        -0.03298331700384915,
+                        0.0,
+                        -0.043801899944842564,
+                        0.0,
+                        -0.058839293203350435,
+                        0.0,
+                        -0.08144957099328076,
+                        0.0,
+                        -0.1204081987548121,
+                        0.0,
+                        -0.20800332029398802,
+                        0.0,
+                        -0.6352096431910579,
+                        0.0,
+                        0.6352096431910579,
+                        0.0,
+                        0.20800332029398802,
+                        0.0,
+                        0.1204081987548121,
+                        0.0,
+                        0.08144957099328076,
+                        0.0,
+                        0.058839293203350435,
+                        0.0,
+                        0.043801899944842564,
+                        0.0,
+                        0.03298331700384915,
+                        0.0,
+                        0.024831901058551206,
+                        0.0,
+                        0.01853357872227764,
+                        0.0,
+                        0.013619275426681525,
+                        0.0,
+                        0.009796593083986657,
+                        0.0,
+                        0.006869378927253657,
+                        0.0,
+                        0.004696094288160902,
+                        0.0,
+                        0.0031669763104787965,
+                        0.0,
+                        0.0021910135612077217,
+                        0.0,
+                        0.0016883777730945177,
+                        0.0
+                      ],
+                      "group_delay": 32
+                    }
+                  }
+                }
+              ],
+              "stream_type": {
+                "value_kind": "scalar",
+                "dimensions": {
+                  "time": 0,
+                  "voltage": 1
+                },
+                "vector_size": null
+              }
+            }
+          },
+          {
+            "name": "tau",
+            "value": {
+              "node": "number",
+              "value": 250.0,
+              "dims": {
+                "time": 1,
+                "voltage": 0
+              },
+              "unit": "ms"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        },
+        "coeffs": {
+          "alpha": 0.015503562994591547
+        }
+      },
+      "upstream": [
+        "input/raw"
+      ]
+    },
+    "theta_envelope": {
+      "canonical_name": "derive/theta_envelope",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "expression": {
+        "node": "call",
+        "callee": "smooth",
+        "args": [
+          {
+            "name": null,
+            "value": {
+              "node": "call",
+              "callee": "magnitude",
+              "args": [
+                {
+                  "name": null,
+                  "value": {
+                    "node": "call",
+                    "callee": "hilbert",
+                    "args": [
+                      {
+                        "name": null,
+                        "value": {
+                          "node": "call",
+                          "callee": "bandpass",
+                          "args": [
+                            {
+                              "name": null,
+                              "value": {
+                                "node": "stream_ref",
+                                "target": "input/raw",
+                                "stream_type": {
+                                  "value_kind": "scalar",
+                                  "dimensions": {
+                                    "time": 0,
+                                    "voltage": 1
+                                  },
+                                  "vector_size": null
+                                }
+                              }
+                            },
+                            {
+                              "name": "band",
+                              "value": {
+                                "node": "tuple",
+                                "elements": [
+                                  {
+                                    "node": "number",
+                                    "value": 4.0,
+                                    "dims": {
+                                      "time": -1,
+                                      "voltage": 0
+                                    },
+                                    "unit": "Hz"
+                                  },
+                                  {
+                                    "node": "number",
+                                    "value": 8.0,
+                                    "dims": {
+                                      "time": -1,
+                                      "voltage": 0
+                                    },
+                                    "unit": "Hz"
+                                  }
+                                ]
+                              }
+                            },
+                            {
+                              "name": "order",
+                              "value": {
+                                "node": "number",
+                                "value": 4.0,
+                                "dims": {
+                                  "time": 0,
+                                  "voltage": 0
+                                },
+                                "unit": null
+                              }
+                            }
+                          ],
+                          "stream_type": {
+                            "value_kind": "scalar",
+                            "dimensions": {
+                              "time": 0,
+                              "voltage": 1
+                            },
+                            "vector_size": null
+                          },
+                          "coeffs": {
+                            "sos": [
+                              [
+                                5.1232059674179e-06,
+                                1.02464119348358e-05,
+                                5.1232059674179e-06,
+                                1.0,
+                                -1.8772435220688628,
+                                0.9015847732133995
+                              ],
+                              [
+                                1.0,
+                                2.0,
+                                1.0,
+                                1.0,
+                                -1.9110147175324173,
+                                0.9249566863061576
+                              ],
+                              [
+                                1.0,
+                                -2.0,
+                                1.0,
+                                1.0,
+                                -1.916154908251924,
+                                0.9519953776828693
+                              ],
+                              [
+                                1.0,
+                                -2.0,
+                                1.0,
+                                1.0,
+                                -1.964519410738834,
+                                0.9744723006421289
+                              ]
+                            ]
+                          }
+                        }
+                      }
+                    ],
+                    "stream_type": {
+                      "value_kind": "complex",
+                      "dimensions": {
+                        "time": 0,
+                        "voltage": 1
+                      },
+                      "vector_size": null
+                    },
+                    "coeffs": {
+                      "fir_taps": [
+                        0.0,
+                        -0.0016883777730945177,
+                        0.0,
+                        -0.0021910135612077217,
+                        0.0,
+                        -0.0031669763104787965,
+                        0.0,
+                        -0.004696094288160902,
+                        0.0,
+                        -0.006869378927253657,
+                        0.0,
+                        -0.009796593083986657,
+                        0.0,
+                        -0.013619275426681525,
+                        0.0,
+                        -0.01853357872227764,
+                        0.0,
+                        -0.024831901058551206,
+                        0.0,
+                        -0.03298331700384915,
+                        0.0,
+                        -0.043801899944842564,
+                        0.0,
+                        -0.058839293203350435,
+                        0.0,
+                        -0.08144957099328076,
+                        0.0,
+                        -0.1204081987548121,
+                        0.0,
+                        -0.20800332029398802,
+                        0.0,
+                        -0.6352096431910579,
+                        0.0,
+                        0.6352096431910579,
+                        0.0,
+                        0.20800332029398802,
+                        0.0,
+                        0.1204081987548121,
+                        0.0,
+                        0.08144957099328076,
+                        0.0,
+                        0.058839293203350435,
+                        0.0,
+                        0.043801899944842564,
+                        0.0,
+                        0.03298331700384915,
+                        0.0,
+                        0.024831901058551206,
+                        0.0,
+                        0.01853357872227764,
+                        0.0,
+                        0.013619275426681525,
+                        0.0,
+                        0.009796593083986657,
+                        0.0,
+                        0.006869378927253657,
+                        0.0,
+                        0.004696094288160902,
+                        0.0,
+                        0.0031669763104787965,
+                        0.0,
+                        0.0021910135612077217,
+                        0.0,
+                        0.0016883777730945177,
+                        0.0
+                      ],
+                      "group_delay": 32
+                    }
+                  }
+                }
+              ],
+              "stream_type": {
+                "value_kind": "scalar",
+                "dimensions": {
+                  "time": 0,
+                  "voltage": 1
+                },
+                "vector_size": null
+              }
+            }
+          },
+          {
+            "name": "tau",
+            "value": {
+              "node": "number",
+              "value": 250.0,
+              "dims": {
+                "time": 1,
+                "voltage": 0
+              },
+              "unit": "ms"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        },
+        "coeffs": {
+          "alpha": 0.015503562994591547
+        }
+      },
+      "upstream": [
+        "input/raw"
+      ]
+    }
+  },
+  "thresholds": {},
+  "inhibits": {},
+  "reward": {
+    "continuous": {
+      "node": "reward_field",
+      "field_path": "composite",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      }
+    },
+    "event": {
+      "node": "call",
+      "callee": "dwell",
+      "args": [
+        {
+          "name": "condition",
+          "value": {
+            "node": "call",
+            "callee": "above",
+            "args": [
+              {
+                "name": null,
+                "value": {
+                  "node": "reward_field",
+                  "field_path": "composite",
+                  "stream_type": {
+                    "value_kind": "scalar",
+                    "dimensions": {
+                      "time": 0,
+                      "voltage": 0
+                    },
+                    "vector_size": null
+                  }
+                }
+              },
+              {
+                "name": null,
+                "value": {
+                  "node": "number",
+                  "value": 0.5,
+                  "dims": {
+                    "time": 0,
+                    "voltage": 0
+                  },
+                  "unit": null
+                }
+              }
+            ],
+            "stream_type": {
+              "value_kind": "boolean",
+              "dimensions": {
+                "time": 0,
+                "voltage": 0
+              },
+              "vector_size": null
+            }
+          }
+        },
+        {
+          "name": "duration",
+          "value": {
+            "node": "number",
+            "value": 250.0,
+            "dims": {
+              "time": 1,
+              "voltage": 0
+            },
+            "unit": "ms"
+          }
+        }
+      ],
+      "stream_type": {
+        "value_kind": "event",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      },
+      "coeffs": {
+        "dwell_samples": 64
+      }
+    },
+    "combine": "weighted",
+    "components": [
+      {
+        "name": "smr",
+        "canonical_name": "reward/smr",
+        "role": "reward",
+        "signal": {
+          "node": "call",
+          "callee": "sigmoid",
+          "args": [
+            {
+              "name": null,
+              "value": {
+                "node": "stream_ref",
+                "target": "derive/smr_envelope",
+                "stream_type": {
+                  "value_kind": "scalar",
+                  "dimensions": {
+                    "time": 0,
+                    "voltage": 1
+                  },
+                  "vector_size": null
+                }
+              }
+            },
+            {
+              "name": "midpoint",
+              "value": {
+                "node": "number",
+                "value": 6.0,
+                "dims": {
+                  "time": 0,
+                  "voltage": 1
+                },
+                "unit": "uV"
+              }
+            },
+            {
+              "name": "steepness",
+              "value": {
+                "node": "number",
+                "value": 1.0,
+                "dims": {
+                  "time": 0,
+                  "voltage": 0
+                },
+                "unit": null
+              }
+            }
+          ],
+          "stream_type": {
+            "value_kind": "scalar",
+            "dimensions": {
+              "time": 0,
+              "voltage": 0
+            },
+            "vector_size": null
+          }
+        },
+        "weight": {
+          "node": "control_ref",
+          "target": "control/w_smr",
+          "default": 1.0,
+          "dims": {
+            "time": 0,
+            "voltage": 0
+          }
+        }
+      },
+      {
+        "name": "theta",
+        "canonical_name": "reward/theta",
+        "role": "suppress",
+        "signal": {
+          "node": "call",
+          "callee": "sigmoid",
+          "args": [
+            {
+              "name": null,
+              "value": {
+                "node": "stream_ref",
+                "target": "derive/theta_envelope",
+                "stream_type": {
+                  "value_kind": "scalar",
+                  "dimensions": {
+                    "time": 0,
+                    "voltage": 1
+                  },
+                  "vector_size": null
+                }
+              }
+            },
+            {
+              "name": "midpoint",
+              "value": {
+                "node": "number",
+                "value": 8.0,
+                "dims": {
+                  "time": 0,
+                  "voltage": 1
+                },
+                "unit": "uV"
+              }
+            },
+            {
+              "name": "steepness",
+              "value": {
+                "node": "number",
+                "value": 1.0,
+                "dims": {
+                  "time": 0,
+                  "voltage": 0
+                },
+                "unit": null
+              }
+            }
+          ],
+          "stream_type": {
+            "value_kind": "scalar",
+            "dimensions": {
+              "time": 0,
+              "voltage": 0
+            },
+            "vector_size": null
+          }
+        },
+        "weight": {
+          "node": "control_ref",
+          "target": "control/w_theta",
+          "default": 0.6,
+          "dims": {
+            "time": 0,
+            "voltage": 0
+          }
+        }
+      }
+    ]
+  },
+  "output": {
+    "audio_gain": {
+      "node": "reward_field",
+      "field_path": "composite",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      }
+    },
+    "audio_chime": {
+      "node": "reward_field",
+      "field_path": "event",
+      "stream_type": {
+        "value_kind": "event",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      }
+    }
+  },
+  "controls": {
+    "w_smr": {
+      "canonical_name": "control/w_smr",
+      "type_kind": "percent",
+      "dims": {
+        "time": 0,
+        "voltage": 0
+      },
+      "default": {
+        "node": "number",
+        "value": 1.0,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_low": {
+        "node": "number",
+        "value": 0.0,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_high": {
+        "node": "number",
+        "value": 4.0,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "log_scale": false,
+      "label": "SMR reward weight",
+      "live_tunable": true,
+      "tune_strategy": null
+    },
+    "w_theta": {
+      "canonical_name": "control/w_theta",
+      "type_kind": "percent",
+      "dims": {
+        "time": 0,
+        "voltage": 0
+      },
+      "default": {
+        "node": "number",
+        "value": 0.6,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_low": {
+        "node": "number",
+        "value": 0.0,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_high": {
+        "node": "number",
+        "value": 4.0,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "log_scale": false,
+      "label": "Theta suppress weight",
+      "live_tunable": true,
+      "tune_strategy": null
+    }
+  },
+  "session": {
+    "phases": []
+  },
+  "topological_order": [
+    "control/w_smr",
+    "control/w_theta",
+    "input/raw",
+    "derive/smr_envelope",
+    "derive/theta_envelope"
+  ]
+}

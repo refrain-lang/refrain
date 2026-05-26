@@ -99,6 +99,10 @@ enum Control {
     Smooth { alpha: ControlCell, sample_rate_hz: f64 },
     /// `SigmoidImpl.update_control`: `midpoint = value`.
     Sigmoid { midpoint: ControlCell },
+    /// A reward component's weight (v0.2 composite). `set_control` writes the
+    /// new weight into the shared cell; `eval_chunk` reads it fresh each chunk,
+    /// mirroring the Python evaluator reading `control_chunks[target]`.
+    Weight { value: ControlCell },
 }
 
 impl Control {
@@ -117,6 +121,9 @@ impl Control {
             }
             Control::Sigmoid { midpoint } => {
                 *midpoint.lock().unwrap() = value;
+            }
+            Control::Weight { value: cell } => {
+                *cell.lock().unwrap() = value;
             }
         }
     }
@@ -448,6 +455,10 @@ pub struct Evaluator {
     inhibits: Vec<CompiledInhibit>,
     reward_continuous: Option<CNode>,
     reward_event: Option<RewardEvent>,
+    /// Compiled v0.2 reward components (empty for v0.1 single-reward protocols).
+    /// When non-empty, `eval_chunk` computes the weighted composite and binds
+    /// `reward.composite` / `reward.component.<name>` into the env.
+    reward_components: Vec<CompiledComponent>,
     outputs: Vec<(String, CNode)>,
     /// Canonical tap names per stream entity, parallel to the env's bare names.
     /// `input/<name>`, `derive/<name>`, `threshold/<name>` — the prefixed keys
@@ -481,6 +492,24 @@ pub struct Evaluator {
     /// the Python evaluator (KeyError) while still treating a known control
     /// with no bound stages as a no-op success.
     declared_controls: std::collections::HashSet<String>,
+}
+
+/// One compiled v0.2 reward component: the bare `name` (tap/stream key), its
+/// `signal` node (a sigmoid/linear/pipeline producing a [0,1] success metric),
+/// the `role` (reward vs suppress), and the weight cell read each chunk. A
+/// `control_ref` weight registers a `Control::Weight` binding so `set_control`
+/// retunes it; a literal weight is a fixed cell; an absent weight is 1.0.
+struct CompiledComponent {
+    name: String,
+    role: ComponentRole,
+    signal: CNode,
+    weight: ControlCell,
+}
+
+#[derive(Clone, Copy)]
+enum ComponentRole {
+    Reward,   // contributes `signal`
+    Suppress, // contributes `1 - signal`
 }
 
 /// Compiled reward-event source. Mirrors `_eval_reward_event`: a `dwell`
@@ -541,7 +570,14 @@ impl Evaluator {
         let inhibits = p.inhibits.values().map(|ih| build_inhibit(ih, &mut ctx)).collect();
 
         let (mut reward_continuous, mut reward_event) = (None, None);
+        let mut reward_components: Vec<CompiledComponent> = Vec::new();
         if let Some(r) = &p.reward {
+            // Components first so any control bindings register before the
+            // continuous/event nodes (order is immaterial for correctness; this
+            // mirrors the Python `_build_pipeline` instantiating component
+            // signals alongside the reward expressions).
+            reward_components =
+                r.components.iter().map(|c| build_component(c, &mut ctx)).collect();
             reward_continuous = r.continuous.as_ref().map(|e| build_node(e, &mut ctx));
             reward_event = r.event.as_ref().map(|e| build_reward_event(e, &mut ctx));
         }
@@ -571,6 +607,7 @@ impl Evaluator {
             inhibits,
             reward_continuous,
             reward_event,
+            reward_components,
             outputs,
             input_canon,
             derive_canon,
@@ -711,6 +748,65 @@ impl Evaluator {
         // inhibits (the all-false vector's last sample).
         taps.insert("muted".to_string(), bool_f(muted.last().copied().unwrap_or(false)));
 
+        // Weighted composite (v0.2). Computed BEFORE reward.continuous /
+        // reward.event so that `continuous = reward.composite` and a
+        // `dwell(condition: above(reward.composite, …))` can reference it.
+        // Mirrors `_process_chunk`'s composite block EXACTLY: per-component
+        // [0,1]-clipped signal, role rule (reward → signal, suppress → 1-signal),
+        // weighted average with the all-zero-weight guard → 0.0.
+        if !self.reward_components.is_empty() {
+            let mut num = vec![0.0_f64; n];
+            let mut weight_sum = vec![0.0_f64; n];
+            // Collect (name, signal) so we can bind component streams after the
+            // borrow of `self.reward_components` ends.
+            let mut component_signals: Vec<(String, Vec<f64>)> =
+                Vec::with_capacity(self.reward_components.len());
+            for comp in self.reward_components.iter_mut() {
+                let signal: Vec<f64> = comp
+                    .signal
+                    .eval(&env, n)
+                    .into_f()
+                    .iter()
+                    .map(|v| v.clamp(0.0, 1.0))
+                    .collect();
+                let w = *comp.weight.lock().unwrap();
+                for i in 0..n {
+                    let success = match comp.role {
+                        ComponentRole::Reward => signal[i],
+                        ComponentRole::Suppress => 1.0 - signal[i],
+                    };
+                    num[i] += w * success;
+                    weight_sum[i] += w;
+                }
+                component_signals.push((comp.name.clone(), signal));
+            }
+            let composite: Vec<f64> = (0..n)
+                .map(|i| if weight_sum[i] > 0.0 { num[i] / weight_sum[i] } else { 0.0 })
+                .collect();
+
+            // Taps: `reward/composite` + `reward/component[<name>]` (last sample),
+            // matching `_capture_taps`.
+            if let Some(&last) = composite.last() {
+                taps.insert("reward/composite".to_string(), last);
+            }
+            for (name, sig) in component_signals.iter() {
+                if let Some(&last) = sig.last() {
+                    taps.insert(format!("reward/component[{name}]"), last);
+                }
+            }
+
+            // env bindings: `reward.composite` (the CNode::Reward("composite")
+            // lookup key AND the Python stream key), `reward.<name>.signal`
+            // (the CNode::Reward("<name>.signal") lookup key), and
+            // `reward.component.<name>` (the Python *stream* key — a value-only
+            // binding for `coerce_streams`, never read by a CNode).
+            env.insert("reward.composite".to_string(), Val::F(composite));
+            for (name, sig) in component_signals {
+                env.insert(format!("reward.{name}.signal"), Val::F(sig.clone()));
+                env.insert(format!("reward.component.{name}"), Val::F(sig));
+            }
+        }
+
         if let Some(node) = self.reward_continuous.as_mut() {
             let v = node.eval(&env, n);
             // `reward/continuous` tap: pre-gating last sample.
@@ -814,6 +910,13 @@ impl Evaluator {
     ) -> BTreeMap<String, Vec<f64>> {
         let mut result: BTreeMap<String, Vec<f64>> = BTreeMap::new();
         for (k, v) in env {
+            // `reward.<name>.signal` is an internal CNode lookup key (the
+            // member-access form). It is NOT part of the last_streams contract:
+            // Python exposes a component's signal as `reward.component.<name>`.
+            // Skip it so the Rust stream key set matches the Python backend.
+            if k.starts_with("reward.") && k.ends_with(".signal") {
+                continue;
+            }
             result.insert(k, v.into_f());
         }
         for (ch, v) in outs {
@@ -1404,6 +1507,34 @@ fn absolute_value(args: &[crate::ir::Arg]) -> f64 {
             _ => None,
         })
         .expect("absolute: numeric value")
+}
+
+/// Compile a v0.2 reward component (mirrors `_resolve_reward_component` +
+/// `_component_weight_chunk`). The `signal` reuses `build_node`; the `weight`
+/// reuses the literal-or-control-ref read used for sigmoid `midpoint`. An
+/// absent weight is the implicit 1.0.
+fn build_component(c: &crate::ir::RewardComponent, ctx: &mut BuildCtx) -> CompiledComponent {
+    let role = match c.role.as_str() {
+        "reward" => ComponentRole::Reward,
+        "suppress" => ComponentRole::Suppress,
+        other => panic!("unknown reward component role {other:?}"),
+    };
+    let signal = build_node(&c.signal, ctx);
+    // Weight: a `control_ref` registers a live binding; a literal `number` is a
+    // fixed cell; absent ⇒ 1.0.
+    let weight = match &c.weight {
+        Some(Expr::ControlRef { target, default }) => {
+            let cell = control_cell(*default);
+            ctx.register(target, Control::Weight { value: cell.clone() });
+            cell
+        }
+        Some(Expr::Number { value }) => control_cell(*value),
+        Some(other) => {
+            panic!("reward component weight must be a control_ref or number, got {other:?}")
+        }
+        None => control_cell(1.0),
+    };
+    CompiledComponent { name: c.name.clone(), role, signal, weight }
 }
 
 /// Compile `reward.event` (a `dwell(...)` call) into a `RewardEvent`. Mirrors

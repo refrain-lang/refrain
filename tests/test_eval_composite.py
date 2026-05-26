@@ -122,3 +122,47 @@ def test_composite_dwell_event_does_not_fire_below_threshold(amp):
     events = ev.step_chunk(chunk)
     assert ev.last_taps()["reward/event.holds"] is False
     assert not any(e.channel == "audio_chime" for e in events)
+
+
+@pytest.mark.parametrize("backend", ["python", "rust"])
+def test_composite_parity_across_backends(amp, backend):
+    """The weighted composite must compute identically on python and rust.
+    Pinned per-backend so the drift gate (which re-runs this file under
+    REFRAIN_EVAL_BACKEND=rust) exercises the Rust v0.2 path. Skips rust when
+    the wheel is not installed (a local-without-wheel convenience; CI/gate
+    always has it)."""
+    if backend == "rust":
+        import importlib.util
+        if importlib.util.find_spec("refrain_core") is None:
+            pytest.skip("refrain_core wheel not installed")
+
+    ir = resolve(parse(_PROTO), amp)
+    ev = Evaluator.live(ir, sample_rate_hz=256.0, channel_names=("Cz", "linked_ears"),
+                        record_streams=True, backend=backend)
+    ev.start(skip_warmup=True)
+    # Cz=5, linked_ears=0 → raw=5 (referential active-minus-reference) → both
+    # sigmoids ≈ 1 → composite = (1*1 + 1*0)/(1+1) = 0.5 on BOTH backends.
+    chunk = np.column_stack([np.full(64, 5.0), np.zeros(64)]).astype(np.float64)
+    ev.step_chunk(chunk)
+    comp = ev.last_streams()["reward.composite"]
+    assert np.allclose(comp, 0.5, atol=1e-9), (backend, float(np.max(comp)), float(np.min(comp)))
+
+
+@pytest.mark.parametrize("backend", ["python", "rust"])
+def test_composite_reweight_parity_across_backends(amp, backend):
+    """Live set_control on a weight moves the composite identically on both
+    backends (the Rust `Control::Weight` cell mirrors the Python control read)."""
+    if backend == "rust":
+        import importlib.util
+        if importlib.util.find_spec("refrain_core") is None:
+            pytest.skip("refrain_core wheel not installed")
+
+    ir = resolve(parse(_PROTO), amp)
+    ev = Evaluator.live(ir, sample_rate_hz=256.0, channel_names=("Cz", "linked_ears"),
+                        record_streams=True, backend=backend)
+    ev.start(skip_warmup=True)
+    chunk = np.column_stack([np.full(64, 5.0), np.zeros(64)]).astype(np.float64)
+    ev.set_control("w_theta", 0.0)  # drop suppress weight → composite = 1.0
+    ev.step_chunk(chunk)
+    comp = ev.last_streams()["reward.composite"]
+    assert np.allclose(comp, 1.0, atol=1e-9), (backend, float(np.max(comp)), float(np.min(comp)))

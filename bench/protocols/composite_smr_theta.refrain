@@ -1,0 +1,72 @@
+// composite_smr_theta.refrain
+// v0.2 weighted-composite bench protocol (reward engine v0.2, Stage 2 golden
+// vector). One reward component (SMR up) + one suppress band (theta down) with
+// DISTINCT control weights; combine = "weighted". Drives the Python<->Rust
+// composite parity test (refrain-core/tests/composite.rs).
+
+protocol "composite_smr_theta" {
+
+  meta {
+    version     = "1.0.0"
+    evidence    = "clinical"
+    description = "SMR-up / theta-down weighted composite at Cz, linked-ears reference"
+  }
+
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels    = ["Cz"]
+  }
+
+  input "raw" {
+    montage = referential(active: "Cz", reference: "linked_ears")
+  }
+
+  derive "smr_envelope" {
+    from = "raw"
+    pipeline = [
+      bandpass(band: (12 Hz, 15 Hz), order: 4),
+      hilbert(),
+      magnitude(),
+      smooth(tau: 250 ms),
+    ]
+  }
+
+  derive "theta_envelope" {
+    from = "raw"
+    pipeline = [
+      bandpass(band: (4 Hz, 8 Hz), order: 4),
+      hilbert(),
+      magnitude(),
+      smooth(tau: 250 ms),
+    ]
+  }
+
+  reward  "smr"   { signal = sigmoid("smr_envelope",   midpoint: 6 uV, steepness: 1); weight = w_smr }
+  inhibit "theta" { signal = sigmoid("theta_envelope", midpoint: 8 uV, steepness: 1); weight = w_theta }
+
+  reward {
+    combine    = "weighted"
+    continuous = reward.composite
+    event      = dwell(condition: above(reward.composite, 0.5), duration: 250 ms)
+  }
+
+  output {
+    audio_gain  = reward.composite
+    audio_chime = reward.event
+  }
+
+  controls {
+    w_smr = percent {
+      default      = 1.0
+      range        = (0, 4)
+      label        = "SMR reward weight"
+      live_tunable = true
+    }
+    w_theta = percent {
+      default      = 0.6
+      range        = (0, 4)
+      label        = "Theta suppress weight"
+      live_tunable = true
+    }
+  }
+}
