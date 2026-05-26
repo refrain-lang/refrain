@@ -244,6 +244,14 @@ delay-line state — SPEC §7.7's warm-restart — land in Phase 0e-c.
 
 ## Research mode (CRED-nf-grade allocation concealment)
 
+> **⚠️ Forthcoming — not in the shipped 0.6.x API.** The `Evaluator.live(...)`
+> parameters and properties shown in this section (`chunk_transformer=`,
+> `sham=ShamConfig(...)`, `evaluator.allocation_token`) are a *design preview*
+> and are **not** part of the current release. The shipped `live()` signature
+> beyond the required args is `record_streams=` and `backend=` only. SPEC §7.9
+> defines the language-level contract; this host API will land in a later
+> version. Don't write integration code against it yet.
+
 For research studies that need blinded comparison of a real protocol
 against one or more sham conditions, Refrain can take ownership of the
 randomization, signal substitution, and cryptographic concealment. See
@@ -427,6 +435,8 @@ entities that exist in the resolved protocol are present:
 | `reward/event` | boolean | dwell fired any sample this chunk |
 | `reward/event.holds` | boolean | dwell condition currently held |
 | `reward/condition[i]` | boolean | i-th dwell sub-condition. Single-condition dwells uniformly emit `reward/condition[0]` |
+| `reward/composite` | float | weighted-composite success in [0,1] (v0.2; only when the protocol declares named reward/suppress components) |
+| `reward/component[<name>]` | float | a named component's [0,1] success signal (v0.2; one per component) |
 | `output/<channel>` | float \| boolean | post-gating, post-clamp value of the channel |
 
 ### Behaviour
@@ -439,7 +449,8 @@ entities that exist in the resolved protocol are present:
 ### Naming conventions
 
 - `<kind>/<name>` matches the IR's internal canonical-name scheme — no ambiguity between user-named entities (`derive/my_signal`) and category-level globals (`muted`).
-- Bracketed indices (`reward/condition[0]`) for arrayed sub-conditions; flat names for everything else.
+- Bracketed indices (`reward/condition[0]`, `reward/component[smr]`) for arrayed/named sub-items; flat names for everything else.
+- The v0.2 weighted-composite keys (`reward/composite`, `reward/component[<name>]`) appear only for protocols that declare named reward/suppress components. In `last_streams()` the same data uses the dotted namespace (`reward.composite`, `reward.component.<name>`), mirroring `reward.continuous`.
 - `reward/event` semantics are intentionally `.any()` over the chunk's events (boolean: did anything fire), distinct from the per-sample event Event records that step_chunk returns. Use the Event stream for accurate edge timing; use the tap for "is anything happening" status display.
 
 ---

@@ -840,6 +840,8 @@ The keyset is derived from the resolved IR's named entities, with a uniform `<ki
 | `reward/event` | boolean | whether the dwell event fired *any* sample in this chunk |
 | `reward/event.holds` | boolean | whether the dwell condition is currently held |
 | `reward/condition[i]` | boolean | i-th sub-condition of the dwell. Single-condition dwells uniformly emit `reward/condition[0]`. |
+| `reward/composite` | float | the weighted-composite success in [0,1] (v0.2; present only when the protocol declares named reward/suppress components — §4.7) |
+| `reward/component[<name>]` | float | a named component's [0,1] success signal (v0.2; one per component) |
 | `output/<channel>` | float \| boolean | post-gating, post-clamp value of the patient-facing channel |
 
 Taps are populated identically during the `warmup` and `run` lifecycle states (§7.1). Hosts that render a clinician observation window need warmup-state taps so the warmup progress is visualisable.
