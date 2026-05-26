@@ -46,7 +46,8 @@ def _reference(
     per-chunk `last_taps()` snapshot (ground truth for `taps.rs`). One run,
     same seeded signal/evaluator — no duplicated signal generation or setup."""
     ev = Evaluator.live(
-        ir, sample_rate_hz=SAMPLE_RATE_HZ, channel_names=CHANNELS, record_streams=True
+        ir, sample_rate_hz=SAMPLE_RATE_HZ, channel_names=CHANNELS, record_streams=True,
+        backend="python"
     )
     ev.start(skip_warmup=True)
 
@@ -103,7 +104,8 @@ def _setcontrol_reference(
     run. REUSES the same `Evaluator.live` / `step_chunk` / `last_taps` path as
     `_reference`; the only difference is the mid-run control change."""
     ev = Evaluator.live(
-        ir, sample_rate_hz=SAMPLE_RATE_HZ, channel_names=CHANNELS, record_streams=True
+        ir, sample_rate_hz=SAMPLE_RATE_HZ, channel_names=CHANNELS, record_streams=True,
+        backend="python"
     )
     ev.start(skip_warmup=True)
 
@@ -151,7 +153,7 @@ def _generate_setcontrol(ir) -> None:
 
 # Protocols whose output channels actually emit events (the others are
 # pure-DSP micro corpora with no `output` bindings to compare).
-EVENT_BEARING = frozenset({"micro_05_reward", "realistic_smr", "micro_09_inhibit"})
+EVENT_BEARING = frozenset({"micro_05_reward", "realistic_smr", "micro_09_inhibit", "composite_smr_theta"})
 
 # Tap-rich protocols for the `taps.rs` golden-vector compare. `realistic_smr`
 # exercises input/derive/threshold/reward/condition/output taps;
@@ -234,5 +236,6 @@ if __name__ == "__main__":
         "micro_08_bandpower",
         "micro_09_inhibit",
         "realistic_smr",
+        "composite_smr_theta",
     ):
         generate(stem)
