@@ -1210,28 +1210,58 @@ class _Resolver:
     # -- Reward -------------------------------------------------------------
 
     def _resolve_reward(self) -> None:
+        components = tuple(self._reward_components)
         if self.reward_ast is None:
-            self.reward_ir = IRReward(continuous=None, event=None)
+            self.reward_ir = IRReward(continuous=None, event=None, components=components)
+            if components:
+                # Components require a `reward { combine = "weighted" }` aggregator.
+                raise ResolveError(
+                    "named reward/suppress components require a top-level "
+                    '`reward { combine = "weighted" }` aggregator block',
+                    loc=components[0].loc,
+                )
             return
         fields = self._assignments_dict(self.reward_ast.body)
         cont_expr = fields.get("continuous")
         event_expr = fields.get("event")
-        if cont_expr is None and event_expr is None:
-            raise ResolveError(
-                "reward block must declare `continuous`, `event`, or both",
-                loc=self.reward_ast.loc,
-            )
-        # Parse optional `combine` field — must be "all" or "any" if present.
         combine_expr = fields.get("combine")
         if combine_expr is not None:
-            if not isinstance(combine_expr, A.StringLit) or combine_expr.value not in {"all", "any"}:
+            if not isinstance(combine_expr, A.StringLit) or combine_expr.value not in {
+                "all", "any", "weighted",
+            }:
                 raise ResolveError(
-                    'reward.combine must be "all" or "any"',
+                    'reward.combine must be "all", "any", or "weighted"',
                     loc=combine_expr.loc if hasattr(combine_expr, "loc") else None,
                 )
             combine = combine_expr.value
         else:
             combine = "all"
+
+        if combine == "weighted":
+            if not components:
+                raise ResolveError(
+                    'reward.combine = "weighted" requires at least one named '
+                    "reward/suppress component",
+                    loc=self.reward_ast.loc,
+                )
+            self._check_positive_weight(components)
+        elif components:
+            raise ResolveError(
+                'named reward/suppress components require `combine = "weighted"`',
+                loc=self.reward_ast.loc,
+            )
+
+        if cont_expr is None and event_expr is None:
+            raise ResolveError(
+                "reward block must declare `continuous`, `event`, or both",
+                loc=self.reward_ast.loc,
+            )
+        # Set reward_ir before resolving cont/event so reward.composite /
+        # reward.<name> member access can see the components.
+        self.reward_ir = IRReward(
+            continuous=None, event=None, combine=combine, components=components,
+            loc=self.reward_ast.loc,
+        )
         cont_ir = self._resolve_stream_expr(cont_expr) if cont_expr is not None else None
         event_ir = self._resolve_stream_expr(event_expr) if event_expr is not None else None
         if event_ir is not None and _expr_stream_type(event_ir) != EVENT_STREAM:
@@ -1239,7 +1269,46 @@ class _Resolver:
                 f"reward.event must produce event_stream, got {_expr_stream_type(event_ir)}",
                 loc=event_expr.loc if event_expr else None,
             )
-        self.reward_ir = IRReward(continuous=cont_ir, event=event_ir, combine=combine, loc=self.reward_ast.loc)
+        self.reward_ir = IRReward(
+            continuous=cont_ir, event=event_ir, combine=combine,
+            components=components, loc=self.reward_ast.loc,
+        )
+
+    def _check_positive_weight(self, components: tuple) -> None:
+        """At least one component weight must be capable of being > 0.
+
+        Statically reject the case where every component's weight is a
+        literal 0 or a control whose default is 0 and whose range upper
+        bound is 0 (so it can never be tuned positive). When a weight is a
+        control with a positive default or a positive range upper bound,
+        treat it as potentially positive and accept. A runtime guard in the
+        evaluator handles the dynamic all-zero case.
+        """
+        def max_weight(comp) -> float:
+            w = comp.weight
+            if w is None:
+                return 1.0  # implicit weight 1.0
+            if isinstance(w, IRNumberLit):
+                return float(w.value)
+            if isinstance(w, IRControlRef):
+                ctrl = self.controls.get(w.target.split("/", 1)[-1])
+                if ctrl is None:
+                    return 1.0
+                hi = ctrl.range_high
+                default = ctrl.default
+                if isinstance(hi, IRNumberLit):
+                    return float(hi.value)
+                if isinstance(default, IRNumberLit):
+                    return float(default.value)
+                return 1.0
+            return 1.0
+
+        if all(max_weight(c) <= 0.0 for c in components):
+            raise ResolveError(
+                "reward composite has no positive weight: at least one "
+                "component must have a weight that can be > 0",
+                loc=components[0].loc,
+            )
 
     # -- Output -------------------------------------------------------------
 

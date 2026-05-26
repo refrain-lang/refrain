@@ -1143,3 +1143,48 @@ def test_ir_reward_component_dataclass_shape():
     r0 = IRReward(continuous=None, event=None)
     assert r0.components == ()
     assert r0.combine == "all"
+
+
+# ---------------------------------------------------------------------------
+# Task 4 (Stage 1): Resolver — wire components, accept combine=weighted,
+#                    require ≥1 positive weight
+# ---------------------------------------------------------------------------
+
+
+def test_reward_combine_weighted_accepted(amp):
+    ir = resolve(parse(_COMPONENTS_PROTO), amp)
+    assert ir.reward.combine == "weighted"
+    assert len(ir.reward.components) == 2
+
+
+_WEIGHTED_NO_COMPONENTS_PROTO = '''
+    protocol "p" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      reward { combine = "weighted"; continuous = reward.composite }
+      output { audio_gain = reward.composite }
+    }
+'''
+
+
+def test_reward_weighted_requires_at_least_one_component(amp):
+    with pytest.raises(ResolveError):
+        resolve(parse(_WEIGHTED_NO_COMPONENTS_PROTO), amp)
+
+
+_ALL_ZERO_WEIGHTS_PROTO = '''
+    protocol "p" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls { w0 = percent { default = 0; range = (0, 0) } }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "env" { from = "raw"; pipeline = [smooth(tau: 100 ms)] }
+      reward  "a" { signal = sigmoid("env", midpoint: 6 uV, steepness: 1); weight = w0 }
+      reward { combine = "weighted"; continuous = reward.composite }
+      output { audio_gain = reward.composite }
+    }
+'''
+
+
+def test_reward_weighted_all_zero_weights_rejected(amp):
+    with pytest.raises(ResolveError):
+        resolve(parse(_ALL_ZERO_WEIGHTS_PROTO), amp)
