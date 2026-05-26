@@ -228,12 +228,35 @@ class IRCustom:
 
 
 @dataclass(frozen=True, slots=True)
+class IRRewardComponent:
+    """A named reward/suppress component of a weighted composite (v0.2).
+
+    `role` is "reward" (contributes `signal`) or "suppress" (contributes
+    `1 - signal`). `signal` is a [0,1] scalar-dimensionless stream. `weight`
+    is an IRControlRef or IRNumberLit; `None` means an implicit weight of 1.0.
+    """
+
+    name: str
+    canonical_name: str    # "reward/<name>"
+    role: str              # "reward" | "suppress"
+    signal: IRExpr
+    weight: IRExpr | None
+    loc: Loc | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class IRReward:
-    """`reward { continuous?, event? }`. At least one must be present."""
+    """`reward { continuous?, event?, combine?, components? }`.
+
+    For a single-reward (v0.1) protocol, `components` is empty and `combine`
+    is "all". A weighted composite (v0.2) carries one IRRewardComponent per
+    named reward/suppress block and `combine == "weighted"`.
+    """
 
     continuous: IRExpr | None
     event: IRExpr | None
-    combine: str = "all"    # "all" | "any" — consumed by Mode 2a fan-out (Task 4)
+    combine: str = "all"    # "all" | "any" | "weighted"
+    components: tuple = ()   # tuple[IRRewardComponent, ...]
     loc: Loc | None = None
 
 
@@ -340,6 +363,7 @@ __all__ = [
     "IRProtocol",
     "IRRequires",
     "IRReward",
+    "IRRewardComponent",
     "IRRewardField",
     "IRSession",
     "IRStreamRef",

@@ -1086,3 +1086,29 @@ def test_group_default_exceeding_max_rejected():
     '''
     with pytest.raises(ResolveError):       # existing min/max count check fires on the expanded default
         resolve(parse(src))
+
+
+# ---------------------------------------------------------------------------
+# Task 2 (Stage 1): IR — IRRewardComponent + IRReward.components dataclass shape
+# ---------------------------------------------------------------------------
+
+
+def test_ir_reward_component_dataclass_shape():
+    from refrain.ir import IRRewardComponent, IRReward, IRNumberLit, IRControlRef
+    from refrain.types_ import DIMENSIONLESS
+    comp = IRRewardComponent(
+        name="smr",
+        canonical_name="reward/smr",
+        role="reward",
+        signal=IRNumberLit(value=0.5, dims=DIMENSIONLESS),
+        weight=IRControlRef(target="control/w_smr", dims=DIMENSIONLESS),
+    )
+    assert comp.role == "reward"
+    assert comp.canonical_name == "reward/smr"
+    r = IRReward(continuous=None, event=None, combine="weighted", components=(comp,))
+    assert r.components[0].name == "smr"
+    assert r.combine == "weighted"
+    # Back-compat default: empty components tuple, combine "all".
+    r0 = IRReward(continuous=None, event=None)
+    assert r0.components == ()
+    assert r0.combine == "all"
