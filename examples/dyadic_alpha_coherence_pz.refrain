@@ -1,0 +1,132 @@
+// ============================================================================
+// Two-brain (dyadic) alpha-coherence training at Pz
+// ----------------------------------------------------------------------------
+// Trains the INTER-BRAIN alpha coherence between two people's Pz electrodes —
+// i.e. how consistently the two brains' ~10 Hz alpha rhythms move together.
+// Feedback rises as the two brains synchronize, and a chime fires when they
+// hold synchrony. (Sometimes called "hyperscanning" neurofeedback.)
+//
+// HOST RESPONSIBILITY (the make-or-break part — Refrain does NOT do this):
+// Refrain sees CHANNELS, not devices. To run this, the host (e.g. Coherence
+// Recorder) must:
+//   1. acquire from BOTH headsets;
+//   2. TIME-SYNCHRONIZE the two streams onto a common clock and resample both
+//      to the protocol's sample rate — coherence is phase-sensitive, so
+//      unaligned streams produce a meaningless MSC; and
+//   3. present them as ONE channel layout with distinct names, e.g.
+//      channel_names = ("Pz_A", "Pz_B").
+// Refrain has no idea "Pz_A" and "Pz_B" come from two different people — to it
+// they are just two channels it computes coherence between.
+// ============================================================================
+
+protocol "dyadic_alpha_coherence_pz" {
+
+  // ---- Metadata (CRED-nf bookkeeping; no runtime effect) -------------------
+  meta {
+    version     = "1.0.0"
+    // "experimental": inter-brain / hyperscanning NF is not clinically
+    // established. Reserve "clinical" for validated protocols.
+    evidence    = "experimental"
+    description = "Inter-brain alpha (10 Hz) coherence uptraining at Pz between two participants"
+    author      = "Bay Area Peak Performance"
+    indication  = "dyadic regulation / social synchrony (research)"
+  }
+
+  // ---- Hardware the protocol needs (checked against the amp at load) -------
+  requires {
+    // 8-12 Hz coherence wants comfortable headroom above the band; >= 256 Hz
+    // is plenty and keeps the Welch FFT bins clean.
+    sample_rate = ">= 256 Hz"
+    // The two channels we correlate — one Pz per participant. The host maps
+    // its merged two-headset layout onto these names.
+    channels    = ["Pz_A", "Pz_B"]
+  }
+
+  // ---- Clinician-tunable controls ------------------------------------------
+  controls {
+    // The operant threshold target, adjustable LIVE mid-session via
+    // set_control("coh_target_pct", ...). 70 => reward when coherence sits in
+    // roughly the top 30% of its recent range (see the threshold below).
+    // Raise it to make synchrony harder to earn.
+    coh_target_pct = percent { default = 70; range = (50, 95); live_tunable = true }
+  }
+
+  // ---- Inputs: one referenced Pz signal per brain --------------------------
+  // referential(active, reference) = active electrode minus its reference.
+  // reference: "device" => use the headset's own on-board reference (consumer
+  // headsets reference internally, so the host streams already-referenced Pz;
+  // there is no subtraction to do here). For a research cap you would instead
+  // reference each Pz to that participant's own linked ears via an explicit
+  // per-brain ear channel, e.g. referential(active: "Pz_A", reference: "A1_A").
+  input "brain_a" { montage = referential(active: "Pz_A", reference: "device") }
+  input "brain_b" { montage = referential(active: "Pz_B", reference: "device") }
+
+  // ---- The trained signal: inter-brain alpha coherence ---------------------
+  // coherence(input_a, input_b, band, window) computes magnitude-squared
+  // coherence (MSC) between the two streams in `band`, over a rolling `window`:
+  //
+  //     MSC = |P_ab|^2 / (P_aa * P_bb)
+  //
+  // i.e. the cross-spectrum magnitude squared, normalized by each signal's own
+  // power spectrum, Welch-averaged across the segments in the window. The
+  // result is a number in [0, 1]:
+  //     0 = no stable relationship between the two alphas;
+  //     1 = a perfectly stable phase + amplitude relationship (the two ~10 Hz
+  //         rhythms rise, fall, and phase-track together).
+  // The 2 s window (= several Welch segments) is what makes MSC meaningful — a
+  // single segment trivially yields 1.0, so a short window would be useless.
+  derive "dyad_coh" {
+    formula = coherence(
+      input_a: "brain_a",
+      input_b: "brain_b",
+      band:    (8 Hz, 12 Hz),   // the conventional alpha band, centered on 10 Hz.
+                                // NB: keep the band a few Hz wide — a very narrow
+                                // band (e.g. 9-11 Hz) spans too few Welch FFT bins
+                                // at this window and yields a degenerate ~0 MSC.
+      window:  2 s              // rolling MSC window (several Welch segments)
+    )
+  }
+
+  // ---- Operant (auto-adjusting) threshold ----------------------------------
+  // percentile(target_pct, window): the threshold rides at the Nth percentile
+  // of the coherence signal over the last 2 minutes. With target_pct = 70 the
+  // pair is "above threshold" ~30% of the time, and the bar auto-tracks as they
+  // improve — the standard operant approach, versus a fixed cutoff that gets
+  // too easy or too hard. The target is wired to the live control above.
+  threshold "coh_t" {
+    signal = "dyad_coh"
+    type   = percentile(target_pct: coh_target_pct, window: 2 min)
+  }
+
+  // ---- Reward: graded gain + a discrete success chime ----------------------
+  // continuous: smooth [0,1] feedback that ramps up as coherence rises through
+  //   ~0.6 (the sigmoid midpoint). The pair always hears "warmer / cooler"
+  //   guidance, not just on/off. steepness 8 sets how sharp that ramp is.
+  // event: fires when coherence holds ABOVE the operant threshold for a
+  //   sustained 500 ms (dwell). The dwell is what prevents brief noise spikes
+  //   from earning a reward — they must actually maintain synchrony.
+  reward {
+    continuous = sigmoid("dyad_coh", midpoint: 0.6, steepness: 8)
+    event      = dwell(condition: above("dyad_coh", "coh_t"), duration: 500 ms)
+  }
+
+  // ---- Outputs the host renders --------------------------------------------
+  // audio_gain : analog [0,1] — e.g. the volume/brightness of a shared tone or
+  //              visual that grows as the two brains sync.
+  // audio_chime: a discrete reward sound the moment they SUSTAIN synchrony.
+  output {
+    audio_gain  = reward.continuous
+    audio_chime = reward.event
+  }
+
+  // ---- Session structure ---------------------------------------------------
+  // warmup: outputs are muted while the 2 s coherence window and the 2 min
+  //   percentile buffer fill and the filters settle — no feedback is given yet.
+  // training: live feedback for 20 minutes.
+  session {
+    phases = [
+      phase { name = "warmup";   duration = 90 s;  output_muted = true },
+      phase { name = "training"; duration = 20 min },
+    ]
+  }
+}
