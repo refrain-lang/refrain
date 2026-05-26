@@ -6,8 +6,30 @@ use numpy::{IntoPyArray, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
+use std::panic::{catch_unwind, AssertUnwindSafe};
+
 use crate::eval::{Evaluator, Event as CoreEvent, State};
 use crate::ir::Protocol;
+
+/// Run a Rust-core call that may panic, converting any panic into a catchable
+/// Python `RuntimeError` rather than letting it propagate as an (uncatchable)
+/// `pyo3_runtime.PanicException`. This lets an embedding host fall back to the
+/// pure-Python backend on an unsupported-in-Rust construct instead of having a
+/// panic take down the process. `what` names the operation in the message.
+fn guard<R>(what: &str, f: impl FnOnce() -> R) -> PyResult<R> {
+    catch_unwind(AssertUnwindSafe(f)).map_err(|e| {
+        let detail = e
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| e.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic".to_string());
+        pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "refrain_core: {what} failed in the Rust core ({detail}). This protocol \
+             or construct may be unsupported by the Rust backend; retry with \
+             backend=\"python\"."
+        ))
+    })
+}
 
 /// Map the Rust `State` enum to the string values Python expects, matching
 /// `eval_.Evaluator.state` (`"ready"` | `"warmup"` | `"run"` | `"stopped"`).
@@ -53,9 +75,10 @@ impl RustEvaluator {
     fn new(ir_json: &str, sample_rate_hz: f64, channel_names: Vec<String>) -> PyResult<Self> {
         let p: Protocol = serde_json::from_str(ir_json)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("IR-JSON: {e}")))?;
-        Ok(Self {
-            inner: Evaluator::new(&p, sample_rate_hz, &channel_names),
-        })
+        let inner = guard("evaluator construction", || {
+            Evaluator::new(&p, sample_rate_hz, &channel_names)
+        })?;
+        Ok(Self { inner })
     }
 
     /// Process one `(n_samples, n_channels)` chunk; return `{stream: ndarray}`
@@ -67,7 +90,7 @@ impl RustEvaluator {
     ) -> PyResult<Bound<'py, PyDict>> {
         let arr = chunk.as_array();
         let rows: Vec<Vec<f64>> = arr.outer_iter().map(|r| r.to_vec()).collect();
-        let streams = self.inner.step_chunk(&rows);
+        let streams = guard("step_chunk", || self.inner.step_chunk(&rows))?;
         let out = PyDict::new(py);
         for (k, v) in streams {
             out.set_item(k, v.into_pyarray(py))?;
@@ -113,7 +136,8 @@ impl RustEvaluator {
         }
         let arr = chunk.as_array();
         let rows: Vec<Vec<f64>> = arr.outer_iter().map(|r| r.to_vec()).collect();
-        Ok(self.inner.step_chunk_events(&rows).into_iter().map(Event::from).collect())
+        let events = guard("step_chunk", || self.inner.step_chunk_events(&rows))?;
+        Ok(events.into_iter().map(Event::from).collect())
     }
 
     /// Current lifecycle state, mirroring `eval_.Evaluator.state`.

@@ -521,3 +521,38 @@ def test_parity_start_twice_raises(smr_bb_ir):
         ev.start(skip_warmup=True)
         with pytest.raises(RuntimeError, match="state 'run'"):
             ev.start()
+
+
+def test_rust_panic_surfaces_as_catchable_runtimeerror():
+    """A panic inside the Rust core must surface as a *catchable* RuntimeError,
+    not an uncatchable `pyo3_runtime.PanicException` (a BaseException) — so a host
+    can `except Exception` and fall back to backend="python" instead of having the
+    panic take down the process. Regression for the panic-catchability gap
+    surfaced by the coherence bug report.
+
+    The resolver rejects unsupported constructs up front, so it won't *emit* a
+    panic-triggering protocol; we exercise the PyO3 guard directly by corrupting a
+    valid IR-JSON's primitive callee to one the Rust core has no impl for (which
+    hits an "unsupported DSP primitive" panic during the core's build)."""
+    refrain_core = pytest.importorskip("refrain_core", reason="refrain_core wheel not installed")
+    from refrain.ir_json import ir_to_json
+
+    src = """
+        protocol "p" {
+          meta { version = "1.0"; evidence = "demo"; description = "x" }
+          input "raw" { montage = referential(active: "Cz", reference: "device") }
+          derive "d" { from = "raw"; pipeline = [bandpass(band: (8 Hz, 12 Hz))] }
+          reward { continuous = sigmoid("d", midpoint: 0 uV, steepness: 1) }
+          output { audio_gain = reward.continuous }
+        }
+    """
+    ir_json = ir_to_json(resolve(parse(src)), sample_rate_hz=256.0)
+    corrupted = ir_json.replace('"bandpass"', '"nonexistent_dsp_primitive"')
+    assert corrupted != ir_json, "expected to corrupt the bandpass callee"
+
+    # `except Exception` MUST catch it — a bare PanicException (BaseException)
+    # would escape this and crash the host.
+    with pytest.raises(Exception) as excinfo:
+        refrain_core.RustEvaluator(corrupted, 256.0, ["Cz"])
+    assert isinstance(excinfo.value, RuntimeError)   # the guard's conversion
+    assert "Rust" in str(excinfo.value)
