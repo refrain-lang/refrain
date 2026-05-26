@@ -67,3 +67,18 @@ def test_composite_reweight_via_set_control(amp):
     ev.step_chunk(chunk)
     comp = ev.last_streams()["reward.composite"]
     assert np.allclose(comp, 1.0, atol=1e-3)
+
+
+def test_composite_exposed_in_taps_and_streams(amp):
+    ir = resolve(parse(_PROTO), amp)
+    ev = Evaluator.live(ir, sample_rate_hz=256.0, channel_names=("Cz", "linked_ears"),
+                        record_streams=True, backend="python")
+    ev.start(skip_warmup=True)
+    ev.step_chunk(np.column_stack([np.full(64, 5.0), np.zeros(64)]).astype(np.float64))
+    taps = ev.last_taps()
+    assert "reward/composite" in taps
+    assert abs(taps["reward/composite"] - 0.5) < 1e-3
+    assert "reward/component[smr]" in taps
+    assert "reward/component[theta]" in taps
+    streams = ev.last_streams()
+    assert "reward.composite" in streams

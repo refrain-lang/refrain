@@ -769,6 +769,8 @@ class Evaluator:
             reward_event=reward_event,
             reward_sub_chunks=reward_sub_chunks,
             per_channel_output=per_channel_output,
+            reward_composite=reward_composite,
+            reward_component_signals=reward_component_signals,
         )
         if self._record_streams:
             captured = {
@@ -825,6 +827,8 @@ class Evaluator:
         reward_event: impls.DwellResult | None,
         reward_sub_chunks: list[np.ndarray],
         per_channel_output: dict[str, tuple[np.ndarray, bool]],
+        reward_composite: np.ndarray | None = None,
+        reward_component_signals: dict[str, np.ndarray] | None = None,
     ) -> None:
         """Repopulate `self._last_taps` from the current chunk's
         intermediate values. Called once per `_process_chunk` *before*
@@ -884,6 +888,14 @@ class Evaluator:
         for i, sub in enumerate(reward_sub_chunks):
             if sub.size:
                 taps[f"reward/condition[{i}]"] = bool(sub[-1])
+
+        # Composite and per-component taps (v0.2).
+        if reward_composite is not None and reward_composite.size:
+            taps["reward/composite"] = float(reward_composite[-1])
+        if reward_component_signals:
+            for cname, csig in reward_component_signals.items():
+                if csig.size:
+                    taps[f"reward/component[{cname}]"] = float(csig[-1])
 
         # Output taps — what the patient-facing value actually was,
         # post-gating and post-clamp. For event channels we expose
