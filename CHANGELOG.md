@@ -5,6 +5,26 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.6.2] — 2026-05-26
+
+### Changed
+- **Rust-backend panics are now catchable.** Any panic in the Rust core (e.g. an
+  unsupported-in-Rust construct reached on `backend="rust"`/`"auto"`) is converted
+  to a Python `RuntimeError` at the PyO3 boundary instead of propagating as an
+  uncatchable `pyo3_runtime.PanicException` — so an embedding host can `except`
+  it and fall back to `backend="python"` rather than having the panic take down
+  the process.
+
+### Documentation
+- Documented the v0.2 weighted-reward tap/stream keys — `reward/composite`,
+  `reward/component[<name>]` (and the dotted `last_streams` equivalents
+  `reward.composite` / `reward.component.<name>`) — in the EMBEDDING.md tap table
+  and SPEC §7.8.
+- Marked EMBEDDING.md's "Research mode" host API (`chunk_transformer=`, `sham=`,
+  `evaluator.allocation_token`) as **forthcoming** — it is not part of the shipped
+  0.6.x `live()` signature (which is `record_streams=` + `backend=` beyond the
+  required args).
+
 ## [0.6.1] — 2026-05-26
 
 ### Fixed
