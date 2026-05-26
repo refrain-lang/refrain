@@ -5,6 +5,32 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.6.0] — 2026-05-25
+
+### Added
+- **Weighted multi-component reward engine** (the standard z-score / summary
+  multi-metric model): a protocol may declare multiple named `reward "<name>"`
+  and suppress-`inhibit "<name>"` components, each with a `signal` (a `[0,1]`
+  success metric) and a `weight` (an ordinary numeric control — so author
+  `default`, `resolve(bindings=)` override, and live `set_control` retune all
+  work). The top-level `reward { combine = "weighted" }` aggregates them into
+  `reward.composite` — a weighted average of per-component success (reward →
+  `signal`, suppress → `1 − signal`) in `[0,1]`; `event` / `continuous` /
+  `output` may reference `reward.composite` and `reward.<name>.signal`.
+  Hard-gate inhibits (`metric` / `threshold` / `action`) keep their v0.1
+  semantics and gate the whole composite.
+- **IR-JSON v0.2** (`refrain-core/schema/ir-json-v0.2.schema.json`) — the first
+  wire-format bump. A protocol using the new features emits
+  `refrain_ir_version: "0.2"` with a `reward.components` array + `combine`;
+  single-reward protocols still emit v0.1 byte-identically. The Rust core
+  deserializes and evaluates v0.2 at machine-precision parity with the Python
+  reference; both schema versions are validated and gated dual-backend.
+
+### Notes
+- Back-compatible: every existing v0.1 protocol parses, resolves, emits, and
+  runs unchanged on both backends. `combine = "independent"` (per-site
+  independent feedback) is planned as a follow-up.
+
 ## [0.5.0] — 2026-05-25
 
 ### Added
