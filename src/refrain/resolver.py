@@ -62,6 +62,7 @@ from .ir import (
     IRProtocol,
     IRRequires,
     IRReward,
+    IRRewardComponent,
     IRRewardField,
     IRSession,
     IRStreamRef,
@@ -157,6 +158,9 @@ class _Resolver:
 
         # Reward IR (filled by resolve_reward).
         self.reward_ir: IRReward | None = None
+
+        # Reward components (named reward / suppress-inhibit) for v0.2 composite.
+        self._reward_components: list[IRRewardComponent] = []
 
     # -- Top-level entry ----------------------------------------------------
 
@@ -409,8 +413,20 @@ class _Resolver:
                     self.thresholds[stmt.name] = self._resolve_threshold(stmt)
                     self._topo.append(f"threshold/{stmt.name}")
                 elif stmt.keyword == "inhibit":
-                    self.inhibits[stmt.name] = self._resolve_inhibit(stmt)
-                    self._topo.append(f"inhibit/{stmt.name}")
+                    fields = self._assignments_dict(stmt.body)
+                    if "signal" in fields and "action" not in fields:
+                        # Suppress band → a weighted reward component (role=suppress).
+                        self._reward_components.append(
+                            self._resolve_reward_component(stmt, role="suppress")
+                        )
+                    else:
+                        # Hard gate → existing IRInhibit (v0.1 semantics).
+                        self.inhibits[stmt.name] = self._resolve_inhibit(stmt)
+                        self._topo.append(f"inhibit/{stmt.name}")
+                elif stmt.keyword == "reward":
+                    self._reward_components.append(
+                        self._resolve_reward_component(stmt, role="reward")
+                    )
                 elif stmt.keyword == "custom":
                     self.customs[stmt.name] = self._resolve_custom(stmt)
                     self._topo.append(f"custom/{stmt.name}")
@@ -642,6 +658,40 @@ class _Resolver:
             action_kind=action_kind,
             action_release_ms=release_ms,
             final=final,
+            loc=decl.loc,
+        )
+
+    def _resolve_reward_component(self, decl: A.NamedDecl, *, role: str) -> IRRewardComponent:
+        """Resolve a named `reward "<n>"` or suppress-`inhibit "<n>"` component.
+
+        `signal` must type-check to a [0,1] success metric (scalar,
+        dimensionless — e.g. sigmoid/linear). `weight` is an ordinary
+        numeric control ref or a literal; absent means an implicit 1.0.
+        """
+        fields = self._assignments_dict(decl.body)
+        signal_expr = fields.get("signal")
+        if signal_expr is None:
+            raise ResolveError(
+                f'{decl.keyword} "{decl.name}" component needs a `signal` field',
+                loc=decl.loc,
+            )
+        signal_ir = self._resolve_stream_expr(signal_expr)
+        st = _expr_stream_type(signal_ir)
+        if not (st.value_kind == "scalar" and st.dimensions == DIMENSIONLESS):
+            raise ResolveError(
+                f'{decl.keyword} "{decl.name}".signal must be a [0,1] success '
+                f"metric (scalar, dimensionless — wrap it in sigmoid/linear); "
+                f"got {st}",
+                loc=signal_expr.loc,
+            )
+        weight_expr = fields.get("weight")
+        weight_ir = self._resolve_value_expr(weight_expr) if weight_expr is not None else None
+        return IRRewardComponent(
+            name=decl.name,
+            canonical_name=f"reward/{decl.name}",
+            role=role,
+            signal=signal_ir,
+            weight=weight_ir,
             loc=decl.loc,
         )
 

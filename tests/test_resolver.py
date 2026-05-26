@@ -1092,6 +1092,37 @@ def test_group_default_exceeding_max_rejected():
 # Task 2 (Stage 1): IR — IRRewardComponent + IRReward.components dataclass shape
 # ---------------------------------------------------------------------------
 
+_COMPONENTS_PROTO = '''
+    protocol "p" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls {
+        w_smr   = percent { default = 1; range = (0, 4) }
+        w_theta = percent { default = 0.6; range = (0, 4) }
+      }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "smr_env"   { from = "raw"; pipeline = [smooth(tau: 100 ms)] }
+      derive "theta_env" { from = "raw"; pipeline = [smooth(tau: 100 ms)] }
+      reward  "smr"   { signal = sigmoid("smr_env",   midpoint: 6 uV, steepness: 1); weight = w_smr }
+      inhibit "theta" { signal = sigmoid("theta_env", midpoint: 8 uV, steepness: 1); weight = w_theta }
+      reward { combine = "weighted"; continuous = reward.composite }
+      output { audio_gain = reward.composite }
+    }
+'''
+
+
+def test_reward_components_resolve_with_roles_and_weights(amp):
+    ir = resolve(parse(_COMPONENTS_PROTO), amp)
+    comps = {c.name: c for c in ir.reward.components}
+    assert set(comps) == {"smr", "theta"}
+    assert comps["smr"].role == "reward"
+    assert comps["theta"].role == "suppress"
+    assert comps["smr"].canonical_name == "reward/smr"
+    # Weight resolves to a control ref (weights are ordinary controls).
+    assert comps["smr"].weight.target == "control/w_smr"
+    assert ir.reward.combine == "weighted"
+    # The suppress-band inhibit is NOT a hard-gate IRInhibit.
+    assert "theta" not in ir.inhibits
+
 
 def test_ir_reward_component_dataclass_shape():
     from refrain.ir import IRRewardComponent, IRReward, IRNumberLit, IRControlRef
