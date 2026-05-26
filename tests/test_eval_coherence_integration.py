@@ -167,6 +167,67 @@ def test_coherence_in_tap_api(backend):
     for i in range(0, n, 64):
         ev.step_chunk(data[i:i + 64])
 
+
+# --- Regression: positional coherence inputs (live/push mode) ---------------
+# `coherence("a","b", …)` (positional inputs) previously resolved but was
+# unrunnable at step_chunk on BOTH backends — python: CoherenceImpl.step missing
+# x_a/x_b; rust: "missing baked coeffs" (an uncatchable panic). Every downstream
+# consumer keys the two explicit stream inputs by name, so the resolver now
+# canonicalizes positional coherence inputs to named (input_a/input_b).
+
+
+def test_coherence_positional_inputs_canonicalized_to_named():
+    def src(coh):
+        return f"""
+            protocol "p" {{
+              meta {{ version = "1.0"; evidence = "demo"; description = "x" }}
+              input "a" {{ montage = referential(active: "C3", reference: "device") }}
+              input "b" {{ montage = referential(active: "C4", reference: "device") }}
+              derive "coh" {{ formula = {coh} }}
+              reward {{ continuous = "coh" }}
+              output {{ audio_gain = reward.continuous }}
+            }}
+        """
+    pos = resolve(parse(src('coherence("a", "b", band: (8 Hz, 12 Hz), window: 2 s)')))
+    named = resolve(parse(src('coherence(input_a: "a", input_b: "b", band: (8 Hz, 12 Hz), window: 2 s)')))
+    arg_names = lambda ir: [a.name for a in ir.derives["coh"].expression.args]
+    assert arg_names(pos) == arg_names(named) == ["input_a", "input_b", "band", "window"]
+
+
+def test_coherence_positional_inputs_run_end_to_end(backend):
+    src = """
+        protocol "p" {
+          meta { version = "1.0"; evidence = "demo"; description = "x" }
+          requires { sample_rate = ">= 250 Hz"; channels = ["C3", "C4"] }
+          input "a" { montage = referential(active: "C3", reference: "device") }
+          input "b" { montage = referential(active: "C4", reference: "device") }
+          derive "coh" { formula = coherence("a", "b", band: (8 Hz, 12 Hz), window: 2 s) }
+          reward { continuous = "coh" }
+          output { audio_gain = reward.continuous }
+        }
+    """
+    ir = resolve(parse(src))
+    n_samples = 30 * SR
+    data = _coherent_then_incoherent(sample_rate_hz=SR, n_samples=n_samples, channels=("C3", "C4"), seed=42)
+    ev = Evaluator.live(ir, sample_rate_hz=SR, channel_names=("C3", "C4"), backend=backend)
+    ev.start(skip_warmup=True)
+    times, gains = [], []
+    for i in range(0, n_samples, 64):
+        chunk = data[i:i + 64]
+        if chunk.shape[0] == 0:
+            break
+        for e in ev.step_chunk(chunk):
+            if e.channel == "audio_gain" and e.kind == "value":
+                times.append(e.timestamp_s)
+                gains.append(e.value)
+    times, gains = np.array(times), np.array(gains)
+    assert len(gains) > 0
+    coherent = gains[(times > 4.0) & (times < 14.0)].mean()
+    incoherent = gains[(times > 19.0) & (times < 29.0)].mean()
+    assert coherent > 0.6, f"coherent-phase gain should be high, got {coherent:.3f}"
+    assert incoherent < 0.3, f"incoherent-phase gain should be low, got {incoherent:.3f}"
+    assert coherent > incoherent + 0.3
+
     taps = ev.last_taps()
     assert "derive/coh" in taps, f"missing tap; saw keys: {sorted(taps)}"
     assert isinstance(taps["derive/coh"], float)

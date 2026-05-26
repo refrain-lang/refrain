@@ -1645,6 +1645,30 @@ class _Resolver:
                 loc=call.loc,
             )
 
+        # Canonicalize coherence's positional stream inputs to named args, so
+        # `coherence("a","b", …)` resolves to the same IR as the named form
+        # `coherence(input_a:"a", input_b:"b", …)`. Coherence is the one stdlib
+        # primitive that takes two *explicit* stream inputs, and every
+        # downstream consumer identifies them by name — the push-mode classifier
+        # (`_DYNAMIC_ARG_KEYS["coherence"] = ("input_a","input_b")`), the IR-JSON
+        # coherence-coeff emitter, and the Rust core. Without this, a positional
+        # call resolves fine but is unrunnable in live/push mode on BOTH backends
+        # (Python: CoherenceImpl.step missing x_a/x_b; Rust: missing baked coeffs).
+        if call.callee == "coherence":
+            sig = _pick_signature(spec, resolved_args, call.loc)
+            named_present = {a.name for a in resolved_args if a.name}
+            pos_names = iter(
+                p.name
+                for p in sig.params
+                if p.name not in named_present and p.name != "__input__"
+            )
+            resolved_args = [
+                a
+                if a.name is not None
+                else IRArg(name=next(pos_names, None), value=a.value, loc=a.loc)
+                for a in resolved_args
+            ]
+
         # Resolve output type using the matching signature.
         output_type = _compute_call_output(
             spec,
