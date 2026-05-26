@@ -53,6 +53,18 @@ from .types_ import Dimensions, StreamType
 IR_JSON_VERSION = "0.1"
 
 
+def _protocol_ir_version(ir: IRProtocol) -> str:
+    """Lowest IR-JSON version that represents this protocol.
+
+    A protocol that uses no named components and no weighted combine emits
+    v0.1 (byte-identical to the pre-v0.2 emitter); anything using the new
+    composite features emits v0.2.
+    """
+    if ir.reward.components or ir.reward.combine == "weighted":
+        return "0.2"
+    return IR_JSON_VERSION
+
+
 @dataclass(frozen=True)
 class _EmitCtx:
     """Carries the runtime parameters needed to bake DSP coefficients."""
@@ -285,11 +297,26 @@ def _emit_inhibit(ih: IRInhibit, ctx: _EmitCtx) -> dict:
     }
 
 
-def _emit_reward(r: IRReward, ctx: _EmitCtx) -> dict:
-    return {
+def _emit_reward(r: IRReward, ctx: _EmitCtx, version: str) -> dict:
+    base = {
         "continuous": _emit_expr(r.continuous, ctx) if r.continuous is not None else None,
         "event": _emit_expr(r.event, ctx) if r.event is not None else None,
     }
+    if version == "0.1":
+        # Byte-identical to the pre-v0.2 emitter: no components/combine keys.
+        return base
+    base["combine"] = r.combine
+    base["components"] = [
+        {
+            "name": c.name,
+            "canonical_name": c.canonical_name,
+            "role": c.role,
+            "signal": _emit_expr(c.signal, ctx),
+            "weight": _emit_expr(c.weight, ctx) if c.weight is not None else None,
+        }
+        for c in r.components
+    ]
+    return base
 
 
 def _emit_control(c: IRControl, ctx: _EmitCtx) -> dict:
@@ -345,8 +372,9 @@ def ir_to_json_obj(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> di
         channel_names=tuple(ir.requires.channels),
         controls=control_defaults(ir),
     )
+    version = _protocol_ir_version(ir)
     return {
-        "refrain_ir_version": IR_JSON_VERSION,
+        "refrain_ir_version": version,
         "name": ir.name,
         "extends": ir.extends,
         "sample_rate_hz": rate,
@@ -357,7 +385,7 @@ def ir_to_json_obj(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> di
         "derives": {name: _emit_derive(d, ctx) for name, d in ir.derives.items()},
         "thresholds": {name: _emit_threshold(t, ctx) for name, t in ir.thresholds.items()},
         "inhibits": {name: _emit_inhibit(ih, ctx) for name, ih in ir.inhibits.items()},
-        "reward": _emit_reward(ir.reward, ctx),
+        "reward": _emit_reward(ir.reward, ctx, version),
         "output": {name: _emit_expr(expr, ctx) for name, expr in ir.output.items()},
         "controls": {
             name: _emit_control(c, ctx)
