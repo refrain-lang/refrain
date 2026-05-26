@@ -5,6 +5,18 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.6.1] — 2026-05-26
+
+### Fixed
+- `coherence(...)` is now runnable in **live/push mode** with **positional**
+  stream inputs (e.g. `coherence("a","b", band: …)`) on both backends. It
+  previously resolved but crashed on the first `step_chunk(...)` — python:
+  `CoherenceImpl.step() missing x_a/x_b`; rust: `coherence: missing baked
+  coeffs` (an uncatchable panic). The resolver now canonicalizes coherence's
+  positional inputs to named (`input_a`/`input_b`), so the positional form
+  resolves to the same IR as the explicit named form. (The named form was
+  already fine.) Python↔Rust parity confirmed at machine precision.
+
 ## [0.6.0] — 2026-05-25
 
 ### Added
