@@ -1534,6 +1534,31 @@ class _Resolver:
             if self.reward_ir.event is None:
                 raise ResolveError("reward.event is not declared in this protocol", loc=loc)
             return IRRewardField(field_path="event.holds", stream_type=BOOLEAN_STREAM, loc=loc)
+        if parts == ("composite",):
+            if not self.reward_ir.components and self.reward_ir.combine != "weighted":
+                raise ResolveError(
+                    "reward.composite is only available with named components "
+                    'and combine = "weighted"',
+                    loc=loc,
+                )
+            return IRRewardField(
+                field_path="composite",
+                stream_type=scalar_stream(DIMENSIONLESS),
+                loc=loc,
+            )
+        if len(parts) == 2 and parts[1] == "signal":
+            comp_names = {c.name for c in self.reward_ir.components}
+            if parts[0] not in comp_names:
+                raise ResolveError(
+                    f"unknown reward component {parts[0]!r}; "
+                    f"declared components: {sorted(comp_names)}",
+                    loc=loc,
+                )
+            return IRRewardField(
+                field_path=f"{parts[0]}.signal",
+                stream_type=scalar_stream(DIMENSIONLESS),
+                loc=loc,
+            )
         raise ResolveError(
             f"unknown reward field path {'.'.join(parts)!r}",
             loc=loc,

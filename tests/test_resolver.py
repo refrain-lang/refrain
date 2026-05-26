@@ -1188,3 +1188,36 @@ _ALL_ZERO_WEIGHTS_PROTO = '''
 def test_reward_weighted_all_zero_weights_rejected(amp):
     with pytest.raises(ResolveError):
         resolve(parse(_ALL_ZERO_WEIGHTS_PROTO), amp)
+
+
+# ---------------------------------------------------------------------------
+# Task 5 (Stage 1): Resolver — reward.composite and reward.<name>.signal access
+# ---------------------------------------------------------------------------
+
+
+def test_reward_composite_member_access_resolves(amp):
+    ir = resolve(parse(_COMPONENTS_PROTO), amp)
+    # output.audio_gain = reward.composite
+    field = ir.output["audio_gain"]
+    assert isinstance(field, IRRewardField)
+    assert field.field_path == "composite"
+    assert field.stream_type.value_kind == "scalar"
+
+
+_COMPONENT_NAME_ACCESS_PROTO = _COMPONENTS_PROTO.replace(
+    "output { audio_gain = reward.composite }",
+    "output { audio_gain = reward.composite; video_clarity = reward.smr.signal }",
+)
+
+
+def test_reward_component_signal_access_resolves(amp):
+    ir = resolve(parse(_COMPONENT_NAME_ACCESS_PROTO), amp)
+    field = ir.output["video_clarity"]
+    assert isinstance(field, IRRewardField)
+    assert field.field_path == "smr.signal"
+
+
+def test_reward_unknown_component_access_rejected(amp):
+    bad = _COMPONENTS_PROTO.replace("reward.composite }", "reward.nope.signal }")
+    with pytest.raises(ResolveError):
+        resolve(parse(bad), amp)
