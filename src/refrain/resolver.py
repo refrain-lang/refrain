@@ -62,6 +62,7 @@ from .ir import (
     IRProtocol,
     IRRequires,
     IRReward,
+    IRRewardComponent,
     IRRewardField,
     IRSession,
     IRStreamRef,
@@ -157,6 +158,9 @@ class _Resolver:
 
         # Reward IR (filled by resolve_reward).
         self.reward_ir: IRReward | None = None
+
+        # Reward components (named reward / suppress-inhibit) for v0.2 composite.
+        self._reward_components: list[IRRewardComponent] = []
 
     # -- Top-level entry ----------------------------------------------------
 
@@ -409,8 +413,20 @@ class _Resolver:
                     self.thresholds[stmt.name] = self._resolve_threshold(stmt)
                     self._topo.append(f"threshold/{stmt.name}")
                 elif stmt.keyword == "inhibit":
-                    self.inhibits[stmt.name] = self._resolve_inhibit(stmt)
-                    self._topo.append(f"inhibit/{stmt.name}")
+                    fields = self._assignments_dict(stmt.body)
+                    if "signal" in fields and "action" not in fields:
+                        # Suppress band → a weighted reward component (role=suppress).
+                        self._reward_components.append(
+                            self._resolve_reward_component(stmt, role="suppress")
+                        )
+                    else:
+                        # Hard gate → existing IRInhibit (v0.1 semantics).
+                        self.inhibits[stmt.name] = self._resolve_inhibit(stmt)
+                        self._topo.append(f"inhibit/{stmt.name}")
+                elif stmt.keyword == "reward":
+                    self._reward_components.append(
+                        self._resolve_reward_component(stmt, role="reward")
+                    )
                 elif stmt.keyword == "custom":
                     self.customs[stmt.name] = self._resolve_custom(stmt)
                     self._topo.append(f"custom/{stmt.name}")
@@ -642,6 +658,53 @@ class _Resolver:
             action_kind=action_kind,
             action_release_ms=release_ms,
             final=final,
+            loc=decl.loc,
+        )
+
+    def _resolve_reward_component(self, decl: A.NamedDecl, *, role: str) -> IRRewardComponent:
+        """Resolve a named `reward "<n>"` or suppress-`inhibit "<n>"` component.
+
+        `signal` must type-check to a [0,1] success metric (scalar,
+        dimensionless — e.g. sigmoid/linear). `weight` is an ordinary
+        numeric control ref or a literal; absent means an implicit 1.0.
+        """
+        fields = self._assignments_dict(decl.body)
+        extra = set(fields) - {"signal", "weight"}
+        if extra:
+            # Catch the footgun where a hard-gate field (e.g. `gate`, or a
+            # stray `action`) lands in a weighted component and would be
+            # silently dropped. A suppress band uses `signal` + `weight`; a
+            # hard-gate inhibit uses `metric` + `threshold` + `action`.
+            raise ResolveError(
+                f'{decl.keyword} "{decl.name}": unexpected field(s) '
+                f"{sorted(extra)} in a weighted reward/suppress component. Use "
+                "`signal` + `weight` for a suppress band, or `metric` + "
+                "`threshold` + `action` for a hard-gate inhibit — not both.",
+                loc=decl.loc,
+            )
+        signal_expr = fields.get("signal")
+        if signal_expr is None:
+            raise ResolveError(
+                f'{decl.keyword} "{decl.name}" component needs a `signal` field',
+                loc=decl.loc,
+            )
+        signal_ir = self._resolve_stream_expr(signal_expr)
+        st = _expr_stream_type(signal_ir)
+        if not (st.value_kind == "scalar" and st.dimensions == DIMENSIONLESS):
+            raise ResolveError(
+                f'{decl.keyword} "{decl.name}".signal must be a [0,1] success '
+                f"metric (scalar, dimensionless — wrap it in sigmoid/linear); "
+                f"got {st}",
+                loc=signal_expr.loc,
+            )
+        weight_expr = fields.get("weight")
+        weight_ir = self._resolve_value_expr(weight_expr) if weight_expr is not None else None
+        return IRRewardComponent(
+            name=decl.name,
+            canonical_name=f"reward/{decl.name}",
+            role=role,
+            signal=signal_ir,
+            weight=weight_ir,
             loc=decl.loc,
         )
 
@@ -1160,28 +1223,58 @@ class _Resolver:
     # -- Reward -------------------------------------------------------------
 
     def _resolve_reward(self) -> None:
+        components = tuple(self._reward_components)
         if self.reward_ast is None:
-            self.reward_ir = IRReward(continuous=None, event=None)
+            self.reward_ir = IRReward(continuous=None, event=None, components=components)
+            if components:
+                # Components require a `reward { combine = "weighted" }` aggregator.
+                raise ResolveError(
+                    "named reward/suppress components require a top-level "
+                    '`reward { combine = "weighted" }` aggregator block',
+                    loc=components[0].loc,
+                )
             return
         fields = self._assignments_dict(self.reward_ast.body)
         cont_expr = fields.get("continuous")
         event_expr = fields.get("event")
-        if cont_expr is None and event_expr is None:
-            raise ResolveError(
-                "reward block must declare `continuous`, `event`, or both",
-                loc=self.reward_ast.loc,
-            )
-        # Parse optional `combine` field — must be "all" or "any" if present.
         combine_expr = fields.get("combine")
         if combine_expr is not None:
-            if not isinstance(combine_expr, A.StringLit) or combine_expr.value not in {"all", "any"}:
+            if not isinstance(combine_expr, A.StringLit) or combine_expr.value not in {
+                "all", "any", "weighted",
+            }:
                 raise ResolveError(
-                    'reward.combine must be "all" or "any"',
+                    'reward.combine must be "all", "any", or "weighted"',
                     loc=combine_expr.loc if hasattr(combine_expr, "loc") else None,
                 )
             combine = combine_expr.value
         else:
             combine = "all"
+
+        if combine == "weighted":
+            if not components:
+                raise ResolveError(
+                    'reward.combine = "weighted" requires at least one named '
+                    "reward/suppress component",
+                    loc=self.reward_ast.loc,
+                )
+            self._check_positive_weight(components)
+        elif components:
+            raise ResolveError(
+                'named reward/suppress components require `combine = "weighted"`',
+                loc=self.reward_ast.loc,
+            )
+
+        if cont_expr is None and event_expr is None:
+            raise ResolveError(
+                "reward block must declare `continuous`, `event`, or both",
+                loc=self.reward_ast.loc,
+            )
+        # Set reward_ir before resolving cont/event so reward.composite /
+        # reward.<name> member access can see the components.
+        self.reward_ir = IRReward(
+            continuous=None, event=None, combine=combine, components=components,
+            loc=self.reward_ast.loc,
+        )
         cont_ir = self._resolve_stream_expr(cont_expr) if cont_expr is not None else None
         event_ir = self._resolve_stream_expr(event_expr) if event_expr is not None else None
         if event_ir is not None and _expr_stream_type(event_ir) != EVENT_STREAM:
@@ -1189,7 +1282,46 @@ class _Resolver:
                 f"reward.event must produce event_stream, got {_expr_stream_type(event_ir)}",
                 loc=event_expr.loc if event_expr else None,
             )
-        self.reward_ir = IRReward(continuous=cont_ir, event=event_ir, combine=combine, loc=self.reward_ast.loc)
+        self.reward_ir = IRReward(
+            continuous=cont_ir, event=event_ir, combine=combine,
+            components=components, loc=self.reward_ast.loc,
+        )
+
+    def _check_positive_weight(self, components: tuple) -> None:
+        """At least one component weight must be capable of being > 0.
+
+        Statically reject the case where every component's weight is a
+        literal 0 or a control whose default is 0 and whose range upper
+        bound is 0 (so it can never be tuned positive). When a weight is a
+        control with a positive default or a positive range upper bound,
+        treat it as potentially positive and accept. A runtime guard in the
+        evaluator handles the dynamic all-zero case.
+        """
+        def max_weight(comp) -> float:
+            w = comp.weight
+            if w is None:
+                return 1.0  # implicit weight 1.0
+            if isinstance(w, IRNumberLit):
+                return float(w.value)
+            if isinstance(w, IRControlRef):
+                ctrl = self.controls.get(w.target.split("/", 1)[-1])
+                if ctrl is None:
+                    return 1.0
+                hi = ctrl.range_high
+                default = ctrl.default
+                if isinstance(hi, IRNumberLit):
+                    return float(hi.value)
+                if isinstance(default, IRNumberLit):
+                    return float(default.value)
+                return 1.0
+            return 1.0
+
+        if all(max_weight(c) <= 0.0 for c in components):
+            raise ResolveError(
+                "reward composite has no positive weight: at least one "
+                "component must have a weight that can be > 0",
+                loc=components[0].loc,
+            )
 
     # -- Output -------------------------------------------------------------
 
@@ -1415,6 +1547,31 @@ class _Resolver:
             if self.reward_ir.event is None:
                 raise ResolveError("reward.event is not declared in this protocol", loc=loc)
             return IRRewardField(field_path="event.holds", stream_type=BOOLEAN_STREAM, loc=loc)
+        if parts == ("composite",):
+            if not self.reward_ir.components and self.reward_ir.combine != "weighted":
+                raise ResolveError(
+                    "reward.composite is only available with named components "
+                    'and combine = "weighted"',
+                    loc=loc,
+                )
+            return IRRewardField(
+                field_path="composite",
+                stream_type=scalar_stream(DIMENSIONLESS),
+                loc=loc,
+            )
+        if len(parts) == 2 and parts[1] == "signal":
+            comp_names = {c.name for c in self.reward_ir.components}
+            if parts[0] not in comp_names:
+                raise ResolveError(
+                    f"unknown reward component {parts[0]!r}; "
+                    f"declared components: {sorted(comp_names)}",
+                    loc=loc,
+                )
+            return IRRewardField(
+                field_path=f"{parts[0]}.signal",
+                stream_type=scalar_stream(DIMENSIONLESS),
+                loc=loc,
+            )
         raise ResolveError(
             f"unknown reward field path {'.'.join(parts)!r}",
             loc=loc,

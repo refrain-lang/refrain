@@ -482,6 +482,9 @@ class Evaluator:
             self._instantiate_expr(self.ir.reward.continuous)
         if self.ir.reward.event is not None:
             self._instantiate_expr(self.ir.reward.event)
+        # Component signals (named reward / suppress-inhibit, v0.2 composite).
+        for comp in self.ir.reward.components:
+            self._instantiate_expr(comp.signal)
         # Output bindings.
         for expr in self.ir.output.values():
             self._instantiate_expr(expr)
@@ -683,18 +686,50 @@ class Evaluator:
             inhibit_active[ih.canonical_name] = metric_chunk > thresh_chunk
 
         # Reward
-        reward_continuous: np.ndarray | None = None
         reward_event: impls.DwellResult | None = None
         reward_sub_chunks: list[np.ndarray] = []
+
+        # Weighted composite (v0.2). Computed BEFORE reward.continuous so
+        # that `continuous = reward.composite` can reference it. Recomputed
+        # each chunk from current control values, so a live set_control on
+        # any weight moves it immediately.
+        reward_composite: np.ndarray | None = None
+        reward_component_signals: dict[str, np.ndarray] = {}
+        if self.ir.reward.components:
+            num = np.zeros(actual_chunk_size, dtype=np.float64)
+            weight_sum = np.zeros(actual_chunk_size, dtype=np.float64)
+            for comp in self.ir.reward.components:
+                signal = np.clip(
+                    self._eval_expr(
+                        comp.signal, stream_values, control_chunks_cache,
+                        actual_chunk_size,
+                        reward_composite=reward_composite,
+                        reward_component_signals=reward_component_signals,
+                    ),
+                    0.0, 1.0,
+                )
+                reward_component_signals[comp.name] = signal
+                w = self._component_weight_chunk(comp, control_chunks_cache, actual_chunk_size)
+                success = signal if comp.role == "reward" else (1.0 - signal)
+                num += w * success
+                weight_sum += w
+            # Runtime all-zero-weight guard: composite is 0 where no weight.
+            reward_composite = np.where(weight_sum > 0.0, num / np.where(weight_sum > 0.0, weight_sum, 1.0), 0.0)
+
+        reward_continuous: np.ndarray | None = None
         if self.ir.reward.continuous is not None:
             reward_continuous = self._eval_expr(
                 self.ir.reward.continuous,
                 stream_values, control_chunks_cache, actual_chunk_size,
+                reward_composite=reward_composite,
+                reward_component_signals=reward_component_signals,
             )
         if self.ir.reward.event is not None:
             reward_event, reward_sub_chunks = self._eval_reward_event(
                 self.ir.reward.event,
                 stream_values, control_chunks_cache, actual_chunk_size,
+                reward_composite=reward_composite,
+                reward_component_signals=reward_component_signals,
             )
 
         # Combined inhibit gate — also exposed as the `muted` tap.
@@ -712,6 +747,8 @@ class Evaluator:
                 stream_values, control_chunks_cache, actual_chunk_size,
                 reward_continuous=reward_continuous,
                 reward_event=reward_event,
+                reward_composite=reward_composite,
+                reward_component_signals=reward_component_signals,
             )
             is_event = self._is_event_channel(expr)
             if is_event:
@@ -734,6 +771,8 @@ class Evaluator:
             reward_event=reward_event,
             reward_sub_chunks=reward_sub_chunks,
             per_channel_output=per_channel_output,
+            reward_composite=reward_composite,
+            reward_component_signals=reward_component_signals,
         )
         if self._record_streams:
             captured = {
@@ -745,6 +784,10 @@ class Evaluator:
             if reward_event is not None:
                 captured["reward.event"] = np.asarray(reward_event.events).copy()
                 captured["reward.event.holds"] = np.asarray(reward_event.holds).copy()
+            if reward_composite is not None:
+                captured["reward.composite"] = np.asarray(reward_composite).copy()
+            for cname, csig in reward_component_signals.items():
+                captured[f"reward.component.{cname}"] = np.asarray(csig).copy()
             for channel, (out_arr, _is_event) in per_channel_output.items():
                 captured[f"output/{channel}"] = np.asarray(out_arr).copy()
             self._last_streams = captured
@@ -786,6 +829,8 @@ class Evaluator:
         reward_event: impls.DwellResult | None,
         reward_sub_chunks: list[np.ndarray],
         per_channel_output: dict[str, tuple[np.ndarray, bool]],
+        reward_composite: np.ndarray | None = None,
+        reward_component_signals: dict[str, np.ndarray] | None = None,
     ) -> None:
         """Repopulate `self._last_taps` from the current chunk's
         intermediate values. Called once per `_process_chunk` *before*
@@ -846,6 +891,14 @@ class Evaluator:
             if sub.size:
                 taps[f"reward/condition[{i}]"] = bool(sub[-1])
 
+        # Composite and per-component taps (v0.2).
+        if reward_composite is not None and reward_composite.size:
+            taps["reward/composite"] = float(reward_composite[-1])
+        if reward_component_signals:
+            for cname, csig in reward_component_signals.items():
+                if csig.size:
+                    taps[f"reward/component[{cname}]"] = float(csig[-1])
+
         # Output taps — what the patient-facing value actually was,
         # post-gating and post-clamp. For event channels we expose
         # "did the channel fire any sample this chunk."
@@ -882,6 +935,11 @@ class Evaluator:
           - "reward/condition[i]"    boolean: i-th sub-condition. Uniform
                                      indexed form — single-condition
                                      dwells emit `reward/condition[0]`.
+          - "reward/composite"       weighted-composite success in [0,1]
+                                     (v0.2; present only when the protocol
+                                     declares named reward/suppress components)
+          - "reward/component[<n>]"  per-component [0,1] success signal
+                                     (v0.2; one key per named component)
           - "output/<channel>"       post-gating, post-clamp value of
                                      the patient-facing channel
 
@@ -919,6 +977,11 @@ class Evaluator:
             / ``"threshold/"`` prefix is stripped via ``split("/", 1)[-1]``.
           - reward → ``"reward.continuous"``, ``"reward.event"`` (rising-edge
             ``.events`` boolean array), ``"reward.event.holds"``
+          - reward composite (v0.2) → ``"reward.composite"`` and one
+            ``"reward.component.<name>"`` per named component (present only when
+            the protocol uses named reward/suppress components). Note the
+            stream namespace uses dots (``reward.component.<name>``) where the
+            ``last_taps`` namespace uses brackets (``reward/component[<name>]``).
           - outputs → ``"output/<channel>"``
         """
         if self._rust is not None:
@@ -980,6 +1043,8 @@ class Evaluator:
         *,
         reward_continuous: np.ndarray | None = None,
         reward_event: impls.DwellResult | None = None,
+        reward_composite: np.ndarray | None = None,
+        reward_component_signals: dict[str, np.ndarray] | None = None,
     ) -> np.ndarray:
         if isinstance(expr, IRNumberLit):
             return np.full(chunk_size, _scale_to_ms_if_duration(expr), dtype=np.float64)
@@ -1009,35 +1074,50 @@ class Evaluator:
                 if reward_event is None:
                     return np.zeros(chunk_size, dtype=bool)
                 return reward_event.holds
+            if expr.field_path == "composite":
+                if reward_composite is None:
+                    return np.zeros(chunk_size, dtype=np.float64)
+                return reward_composite
+            if expr.field_path.endswith(".signal"):
+                name = expr.field_path[: -len(".signal")]
+                if reward_component_signals is None or name not in reward_component_signals:
+                    return np.zeros(chunk_size, dtype=np.float64)
+                return reward_component_signals[name]
             raise ValueError(f"unknown reward field {expr.field_path!r}")
         if isinstance(expr, IRBinaryOp):
             left = self._eval_expr(
                 expr.left, stream_values, control_chunks, chunk_size,
                 reward_continuous=reward_continuous, reward_event=reward_event,
+                reward_composite=reward_composite, reward_component_signals=reward_component_signals,
             )
             right = self._eval_expr(
                 expr.right, stream_values, control_chunks, chunk_size,
                 reward_continuous=reward_continuous, reward_event=reward_event,
+                reward_composite=reward_composite, reward_component_signals=reward_component_signals,
             )
             return _apply_binop(expr.op, left, right)
         if isinstance(expr, IRConditional):
             cond = self._eval_expr(
                 expr.cond, stream_values, control_chunks, chunk_size,
                 reward_continuous=reward_continuous, reward_event=reward_event,
+                reward_composite=reward_composite, reward_component_signals=reward_component_signals,
             )
             t = self._eval_expr(
                 expr.then_branch, stream_values, control_chunks, chunk_size,
                 reward_continuous=reward_continuous, reward_event=reward_event,
+                reward_composite=reward_composite, reward_component_signals=reward_component_signals,
             )
             e = self._eval_expr(
                 expr.else_branch, stream_values, control_chunks, chunk_size,
                 reward_continuous=reward_continuous, reward_event=reward_event,
+                reward_composite=reward_composite, reward_component_signals=reward_component_signals,
             )
             return np.where(cond, t, e)
         if isinstance(expr, IRCall):
             return self._eval_call(
                 expr, stream_values, control_chunks, chunk_size,
                 reward_continuous=reward_continuous, reward_event=reward_event,
+                reward_composite=reward_composite, reward_component_signals=reward_component_signals,
             )
         if isinstance(expr, IRArray):
             # An array used as a value (rare outside primitive args).
@@ -1053,6 +1133,8 @@ class Evaluator:
         *,
         reward_continuous: np.ndarray | None = None,
         reward_event: impls.DwellResult | None = None,
+        reward_composite: np.ndarray | None = None,
+        reward_component_signals: dict[str, np.ndarray] | None = None,
     ) -> np.ndarray:
         if call.callee == "ratio":
             # Used only inside bandpass; not a stream-producing call.
@@ -1066,6 +1148,7 @@ class Evaluator:
                 self._eval_expr(
                     e, stream_values, control_chunks, chunk_size,
                     reward_continuous=reward_continuous, reward_event=reward_event,
+                    reward_composite=reward_composite, reward_component_signals=reward_component_signals,
                 )
             )
         return impl.step(*dynamic_chunks)
@@ -1076,6 +1159,8 @@ class Evaluator:
         stream_values: dict[str, np.ndarray],
         control_chunks: dict[str, np.ndarray],
         chunk_size: int,
+        reward_composite: np.ndarray | None = None,
+        reward_component_signals: dict[str, np.ndarray] | None = None,
     ) -> tuple[impls.DwellResult, list[np.ndarray]]:
         """The reward.event expression's top-level call is `dwell` (or
         another event-producing primitive). Special-cased so we keep the
@@ -1113,7 +1198,11 @@ class Evaluator:
         ):
             arr = condition_expr.args[0].value
             sub_chunks = [
-                self._eval_expr(elt, stream_values, control_chunks, chunk_size)
+                self._eval_expr(
+                    elt, stream_values, control_chunks, chunk_size,
+                    reward_composite=reward_composite,
+                    reward_component_signals=reward_component_signals,
+                )
                 for elt in arr.elements
             ]
             stacked = np.stack(sub_chunks, axis=0)
@@ -1126,10 +1215,28 @@ class Evaluator:
             # so the host iteration loop is uniform.
             condition_chunk = self._eval_expr(
                 condition_expr, stream_values, control_chunks, chunk_size,
+                reward_composite=reward_composite,
+                reward_component_signals=reward_component_signals,
             )
             sub_chunks = [condition_chunk]
 
         return impl.step(condition_chunk), sub_chunks
+
+    def _component_weight_chunk(
+        self, comp, control_chunks: dict[str, np.ndarray], chunk_size: int
+    ) -> np.ndarray:
+        """Resolve a component's weight to a per-sample chunk. A control-ref
+        weight reads the live control value (so set_control retunes it); a
+        literal weight is a constant; absent weight is implicit 1.0."""
+        w = comp.weight
+        if w is None:
+            return np.ones(chunk_size, dtype=np.float64)
+        if isinstance(w, IRControlRef):
+            return control_chunks[w.target]
+        if isinstance(w, IRNumberLit):
+            return np.full(chunk_size, float(w.value), dtype=np.float64)
+        # Fallback: evaluate as a stream expression.
+        return self._eval_expr(w, {}, control_chunks, chunk_size)
 
     def _compute_muted(
         self, inhibit_active: dict[str, np.ndarray], chunk_size: int

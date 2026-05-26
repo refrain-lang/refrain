@@ -284,3 +284,82 @@ def test_groups_form_emits_identical_ir_json():
     assert ir_to_json_obj(grouped) == ir_to_json_obj(inline)
     # placement controls are omitted from IR-JSON either way; groups never appear
     assert "groups" not in ir_to_json_obj(grouped)
+
+
+# ---------------------------------------------------------------------------
+# Task 8 (Stage 1): IR-JSON — version-aware v0.1/v0.2 emission
+# ---------------------------------------------------------------------------
+
+_V01_PROTO = '''
+    protocol "p" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+      output { audio_gain = reward.continuous }
+    }
+'''
+
+_V02_PROTO = '''
+    protocol "p" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls {
+        w_smr   = percent { default = 1; range = (0, 4) }
+        w_theta = percent { default = 0.6; range = (0, 4) }
+      }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "smr_env"   { from = "raw"; pipeline = [smooth(tau: 100 ms)] }
+      derive "theta_env" { from = "raw"; pipeline = [smooth(tau: 100 ms)] }
+      reward  "smr"   { signal = sigmoid("smr_env",   midpoint: 6 uV, steepness: 1); weight = w_smr }
+      inhibit "theta" { signal = sigmoid("theta_env", midpoint: 8 uV, steepness: 1); weight = w_theta }
+      reward { combine = "weighted"; continuous = reward.composite }
+      output { audio_gain = reward.composite }
+    }
+'''
+
+
+def test_single_reward_protocol_emits_v01_unchanged():
+    ir = resolve(parse(_V01_PROTO), _AMP)
+    obj = ir_to_json_obj(ir)
+    assert obj["refrain_ir_version"] == "0.1"
+    # v0.1 reward shape: exactly continuous + event keys, no components/combine.
+    assert set(obj["reward"]) == {"continuous", "event"}
+
+
+def test_weighted_protocol_emits_v02_with_components():
+    ir = resolve(parse(_V02_PROTO), _AMP)
+    obj = ir_to_json_obj(ir)
+    assert obj["refrain_ir_version"] == "0.2"
+    assert obj["reward"]["combine"] == "weighted"
+    comps = {c["name"]: c for c in obj["reward"]["components"]}
+    assert set(comps) == {"smr", "theta"}
+    assert comps["smr"]["role"] == "reward"
+    assert comps["theta"]["role"] == "suppress"
+    # Weight is emitted as a control_ref node (weights are controls).
+    assert comps["smr"]["weight"]["node"] == "control_ref"
+    assert comps["smr"]["signal"]["callee"] == "sigmoid"
+    # The composite is reachable via the continuous binding as a reward_field.
+    assert obj["reward"]["continuous"]["node"] == "reward_field"
+    assert obj["reward"]["continuous"]["field_path"] == "composite"
+
+
+# ---------------------------------------------------------------------------
+# Task 9 (Stage 1): Back-compat byte-identity guard for shipped examples
+# ---------------------------------------------------------------------------
+
+
+def test_v01_emission_byte_identical_for_examples():
+    # Every shipped example is single-reward (v0.1). Their emitted JSON must
+    # be unchanged by the v0.2 work: version "0.1", reward has exactly
+    # continuous/event keys, and the doc validates against the v0.1 schema.
+    import jsonschema
+    schema_path = REPO / "refrain-core" / "schema" / "ir-json-v0.1.schema.json"
+    validator = jsonschema.Draft202012Validator(json.loads(schema_path.read_text()))
+    for path in sorted(EXAMPLES.glob("*.refrain")):
+        if path.name in {"othmer_ilf_cz_pz.refrain"}:  # needs a library loader (extends)
+            continue
+        ir = resolve(parse_file(path), _AMP)
+        obj = ir_to_json_obj(ir)
+        assert obj["refrain_ir_version"] == "0.1", path.name
+        assert set(obj["reward"]) == {"continuous", "event"}, path.name
+        errors = list(validator.iter_errors(obj))
+        assert not errors, f"{path.name}: {[e.message for e in errors]}"

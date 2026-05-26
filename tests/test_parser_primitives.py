@@ -375,3 +375,21 @@ def test_multiple_member_chain_normalises_left_associatively():
     # Outermost member access is `.d`; target is `a.b.c`.
     assert isinstance(e, A.MemberAccess) and e.member == "d"
     assert isinstance(e.target, A.MemberAccess) and e.target.member == "c"
+
+
+def test_named_reward_parses_as_named_decl():
+    from refrain import ast as A
+    src = '''
+        protocol "p" {
+          reward "smr" { signal = sigmoid("env", midpoint: 6, steepness: 1); weight = w_smr }
+          reward { combine = "weighted"; continuous = reward.composite }
+        }
+    '''
+    f = parse(src)
+    named = [s for s in f.protocol.body
+             if isinstance(s, A.NamedDecl) and s.keyword == "reward"]
+    assert len(named) == 1
+    assert named[0].name == "smr"
+    sections = [s for s in f.protocol.body
+                if isinstance(s, A.SectionBlock) and s.keyword == "reward"]
+    assert len(sections) == 1

@@ -1086,3 +1086,138 @@ def test_group_default_exceeding_max_rejected():
     '''
     with pytest.raises(ResolveError):       # existing min/max count check fires on the expanded default
         resolve(parse(src))
+
+
+# ---------------------------------------------------------------------------
+# Task 2 (Stage 1): IR — IRRewardComponent + IRReward.components dataclass shape
+# ---------------------------------------------------------------------------
+
+_COMPONENTS_PROTO = '''
+    protocol "p" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls {
+        w_smr   = percent { default = 1; range = (0, 4) }
+        w_theta = percent { default = 0.6; range = (0, 4) }
+      }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "smr_env"   { from = "raw"; pipeline = [smooth(tau: 100 ms)] }
+      derive "theta_env" { from = "raw"; pipeline = [smooth(tau: 100 ms)] }
+      reward  "smr"   { signal = sigmoid("smr_env",   midpoint: 6 uV, steepness: 1); weight = w_smr }
+      inhibit "theta" { signal = sigmoid("theta_env", midpoint: 8 uV, steepness: 1); weight = w_theta }
+      reward { combine = "weighted"; continuous = reward.composite }
+      output { audio_gain = reward.composite }
+    }
+'''
+
+
+def test_reward_components_resolve_with_roles_and_weights(amp):
+    ir = resolve(parse(_COMPONENTS_PROTO), amp)
+    comps = {c.name: c for c in ir.reward.components}
+    assert set(comps) == {"smr", "theta"}
+    assert comps["smr"].role == "reward"
+    assert comps["theta"].role == "suppress"
+    assert comps["smr"].canonical_name == "reward/smr"
+    # Weight resolves to a control ref (weights are ordinary controls).
+    assert comps["smr"].weight.target == "control/w_smr"
+    assert ir.reward.combine == "weighted"
+    # The suppress-band inhibit is NOT a hard-gate IRInhibit.
+    assert "theta" not in ir.inhibits
+
+
+def test_ir_reward_component_dataclass_shape():
+    from refrain.ir import IRRewardComponent, IRReward, IRNumberLit, IRControlRef
+    from refrain.types_ import DIMENSIONLESS
+    comp = IRRewardComponent(
+        name="smr",
+        canonical_name="reward/smr",
+        role="reward",
+        signal=IRNumberLit(value=0.5, dims=DIMENSIONLESS),
+        weight=IRControlRef(target="control/w_smr", dims=DIMENSIONLESS),
+    )
+    assert comp.role == "reward"
+    assert comp.canonical_name == "reward/smr"
+    r = IRReward(continuous=None, event=None, combine="weighted", components=(comp,))
+    assert r.components[0].name == "smr"
+    assert r.combine == "weighted"
+    # Back-compat default: empty components tuple, combine "all".
+    r0 = IRReward(continuous=None, event=None)
+    assert r0.components == ()
+    assert r0.combine == "all"
+
+
+# ---------------------------------------------------------------------------
+# Task 4 (Stage 1): Resolver — wire components, accept combine=weighted,
+#                    require ≥1 positive weight
+# ---------------------------------------------------------------------------
+
+
+def test_reward_combine_weighted_accepted(amp):
+    ir = resolve(parse(_COMPONENTS_PROTO), amp)
+    assert ir.reward.combine == "weighted"
+    assert len(ir.reward.components) == 2
+
+
+_WEIGHTED_NO_COMPONENTS_PROTO = '''
+    protocol "p" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      reward { combine = "weighted"; continuous = reward.composite }
+      output { audio_gain = reward.composite }
+    }
+'''
+
+
+def test_reward_weighted_requires_at_least_one_component(amp):
+    with pytest.raises(ResolveError):
+        resolve(parse(_WEIGHTED_NO_COMPONENTS_PROTO), amp)
+
+
+_ALL_ZERO_WEIGHTS_PROTO = '''
+    protocol "p" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls { w0 = percent { default = 0; range = (0, 0) } }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "env" { from = "raw"; pipeline = [smooth(tau: 100 ms)] }
+      reward  "a" { signal = sigmoid("env", midpoint: 6 uV, steepness: 1); weight = w0 }
+      reward { combine = "weighted"; continuous = reward.composite }
+      output { audio_gain = reward.composite }
+    }
+'''
+
+
+def test_reward_weighted_all_zero_weights_rejected(amp):
+    with pytest.raises(ResolveError):
+        resolve(parse(_ALL_ZERO_WEIGHTS_PROTO), amp)
+
+
+# ---------------------------------------------------------------------------
+# Task 5 (Stage 1): Resolver — reward.composite and reward.<name>.signal access
+# ---------------------------------------------------------------------------
+
+
+def test_reward_composite_member_access_resolves(amp):
+    ir = resolve(parse(_COMPONENTS_PROTO), amp)
+    # output.audio_gain = reward.composite
+    field = ir.output["audio_gain"]
+    assert isinstance(field, IRRewardField)
+    assert field.field_path == "composite"
+    assert field.stream_type.value_kind == "scalar"
+
+
+_COMPONENT_NAME_ACCESS_PROTO = _COMPONENTS_PROTO.replace(
+    "output { audio_gain = reward.composite }",
+    "output { audio_gain = reward.composite; video_clarity = reward.smr.signal }",
+)
+
+
+def test_reward_component_signal_access_resolves(amp):
+    ir = resolve(parse(_COMPONENT_NAME_ACCESS_PROTO), amp)
+    field = ir.output["video_clarity"]
+    assert isinstance(field, IRRewardField)
+    assert field.field_path == "smr.signal"
+
+
+def test_reward_unknown_component_access_rejected(amp):
+    bad = _COMPONENTS_PROTO.replace("reward.composite }", "reward.nope.signal }")
+    with pytest.raises(ResolveError):
+        resolve(parse(bad), amp)
