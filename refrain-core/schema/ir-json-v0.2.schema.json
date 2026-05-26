@@ -1,0 +1,364 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://refrainlang.org/schema/ir-json-v0.2.schema.json",
+  "title": "Refrain IR-JSON v0.2",
+  "description": "Machine-readable schema for the Refrain IR-JSON wire format (v0.2: weighted-composite rewards). Produced by refrain.ir_json; consumed by refrain-core. Draft 2020-12.",
+  "type": "object",
+  "required": ["refrain_ir_version", "sample_rate_hz", "channels", "inputs", "derives", "output", "topological_order"],
+  "additionalProperties": true,
+  "properties": {
+    "refrain_ir_version": {
+      "const": "0.2",
+      "description": "Wire-format version tag. Must be the string '0.2'."
+    },
+    "name": { "type": ["string", "null"] },
+    "extends": { "type": ["string", "null"] },
+    "sample_rate_hz": { "type": "number", "exclusiveMinimum": 0 },
+    "channels": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+    "requires": { "$ref": "#/$defs/Requires" },
+    "meta": { "type": "object", "additionalProperties": { "$ref": "#/$defs/Expr" } },
+    "inputs": { "type": "object", "additionalProperties": { "$ref": "#/$defs/Input" } },
+    "derives": { "type": "object", "additionalProperties": { "$ref": "#/$defs/Derive" } },
+    "thresholds": { "type": "object", "additionalProperties": { "$ref": "#/$defs/Threshold" } },
+    "inhibits": { "type": "object", "additionalProperties": { "$ref": "#/$defs/Inhibit" } },
+    "reward": {
+      "oneOf": [
+        { "$ref": "#/$defs/Reward" },
+        { "type": "null" }
+      ]
+    },
+    "output": { "type": "object", "additionalProperties": { "$ref": "#/$defs/Expr" } },
+    "controls": { "type": "object", "additionalProperties": { "$ref": "#/$defs/ControlDecl" } },
+    "session": {
+      "oneOf": [
+        { "$ref": "#/$defs/Session" },
+        { "type": "null" }
+      ]
+    },
+    "topological_order": { "type": "array", "items": { "type": "string" } }
+  },
+
+  "$defs": {
+    "Requires": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "coupling": { "type": ["string", "null"] },
+        "sample_rate_min_hz": { "type": "number" },
+        "sample_rate_chosen_hz": { "type": "number" },
+        "channels": { "type": "array", "items": { "type": "string" } },
+        "impedance": { "type": "string" },
+        "markers": { "type": "string" }
+      }
+    },
+
+    "StreamType": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "value_kind": { "type": "string" },
+        "dimensions": { "type": "object" },
+        "vector_size": { "type": ["integer", "null"] }
+      }
+    },
+
+    "Input": {
+      "type": "object",
+      "required": ["canonical_name", "montage"],
+      "additionalProperties": true,
+      "properties": {
+        "canonical_name": { "type": "string" },
+        "stream_type": { "$ref": "#/$defs/StreamType" },
+        "montage": { "$ref": "#/$defs/Expr" }
+      }
+    },
+
+    "Derive": {
+      "type": "object",
+      "required": ["canonical_name", "expression"],
+      "additionalProperties": true,
+      "properties": {
+        "canonical_name": { "type": "string" },
+        "stream_type": { "$ref": "#/$defs/StreamType" },
+        "expression": { "$ref": "#/$defs/Expr" },
+        "upstream": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+
+    "Threshold": {
+      "type": "object",
+      "required": ["canonical_name", "signal", "threshold_call"],
+      "additionalProperties": true,
+      "properties": {
+        "canonical_name": { "type": "string" },
+        "signal": { "type": "string" },
+        "threshold_call": { "$ref": "#/$defs/Expr" },
+        "stream_type": { "$ref": "#/$defs/StreamType" },
+        "live_tunable": { "type": "boolean" }
+      }
+    },
+
+    "Inhibit": {
+      "type": "object",
+      "required": ["canonical_name", "metric", "threshold", "action_kind"],
+      "additionalProperties": true,
+      "properties": {
+        "canonical_name": { "type": "string" },
+        "metric": { "$ref": "#/$defs/Expr" },
+        "threshold": { "$ref": "#/$defs/Expr" },
+        "action_kind": { "type": "string" },
+        "action_release_ms": { "type": ["number", "null"] }
+      }
+    },
+
+    "Reward": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "continuous": {
+          "oneOf": [
+            { "$ref": "#/$defs/Expr" },
+            { "type": "null" }
+          ]
+        },
+        "event": {
+          "oneOf": [
+            { "$ref": "#/$defs/Expr" },
+            { "type": "null" }
+          ]
+        },
+        "combine": {
+          "type": "string",
+          "enum": ["all", "any", "weighted"]
+        },
+        "components": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/RewardComponent" }
+        }
+      }
+    },
+
+    "RewardComponent": {
+      "type": "object",
+      "required": ["name", "role", "signal"],
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": "string" },
+        "canonical_name": { "type": "string" },
+        "role": { "type": "string", "enum": ["reward", "suppress"] },
+        "signal": { "$ref": "#/$defs/Expr" },
+        "weight": {
+          "oneOf": [
+            { "$ref": "#/$defs/Expr" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+
+    "ControlDecl": {
+      "type": "object",
+      "required": ["canonical_name"],
+      "additionalProperties": true,
+      "properties": {
+        "canonical_name": { "type": "string" },
+        "type_kind": { "type": "string" },
+        "dims": { "type": "object" },
+        "default": { "$ref": "#/$defs/Expr" },
+        "range_low": { "$ref": "#/$defs/Expr" },
+        "range_high": { "$ref": "#/$defs/Expr" },
+        "log_scale": { "type": "boolean" },
+        "label": { "type": ["string", "null"] },
+        "live_tunable": { "type": "boolean" },
+        "tune_strategy": { "type": ["string", "null"] }
+      }
+    },
+
+    "Session": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "phases": { "type": "array", "items": { "$ref": "#/$defs/Phase" } }
+      }
+    },
+
+    "Phase": {
+      "type": "object",
+      "required": ["name", "duration_ms"],
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": "string" },
+        "duration_ms": { "type": "number" },
+        "output_muted": { "type": "boolean" }
+      }
+    },
+
+    "Arg": {
+      "type": "object",
+      "required": ["value"],
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": ["string", "null"] },
+        "value": { "$ref": "#/$defs/Expr" }
+      }
+    },
+
+    "Coeffs": {
+      "title": "Coeffs",
+      "description": "Baked filter/stat coefficients (designed by Python/SciPy; the runtime only runs the recurrence). All fields optional.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sos": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } },
+        "fir_taps": { "type": "array", "items": { "type": "number" } },
+        "group_delay": { "type": "integer" },
+        "alpha": { "type": "number" },
+        "dt": { "type": "number" },
+        "window_samples": { "type": "integer" },
+        "dwell_samples": { "type": "integer" },
+        "nperseg": { "type": "integer" },
+        "noverlap": { "type": "integer" }
+      }
+    },
+
+    "Expr": {
+      "title": "Expr",
+      "description": "IR expression node; a tagged union discriminated by the `node` field.",
+      "type": "object",
+      "required": ["node"],
+      "additionalProperties": true,
+      "properties": { "node": { "type": "string" } },
+      "oneOf": [
+        { "$ref": "#/$defs/ExprNumber" },
+        { "$ref": "#/$defs/ExprString" },
+        { "$ref": "#/$defs/ExprBool" },
+        { "$ref": "#/$defs/ExprStreamRef" },
+        { "$ref": "#/$defs/ExprThresholdRef" },
+        { "$ref": "#/$defs/ExprControlRef" },
+        { "$ref": "#/$defs/ExprRewardField" },
+        { "$ref": "#/$defs/ExprCall" },
+        { "$ref": "#/$defs/ExprArray" },
+        { "$ref": "#/$defs/ExprTuple" },
+        { "$ref": "#/$defs/ExprBinop" },
+        { "$ref": "#/$defs/ExprConditional" },
+        { "$ref": "#/$defs/ExprBlock" }
+      ]
+    },
+
+    "ExprNumber": {
+      "type": "object",
+      "required": ["node", "value"],
+      "additionalProperties": true,
+      "properties": { "node": { "const": "number" }, "value": { "type": "number" } }
+    },
+    "ExprString": {
+      "type": "object",
+      "required": ["node", "value"],
+      "additionalProperties": true,
+      "properties": { "node": { "const": "string" }, "value": { "type": "string" } }
+    },
+    "ExprBool": {
+      "type": "object",
+      "required": ["node", "value"],
+      "additionalProperties": true,
+      "properties": { "node": { "const": "bool" }, "value": { "type": "boolean" } }
+    },
+    "ExprStreamRef": {
+      "type": "object",
+      "required": ["node", "target"],
+      "additionalProperties": true,
+      "properties": { "node": { "const": "stream_ref" }, "target": { "type": "string" } }
+    },
+    "ExprThresholdRef": {
+      "type": "object",
+      "required": ["node", "target"],
+      "additionalProperties": true,
+      "properties": { "node": { "const": "threshold_ref" }, "target": { "type": "string" } }
+    },
+    "ExprControlRef": {
+      "type": "object",
+      "required": ["node", "target", "default"],
+      "additionalProperties": true,
+      "properties": {
+        "node": { "const": "control_ref" },
+        "target": { "type": "string" },
+        "default": { "type": "number" }
+      }
+    },
+    "ExprRewardField": {
+      "type": "object",
+      "required": ["node", "field_path"],
+      "additionalProperties": true,
+      "properties": {
+        "node": { "const": "reward_field" },
+        "field_path": { "type": "string" }
+      }
+    },
+    "ExprCall": {
+      "type": "object",
+      "required": ["node", "callee"],
+      "additionalProperties": true,
+      "properties": {
+        "node": { "const": "call" },
+        "callee": { "type": "string" },
+        "args": { "type": "array", "items": { "$ref": "#/$defs/Arg" } },
+        "coeffs": {
+          "oneOf": [
+            { "$ref": "#/$defs/Coeffs" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "ExprArray": {
+      "type": "object",
+      "required": ["node", "elements"],
+      "additionalProperties": true,
+      "properties": {
+        "node": { "const": "array" },
+        "elements": { "type": "array", "items": { "$ref": "#/$defs/Expr" } }
+      }
+    },
+    "ExprTuple": {
+      "type": "object",
+      "required": ["node", "elements"],
+      "additionalProperties": true,
+      "properties": {
+        "node": { "const": "tuple" },
+        "elements": { "type": "array", "items": { "$ref": "#/$defs/Expr" } }
+      }
+    },
+    "ExprBinop": {
+      "type": "object",
+      "required": ["node", "op", "left", "right"],
+      "additionalProperties": true,
+      "properties": {
+        "node": { "const": "binop" },
+        "op": { "type": "string" },
+        "left": { "$ref": "#/$defs/Expr" },
+        "right": { "$ref": "#/$defs/Expr" }
+      }
+    },
+    "ExprConditional": {
+      "type": "object",
+      "required": ["node", "cond", "then", "else"],
+      "additionalProperties": true,
+      "properties": {
+        "node": { "const": "conditional" },
+        "cond": { "$ref": "#/$defs/Expr" },
+        "then": { "$ref": "#/$defs/Expr" },
+        "else": { "$ref": "#/$defs/Expr" }
+      }
+    },
+    "ExprBlock": {
+      "type": "object",
+      "required": ["node", "fields"],
+      "additionalProperties": true,
+      "properties": {
+        "node": { "const": "block" },
+        "kind": { "type": ["string", "null"] },
+        "fields": { "type": "object", "additionalProperties": { "$ref": "#/$defs/Expr" } }
+      }
+    }
+  }
+}
