@@ -20,6 +20,12 @@ _DEFAULT_COOLDOWN_S = 0.5
 # so the leaf's truth value is unambiguous within the spike window.
 _SPIKE_S = 6.0
 
+# Seconds added after a percentile window fills, so the rolling window is fully
+# populated before the spike (the oracle treats the fill region as DON'T-CARE).
+_FILL_PAD_S = 2.0
+# Trailing buffer after the spike so the scenario doesn't end mid-event.
+_TAIL_PAD_S = 2.0
+
 
 def _training_phase(total_s: float) -> PhaseOverride:
     """Phase override that mutes a warmup head + cooldown tail, leaving the
@@ -92,8 +98,8 @@ def _pivotal_scenarios_for_leaf(
 
     # For percentile leaves we need a window-fill region first.
     needs_warmup = thr.kind == "percentile"
-    fill_s = (thr.percentile_window_ms / 1000.0 + 2.0) if needs_warmup else 0.0
-    total_s = fill_s + _SPIKE_S + 2.0
+    fill_s = (thr.percentile_window_ms / 1000.0 + _FILL_PAD_S) if needs_warmup else 0.0
+    total_s = fill_s + _SPIKE_S + _TAIL_PAD_S
 
     for side in ("true", "false"):
         amp = _amplitude_for_truth(leaf.op, derive, thr, side=side, fs=fs)
@@ -151,13 +157,13 @@ def _dwell_scenarios(surface: LogicalSurface) -> Iterator[Scenario]:
     # TODO(v2): assumes the smr_cz layout (smr_envelope is the driven derive);
     # generalize to the output-relevant derive for arbitrary protocols.
     smr_derive = next(d for d in surface.derives if d.name == "smr_envelope")
-    fill_s = _longest_percentile_window_s(surface) + 2.0  # post-fill window
+    fill_s = _longest_percentile_window_s(surface) + _FILL_PAD_S  # post-fill window
     dwell_s = surface.dwell_ms / 1000.0
     settle_s = 1.0   # rough collar pad
 
     # MET: hold tone for 2× dwell (clearly long enough).
     hold_s_met = max(2.0 * dwell_s + settle_s, 1.0)
-    total_met = fill_s + hold_s_met + 2.0
+    total_met = fill_s + hold_s_met + _TAIL_PAD_S
     yield Scenario(
         label="dwell_met",
         duration_s=total_met,
@@ -174,7 +180,7 @@ def _dwell_scenarios(surface: LogicalSurface) -> Iterator[Scenario]:
 
     # MISSED: hold for dwell - 100 ms (clearly too short).
     hold_s_missed = max(0.1, dwell_s - 0.1)
-    total_missed = fill_s + hold_s_missed + 2.0
+    total_missed = fill_s + hold_s_missed + _TAIL_PAD_S
     yield Scenario(
         label="dwell_missed",
         duration_s=total_missed,
@@ -194,8 +200,8 @@ def _percentile_warmup_scenarios(surface: LogicalSurface) -> Iterator[Scenario]:
     """Long quiet fill then a high-rank spike. Asserts that the warmup region
     is DON'T-CARE (oracle's pre-fill) and the post-fill spike fires."""
     fs = surface.sample_rate_hz
-    fill_s = _longest_percentile_window_s(surface) + 2.0
-    total_s = fill_s + _SPIKE_S + 2.0
+    fill_s = _longest_percentile_window_s(surface) + _FILL_PAD_S
+    total_s = fill_s + _SPIKE_S + _TAIL_PAD_S
 
     # TODO(v2): assumes the smr_cz layout (see _dwell_scenarios).
     smr_derive = next(d for d in surface.derives if d.name == "smr_envelope")
@@ -237,6 +243,9 @@ def generate_characterization_probe(surface: LogicalSurface) -> Iterator[Scenari
                 f"probe:tone_{center:.1f}hz",
                 f"probe:band:{derive.name}",
             }),
+            # Short warmup/cooldown: a characterization probe only needs the
+            # envelope to settle, not a percentile window to fill, so it uses a
+            # tighter collar than the _training_phase default.
             phase_override=PhaseOverride(0.5, duration - 1.0, 0.5),
         )
 
@@ -251,8 +260,8 @@ def generate_rank_sweep(surface: LogicalSurface) -> Iterator[Scenario]:
         if thr.kind != "percentile":
             continue
         derive = next(d for d in surface.derives if d.name == thr.signal)
-        fill_s = thr.percentile_window_ms / 1000.0 + 2.0
-        total_s = fill_s + _SPIKE_S + 2.0
+        fill_s = thr.percentile_window_ms / 1000.0 + _FILL_PAD_S
+        total_s = fill_s + _SPIKE_S + _TAIL_PAD_S
         for amp in amplitudes:
             segments = (
                 (BandSegment(band=derive.band, channel=derive.channel,
@@ -282,10 +291,10 @@ def generate_hold_duration_sweep(surface: LogicalSurface) -> Iterator[Scenario]:
     fractions = (0.5, 0.9, 1.5, 2.5, 5.0)
     # TODO(v2): smr_cz-specific driven derive (see _dwell_scenarios).
     smr_derive = next(d for d in surface.derives if d.name == "smr_envelope")
-    fill_s = _longest_percentile_window_s(surface) + 2.0
+    fill_s = _longest_percentile_window_s(surface) + _FILL_PAD_S
     for f in fractions:
         hold_s = dwell_s * f
-        total_s = fill_s + hold_s + 2.0
+        total_s = fill_s + hold_s + _TAIL_PAD_S
         yield Scenario(
             label=f"hold_sweep:{f:g}x_dwell",
             duration_s=total_s,
