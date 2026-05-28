@@ -1,0 +1,221 @@
+name: release
+
+# Triggered when a `v*` tag is pushed. Builds the host-facing artifacts the
+# Coherence Recorder (and any other embedder) consumes — refrain_core wheels
+# per OS/arch + the pure-Python refrain wheel + sdist — and attaches them to
+# the GitHub Release for that tag (creating the Release if absent, updating it
+# if a maintainer already cut one manually). Also bundles the mobile artifacts
+# (iOS xcframework, Android JNI .so + Kotlin source) so the app team can pull
+# a single Release page for a given version.
+#
+# `mobile.yml` still runs per-PR for drift gating; this workflow is the
+# per-tag distribution path.
+
+on:
+  push:
+    tags: ["v*"]
+  # Manual smoke-test — runs every build job against the dispatched ref but
+  # skips the `publish` step (no tag = nowhere to upload). Use this to validate
+  # workflow changes before cutting a real tag.
+  workflow_dispatch:
+
+permissions:
+  contents: write   # required by softprops/action-gh-release to upload assets
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # refrain_core wheels — one wheel per OS/arch, ABI3-py310 (so a single wheel
+  # per platform serves Python 3.10+). PyO3/maturin-action handles manylinux
+  # via its bundled container; macOS arm64 and x86_64 are split runners.
+  # ---------------------------------------------------------------------------
+  refrain-core-wheels:
+    name: refrain_core wheel — ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14            # Apple Silicon
+            target: aarch64-apple-darwin
+          - os: macos-13            # Intel
+            target: x86_64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build refrain_core wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: refrain-core
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          # auto = pick a manylinux container for Linux (no-op elsewhere)
+          manylinux: auto
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: refrain-core-wheel-${{ matrix.target }}
+          path: refrain-core/dist/*.whl
+
+  # refrain_core sdist — one job, since the source is platform-agnostic.
+  refrain-core-sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build refrain_core sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: refrain-core
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: refrain-core-sdist
+          path: refrain-core/dist/*.tar.gz
+
+  # ---------------------------------------------------------------------------
+  # Pure-Python refrain — single wheel + sdist via `python -m build`.
+  # ---------------------------------------------------------------------------
+  refrain-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade build
+      - run: python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: refrain-python
+          path: dist/*
+
+  # ---------------------------------------------------------------------------
+  # iOS xcframework — same recipe as mobile.yml's ios-xcframework job, but the
+  # output is zipped and uploaded as a release asset rather than a CI artifact.
+  # ---------------------------------------------------------------------------
+  ios-xcframework:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+
+      - name: Cross-compile device + simulator staticlibs
+        working-directory: refrain-core
+        run: |
+          cargo rustc --release --lib \
+            --target aarch64-apple-ios \
+            --crate-type staticlib \
+            --features uniffi
+          cargo rustc --release --lib \
+            --target aarch64-apple-ios-sim \
+            --crate-type staticlib \
+            --features uniffi
+
+      - name: Assemble + zip RefrainCore.xcframework
+        working-directory: refrain-core
+        run: |
+          mkdir -p Headers
+          cp bindings/swift/refrain_coreFFI.h Headers/
+          cp bindings/swift/refrain_coreFFI.modulemap Headers/module.modulemap
+          xcodebuild -create-xcframework \
+            -library target/aarch64-apple-ios/release/librefrain_core.a \
+            -headers Headers \
+            -library target/aarch64-apple-ios-sim/release/librefrain_core.a \
+            -headers Headers \
+            -output RefrainCore.xcframework
+          zip -r RefrainCore.xcframework.zip RefrainCore.xcframework
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-xcframework
+          path: refrain-core/RefrainCore.xcframework.zip
+
+  # ---------------------------------------------------------------------------
+  # Android JNI .so files + generated Kotlin source — same recipe as
+  # mobile.yml's android-aar job. Per its comments this stops short of a full
+  # AAR (no Gradle module yet — turn-key plan at
+  # docs/superpowers/plans/2026-05-25-android-aar-gradle-module.md). The
+  # tarball contains the per-ABI .so files and bindings/kotlin source the
+  # consumer needs to wrap into an AAR locally.
+  # ---------------------------------------------------------------------------
+  android-jni:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+      - name: Set up Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27c
+          add-to-path: true
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Build per-ABI .so files + bundle
+        working-directory: refrain-core
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          cargo ndk \
+            -t arm64-v8a -t armeabi-v7a -t x86_64 \
+            -o android/src/main/jniLibs \
+            build --release --lib --features uniffi
+          tar czf refrain-core-android-jni.tar.gz android/src/main/jniLibs bindings/kotlin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-jni
+          path: refrain-core/refrain-core-android-jni.tar.gz
+
+  # ---------------------------------------------------------------------------
+  # Gather every artifact and attach to the Release for the pushed tag.
+  # `if: always()` runs even if a build job failed so a partial release still
+  # publishes (e.g. android-jni may not be NDK-validated on a given runner);
+  # the maintainer can retrigger missing jobs after the fact.
+  # ---------------------------------------------------------------------------
+  publish:
+    needs:
+      - refrain-core-wheels
+      - refrain-core-sdist
+      - refrain-python
+      - ios-xcframework
+      - android-jni
+    # Run even if a build job failed so a partial release can still publish
+    # (e.g. android-jni's NDK setup may regress on a given runner); skip on
+    # workflow_dispatch since there is no tag to attach assets to.
+    if: always() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts/
+        run: |
+          mkdir -p dist
+          find artifacts -type f \( -name '*.whl' -o -name '*.tar.gz' -o -name '*.zip' \) -exec cp -v {} dist/ \;
+          ls -la dist/
+
+      - name: Upload assets to Release ${{ github.ref_name }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: dist/*
+          fail_on_unmatched_files: false
+          # If the maintainer already created the Release (e.g. for the
+          # initial v0.6.3 cut-by-hand), keep its body+title. New tags pushed
+          # without a pre-existing Release will get one auto-created.
