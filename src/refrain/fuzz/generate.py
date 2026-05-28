@@ -214,4 +214,99 @@ def _percentile_warmup_scenarios(surface: LogicalSurface) -> Iterator[Scenario]:
     )
 
 
-__all__ = ["generate_directed_scenarios"]
+def generate_characterization_probe(surface: LogicalSurface) -> Iterator[Scenario]:
+    """Tone sweep at one frequency per derive's band center (v1 minimum). Each
+    scenario injects a single tone; the checker asserts the corresponding
+    derive's envelope is high and others low — verifying each band peaks where
+    declared."""
+    fs = surface.sample_rate_hz
+    duration = 6.0
+    for derive in surface.derives:
+        center = 0.5 * (derive.band[0] + derive.band[1])
+        yield Scenario(
+            label=f"probe:tone_{center:.1f}hz",
+            duration_s=duration,
+            sample_rate_hz=fs,
+            segments=(
+                BandSegment(band=derive.band, channel=derive.channel,
+                            start_s=1.0, end_s=duration - 0.5,
+                            content=Tone(amplitude_uv=20.0)),
+            ),
+            controls={},
+            coverage_tags=frozenset({
+                f"probe:tone_{center:.1f}hz",
+                f"probe:band:{derive.name}",
+            }),
+            phase_override=PhaseOverride(0.5, duration - 1.0, 0.5),
+        )
+
+
+def generate_rank_sweep(surface: LogicalSurface) -> Iterator[Scenario]:
+    """For each percentile threshold, emit a series of scenarios with
+    monotonically increasing tone amplitudes (→ increasing rank within the
+    post-fill window). The checker asserts firing rate is non-decreasing."""
+    fs = surface.sample_rate_hz
+    amplitudes = (5.0, 15.0, 25.0, 40.0)
+    for thr in surface.thresholds:
+        if thr.kind != "percentile":
+            continue
+        derive = next(d for d in surface.derives if d.name == thr.signal)
+        fill_s = thr.percentile_window_ms / 1000.0 + 2.0
+        total_s = fill_s + _SPIKE_S + 2.0
+        for amp in amplitudes:
+            segments = (
+                (BandSegment(band=derive.band, channel=derive.channel,
+                             start_s=fill_s, end_s=fill_s + _SPIKE_S,
+                             content=Tone(amplitude_uv=amp)),)
+                if amp > 0 else ()
+            )
+            yield Scenario(
+                label=f"rank_sweep:{thr.name}:amp_{amp:g}",
+                duration_s=total_s,
+                sample_rate_hz=fs,
+                segments=segments,
+                controls={},
+                coverage_tags=frozenset({
+                    f"metamorphic:rank_sweep:{thr.name}",
+                    f"rank_sweep:amp_{amp:g}",
+                }),
+                phase_override=_training_phase(total_s),
+            )
+
+
+def generate_hold_duration_sweep(surface: LogicalSurface) -> Iterator[Scenario]:
+    """Sweep the hold duration for the all-leaves-TRUE configuration. Firing
+    rate must be non-decreasing as hold lengthens past dwell."""
+    fs = surface.sample_rate_hz
+    dwell_s = surface.dwell_ms / 1000.0
+    fractions = (0.5, 0.9, 1.5, 2.5, 5.0)
+    # TODO(v2): smr_cz-specific driven derive (see _dwell_scenarios).
+    smr_derive = next(d for d in surface.derives if d.name == "smr_envelope")
+    fill_s = _longest_percentile_window_s(surface) + 2.0
+    for f in fractions:
+        hold_s = dwell_s * f
+        total_s = fill_s + hold_s + 2.0
+        yield Scenario(
+            label=f"hold_sweep:{f:g}x_dwell",
+            duration_s=total_s,
+            sample_rate_hz=fs,
+            segments=(
+                BandSegment(band=smr_derive.band, channel=smr_derive.channel,
+                            start_s=fill_s, end_s=fill_s + hold_s,
+                            content=Tone(amplitude_uv=30.0)),
+            ),
+            controls={},
+            coverage_tags=frozenset({
+                "metamorphic:hold_duration_sweep",
+                f"hold_sweep:{f:g}x_dwell",
+            }),
+            phase_override=_training_phase(total_s),
+        )
+
+
+__all__ = [
+    "generate_directed_scenarios",
+    "generate_characterization_probe",
+    "generate_rank_sweep",
+    "generate_hold_duration_sweep",
+]
