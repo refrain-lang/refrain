@@ -18,6 +18,7 @@ This file is built incrementally:
 """
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass, field
 from typing import Iterable, Sequence
 
@@ -183,11 +184,13 @@ def apply_dwell(
     streak = 0
     last_t = None
     transitions: list[int] = []
+    streak_at: list[int] = [0] * n
     for i, t in enumerate(truth_per_sample):
         if t is True:
             streak += 1
         else:
             streak = 0
+        streak_at[i] = streak
         if streak == dwell_samples:
             fire_samples.append(i)
         if last_t is not None and t != last_t:
@@ -216,18 +219,243 @@ def apply_dwell(
                    if iv.reason is DontCareReason.PHASE_MUTED)
     ]
 
-    # Collar around transitions.
+    # Collar around transitions: the settle window after a condition flip is
+    # untrustworthy, so timing of any event there is not asserted.
     collar_samples = int(round(collar_s * fs))
+    collar_ivals: list[tuple[int, int]] = []
     if collar_samples > 0:
         for t_idx in transitions:
             a = max(0, t_idx - collar_samples)
             b = min(n, t_idx + collar_samples)
+            collar_ivals.append((a, b))
             dont_care.append(DontCareInterval(a, b, DontCareReason.SETTLE_COLLAR))
 
+    # A SHOULD-FIRE whose timing lands inside a collar can't be crisply
+    # asserted there. Drop it, but if the condition is still robustly TRUE
+    # (dwell already satisfied) at the sample where the collar clears, assert
+    # the event there instead — the evaluator must fire once the signal is
+    # trustworthy and the dwell has elapsed.
+    if collar_ivals:
+        kept: list[int] = []
+        for s in fire_samples:
+            covering = [(a, b) for (a, b) in collar_ivals if a <= s < b]
+            if not covering:
+                kept.append(s)
+                continue
+            # Defer to the end of the latest collar covering this fire.
+            collar_end = max(b for (_, b) in covering)
+            if collar_end < n and streak_at[collar_end] >= dwell_samples:
+                kept.append(collar_end)
+        fire_samples = kept
+
     return ExpectedTimeline(
-        should_fire_event_samples=fire_samples,
+        should_fire_event_samples=sorted(set(fire_samples)),
         dont_care_intervals=dont_care,
     )
+
+
+def predict(scenario, surface) -> ExpectedTimeline:
+    """Predict the 3-valued expected event timeline for a Scenario.
+
+    Wires together every prior piece: per-derive envelope-over-time, 3-valued
+    threshold leaves (absolute via analytic margin, percentile via ordinal
+    rank over a rolling window), condition-tree combination, dwell, phase
+    muting, and pre-window-fill DON'T-CARE. NEVER calls the evaluator.
+    """
+    fs = surface.sample_rate_hz
+    n_samples = int(round(scenario.duration_s * fs))
+    chunk_s = 64 / fs  # default chunk granularity, matches refrain run
+
+    # Step 1: per-derive predicted envelope-over-time (piecewise constant).
+    env_per_derive = {
+        d.name: _predicted_envelope_timeline(d, scenario, n_samples, fs)
+        for d in surface.derives
+    }
+
+    # Step 2: per-sample 3-valued truth of each threshold leaf.
+    leaf_truth: dict[tuple[str, str], list[bool | None]] = {}
+    for thr in surface.thresholds:
+        env = env_per_derive[thr.signal]
+        leaf_truth[(thr.signal, thr.name)] = _leaf_truth_timeline(
+            env=env, thr=thr, fs=fs,
+        )
+
+    # Step 3: combine through the condition tree, sample by sample.
+    truth_per_sample = _walk_condition(surface.reward_condition, leaf_truth, n_samples)
+
+    # Step 4: phase muting mask.
+    muted_mask = _muted_mask(scenario, surface, n_samples, fs)
+
+    # Step 5: dwell + collar.
+    dwell_samples = int(round(surface.dwell_ms / 1000.0 * fs))
+    settle_candidates = [
+        settle_time_s(sos=d.sos, tau_s=(d.smooth_tau_ms or 0.0) / 1000.0,
+                      chunk_s=chunk_s, fs=fs)
+        for d in surface.derives if d.sos is not None
+    ]
+    collar_s = max(settle_candidates) if settle_candidates else 0.0
+    timeline = apply_dwell(
+        truth_per_sample,
+        dwell_samples=dwell_samples,
+        fs=fs,
+        collar_s=collar_s,
+        muted_mask=muted_mask,
+    )
+
+    # Step 6: merge in pre-window-fill DON'T-CARE intervals for percentile thresholds.
+    timeline = _add_pre_fill_dont_care(timeline, surface, fs, n_samples)
+
+    return timeline
+
+
+def _predicted_envelope_timeline(derive, scenario, n_samples, fs) -> list[float]:
+    """Piecewise envelope: noise-floor baseline + tone contribution where any
+    BandSegment overlaps the derive's band on the derive's channel.
+
+    v1 simplification: when multiple segments overlap a band, the strongest
+    Tone's envelope is taken; BandNoise contributions are NOT predicted as
+    absolute values (only their rank is used downstream)."""
+    env = [_noise_floor_envelope(derive, fs)] * n_samples
+    if derive.sos is None:
+        return env
+    from .scenario import Tone
+    for seg in scenario.segments:
+        if seg.channel != derive.channel:
+            continue
+        if seg.band[1] < derive.band[0] or seg.band[0] > derive.band[1]:
+            continue
+        if isinstance(seg.content, Tone):
+            steady = tone_envelope_steady_state(
+                derive.sos, freq_hz=seg.center_hz,
+                amplitude_uv=seg.content.amplitude_uv, fs=fs,
+            )
+            a = int(round(seg.start_s * fs))
+            b = int(round(seg.end_s * fs))
+            for i in range(max(0, a), min(n_samples, b)):
+                if steady > env[i]:
+                    env[i] = steady
+    return env
+
+
+def _noise_floor_envelope(derive, fs) -> float:
+    """Coarse estimate of the in-band envelope of pink noise. Concrete numbers
+    don't matter for v1 because scenarios use clear margins."""
+    return 2.0
+
+
+def _leaf_truth_timeline(*, env: list[float], thr, fs: int) -> list[bool | None]:
+    """Per-sample 3-valued truth of one threshold leaf."""
+    if thr.kind == "absolute":
+        margin = max(1.0, 0.20 * thr.absolute_uv)
+        return [
+            predict_absolute_leaf_truth(env=e, threshold=thr.absolute_uv,
+                                        margin=margin, op="above")
+            for e in env
+        ]
+    window_samples = int(round(thr.percentile_window_ms / 1000.0 * fs))
+    return _ordinal_percentile_truth(env, thr, window_samples)
+
+
+def _ordinal_percentile_truth(env: list[float], thr, window_samples: int) -> list[bool | None]:
+    """Rank-based 3-valued truth for a percentile threshold.
+
+    At each sample i (with i >= window_samples), compute the sample's rank
+    within env[i-window_samples : i]:
+        rank = 100 * (#strictly-less elements) / window_samples
+    rank > target+margin -> TRUE; rank < target-margin -> FALSE; else DON'T-CARE.
+    Pre-fill (i < window_samples) -> DON'T-CARE.
+
+    Implemented with an incremental sorted trailing window (bisect) so the
+    cost is O(n log w) rather than O(n * w); this is semantically IDENTICAL to
+    a naive per-sample `(window < x).sum()` count — it just avoids rescanning
+    the whole window each step (critical for the 2-min / 30 720-sample window).
+    """
+    rank_margin = 15.0
+    target = thr.percentile_target
+    n = len(env)
+    out: list[bool | None] = [None] * n
+    if window_samples <= 0 or window_samples >= n:
+        return out
+    sorted_window: list[float] = sorted(env[:window_samples])
+    for i in range(window_samples, n):
+        x = env[i]
+        # #elements strictly less than x in the trailing window.
+        less = bisect.bisect_left(sorted_window, x)
+        rank = less / window_samples * 100.0
+        if rank > target + rank_margin:
+            out[i] = True
+        elif rank < target - rank_margin:
+            out[i] = False
+        else:
+            out[i] = None
+        # Slide the window: drop env[i-window_samples], add env[i].
+        old = env[i - window_samples]
+        del sorted_window[bisect.bisect_left(sorted_window, old)]
+        bisect.insort(sorted_window, x)
+    return out
+
+
+def _walk_condition(node, leaf_truth, n_samples) -> list[bool | None]:
+    from .surface import ConditionLeaf, ConditionNode
+    if isinstance(node, ConditionLeaf):
+        return [
+            _flip_for_op(node.op, leaf_truth[(node.signal, node.threshold)][i])
+            for i in range(n_samples)
+        ]
+    assert isinstance(node, ConditionNode)
+    kid_truths = [_walk_condition(c, leaf_truth, n_samples) for c in node.children]
+    return [
+        combine_condition_tree(node.op, [kt[i] for kt in kid_truths])
+        for i in range(n_samples)
+    ]
+
+
+def _flip_for_op(op: str, t: bool | None) -> bool | None:
+    """Leaf op is `above` or `below`; leaf_truth was computed for `above`."""
+    if t is None:
+        return None
+    if op == "above":
+        return t
+    if op == "below":
+        return not t
+    raise ValueError(op)
+
+
+def _muted_mask(scenario, surface, n_samples: int, fs: int) -> list[bool]:
+    """Boolean mask of samples where output is muted. Uses scenario.phase_override
+    if given, else surface.phases."""
+    mask = [False] * n_samples
+    if scenario.phase_override is not None:
+        po = scenario.phase_override
+        durations = [(po.warmup_s, True), (po.training_s, False), (po.cooldown_s, True)]
+    else:
+        durations = [(p.duration_s, p.output_muted) for p in surface.phases]
+    i = 0
+    for dur_s, is_muted in durations:
+        j = min(n_samples, i + int(round(dur_s * fs)))
+        for k in range(i, j):
+            mask[k] = is_muted
+        i = j
+    return mask
+
+
+def _add_pre_fill_dont_care(timeline, surface, fs: int, n_samples: int) -> ExpectedTimeline:
+    """For each percentile threshold, mark [0, window_samples) DON'T-CARE with
+    reason PRE_WINDOW_FILL (use the longest window). Drop SHOULD-FIRE samples
+    landing in the pre-fill region."""
+    longest = 0
+    for thr in surface.thresholds:
+        if thr.kind == "percentile":
+            w = int(round(thr.percentile_window_ms / 1000.0 * fs))
+            if w > longest:
+                longest = w
+    if longest <= 0:
+        return timeline
+    end = min(n_samples, longest)
+    new_dc = list(timeline.dont_care_intervals)
+    new_dc.append(DontCareInterval(0, end, DontCareReason.PRE_WINDOW_FILL))
+    fires = [s for s in timeline.should_fire_event_samples if s >= end]
+    return ExpectedTimeline(should_fire_event_samples=fires, dont_care_intervals=new_dc)
 
 
 __all__ = [
@@ -242,4 +470,5 @@ __all__ = [
     "predict_absolute_leaf_truth",
     "combine_condition_tree",
     "apply_dwell",
+    "predict",
 ]
