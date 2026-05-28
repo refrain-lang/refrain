@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "refrain-core"
-version = "0.6.2"
+version = "0.6.3"
 description = "Portable Refrain real-time evaluator (PoC) — Python binding"
 requires-python = ">=3.10"
 

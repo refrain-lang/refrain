@@ -5,6 +5,27 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.6.3] — 2026-05-28
+
+### Fixed
+- **`absolute(value: <control_ref>)` is now accepted by the Rust core, in
+  parity with the Python evaluator.** Previously the Rust core's
+  `absolute_value` only matched a literal `number` for the `value:` arg and fell
+  through to the positional path, panicking at `refrain-core/src/eval.rs:1153`
+  with `missing positional arg 0` whenever a clinician knob was bound into a
+  baseline-fixed threshold (the reported repro: `threshold "smr_t" { signal =
+  "smr_envelope"; type = absolute(value: smr_threshold_uv); live_tunable = true }`
+  with a `voltage`-typed control). Affects threshold blocks AND inhibits, since
+  both share the same constructor parser.
+- **`Evaluator.set_control(...)` now retunes an `absolute(value: <control_ref>)`
+  threshold's constant** on both backends. Previously
+  `AbsoluteThresholdImpl` had no `update_control` method, so the Python
+  evaluator's `_control_deps` loop silently no-op'd and the threshold stayed at
+  its construction-time default. The Rust core now binds a `Control::Const`
+  sharing the threshold's cell so a live retune is observed in the next chunk
+  without rebuilding state (parallel to `Control::Percentile` / `Sigmoid` /
+  `Smooth` / `Weight`).
+
 ## [0.6.2] — 2026-05-26
 
 ### Changed

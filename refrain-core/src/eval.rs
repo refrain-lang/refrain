@@ -103,6 +103,11 @@ enum Control {
     /// new weight into the shared cell; `eval_chunk` reads it fresh each chunk,
     /// mirroring the Python evaluator reading `control_chunks[target]`.
     Weight { value: ControlCell },
+    /// `AbsoluteThresholdImpl.update_control`: write the new constant into the
+    /// shared cell that `CNode::ConstCell` / `InhibitThreshold::ConstCell`
+    /// reads each chunk. Mirrors the Python `update_control` that sets
+    /// `self.value`.
+    Const { value: ControlCell },
 }
 
 impl Control {
@@ -123,6 +128,9 @@ impl Control {
                 *midpoint.lock().unwrap() = value;
             }
             Control::Weight { value: cell } => {
+                *cell.lock().unwrap() = value;
+            }
+            Control::Const { value: cell } => {
                 *cell.lock().unwrap() = value;
             }
         }
@@ -265,6 +273,10 @@ impl Referential {
 
 enum CNode {
     Const(f64),
+    /// `absolute(value: <control_ref>)` — constant fed by a shared cell so
+    /// `set_control` retunes the threshold in-place. The literal-`Number` path
+    /// stays on `Const(f64)`.
+    ConstCell(ControlCell),
     BoolConst(bool),
     Stream(String),       // bare-name lookup in env (inputs/derives/thresholds)
     Reward(String),       // "reward.<field_path>" lookup in env
@@ -286,6 +298,10 @@ impl CNode {
     fn eval(&mut self, env: &HashMap<String, Val>, n: usize) -> Val {
         match self {
             CNode::Const(c) => Val::F(vec![*c; n]),
+            CNode::ConstCell(cell) => {
+                let v = *cell.lock().unwrap();
+                Val::F(vec![v; n])
+            }
             CNode::BoolConst(b) => Val::B(vec![*b; n]),
             CNode::Stream(name) => env
                 .get(name)
@@ -422,6 +438,9 @@ impl InhibitGate {
 /// thus double-advancing — the stateful metric pipeline.
 enum InhibitThreshold {
     Const(f64),
+    /// `absolute(value: <control_ref>)` form: the inhibit's constant fed by a
+    /// shared cell so `set_control` retunes it without rebuilding the inhibit.
+    ConstCell(ControlCell),
     Pct(Percentile),
 }
 
@@ -430,6 +449,7 @@ impl InhibitThreshold {
     fn eval(&mut self, metric: &[f64]) -> Vec<f64> {
         match self {
             InhibitThreshold::Const(v) => vec![*v; metric.len()],
+            InhibitThreshold::ConstCell(cell) => vec![*cell.lock().unwrap(); metric.len()],
             InhibitThreshold::Pct(p) => p.step(metric),
         }
     }
@@ -1459,8 +1479,14 @@ fn build_inhibit_threshold(call: &Expr, ctx: &mut BuildCtx) -> InhibitThreshold 
             InhibitThreshold::Pct(Percentile::from_cell(cell, window_samples))
         }
         Expr::Call { callee, args, .. } if callee == "absolute" => {
-            let v = absolute_value(args);
-            InhibitThreshold::Const(v)
+            let (v, target) = absolute_value(args);
+            if let Some(target) = target {
+                let cell = control_cell(v);
+                ctx.register(&target, Control::Const { value: cell.clone() });
+                InhibitThreshold::ConstCell(cell)
+            } else {
+                InhibitThreshold::Const(v)
+            }
         }
         _ => panic!("PoC: unsupported inhibit threshold constructor"),
     }
@@ -1492,7 +1518,14 @@ fn build_threshold_call(call: &Expr, signal: CNode, ctx: &mut BuildCtx) -> CNode
             CNode::Pct(Percentile::from_cell(cell, window_samples), Box::new(signal))
         }
         Expr::Call { callee, args, .. } if callee == "absolute" => {
-            CNode::Const(absolute_value(args))
+            let (v, target) = absolute_value(args);
+            if let Some(target) = target {
+                let cell = control_cell(v);
+                ctx.register(&target, Control::Const { value: cell.clone() });
+                CNode::ConstCell(cell)
+            } else {
+                CNode::Const(v)
+            }
         }
         _ => panic!("PoC: unsupported threshold constructor"),
     }
@@ -1500,13 +1533,26 @@ fn build_threshold_call(call: &Expr, signal: CNode, ctx: &mut BuildCtx) -> CNode
 
 /// `absolute(value)` — read the constant threshold value (named `value:` or
 /// the first positional number). Shared by threshold blocks and inhibits.
-fn absolute_value(args: &[crate::ir::Arg]) -> f64 {
-    num_named(args, "value")
-        .or_else(|| match positional(args, 0) {
-            Expr::Number { value } => Some(*value),
-            _ => None,
-        })
-        .expect("absolute: numeric value")
+///
+/// Returns `(value, Option<target>)`: when `value:` is a `control_ref` (the
+/// live-tunable form), the canonical control target is returned so the caller
+/// can register a `Control::Const` binding sharing the threshold's cell.
+fn absolute_value(args: &[crate::ir::Arg]) -> (f64, Option<String>) {
+    for a in args.iter() {
+        if a.name.as_deref() == Some("value") {
+            return match &a.value {
+                Expr::Number { value } => (*value, None),
+                Expr::ControlRef { target, default } => (*default, Some(target.clone())),
+                _ => panic!("absolute: `value:` must be a number or control_ref"),
+            };
+        }
+    }
+    // Positional fallback: `absolute(8 uV)` form (literal only; the front-end
+    // emits `value:` for control-ref bindings).
+    match positional(args, 0) {
+        Expr::Number { value } => (*value, None),
+        _ => panic!("absolute: numeric value"),
+    }
 }
 
 /// Compile a v0.2 reward component (mirrors `_resolve_reward_component` +
