@@ -71,7 +71,7 @@ def test_report_includes_dont_care_breakdown_by_reason():
         metamorphic_violations=[],
         all_coverage_tags={"x", "y"},
     )
-    assert "4" in text  # 3 + 1
+    assert "don't-care intervals: 4" in text  # 3 + 1
 
 
 def test_report_lists_metamorphic_violations():

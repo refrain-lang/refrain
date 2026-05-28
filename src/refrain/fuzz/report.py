@@ -84,10 +84,22 @@ def render_report(
 
 
 def _behavioral_summary(results: list[PerScenarioResult]) -> str:
+    """Plain-language summary inferred from the pivotal-scenario coverage.
+
+    Heuristic: the generator's pivotal scenarios carry a `:true` / `:false`
+    leaf-side suffix (see generate.py `_pivotal_scenarios_for_leaf`). We use
+    `n_events > 0` as the "engine fired" proxy (an emitted event = the reward
+    fired), independent of the PASS/MISSED verdict, so the summary describes
+    OBSERVED behaviour rather than oracle agreement.
+    """
+    # TRUE-pivot scenarios where the engine fired → reward responds to the
+    # favourable condition.
     fired = [
         r for r in results
         if r.n_events > 0 and "true" in _leaf_tags(r)
     ]
+    # FALSE-pivot scenarios where the engine stayed silent → reward is
+    # correctly suppressed by the adverse condition.
     did_not_fire = [
         r for r in results
         if r.n_events == 0 and "false" in _leaf_tags(r)
@@ -114,9 +126,16 @@ def _behavioral_summary(results: list[PerScenarioResult]) -> str:
 def _structural_smells(
     results: list[PerScenarioResult], all_coverage_tags: set[str]
 ) -> list[str]:
+    """Tags the generator intended to cover but no scenario asserted crisply.
+
+    A tag is "covered" if some result carrying it made >0 crisp assertions.
+    From PerScenarioResult alone we cannot tell whether an uncovered tag was
+    never reached or was reached but fully DON'T-CARE, so the message stays
+    deliberately non-committal ("uncovered").
+    """
     covered = {t for r in results for t in r.coverage_tags if r.n_crisp_assertions > 0}
     uncovered = all_coverage_tags - covered
-    return [f"uncovered (unreachable or unassertable): {t}" for t in sorted(uncovered)]
+    return [f"uncovered (no crisp assertion): {t}" for t in sorted(uncovered)]
 
 
 __all__ = ["render_report"]
