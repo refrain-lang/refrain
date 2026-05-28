@@ -41,12 +41,21 @@ def check_scenario(
     fs: int,
     collar_samples: int,
     coverage_tags: frozenset[str],
+    total_samples: int | None = None,
 ) -> PerScenarioResult:
     """Classify a scenario's events against the oracle's expected timeline.
 
     Returns the worst per-event verdict. Raises VacuityError if the
     scenario made zero crisp assertions (no should-fire windows AND its
     entire timeline was DON'T-CARE).
+
+    `total_samples` is the scenario's timeline length in samples. Pass it so
+    the vacuity check knows the true end of the timeline: a DON'T-CARE region
+    that does not reach the end still leaves a crisp SHOULD-NOT-FIRE tail. When
+    omitted it is estimated from the furthest DON'T-CARE interval, which can
+    UNDER-count the crisp tail — callers that have the real length (the CLI
+    driver) should always pass it. `fs` is currently unused; kept for API
+    stability and future sample/time conversions.
     """
     n_crisp = len(expected.should_fire_event_samples)
     if not expected.dont_care_intervals:
@@ -54,10 +63,11 @@ def check_scenario(
         # which is itself an assertion (an event anywhere is SPURIOUS).
         has_non_dont_care_region = True
     else:
-        total_samples_estimated = max(iv.end_sample for iv in expected.dont_care_intervals)
-        has_non_dont_care_region = _has_crisp_should_not_fire(
-            expected, total_samples_estimated
-        )
+        dc_extent = max(iv.end_sample for iv in expected.dont_care_intervals)
+        # Prefer the caller-supplied length; never go below the DON'T-CARE
+        # extent (so a fully-covered timeline is still detected as vacuous).
+        total = max(total_samples, dc_extent) if total_samples is not None else dc_extent
+        has_non_dont_care_region = _has_crisp_should_not_fire(expected, total)
     if n_crisp == 0 and not has_non_dont_care_region:
         raise VacuityError(
             f"scenario {scenario_label!r}: zero crisp assertions "
@@ -112,10 +122,15 @@ def _in_dont_care(sample: int, intervals: list[DontCareInterval]) -> bool:
 
 
 def _nearest_should_fire(sample: int, fires: list[int], collar_samples: int) -> int | None:
-    for sf in fires:
-        if abs(sample - sf) <= collar_samples:
-            return sf
-    return None
+    """The should-fire sample closest to `sample` within the collar, or None.
+
+    Picking the geometrically nearest (not the first within range) avoids a
+    false MISSED when two should-fire samples sit closer together than the
+    collar and an event lands between them."""
+    candidates = [sf for sf in fires if abs(sample - sf) <= collar_samples]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda sf: abs(sample - sf))
 
 
 def _max_verdict(a: Verdict, b: Verdict) -> Verdict:
