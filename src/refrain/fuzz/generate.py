@@ -48,15 +48,20 @@ def generate_directed_scenarios(surface: LogicalSurface) -> Iterator[Scenario]:
     """Yield the directed-coverage scenario set for v1."""
     fs = surface.sample_rate_hz
 
-    # Negative control: all quiet.
+    # Negative control: all quiet. Run long enough that the longest percentile
+    # window fills, leaving a crisp post-fill SHOULD-NOT-FIRE tail; an 8 s run
+    # would sit entirely inside the oracle's PRE_WINDOW_FILL DON'T-CARE region
+    # and be vacuous (the checker fails loud on that).
+    neg_fill_s = _longest_percentile_window_s(surface) + _FILL_PAD_S
+    neg_total_s = neg_fill_s + _SPIKE_S + _TAIL_PAD_S
     yield Scenario(
         label="negative_control_quiet",
-        duration_s=8.0,
+        duration_s=neg_total_s,
         sample_rate_hz=fs,
         segments=(),
         controls={},
         coverage_tags=frozenset({"negative_control"}),
-        phase_override=PhaseOverride(_DEFAULT_WARMUP_S, 5.5, _DEFAULT_COOLDOWN_S),
+        phase_override=_training_phase(neg_total_s),
     )
 
     # Per-leaf pivotal: drive one leaf TRUE / FALSE with the others favourable.
