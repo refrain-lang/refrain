@@ -355,7 +355,10 @@ def test_v01_emission_byte_identical_for_examples():
     schema_path = REPO / "refrain-core" / "schema" / "ir-json-v0.1.schema.json"
     validator = jsonschema.Draft202012Validator(json.loads(schema_path.read_text()))
     for path in sorted(EXAMPLES.glob("*.refrain")):
-        if path.name in {"othmer_ilf_cz_pz.refrain"}:  # needs a library loader (extends)
+        if path.name in {
+            "othmer_ilf_cz_pz.refrain",            # needs a library loader (extends)
+            "dyadic_alpha_coherence_pz.refrain",   # two-participant layout (Pz_A/Pz_B), not on Q21
+        }:
             continue
         ir = resolve(parse_file(path), _AMP)
         obj = ir_to_json_obj(ir)

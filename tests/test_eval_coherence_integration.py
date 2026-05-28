@@ -232,3 +232,40 @@ def test_coherence_positional_inputs_run_end_to_end(backend):
     assert "derive/coh" in taps, f"missing tap; saw keys: {sorted(taps)}"
     assert isinstance(taps["derive/coh"], float)
     assert 0.0 <= taps["derive/coh"] <= 1.0
+
+
+def test_dyadic_coherence_example_tracks_inter_brain_alpha(backend):
+    """The shipped two-brain coherence example resolves and runs on both
+    backends, and its audio_gain (a sigmoid over the inter-brain alpha MSC)
+    rises when the two Pz alpha rhythms are coherent. End-to-end REAL check of
+    examples/dyadic_alpha_coherence_pz.refrain."""
+    from pathlib import Path
+
+    from refrain.parser import parse_file
+
+    example = (
+        Path(__file__).resolve().parent.parent / "examples" / "dyadic_alpha_coherence_pz.refrain"
+    )
+    # No amp: Pz_A/Pz_B are a two-participant layout, not on the bundled profiles.
+    ir = resolve(parse_file(example))
+    rate = 256  # the example requires >= 256 Hz
+    n_samples = 30 * rate
+    data = _coherent_then_incoherent(
+        sample_rate_hz=rate, n_samples=n_samples, channels=("Pz_A", "Pz_B"), seed=1,
+    )
+    ev = Evaluator.live(ir, sample_rate_hz=rate, channel_names=("Pz_A", "Pz_B"), backend=backend)
+    ev.start(skip_warmup=True)
+    times, gains = [], []
+    for i in range(0, n_samples, 64):
+        chunk = data[i:i + 64]
+        if chunk.shape[0] == 0:
+            break
+        for e in ev.step_chunk(chunk):
+            if e.channel == "audio_gain" and e.kind == "value":
+                times.append(e.timestamp_s)
+                gains.append(e.value)
+    times, gains = np.array(times), np.array(gains)
+    coherent = gains[(times > 4.0) & (times < 14.0)].mean()
+    incoherent = gains[(times > 19.0) & (times < 29.0)].mean()
+    assert coherent > 0.6, f"coherent-phase audio_gain should be high, got {coherent:.3f}"
+    assert incoherent < 0.3, f"incoherent-phase audio_gain should be low, got {incoherent:.3f}"
