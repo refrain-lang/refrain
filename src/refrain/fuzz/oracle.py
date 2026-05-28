@@ -19,7 +19,7 @@ This file is built incrementally:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import numpy as np
 from scipy.signal import freqz_sos
@@ -158,12 +158,12 @@ def combine_condition_tree(op: str, kids: Iterable[bool | None]) -> bool | None:
 
 
 def apply_dwell(
-    truth_per_sample,
+    truth_per_sample: Sequence[bool | None],
     *,
     dwell_samples: int,
     fs: int,
     collar_s: float,
-    muted_mask,
+    muted_mask: Sequence[bool],
 ) -> ExpectedTimeline:
     """Predict SHOULD-FIRE events from a per-sample 3-valued condition truth.
 
@@ -208,6 +208,8 @@ def apply_dwell(
         dont_care.append(DontCareInterval(mstart, n, DontCareReason.PHASE_MUTED))
 
     # Drop fire events that land inside muted intervals (output suppressed).
+    # O(F×M) scan — fine for v1 (few events, ≤handful of intervals); if either
+    # grows large, replace with a sorted-interval merge.  # TODO(perf)
     fire_samples = [
         s for s in fire_samples
         if not any(iv.start_sample <= s < iv.end_sample for iv in dont_care
