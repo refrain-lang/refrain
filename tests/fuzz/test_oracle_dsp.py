@@ -1,3 +1,5 @@
+# Copyright 2026 Refrain Language Authors.
+# Licensed under the Apache License, Version 2.0 (see LICENSE).
 """Tests for the oracle's pure-DSP analytic primitives."""
 from __future__ import annotations
 

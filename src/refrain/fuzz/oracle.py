@@ -31,10 +31,10 @@ def bandpass_gain_at(sos, *, freq_hz: float, fs: int) -> float:
     influence the prediction.
     """
     sos_arr = np.asarray(sos)
-    # freqz_sos expects normalized angular frequencies in [0, 2π] when fs=2π.
-    # w_target = 2π·freq/fs maps the physical frequency to that range.
-    w_target = 2 * np.pi * freq_hz / fs
-    w, h = freqz_sos(sos_arr, worN=[w_target], fs=2 * np.pi)
+    # Evaluate |H| at the physical frequency directly: with fs given, freqz_sos
+    # samples the response at freq_hz (in [0, fs/2]) — no manual angular-frequency
+    # conversion needed.
+    w, h = freqz_sos(sos_arr, worN=[freq_hz], fs=fs)
     return float(np.abs(h[0]))
 
 
@@ -54,8 +54,10 @@ def settle_time_s(*, sos, tau_s: float | None, chunk_s: float, fs: int) -> float
       - filter impulse-response settle, derived analytically from the 3 dB
         bandwidth: tau_filter = N_sections / (π · BW_Hz). For a Butterworth
         IIR bandpass, each SOS section contributes one ring-down time constant
-        of 1/(π·BW); the worst-case settle is N·tau_filter. This avoids
-        fragile numerical simulation while bounding the ring-down correctly.
+        of ~1/(π·BW); summing over N sections approximates the worst-case
+        ring-down. This is a tight engineering approximation (not a provable
+        strict upper bound), chosen over fragile numerical impulse simulation;
+        the surrounding 3·tau + chunk terms give comfortable headroom.
       - 3·tau for the one-pole smoother (~95% step response)
       - one chunk (event-emission quantisation)
     """
@@ -77,7 +79,7 @@ def settle_time_s(*, sos, tau_s: float | None, chunk_s: float, fs: int) -> float
     n_sections = len(sos_arr)
     impulse_settle_s = n_sections / (np.pi * bw_hz)
 
-    tau_term = 3.0 * (tau_s or 0.0)
+    tau_term = 3.0 * (tau_s if tau_s is not None else 0.0)
     return impulse_settle_s + tau_term + chunk_s
 
 
