@@ -267,7 +267,7 @@ def apply_dwell(
     )
 
 
-def predict(scenario: "Scenario", surface: "LogicalSurface") -> ExpectedTimeline:
+def predict(scenario: Scenario, surface: LogicalSurface) -> ExpectedTimeline:
     """Predict the 3-valued expected event timeline for a Scenario.
 
     Wires together every prior piece: per-derive envelope-over-time, 3-valued
