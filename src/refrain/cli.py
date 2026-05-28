@@ -12,6 +12,10 @@ v0.0r1 subcommands:
                                                   against a recording or
                                                   synthetic source; emit
                                                   events to stdout / JSONL
+  - `refrain fuzz FILE [--max-scenarios N]`     — auto-synthesise scenarios
+                                                  from the IR, predict expected
+                                                  behaviour, run the evaluator,
+                                                  and report (see PROTOCOL-FUZZER)
 
 The entry point is `main()`, wired in `pyproject.toml` as
 `refrain = "refrain.cli:main"`.
@@ -20,9 +24,11 @@ The entry point is `main()`, wired in `pyproject.toml` as
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from . import __version__
 from .amp_profile import AmpProfileError, load_amp_profile
@@ -31,6 +37,9 @@ from .cost import estimate_cost
 from .ir_print import print_cred_nf, print_ir
 from .parser import ParseError, parse_file
 from .resolver import ResolveError, resolve
+
+if TYPE_CHECKING:
+    from .ir import IRProtocol
 
 
 def _cmd_check(args: argparse.Namespace) -> int:
@@ -428,11 +437,8 @@ def _apply_phase_override(ir, phase_override):
 
     The override carries durations in seconds; `IRPhase.duration_ms` is in
     milliseconds, so we convert. Returns `ir` unchanged when there is no
-    override. A zero-length phase is dropped (the evaluator computes warmup
-    from `session.phases[0].output_muted`, so we keep a leading muted warmup
-    even when it is the only muted phase)."""
-    import dataclasses
-
+    override. Zero-length phases are dropped; the evaluator tolerates an
+    empty phases tuple, so no special-casing is needed."""
     from .ir import IRPhase
 
     if phase_override is None:
@@ -499,7 +505,7 @@ def _fuzz_one_scenario(scenario, *, ir, surface, channels, collar_samples, chunk
     gen = render_scenario(scenario, channels=channels)
     source = SyntheticSource(gen, duration_s=scenario.duration_s)
 
-    actual: list = []
+    actual: list[ActualEvent] = []
     for ev in eval_protocol(scenario_ir, source, chunk_size=chunk_size):
         if ev.kind != "event":
             continue
@@ -570,9 +576,10 @@ def _cmd_fuzz(args: argparse.Namespace) -> int:
     return 1 if (has_violation or metamorphic_violations) else 0
 
 
-def _parse_resolve_or_report(args: argparse.Namespace):
+def _parse_resolve_or_report(args: argparse.Namespace) -> IRProtocol | int:
     """Resolve `args.file` to an IRProtocol, or return an int exit code after
-    printing a diagnostic (mirrors `_cmd_run`'s error handling)."""
+    printing a diagnostic (mirrors `_cmd_run`'s error handling). The caller
+    dispatches on `isinstance(result, int)` to detect the error path."""
     path = Path(args.file)
     if not path.exists():
         print(f"error: {path}: no such file", file=sys.stderr)
