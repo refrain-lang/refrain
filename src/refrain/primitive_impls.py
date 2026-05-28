@@ -443,6 +443,11 @@ class AbsoluteThresholdImpl(PrimitiveImpl):
     def step(self, x: np.ndarray) -> np.ndarray:
         return np.full(x.shape[0], self.value, dtype=np.float64)
 
+    def update_control(self, target: str, value: float) -> None:
+        """`absolute(value: <control_ref>)` binds the threshold's only
+        parameter to the control, so any incoming change retargets `value`."""
+        self.value = float(value)
+
 
 class PercentileThresholdImpl(PercentileImpl):
     """Same machinery as PercentileImpl, just named for clarity in IR

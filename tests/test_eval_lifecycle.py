@@ -345,6 +345,53 @@ def test_set_control_propagates_to_percentile_impls(smr_bb_ir):
     assert 55.0 in new_target_pcts
 
 
+@pytest.mark.skipif(
+    RUST_BACKEND_ACTIVE,
+    reason="inspects Python-only `_impls` / AbsoluteThresholdImpl internals",
+)
+def test_set_control_propagates_to_absolute_threshold_impl():
+    """An absolute(value: <control_ref>) threshold must update its
+    `.value` when set_control is called for the bound voltage control.
+    Without an update_control hook the host-side knob silently no-ops."""
+    from refrain.primitive_impls import AbsoluteThresholdImpl
+
+    src_text = '''
+        protocol "P" {
+          input "raw" { montage = bipolar(plus: "T3", minus: "T4") }
+          derive "env" {
+            from = "raw"
+            pipeline = [smooth(tau: 100 ms)]
+          }
+          threshold "t" {
+            signal = "env"
+            type = absolute(value: smr_threshold_uv)
+            live_tunable = true
+          }
+          reward {
+            continuous = sigmoid("env" / "t", midpoint: 1.0, steepness: 3)
+          }
+          output { audio_gain = reward.continuous }
+          controls {
+            smr_threshold_uv = voltage {
+              default = 4 uV
+              range = (1 uV, 25 uV)
+              live_tunable = true
+            }
+          }
+        }
+    '''
+    ir = resolve(parse(src_text))
+    ev = Evaluator.live(
+        ir, sample_rate_hz=250, channel_names=("T3", "T4"), backend="python",
+    )
+    abs_impls = [i for i in ev._impls.values() if isinstance(i, AbsoluteThresholdImpl)]
+    assert len(abs_impls) == 1
+    assert abs_impls[0].value == pytest.approx(4.0)
+
+    ev.set_control("smr_threshold_uv", 5.5)
+    assert abs_impls[0].value == pytest.approx(5.5)
+
+
 # --- backend="auto" selection (Phase D1) -----------------------------------
 
 
