@@ -20,12 +20,20 @@ from __future__ import annotations
 
 import bisect
 from dataclasses import dataclass, field
-from typing import Iterable, Sequence
+from typing import TYPE_CHECKING, Iterable, Sequence
 
 import numpy as np
 from scipy.signal import freqz_sos
 
 from .scenario import DontCareReason
+
+if TYPE_CHECKING:
+    from .scenario import Scenario
+    from .surface import LogicalSurface
+
+# Evaluator chunk granularity (samples/step) that `refrain run` uses; the
+# oracle quantises its settle collar to the same step.
+_DEFAULT_CHUNK_SAMPLES = 64
 
 
 def bandpass_gain_at(sos, *, freq_hz: float, fs: int) -> float:
@@ -177,6 +185,11 @@ def apply_dwell(
          them DON'T-CARE with reason=PHASE_MUTED.
       4. Apply a ±collar DON'T-CARE around every condition transition (so
          literally-marginal timing doesn't get crisp assertions).
+      5. Collar deferral: a SHOULD-FIRE whose rising edge lands inside a
+         settle-collar interval is dropped (its timing is untrustworthy
+         there) and re-asserted at the collar's end iff dwell is still
+         satisfied at that point. So a fire's asserted sample may be shifted
+         later than its raw rising edge when collar_s > 0.
     """
     n = len(truth_per_sample)
     fire_samples: list[int] = []
@@ -254,7 +267,7 @@ def apply_dwell(
     )
 
 
-def predict(scenario, surface) -> ExpectedTimeline:
+def predict(scenario: "Scenario", surface: "LogicalSurface") -> ExpectedTimeline:
     """Predict the 3-valued expected event timeline for a Scenario.
 
     Wires together every prior piece: per-derive envelope-over-time, 3-valued
@@ -264,7 +277,7 @@ def predict(scenario, surface) -> ExpectedTimeline:
     """
     fs = surface.sample_rate_hz
     n_samples = int(round(scenario.duration_s * fs))
-    chunk_s = 64 / fs  # default chunk granularity, matches refrain run
+    chunk_s = _DEFAULT_CHUNK_SAMPLES / fs
 
     # Step 1: per-derive predicted envelope-over-time (piecewise constant).
     env_per_derive = {
