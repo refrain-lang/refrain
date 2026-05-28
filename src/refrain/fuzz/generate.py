@@ -101,9 +101,16 @@ def _pivotal_scenarios_for_leaf(
     derive = next(d for d in surface.derives if d.name == leaf.signal)
     thr = next(t for t in surface.thresholds if t.name == leaf.threshold)
 
-    # For percentile leaves we need a window-fill region first.
-    needs_warmup = thr.kind == "percentile"
-    fill_s = (thr.percentile_window_ms / 1000.0 + _FILL_PAD_S) if needs_warmup else 0.0
+    # The reward condition (an all_of/any_of tree) is predicted as a whole, so
+    # its truth at any sample depends on EVERY leaf — including percentile leaves
+    # whose pre-window-fill region the oracle marks DON'T-CARE. Even when the
+    # pivoted leaf is absolute (its own threshold needs no warmup), we must still
+    # fill the LONGEST percentile window across the surface before the spike;
+    # otherwise a short (e.g. 8 s) scenario sits entirely inside the oracle's
+    # pre-fill DON'T-CARE region and is vacuous (the checker fails loud on that —
+    # see the negative-control note above and _dwell/_percentile_warmup).
+    surface_fill_s = _longest_percentile_window_s(surface)
+    fill_s = (surface_fill_s + _FILL_PAD_S) if surface_fill_s > 0.0 else 0.0
     total_s = fill_s + _SPIKE_S + _TAIL_PAD_S
 
     for side in ("true", "false"):
