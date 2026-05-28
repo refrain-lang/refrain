@@ -169,6 +169,13 @@ def _iter_pipeline_calls(d: IRDerive):
 def _band_from_call(call: IRCall) -> tuple[float, float]:
     """Read `band: (lo Hz, hi Hz)` from a bandpass call."""
     band = _arg(call, "band")
+    if band is None:
+        # v1 supports only the edge-frequency form `bandpass(band=(lo, hi))`.
+        # The center/bandwidth form would land here; surface it clearly.
+        raise ValueError(
+            "surface: bandpass call has no `band` argument "
+            "(v1 supports only the band=(lo, hi) form)"
+        )
     lo, hi = band.elements  # IRTuple of two IRNumberLit (Hz)
     return (float(lo.value), float(hi.value))
 

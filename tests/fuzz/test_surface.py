@@ -1,8 +1,6 @@
 """Tests for the LogicalSurface extraction from a resolved Refrain IR."""
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from refrain.fuzz.surface import LogicalSurface, build_surface
