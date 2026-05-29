@@ -116,3 +116,33 @@ def test_metamorphic_monotonic_violates_when_fire_count_drops():
     ]
     violations = check_metamorphic_monotonic(results, tag_prefix="metamorphic:rank_sweep:")
     assert len(violations) == 1
+
+
+def _hold(frac, n_events):
+    # Mirrors generate.py's hold-sweep label format: f"hold_sweep:{f:g}x_dwell".
+    label = f"hold_sweep:{frac:g}x_dwell"
+    return PerScenarioResult(
+        label=label, verdict=Verdict.PASS, n_events=n_events,
+        n_crisp_assertions=1, n_dont_care_intervals=0,
+        coverage_tags=frozenset({"metamorphic:hold_duration_sweep", label}),
+    )
+
+
+def test_metamorphic_monotonic_orders_fractional_hold_labels_by_magnitude():
+    # Fractional dwell-multiples; n_events non-decreasing in TRUE magnitude
+    # order (0.5 < 0.9 < 1.5 < 2.5 < 5). A naive trailing-integer sort would
+    # read "0.5x_dwell" as 5 and scramble the order into a false violation.
+    results = [_hold(0.5, 0), _hold(0.9, 1), _hold(1.5, 2), _hold(2.5, 3), _hold(5.0, 4)]
+    violations = check_metamorphic_monotonic(
+        results, tag_prefix="metamorphic:hold_duration_sweep"
+    )
+    assert violations == []
+
+
+def test_metamorphic_monotonic_flags_fractional_hold_drop():
+    # A genuine drop in magnitude order (0.5→5 events, then 0.9→2) must flag.
+    results = [_hold(0.5, 5), _hold(0.9, 2), _hold(1.5, 3)]
+    violations = check_metamorphic_monotonic(
+        results, tag_prefix="metamorphic:hold_duration_sweep"
+    )
+    assert len(violations) == 1

@@ -139,24 +139,26 @@ def _max_verdict(a: Verdict, b: Verdict) -> Verdict:
     return a if order[a] >= order[b] else b
 
 
-def _series_sort_key(label: str) -> tuple[int, str]:
+def _series_sort_key(label: str) -> tuple[float, str]:
     """Order a sweep series by its intended numeric magnitude.
 
-    The reference implementation sorted members lexically, but Task-8 sweep
-    labels carry their magnitude as a trailing integer (e.g. ``amp_5``,
-    ``amp_15``, ``amp_25``). A pure lexical sort puts ``amp_15`` before
-    ``amp_5`` (because the character ``'1'`` < ``'5'``), which scrambles the
-    sweep's intended order and would falsely flag a monotonicity violation.
+    The reference implementation sorted members lexically, but the sweep
+    labels carry their magnitude as the last number in the label, which may
+    be an integer (``amp_5``, ``amp_15``, ``amp_25``) OR a decimal followed by
+    a unit suffix (``0.5x_dwell``, ``0.9x_dwell``, ``1.5x_dwell``, ``5x_dwell``).
+    A lexical sort puts ``amp_15`` before ``amp_5``; an integer-only parse
+    would read ``0.5x_dwell`` as ``5`` — both scramble the sweep's intended
+    order and would falsely flag (or hide) a monotonicity violation.
 
-    We instead extract the trailing integer (the digits after the last
-    underscore, or the last run of digits) and sort by it numerically, falling
-    back to lexical order when no trailing integer is present so the ordering
-    is still total and deterministic.
+    We extract the final numeric magnitude (int or decimal) immediately before
+    any trailing non-digit suffix and sort by it as a float, falling back to
+    lexical order when there is no number so the ordering stays total and
+    deterministic.
     """
-    m = re.search(r"(\d+)\D*$", label)
+    m = re.search(r"(\d+(?:\.\d+)?)\D*$", label)
     if m is None:
-        return (0, label)
-    return (int(m.group(1)), label)
+        return (0.0, label)
+    return (float(m.group(1)), label)
 
 
 @dataclass(frozen=True, slots=True)
