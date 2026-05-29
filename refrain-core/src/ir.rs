@@ -28,6 +28,14 @@ pub struct Protocol {
     pub output: IndexMap<String, Expr>,
     #[serde(default)]
     pub session: Option<Session>,
+    /// Named activation blocks (staged protocols), keyed by block name.
+    #[serde(default)]
+    pub blocks: BTreeMap<String, Block>,
+    /// Named, block-selectable reward bundles, keyed by bundle name. Each is a
+    /// `Reward` shape (continuous/event); the active block selects which drives
+    /// `reward.continuous`/`reward.event`.
+    #[serde(default)]
+    pub reward_bundles: BTreeMap<String, Reward>,
     #[serde(default)]
     pub topological_order: Vec<String>,
     /// Declared clinician controls, keyed by bare name (`smr_target_pct`).
@@ -57,9 +65,38 @@ pub struct Session {
 #[derive(Debug, Deserialize)]
 pub struct Phase {
     pub name: String,
+    #[serde(default)]
     pub duration_ms: f64,
     #[serde(default)]
     pub output_muted: bool,
+    /// Transition rule: "timed" (auto-advance after duration), "open" (no
+    /// clock; host advances), or "timed_with_floor" (auto-advance unless held).
+    #[serde(default = "default_phase_mode")]
+    pub mode: String,
+    /// Name of the block active during this phase, or None (warmup/rest).
+    #[serde(default)]
+    pub block: Option<String>,
+}
+
+fn default_phase_mode() -> String {
+    "timed".to_string()
+}
+
+/// A named activation set referenced by `phase.block` (`_emit_block`). Selects
+/// which named reward bundle / output channels / inhibits are live during a
+/// phase. `thresholds` is declarative (telemetry/validation). Empty `output`
+/// ⇒ all channels live; empty `inhibits` ⇒ all inhibits gate.
+#[derive(Debug, Deserialize)]
+pub struct Block {
+    pub name: String,
+    #[serde(default)]
+    pub thresholds: Vec<String>,
+    #[serde(default)]
+    pub reward: Option<String>,
+    #[serde(default)]
+    pub output: Vec<String>,
+    #[serde(default)]
+    pub inhibits: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]

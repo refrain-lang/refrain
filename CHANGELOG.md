@@ -5,6 +5,51 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [Unreleased]
+
+### Added
+- **Staged / segmented protocols (R1–R4 + R6).** A `.refrain` protocol can now
+  describe a clinical session as N short training blocks with rests between
+  them, taken against one baseline up front, with blocks training different
+  things in one sitting (e.g. beta-up then alpha-up).
+  - **N-phase runtime + three phase types.** `session.phases` is now a real
+    runtime state machine (not metadata past the first phase). Each phase
+    carries a `mode`: `timed` (auto-advance after `duration`), `open` (no
+    clock; the host advances it), or `timed_with_floor` (auto-advance, but the
+    host may end it early or extend it). Mid-session `output_muted` rests now
+    actually mute (previously only the first phase did).
+  - **Host transport API** (Python `Evaluator` + Rust core, pyo3 + uniffi):
+    `advance_phase()` (clinician "Next →"), `hold(held=True)` (extend a
+    `timed_with_floor` block; `hold(False)` re-arms), `set_clock_frozen(bool)`
+    (pause/resume the phase clock on any phase type, orthogonal to output
+    muting), and `current_phase()` introspection (index/name/mode/block/
+    remaining_s/clock_frozen/held), aligned with `last_taps`. New numeric
+    `phase/index` + `phase/output_muted` taps. Generalises the offline-only
+    `skip_warmup` into a supported live control.
+  - **Named blocks + reward bundles.** `block "<name>" { threshold; reward;
+    output; inhibit }` selects which named threshold / reward bundle / output
+    channels / inhibits are live during a phase; reward bundles are declared as
+    `reward "<name>" { continuous?; event? }` (disambiguated from weighted
+    components by field shape). Derives and threshold impls stay global and
+    always-computed — a block gates *emission/selection*, never *computation*,
+    so signals stay warm across block boundaries.
+  - **Adaptive `percentile()` windows freeze across muted rests (R6):** the
+    warmup phase populates the window and active phases ingest, but later
+    `output_muted` rests do not, so rest-period artifact can't pollute a later
+    block's window.
+  - IR-JSON gains `phase.mode`/`phase.block`, top-level `blocks` and
+    `reward_bundles` (all additive; the v0.2 schema is extended, not bumped). A
+    protocol using blocks/bundles emits `refrain_ir_version: "0.2"`.
+  - New example `examples/staged_beta_alpha.refrain`; full Python↔Rust parity
+    suite for staged sessions (`tests/test_staged_parity.py`).
+
+### Notes
+- The one-shot baseline measure-then-freeze is recorder-side (control-backed
+  `absolute(value: <control>)` + `set_control` at the single warmup→run); the
+  engine's obligation is that derives/threshold impls stay global so a
+  `set_control` seeding an inactive block's threshold takes effect — guarded by
+  the parity suite.
+
 ## [0.6.3] — 2026-05-28
 
 ### Fixed

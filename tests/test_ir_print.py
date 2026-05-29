@@ -15,8 +15,9 @@ import pytest
 
 from refrain.amp_profile import load_amp_profile
 from refrain.ir_print import print_cred_nf, print_ir
-from refrain.parser import parse_file
+from refrain.parser import parse, parse_file
 from refrain.resolver import resolve
+from tests.conftest_staged import HET
 
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
@@ -147,3 +148,10 @@ def test_cred_nf_runs_without_amp_profile():
     out = print_cred_nf(ir)
     # Software/hardware row falls back to [NOT SPECIFIED].
     assert "NOT SPECIFIED" in out
+
+
+def test_print_ir_includes_block_and_mode():
+    text = print_ir(resolve(parse(HET)))
+    assert "beta_up" in text          # block declaration rendered
+    assert "timed_with_floor" in text  # phase mode rendered
+    assert "br" in text                # reward bundle name rendered

@@ -315,6 +315,23 @@ class Evaluator:
         # Lifecycle state.
         self._state: str = "ready"
         self._samples_pushed: int = 0
+        # Phase cursor (N-phase runtime).
+        self._phases_samples: list[int] = self._compute_phase_samples()
+        self._phase_index: int = 0
+        self._phase_elapsed: int = 0
+        self._held: bool = False
+        self._clock_frozen: bool = False
+        # When `start(skip_warmup=True)` is used and phase 0 is output-muted,
+        # the leading warmup mute is bypassed (offline analysis / tests that
+        # don't exercise warmup). Only suppresses the leading-phase mute; any
+        # later muted phase (e.g. a mid-session rest or cooldown) still mutes.
+        self._skip_leading_warmup_mute: bool = False
+        # Snapshot of the phase active during the chunk just processed, kept
+        # aligned with last_taps (see current_phase()). index -1 == terminal.
+        self._phase_snapshot: dict = {"index": -1}
+        # Backward-compatible warmup-window scalar: duration (in samples) of a
+        # leading output-muted phase, else 0. Preserves the pre-cursor
+        # `_warmup_samples` semantics relied on by existing lifecycle tests.
         self._warmup_samples: int = self._compute_warmup_samples()
 
         # Per-chunk last-sample values for introspection (the tap API).
@@ -410,8 +427,53 @@ class Evaluator:
             return self._rust.warmup_remaining_s()
         if self._state != "warmup":
             return 0.0
-        remaining = max(0, self._warmup_samples - self._samples_pushed)
-        return remaining / self.sample_rate_hz
+        if self._phase_index < len(self._phases_samples):
+            dur = self._phases_samples[self._phase_index]
+        else:
+            dur = 0
+        return max(0, dur - self._phase_elapsed) / self.sample_rate_hz
+
+    def current_phase(self) -> dict:
+        """Snapshot of the phase active during the most recently processed
+        chunk. `{"index": -1}`-shaped once the session is terminal."""
+        if self._rust is not None:
+            return dict(self._rust.current_phase())
+        return dict(self._phase_snapshot)
+
+    def advance_phase(self) -> bool:
+        """End the current phase now and enter the next; advancing past the
+        last phase transitions to `stopped`. Returns False if already stopped."""
+        if self._rust is not None:
+            return bool(self._rust.advance_phase())
+        if self._state == "stopped":
+            return False
+        self._goto_next_phase()
+        self._snapshot_current_phase()
+        return True
+
+    def hold(self, held: bool = True) -> bool:
+        """Extend a `timed_with_floor` phase past its floor (suppress
+        auto-advance). `hold(False)` re-arms the countdown. Returns True if it
+        took effect (current phase is timed_with_floor), else False (open holds
+        implicitly; `timed` is firm)."""
+        if self._rust is not None:
+            return bool(self._rust.hold(held))
+        ph = self._current_phase_ir()
+        if ph is None or ph.mode != "timed_with_floor":
+            return False
+        self._held = bool(held)
+        self._snapshot_current_phase()
+        return True
+
+    def set_clock_frozen(self, frozen: bool) -> None:
+        """Freeze/resume the phase clock on ANY phase type (transport pause).
+        While frozen no auto-advance fires; the countdown resumes from where it
+        stopped. Orthogonal to output muting. advance_phase() still works."""
+        if self._rust is not None:
+            self._rust.set_clock_frozen(bool(frozen))
+            return
+        self._clock_frozen = bool(frozen)
+        self._snapshot_current_phase()
 
     def start(self, *, skip_warmup: bool = False) -> None:
         """Enter `warmup` (or directly `run` if the protocol has no
@@ -433,10 +495,83 @@ class Evaluator:
         if self._state != "ready":
             raise RuntimeError(f"Evaluator.start() called in state {self._state!r}")
         self._samples_pushed = 0
-        if skip_warmup or self._warmup_samples == 0:
+        self._phase_index = 0
+        self._phase_elapsed = 0
+        self._held = False
+        self._clock_frozen = False
+        self._skip_leading_warmup_mute = bool(skip_warmup)
+        first = self._current_phase_ir()
+        if skip_warmup or first is None:
             self._state = "run"
-        else:
+        elif first.output_muted and self._phase_index == 0:
             self._state = "warmup"
+        else:
+            self._state = "run"
+        self._snapshot_current_phase()
+
+    def _phase_mutes_output(self) -> bool:
+        """Whether the current phase suppresses patient-facing output. Any
+        `output_muted` phase mutes (warmup AND mid-session rests), except the
+        leading warmup phase when `start(skip_warmup=True)` bypassed it."""
+        ph = self._current_phase_ir()
+        if ph is None or not ph.output_muted:
+            return False
+        if self._skip_leading_warmup_mute and self._phase_index == 0:
+            return False
+        return True
+
+    def _snapshot_current_phase(self) -> None:
+        """Refresh `_phase_snapshot` from the live cursor. Called from `start()`
+        (initial phase, before any chunk) and from `_process_chunk` at
+        tap-capture time, so `current_phase()` reflects the phase the most
+        recently processed chunk ran under — aligned with `last_taps`."""
+        ph = self._current_phase_ir()
+        if ph is None:
+            self._phase_snapshot = {
+                "index": -1, "name": None, "mode": None, "output_muted": False,
+                "block": None, "remaining_s": None, "clock_frozen": False, "held": False,
+            }
+            return
+        idx = self._phase_index
+        dur = self._phases_samples[idx]
+        has_clock = (
+            ph.mode in ("timed", "timed_with_floor")
+            and not self._held
+            and not self._clock_frozen
+        )
+        remaining = (
+            max(0, dur - self._phase_elapsed) / self.sample_rate_hz if has_clock else None
+        )
+        self._phase_snapshot = {
+            "index": idx, "name": ph.name, "mode": ph.mode,
+            "output_muted": bool(ph.output_muted), "block": ph.block,
+            "remaining_s": remaining, "clock_frozen": self._clock_frozen, "held": self._held,
+        }
+
+    def _advance_if_due(self, n: int) -> None:
+        ph = self._current_phase_ir()
+        if ph is None:
+            return
+        if not self._clock_frozen:
+            self._phase_elapsed += n
+        duration = self._phases_samples[self._phase_index]
+        auto = ph.mode == "timed" or (ph.mode == "timed_with_floor" and not self._held)
+        if (
+            auto
+            and not self._clock_frozen
+            and ph.mode != "open"
+            and self._phase_elapsed >= duration
+        ):
+            self._goto_next_phase()
+
+    def _goto_next_phase(self) -> None:
+        if self._state == "warmup":
+            self._state = "run"
+        self._phase_index += 1
+        self._phase_elapsed = 0
+        self._held = False
+        if self._phase_index >= len(self.ir.session.phases):
+            self._state = "stopped"
 
     def stop(self) -> None:
         """End the session. Subsequent `step_chunk` calls raise."""
@@ -444,6 +579,18 @@ class Evaluator:
             self._rust.stop()
             return
         self._state = "stopped"
+
+    def _compute_phase_samples(self) -> list[int]:
+        return [
+            int(round(ph.duration_ms / 1000.0 * self.sample_rate_hz))
+            for ph in self.ir.session.phases
+        ]
+
+    def _current_phase_ir(self):
+        phases = self.ir.session.phases
+        if 0 <= self._phase_index < len(phases):
+            return phases[self._phase_index]
+        return None
 
     def _compute_warmup_samples(self) -> int:
         """Look at the first session phase; if `output_muted = true`, its
@@ -485,6 +632,14 @@ class Evaluator:
         # Component signals (named reward / suppress-inhibit, v0.2 composite).
         for comp in self.ir.reward.components:
             self._instantiate_expr(comp.signal)
+        # Reward bundles (staged protocols): instantiate every declared
+        # bundle's exprs so their impls exist and stay warm even while the
+        # bundle's block is inactive (dwell timers must keep ticking).
+        for rb in self.ir.reward_bundles.values():
+            if rb.continuous is not None:
+                self._instantiate_expr(rb.continuous)
+            if rb.event is not None:
+                self._instantiate_expr(rb.event)
         # Output bindings.
         for expr in self.ir.output.values():
             self._instantiate_expr(expr)
@@ -632,10 +787,14 @@ class Evaluator:
 
         events = list(self._process_chunk(raw_chunk, t0_s, control_chunks_cache))
 
-        # Advance cursor and possibly transition warmup -> run.
+        # Advance the phase cursor (auto-advances timed phases; flips
+        # warmup -> run on the first advance out of a leading muted phase).
+        # The phase snapshot was already captured inside _process_chunk so
+        # current_phase() stays aligned with last_taps (the phase THIS chunk
+        # ran under), per the recorder's tap/phase-alignment contract; the
+        # advance below only moves the cursor for the NEXT chunk.
         self._samples_pushed += actual_chunk_size
-        if self._state == "warmup" and self._samples_pushed >= self._warmup_samples:
-            self._state = "run"
+        self._advance_if_due(actual_chunk_size)
 
         return events
 
@@ -648,7 +807,7 @@ class Evaluator:
         """Walk the IR for one chunk. Always updates state; only emits
         events when state == 'run'."""
         actual_chunk_size = raw_chunk.shape[0]
-        suppress_output = (self._state == "warmup")
+        suppress_output = self._phase_mutes_output()
 
         stream_values: dict[str, np.ndarray] = {}
 
@@ -663,9 +822,22 @@ class Evaluator:
                 d.expression, stream_values, control_chunks_cache, actual_chunk_size
             )
 
+        # Freeze adaptive-window ingestion during mid-session muted rests so a
+        # later block's window isn't polluted by rest-period artifact: ingest
+        # during the initial phase (warmup populates) and any non-muted phase;
+        # FREEZE during `output_muted` phases AFTER the first ("one baseline up
+        # front"). Equivalent to: output_muted and phase_index > 0.
+        _ph = self._current_phase_ir()
+        freeze_ingest = (
+            bool(_ph.output_muted and self._phase_index > 0) if _ph is not None else False
+        )
+
         # Thresholds: per-threshold call, fed the signal it tracks.
         for t in self.ir.thresholds.values():
             impl = self._impls[id(t.threshold_call)]
+            setter = getattr(impl, "set_ingesting", None)
+            if setter is not None:
+                setter(not freeze_ingest)
             if isinstance(impl, impls.AbsoluteThresholdImpl):
                 stream_values[t.canonical_name] = impl.step(np.zeros(actual_chunk_size))
             else:
@@ -732,8 +904,41 @@ class Evaluator:
                 reward_component_signals=reward_component_signals,
             )
 
-        # Combined inhibit gate — also exposed as the `muted` tap.
-        muted = self._compute_muted(inhibit_active, actual_chunk_size)
+        # Active block (from the current phase) selects which reward bundle and
+        # which output/inhibit set are live. All bundles are EVALUATED every
+        # chunk (keeping dwell timers warm); only the active one drives output.
+        # When there is no active block (warmup / rest / blockless protocol),
+        # the default top-level reward results computed above remain in effect.
+        ph = self._current_phase_ir()
+        active_block = None
+        if ph is not None and ph.block is not None:
+            active_block = self.ir.blocks.get(ph.block)
+        active_bundle = active_block.reward if active_block is not None else None
+        for name, rb in self.ir.reward_bundles.items():
+            if rb.continuous is not None:
+                c = self._eval_expr(
+                    rb.continuous, stream_values, control_chunks_cache, actual_chunk_size
+                )
+                if name == active_bundle:
+                    reward_continuous = c
+            if rb.event is not None:
+                ev_res, subs = self._eval_reward_event(
+                    rb.event, stream_values, control_chunks_cache, actual_chunk_size
+                )
+                if name == active_bundle:
+                    reward_event, reward_sub_chunks = ev_res, subs
+
+        # Active-channel set for output masking: channels NOT in the active
+        # block's `.outputs` are forced silent. Empty `.outputs` (or no active
+        # block) => all channels live (back-compat with blockless protocols).
+        if active_block is not None and active_block.outputs:
+            active_channels = set(active_block.outputs)
+        else:
+            active_channels = set(self.ir.output.keys())
+
+        # Combined inhibit gate — also exposed as the `muted` tap. Inhibits not
+        # in the active block's `.inhibits` set do not contribute to the gate.
+        muted = self._compute_muted(inhibit_active, actual_chunk_size, active_block)
 
         # Pre-compute each output binding's gated/clamped values now so
         # we can capture them as `output/<channel>` taps *and* emit
@@ -751,7 +956,18 @@ class Evaluator:
                 reward_component_signals=reward_component_signals,
             )
             is_event = self._is_event_channel(expr)
-            if is_event:
+            if channel not in active_channels:
+                # Inactive-block channel: forced silent (same effect as an
+                # output_muted phase) — mirror the warmup zeroing pattern.
+                if is_event:
+                    per_channel_output[channel] = (
+                        np.zeros_like(values, dtype=bool), True
+                    )
+                else:
+                    per_channel_output[channel] = (
+                        np.zeros_like(values, dtype=np.float64), False
+                    )
+            elif is_event:
                 # Event channels: gate by inhibits, keep as boolean.
                 gated_bool = values.astype(bool) & ~muted
                 per_channel_output[channel] = (gated_bool, True)
@@ -759,6 +975,18 @@ class Evaluator:
                 clamped = np.clip(values, 0.0, 1.0)
                 gated = np.where(muted, 0.0, clamped)
                 per_channel_output[channel] = (gated, False)
+
+        # During an output-muted phase (warmup or a mid-session rest) the
+        # patient hears nothing: zero the patient-facing output channels so
+        # the `output/<channel>` taps and recorded streams reflect what was
+        # actually presented (silence). Upstream taps (envelopes, thresholds,
+        # reward) still populate so the clinician retains full visibility.
+        if suppress_output:
+            for channel, (out_arr, is_event) in per_channel_output.items():
+                if is_event:
+                    per_channel_output[channel] = (np.zeros_like(out_arr, dtype=bool), True)
+                else:
+                    per_channel_output[channel] = (np.zeros_like(out_arr), False)
 
         # Capture taps for introspection (SPEC §7.8 / EMBEDDING.md).
         # This populates `self._last_taps` and runs in BOTH warmup and
@@ -774,6 +1002,12 @@ class Evaluator:
             reward_composite=reward_composite,
             reward_component_signals=reward_component_signals,
         )
+        # Capture the phase snapshot at the SAME point as the taps, reflecting
+        # the phase THIS chunk ran under (before step_chunk advances the cursor
+        # for the next chunk). This keeps current_phase() aligned with
+        # last_taps so a host polling both after step_chunk sees a coherent
+        # pair with no boundary off-by-one (recorder seam #2).
+        self._snapshot_current_phase()
         if self._record_streams:
             captured = {
                 k.split("/", 1)[-1]: np.asarray(v).copy()
@@ -910,6 +1144,12 @@ class Evaluator:
                 taps[key] = bool(out_chunk.any())
             else:
                 taps[key] = float(out_chunk[-1])
+
+        # Phase cursor taps (numeric — not booleans, so not in
+        # _rust_bool_tap_keys / event-channel set).
+        taps["phase/index"] = float(self._phase_index)
+        _ph = self._current_phase_ir()
+        taps["phase/output_muted"] = 1.0 if (_ph is not None and _ph.output_muted) else 0.0
 
     def last_taps(self) -> dict[str, float | bool]:
         """Return last-sample values for internal taps from the most
@@ -1239,14 +1479,27 @@ class Evaluator:
         return self._eval_expr(w, {}, control_chunks, chunk_size)
 
     def _compute_muted(
-        self, inhibit_active: dict[str, np.ndarray], chunk_size: int
+        self, inhibit_active: dict[str, np.ndarray], chunk_size: int, active_block=None
     ) -> np.ndarray:
         """Combine all inhibits' output gates into a single boolean
-        `output is muted this sample` stream."""
+        `output is muted this sample` stream.
+
+        When `active_block` declares a non-empty `.inhibits` set, only those
+        inhibits contribute to the gate; inhibits outside the set still compute
+        (so their state stays warm) but do not mute output. An empty set (or no
+        active block) gates on all inhibits (back-compat)."""
         if not inhibit_active:
             return np.zeros(chunk_size, dtype=bool)
+        allowed = (
+            set(active_block.inhibits)
+            if (active_block is not None and active_block.inhibits)
+            else None
+        )
         muted = np.zeros(chunk_size, dtype=bool)
         for canonical, active in inhibit_active.items():
+            short = canonical.split("/", 1)[-1]
+            if allowed is not None and short not in allowed:
+                continue
             action = self._inhibit_actions.get(canonical)
             if action is None or isinstance(action, impls.FlagAction):
                 continue

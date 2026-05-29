@@ -35,6 +35,8 @@
         { "type": "null" }
       ]
     },
+    "blocks": { "type": "object", "additionalProperties": { "$ref": "#/$defs/Block" } },
+    "reward_bundles": { "type": "object", "additionalProperties": { "$ref": "#/$defs/Reward" } },
     "topological_order": { "type": "array", "items": { "type": "string" } }
   },
 
@@ -189,7 +191,22 @@
       "properties": {
         "name": { "type": "string" },
         "duration_ms": { "type": "number" },
-        "output_muted": { "type": "boolean" }
+        "output_muted": { "type": "boolean" },
+        "mode": { "type": "string", "enum": ["timed", "open", "timed_with_floor"] },
+        "block": { "type": ["string", "null"] }
+      }
+    },
+
+    "Block": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": "string" },
+        "thresholds": { "type": "array", "items": { "type": "string" } },
+        "reward": { "type": ["string", "null"] },
+        "output": { "type": "array", "items": { "type": "string" } },
+        "inhibits": { "type": "array", "items": { "type": "string" } }
       }
     },
 

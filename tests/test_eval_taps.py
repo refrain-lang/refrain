@@ -99,6 +99,7 @@ def test_smr_bb_last_taps_key_set(smr_bb_ir, backend):
         "reward/event", "reward/event.holds",
         "reward/condition[0]", "reward/condition[1]", "reward/condition[2]",
         "output/audio_chime", "output/audio_gain",
+        "phase/index", "phase/output_muted",
     }
     assert keys == expected, f"missing: {expected - keys}; extra: {keys - expected}"
 

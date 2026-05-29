@@ -152,6 +152,43 @@ impl RustEvaluator {
         self.inner.warmup_remaining_s()
     }
 
+    /// `eval_.Evaluator.advance_phase`: end the current phase now and enter the
+    /// next; advancing past the last phase transitions to `stopped`. Returns
+    /// `False` if already stopped.
+    fn advance_phase(&mut self) -> bool {
+        self.inner.advance_phase()
+    }
+
+    /// `eval_.Evaluator.hold`: extend a `timed_with_floor` phase past its floor
+    /// (`hold(False)` re-arms). Returns `True` if it took effect.
+    #[pyo3(signature = (held = true))]
+    fn hold(&mut self, held: bool) -> bool {
+        self.inner.hold(held)
+    }
+
+    /// `eval_.Evaluator.set_clock_frozen`: freeze/resume the phase clock on any
+    /// phase type (transport pause); orthogonal to output muting.
+    fn set_clock_frozen(&mut self, frozen: bool) {
+        self.inner.set_clock_frozen(frozen);
+    }
+
+    /// `eval_.Evaluator.current_phase`: snapshot of the phase the most recent
+    /// chunk ran under (aligned with `last_taps`). Returns a dict with keys
+    /// index/name/mode/output_muted/block/remaining_s/clock_frozen/held.
+    fn current_phase<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let s = self.inner.current_phase();
+        let out = PyDict::new(py);
+        out.set_item("index", s.index)?;
+        out.set_item("name", s.name)?;
+        out.set_item("mode", s.mode)?;
+        out.set_item("output_muted", s.output_muted)?;
+        out.set_item("block", s.block)?;
+        out.set_item("remaining_s", s.remaining_s)?;
+        out.set_item("clock_frozen", s.clock_frozen)?;
+        out.set_item("held", s.held)?;
+        Ok(out)
+    }
+
     /// Clinician-observation snapshot from the most recent `step_chunk_events`
     /// call. Returns `{canonical_name: f64}` — booleans stored as 0.0/1.0.
     /// The Python wrapper coerces known-boolean keys back to `bool`.

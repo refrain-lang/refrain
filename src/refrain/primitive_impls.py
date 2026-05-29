@@ -376,18 +376,29 @@ class PercentileImpl(PrimitiveImpl):
         self.target_pct = target_pct
         self.window_samples = max(1, int(round(window_ms / 1000.0 * sample_rate_hz)))
         self._buffer: deque[float] = deque(maxlen=self.window_samples)
+        # When False, `step` still EMITS the current percentile but does NOT
+        # ingest incoming samples into the rolling buffer. The evaluator drives
+        # this via `set_ingesting` to freeze the window during mid-session
+        # muted rests so rest-period artifact can't pollute a later block's
+        # window ("one baseline up front").
+        self._ingesting = True
         # Track which control names map to which parameters, populated
         # via update_control. The map is empty until the evaluator has
         # registered control->impl deps; PercentileImpl supports
         # updating `target_pct` from any incoming control change.
         self._control_param_map: dict[str, str] = {}
 
+    def set_ingesting(self, ingesting: bool) -> None:
+        self._ingesting = bool(ingesting)
+
     def step(self, x: np.ndarray) -> np.ndarray:
         out = np.empty(x.shape[0], dtype=np.float64)
         for i, v in enumerate(x):
-            self._buffer.append(float(v))
+            if self._ingesting:
+                self._buffer.append(float(v))
             # Compute percentile over current buffer (warm-up: short buffer is OK).
-            arr = np.fromiter(self._buffer, dtype=np.float64)
+            # A frozen window still emits over its existing buffer.
+            arr = np.fromiter(self._buffer, dtype=np.float64) if len(self._buffer) else np.zeros(1)
             out[i] = float(np.percentile(arr, self.target_pct))
         return out
 

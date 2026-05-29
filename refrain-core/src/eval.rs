@@ -307,10 +307,16 @@ impl CNode {
                 .get(name)
                 .unwrap_or_else(|| panic!("stream {name:?} not bound"))
                 .clone(),
-            CNode::Reward(field) => env
-                .get(&format!("reward.{field}"))
-                .unwrap_or_else(|| panic!("reward.{field} not bound"))
-                .clone(),
+            CNode::Reward(field) => match env.get(&format!("reward.{field}")) {
+                Some(v) => v.clone(),
+                // Mirror Python's IRRewardField defaults: an unbound reward
+                // field reads as typed zeros. This happens for a staged
+                // protocol whose `output` references `reward.continuous`/
+                // `reward.event` during a phase with no active block (warmup /
+                // rest), where no bundle has bound it.
+                None if field == "event" || field == "event.holds" => Val::B(vec![false; n]),
+                None => Val::F(vec![0.0; n]),
+            },
             CNode::Pipeline(stages, input) => {
                 let mut sig = Signal::Real(input.eval(env, n).into_f());
                 for s in stages.iter_mut() {
@@ -372,6 +378,16 @@ impl CNode {
                 let cb = cb.as_b();
                 Val::F((0..n).map(|i| if cb[i] { tf[i] } else { ef[i] }).collect())
             }
+        }
+    }
+
+    /// Freeze (false) / resume (true) any windowed-percentile tracker in this
+    /// node. Only a top-level `Pct` threshold node carries one; mirrors the
+    /// Python evaluator driving `set_ingesting` on percentile threshold impls
+    /// to freeze their window during mid-session muted rests (R6).
+    fn set_ingesting(&mut self, ingesting: bool) {
+        if let CNode::Pct(p, _) = self {
+            p.set_ingesting(ingesting);
         }
     }
 }
@@ -466,6 +482,90 @@ struct CompiledInhibit {
     gate: Option<InhibitGate>,
 }
 
+// --- Staged-protocol phase cursor -----------------------------------------
+
+/// One compiled session phase (mirrors `IRPhase`). `duration_samples` is the
+/// phase's clock in samples (0 for `mode == "open"`).
+struct PhaseInfo {
+    name: String,
+    duration_samples: usize,
+    output_muted: bool,
+    mode: String, // "timed" | "open" | "timed_with_floor"
+    block: Option<String>,
+}
+
+/// A named activation block (mirrors `IRBlock`). `reward` selects a reward
+/// bundle; empty `outputs`/`inhibits` mean "all live" (back-compat).
+struct CompiledBlock {
+    reward: Option<String>,
+    outputs: Vec<String>,
+    inhibits: Vec<String>,
+}
+
+/// A named, block-selectable reward bundle (continuous and/or event).
+struct RewardBundle {
+    continuous: Option<CNode>,
+    event: Option<RewardEvent>,
+}
+
+/// Snapshot of the phase active during the most recently processed chunk,
+/// mirroring `eval_.Evaluator.current_phase()`. Kept aligned with `last_taps`
+/// (recorder seam #2). The binding layer maps this to a Python dict.
+#[derive(Clone)]
+pub struct PhaseSnapshot {
+    pub index: i64, // -1 once terminal / before any phase
+    pub name: Option<String>,
+    pub mode: Option<String>,
+    pub output_muted: bool,
+    pub block: Option<String>,
+    pub remaining_s: Option<f64>,
+    pub clock_frozen: bool,
+    pub held: bool,
+}
+
+impl PhaseSnapshot {
+    fn terminal() -> Self {
+        PhaseSnapshot {
+            index: -1,
+            name: None,
+            mode: None,
+            output_muted: false,
+            block: None,
+            remaining_s: None,
+            clock_frozen: false,
+            held: false,
+        }
+    }
+}
+
+/// Step a compiled `RewardEvent` for one chunk: evaluate each sub-condition,
+/// recombine per `combine`, and advance the dwell. Returns the dwell `events`
+/// and `holds` streams plus each sub-condition's last sample (for the
+/// `reward/condition[i]` taps). Pure w.r.t. phase state — used for both the
+/// default reward and every reward bundle (all bundles step every chunk so
+/// their dwell timers stay warm).
+fn step_reward_event(
+    re: &mut RewardEvent,
+    env: &HashMap<String, Val>,
+    n: usize,
+) -> (Vec<bool>, Vec<bool>, Vec<bool>) {
+    let mut sub_streams: Vec<Vec<bool>> = Vec::with_capacity(re.sub_conditions.len());
+    let mut sub_lasts: Vec<bool> = Vec::with_capacity(re.sub_conditions.len());
+    for sub in re.sub_conditions.iter_mut() {
+        let s = sub.eval(env, n).as_b().to_vec();
+        sub_lasts.push(s.last().copied().unwrap_or(false));
+        sub_streams.push(s);
+    }
+    let condition: Vec<bool> = (0..n)
+        .map(|i| match re.combine {
+            SubCombine::All => sub_streams.iter().all(|s| s[i]),
+            SubCombine::Any => sub_streams.iter().any(|s| s[i]),
+        })
+        .collect();
+    let (events, holds) = re.dwell.step(&condition);
+    (events, holds, sub_lasts)
+}
+
 // --- Evaluator ------------------------------------------------------------
 
 pub struct Evaluator {
@@ -489,7 +589,27 @@ pub struct Evaluator {
     sample_rate_hz: f64,
     state: State,
     samples_pushed: usize,
-    warmup_samples: usize,
+    // --- Staged-protocol N-phase cursor (mirrors the Python evaluator) ---
+    /// Compiled session phases in order; empty for protocols with no session
+    /// (e.g. the bench micro corpus), where the cursor is inert.
+    phases: Vec<PhaseInfo>,
+    /// Named activation blocks, keyed by block name.
+    blocks: BTreeMap<String, CompiledBlock>,
+    /// Named, block-selectable reward bundles, keyed by bundle name. Every
+    /// bundle is evaluated each chunk (warm dwell timers); the active block's
+    /// bundle drives `reward.continuous` / `reward.event`.
+    reward_bundles: BTreeMap<String, RewardBundle>,
+    phase_index: usize,
+    phase_elapsed: usize,
+    held: bool,
+    clock_frozen: bool,
+    /// `start(skip_warmup=true)` bypasses the leading warmup phase's output
+    /// mute (offline/tests); later muted phases still mute. Mirrors the Python
+    /// `_skip_leading_warmup_mute` flag.
+    skip_leading_warmup_mute: bool,
+    /// Snapshot of the phase the most recent chunk ran under (aligned with
+    /// `last_taps`); `index == -1` before any chunk / once terminal.
+    phase_snapshot: PhaseSnapshot,
     /// Clinician-observation snapshot from the most recent chunk, mirroring
     /// `Evaluator.last_taps()` / `_capture_taps`. Booleans are stored as
     /// 0.0/1.0 in this single map for the golden-vector compare. Empty before
@@ -618,7 +738,59 @@ impl Evaluator {
         let threshold_canon: Vec<String> =
             thresholds.iter().map(|(n, _)| p.thresholds[n].canonical_name.clone()).collect();
 
-        let warmup_samples = compute_warmup_samples(p, sample_rate_hz);
+        // Staged-protocol phases (empty for protocols with no session). Each
+        // phase's clock is in samples; `open` phases have no clock (0).
+        let phases: Vec<PhaseInfo> = p
+            .session
+            .as_ref()
+            .map(|s| {
+                s.phases
+                    .iter()
+                    .map(|ph| PhaseInfo {
+                        name: ph.name.clone(),
+                        duration_samples: (ph.duration_ms / 1000.0 * sample_rate_hz).round()
+                            as usize,
+                        output_muted: ph.output_muted,
+                        mode: ph.mode.clone(),
+                        block: ph.block.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Named activation blocks (declarative thresholds are not needed at
+        // runtime; bundle selection pulls the block's threshold transitively).
+        let blocks: BTreeMap<String, CompiledBlock> = p
+            .blocks
+            .iter()
+            .map(|(name, b)| {
+                (
+                    name.clone(),
+                    CompiledBlock {
+                        reward: b.reward.clone(),
+                        outputs: b.output.clone(),
+                        inhibits: b.inhibits.clone(),
+                    },
+                )
+            })
+            .collect();
+
+        // Named reward bundles, compiled like the top-level reward (all bundles
+        // are evaluated every chunk so their dwell timers stay warm; the active
+        // block selects which drives reward.continuous/reward.event).
+        let reward_bundles: BTreeMap<String, RewardBundle> = p
+            .reward_bundles
+            .iter()
+            .map(|(name, rb)| {
+                (
+                    name.clone(),
+                    RewardBundle {
+                        continuous: rb.continuous.as_ref().map(|e| build_node(e, &mut ctx)),
+                        event: rb.event.as_ref().map(|e| build_reward_event(e, &mut ctx)),
+                    },
+                )
+            })
+            .collect();
 
         Evaluator {
             inputs,
@@ -635,7 +807,15 @@ impl Evaluator {
             sample_rate_hz,
             state: State::Ready,
             samples_pushed: 0,
-            warmup_samples,
+            phases,
+            blocks,
+            reward_bundles,
+            phase_index: 0,
+            phase_elapsed: 0,
+            held: false,
+            clock_frozen: false,
+            skip_leading_warmup_mute: false,
+            phase_snapshot: PhaseSnapshot::terminal(),
             last_taps: BTreeMap::new(),
             last_streams: BTreeMap::new(),
             controls: ctx.controls,
@@ -675,11 +855,18 @@ impl Evaluator {
     /// `run`. Call before the first event-emitting chunk.
     pub fn start(&mut self, skip_warmup: bool) {
         self.samples_pushed = 0;
-        self.state = if skip_warmup || self.warmup_samples == 0 {
+        self.phase_index = 0;
+        self.phase_elapsed = 0;
+        self.held = false;
+        self.clock_frozen = false;
+        self.skip_leading_warmup_mute = skip_warmup;
+        let first_muted = self.phases.first().map(|p| p.output_muted).unwrap_or(false);
+        self.state = if skip_warmup || self.phases.is_empty() || !first_muted {
             State::Run
         } else {
             State::Warmup
         };
+        self.snapshot_current_phase();
     }
 
     /// `eval_.Evaluator.stop`: end the session.
@@ -697,8 +884,100 @@ impl Evaluator {
         if self.state != State::Warmup {
             return 0.0;
         }
-        let remaining = self.warmup_samples.saturating_sub(self.samples_pushed);
-        remaining as f64 / self.sample_rate_hz
+        let dur = self.phases.get(self.phase_index).map(|p| p.duration_samples).unwrap_or(0);
+        dur.saturating_sub(self.phase_elapsed) as f64 / self.sample_rate_hz
+    }
+
+    /// End the current phase now and enter the next; advancing past the last
+    /// phase transitions to `stopped`. Returns false if already stopped.
+    /// Mirrors `eval_.Evaluator.advance_phase`.
+    pub fn advance_phase(&mut self) -> bool {
+        if self.state == State::Stopped {
+            return false;
+        }
+        self.goto_next_phase();
+        self.snapshot_current_phase();
+        true
+    }
+
+    /// Extend a `timed_with_floor` phase past its floor (suppress auto-advance);
+    /// `hold(false)` re-arms the countdown. Returns true if it took effect
+    /// (current phase is timed_with_floor), else false. Mirrors `Evaluator.hold`.
+    pub fn hold(&mut self, held: bool) -> bool {
+        match self.phases.get(self.phase_index) {
+            Some(p) if p.mode == "timed_with_floor" => {
+                self.held = held;
+                self.snapshot_current_phase();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Freeze/resume the phase clock on any phase type (transport pause).
+    /// Orthogonal to output muting. Mirrors `Evaluator.set_clock_frozen`.
+    pub fn set_clock_frozen(&mut self, frozen: bool) {
+        self.clock_frozen = frozen;
+        self.snapshot_current_phase();
+    }
+
+    /// Snapshot of the phase the most recent chunk ran under (aligned with
+    /// `last_taps`). Mirrors `eval_.Evaluator.current_phase`.
+    pub fn current_phase(&self) -> PhaseSnapshot {
+        self.phase_snapshot.clone()
+    }
+
+    fn snapshot_current_phase(&mut self) {
+        self.phase_snapshot = match self.phases.get(self.phase_index) {
+            None => PhaseSnapshot::terminal(),
+            Some(p) => {
+                let has_clock = (p.mode == "timed" || p.mode == "timed_with_floor")
+                    && !self.held
+                    && !self.clock_frozen;
+                let remaining = if has_clock {
+                    Some(
+                        p.duration_samples.saturating_sub(self.phase_elapsed) as f64
+                            / self.sample_rate_hz,
+                    )
+                } else {
+                    None
+                };
+                PhaseSnapshot {
+                    index: self.phase_index as i64,
+                    name: Some(p.name.clone()),
+                    mode: Some(p.mode.clone()),
+                    output_muted: p.output_muted,
+                    block: p.block.clone(),
+                    remaining_s: remaining,
+                    clock_frozen: self.clock_frozen,
+                    held: self.held,
+                }
+            }
+        };
+    }
+
+    /// Whether the current phase suppresses patient-facing output (any
+    /// `output_muted` phase, except the leading warmup phase when
+    /// `skip_warmup` bypassed it). Mirrors `_phase_mutes_output`.
+    fn phase_mutes_output(&self) -> bool {
+        match self.phases.get(self.phase_index) {
+            Some(p) if p.output_muted => {
+                !(self.skip_leading_warmup_mute && self.phase_index == 0)
+            }
+            _ => false,
+        }
+    }
+
+    fn goto_next_phase(&mut self) {
+        if self.state == State::Warmup {
+            self.state = State::Run;
+        }
+        self.phase_index += 1;
+        self.phase_elapsed = 0;
+        self.held = false;
+        if self.phase_index >= self.phases.len() {
+            self.state = State::Stopped;
+        }
     }
 
     /// Shared per-chunk computation: runs inputs/derives/thresholds/inhibits/
@@ -714,10 +993,38 @@ impl Evaluator {
         let n = chunk.len();
         let mut env: HashMap<String, Val> = HashMap::new();
 
-        // Taps snapshot for this chunk (mirrors `_capture_taps`). Built
-        // alongside the per-chunk computation — booleans stored as 0.0/1.0.
-        // Populated identically in warmup and run (NOT warmup-suppressed).
-        let mut taps: BTreeMap<String, f64> = BTreeMap::new();
+        // Taps snapshot for this chunk (mirrors `_capture_taps`). Booleans
+        // stored as 0.0/1.0; populated identically in warmup and run.
+        // Like the Python `_capture_taps`, this UPDATES the previous snapshot
+        // in place rather than rebuilding it, so a conditionally-written key
+        // (e.g. `reward/continuous`, tapped only while a reward bundle is
+        // active) persists with its last value once any chunk has written it.
+        // For stable-keyset (blockless) protocols this is identical to a fresh
+        // map; for staged protocols it keeps the Rust keyset matching Python's.
+        let mut taps: BTreeMap<String, f64> = std::mem::take(&mut self.last_taps);
+
+        // Staged-protocol phase context for this chunk. All values are owned so
+        // nothing borrows `self` across the mutable stage iterations below.
+        // For blockless protocols (empty phases / no blocks) these are all
+        // inert: no muting, no masking, no freeze, no bundle selection.
+        let mutes_output = self.phase_mutes_output();
+        let freeze_ingest = self
+            .phases
+            .get(self.phase_index)
+            .map(|p| p.output_muted && self.phase_index > 0)
+            .unwrap_or(false);
+        let active_block = self
+            .phases
+            .get(self.phase_index)
+            .and_then(|p| p.block.as_ref())
+            .and_then(|bn| self.blocks.get(bn));
+        let active_bundle: Option<String> = active_block.and_then(|b| b.reward.clone());
+        let output_filter: Option<std::collections::HashSet<String>> = active_block
+            .filter(|b| !b.outputs.is_empty())
+            .map(|b| b.outputs.iter().cloned().collect());
+        let inhibit_filter: Option<std::collections::HashSet<String>> = active_block
+            .filter(|b| !b.inhibits.is_empty())
+            .map(|b| b.inhibits.iter().cloned().collect());
 
         for (name, montage) in self.inputs.iter() {
             env.insert(name.clone(), Val::F(montage.run(chunk)));
@@ -728,6 +1035,9 @@ impl Evaluator {
             env.insert(name.clone(), v);
         }
         for (name, node) in self.thresholds.iter_mut() {
+            // R6: freeze a percentile threshold's window during mid-session
+            // muted rests (no-op for absolute thresholds / non-frozen phases).
+            node.set_ingesting(!freeze_ingest);
             let v = node.eval(&env, n);
             env.insert(name.clone(), v);
         }
@@ -756,11 +1066,25 @@ impl Evaluator {
             if let Some(&last) = active.last() {
                 taps.insert(ih.canonical_name.clone(), bool_f(last));
             }
+            // Active-block inhibit masking: an inhibit not in the active block's
+            // (non-empty) inhibit set does not contribute to the mute gate
+            // (its gate state is left untouched, mirroring `_compute_muted`'s
+            // `continue`). Empty set / no block ⇒ all inhibits gate.
+            let allowed = {
+                let short = ih
+                    .canonical_name
+                    .split_once('/')
+                    .map(|(_, n)| n)
+                    .unwrap_or(ih.canonical_name.as_str());
+                inhibit_filter.as_ref().map_or(true, |f| f.contains(short))
+            };
             // flag actions (`gate == None`) contribute nothing to `muted`.
-            if let Some(gate) = ih.gate.as_mut() {
-                let g = gate.gate(&active);
-                for i in 0..n {
-                    muted[i] |= g[i];
+            if allowed {
+                if let Some(gate) = ih.gate.as_mut() {
+                    let g = gate.gate(&active);
+                    for i in 0..n {
+                        muted[i] |= g[i];
+                    }
                 }
             }
         }
@@ -862,10 +1186,54 @@ impl Evaluator {
             env.insert("reward.event.holds".to_string(), Val::B(holds));
         }
 
+        // Reward bundles (staged protocols): evaluate EVERY bundle each chunk
+        // so their dwell timers stay warm; the ACTIVE block's bundle drives
+        // reward.continuous / reward.event (overriding the default reward, which
+        // is empty for bundle-only protocols). Inert when no bundles exist.
+        for (bname, bundle) in self.reward_bundles.iter_mut() {
+            let is_active = active_bundle.as_deref() == Some(bname.as_str());
+            if let Some(cont) = bundle.continuous.as_mut() {
+                let v = cont.eval(&env, n);
+                if is_active {
+                    last_f(&mut taps, "reward/continuous", Some(&v));
+                    env.insert("reward.continuous".to_string(), v);
+                }
+            }
+            if let Some(re) = bundle.event.as_mut() {
+                let (events, holds, sub_lasts) = step_reward_event(re, &env, n);
+                if is_active {
+                    for (i, &last) in sub_lasts.iter().enumerate() {
+                        taps.insert(format!("reward/condition[{i}]"), bool_f(last));
+                    }
+                    taps.insert("reward/event".to_string(), bool_f(events.iter().any(|&b| b)));
+                    if let Some(&last) = holds.last() {
+                        taps.insert("reward/event.holds".to_string(), bool_f(last));
+                    }
+                    env.insert("reward.event".to_string(), Val::B(events));
+                    env.insert("reward.event.holds".to_string(), Val::B(holds));
+                }
+            }
+        }
+
         let mut outs: Vec<(String, Val)> = Vec::new();
         for (ch, node) in self.outputs.iter_mut() {
             let v = node.eval(&env, n);
             outs.push((ch.clone(), v));
+        }
+
+        // Output activation gate (mirrors `_process_chunk`): silence any channel
+        // not in the active block's output set, and silence ALL channels during
+        // an output-muted phase — so taps/streams/emission reflect what the
+        // patient actually received. Inert for blockless / non-muted phases.
+        for (ch, v) in outs.iter_mut() {
+            let silence =
+                mutes_output || output_filter.as_ref().is_some_and(|f| !f.contains(ch));
+            if silence {
+                *v = match v {
+                    Val::B(b) => Val::B(vec![false; b.len()]),
+                    Val::F(f) => Val::F(vec![0.0; f.len()]),
+                };
+            }
         }
 
         // output taps — post-gate/clamp. Event channels: `any fired this chunk`
@@ -889,7 +1257,19 @@ impl Evaluator {
             }
         }
 
+        // Numeric phase taps (recorder per-block telemetry / tap-frame phase
+        // stamping). Plain f64 — never coerced to bool.
+        taps.insert("phase/index".to_string(), self.phase_index as f64);
+        taps.insert(
+            "phase/output_muted".to_string(),
+            bool_f(self.phases.get(self.phase_index).map(|p| p.output_muted).unwrap_or(false)),
+        );
+
         self.last_taps = taps;
+        // Capture the phase snapshot at the SAME point as the taps, reflecting
+        // the phase THIS chunk ran under (before `advance` moves the cursor) —
+        // keeps current_phase() aligned with last_taps (recorder seam #2).
+        self.snapshot_current_phase();
         (env, muted, outs)
     }
 
@@ -1002,7 +1382,11 @@ impl Evaluator {
 
         let n = chunk.len();
         let t0_s = self.samples_pushed as f64 / self.sample_rate_hz;
-        let suppress_output = self.state == State::Warmup;
+        // Generalized from "is warmup" to "current phase mutes output", so
+        // mid-session muted rests suppress emission too (not just the first
+        // phase). Output channels are already silenced in eval_chunk for muted
+        // phases; this skips the per-channel event emission below.
+        let suppress_output = self.phase_mutes_output();
 
         // `muted` is the combined inhibit gate (`_compute_muted`), computed in
         // `eval_chunk`. Inhibit state advances even during warmup; only event
@@ -1068,29 +1452,28 @@ impl Evaluator {
         events
     }
 
-    /// Advance the sample cursor and transition `warmup → run` once enough
-    /// samples have been pushed (mirrors the tail of `step_chunk`).
+    /// Advance the sample + phase cursor at the end of a chunk. Accumulates the
+    /// current phase's elapsed clock (unless frozen) and auto-advances per the
+    /// phase mode rule (mirrors `_advance_if_due`/`_goto_next_phase`): `timed`
+    /// and un-held `timed_with_floor` auto-advance at their duration; `open`
+    /// and frozen/held phases never auto-advance.
     fn advance(&mut self, n: usize) {
         self.samples_pushed += n;
-        if self.state == State::Warmup && self.samples_pushed >= self.warmup_samples {
-            self.state = State::Run;
+        let Some(p) = self.phases.get(self.phase_index) else {
+            return;
+        };
+        if !self.clock_frozen {
+            self.phase_elapsed += n;
+        }
+        let auto = p.mode == "timed" || (p.mode == "timed_with_floor" && !self.held);
+        if auto
+            && !self.clock_frozen
+            && p.mode != "open"
+            && self.phase_elapsed >= p.duration_samples
+        {
+            self.goto_next_phase();
         }
     }
-}
-
-/// `eval_.Evaluator._compute_warmup_samples`: if the first session phase is
-/// `output_muted`, its duration becomes the warmup window; otherwise 0.
-fn compute_warmup_samples(p: &Protocol, sample_rate_hz: f64) -> usize {
-    let Some(session) = p.session.as_ref() else {
-        return 0;
-    };
-    let Some(first) = session.phases.first() else {
-        return 0;
-    };
-    if !first.output_muted {
-        return 0;
-    }
-    (first.duration_ms / 1000.0 * sample_rate_hz).round() as usize
 }
 
 /// Compile every derive into a `(bare_name, CNode)` list ordered so each

@@ -45,6 +45,7 @@ from .ir import (
     IRArg,
     IRArray,
     IRBinaryOp,
+    IRBlock,
     IRBlockExpr,
     IRBoolLit,
     IRCall,
@@ -162,6 +163,12 @@ class _Resolver:
         # Reward components (named reward / suppress-inhibit) for v0.2 composite.
         self._reward_components: list[IRRewardComponent] = []
 
+        # Named reward bundles (block-selectable, contain continuous/event).
+        self._reward_bundles: dict[str, IRReward] = {}
+
+        # Named block declarations (staged-protocol feature).
+        self._blocks: dict[str, IRBlock] = {}
+
     # -- Top-level entry ----------------------------------------------------
 
     def resolve(self) -> IRProtocol:
@@ -201,7 +208,9 @@ class _Resolver:
         self._resolve_named_decls(proto)
         self._resolve_reward()
         output_ir = self._resolve_output()
+        self.output = output_ir
         session_ir = self._resolve_session()
+        self._validate_staging(session_ir)
         meta_ir = self._resolve_meta()
 
         return IRProtocol(
@@ -223,6 +232,8 @@ class _Resolver:
                 state_kb=self._state_kb,
                 worst_case_us=self._worst_case_us,
             ),
+            blocks=dict(self._blocks),
+            reward_bundles=dict(self._reward_bundles),
             amp_profile=self.amp,
             loc=proto.loc,
         )
@@ -403,33 +414,42 @@ class _Resolver:
     def _resolve_named_decls(self, proto: A.Protocol) -> None:
         for stmt in proto.body:
             if isinstance(stmt, A.NamedDecl):
-                if stmt.keyword == "input":
-                    self.inputs[stmt.name] = self._resolve_input(stmt)
-                    self._topo.append(f"input/{stmt.name}")
-                elif stmt.keyword == "derive":
-                    self.derives[stmt.name] = self._resolve_derive(stmt)
-                    self._topo.append(f"derive/{stmt.name}")
-                elif stmt.keyword == "threshold":
-                    self.thresholds[stmt.name] = self._resolve_threshold(stmt)
-                    self._topo.append(f"threshold/{stmt.name}")
-                elif stmt.keyword == "inhibit":
-                    fields = self._assignments_dict(stmt.body)
-                    if "signal" in fields and "action" not in fields:
-                        # Suppress band → a weighted reward component (role=suppress).
-                        self._reward_components.append(
-                            self._resolve_reward_component(stmt, role="suppress")
-                        )
-                    else:
-                        # Hard gate → existing IRInhibit (v0.1 semantics).
-                        self.inhibits[stmt.name] = self._resolve_inhibit(stmt)
-                        self._topo.append(f"inhibit/{stmt.name}")
-                elif stmt.keyword == "reward":
-                    self._reward_components.append(
-                        self._resolve_reward_component(stmt, role="reward")
-                    )
-                elif stmt.keyword == "custom":
-                    self.customs[stmt.name] = self._resolve_custom(stmt)
-                    self._topo.append(f"custom/{stmt.name}")
+                self._dispatch_named_decl(stmt)
+
+    def _dispatch_named_decl(self, stmt: A.NamedDecl) -> None:  # noqa: PLR0912
+        if stmt.keyword == "input":
+            self.inputs[stmt.name] = self._resolve_input(stmt)
+            self._topo.append(f"input/{stmt.name}")
+        elif stmt.keyword == "derive":
+            self.derives[stmt.name] = self._resolve_derive(stmt)
+            self._topo.append(f"derive/{stmt.name}")
+        elif stmt.keyword == "threshold":
+            self.thresholds[stmt.name] = self._resolve_threshold(stmt)
+            self._topo.append(f"threshold/{stmt.name}")
+        elif stmt.keyword == "inhibit":
+            fields = self._assignments_dict(stmt.body)
+            if "signal" in fields and "action" not in fields:
+                # Suppress band → a weighted reward component (role=suppress).
+                self._reward_components.append(
+                    self._resolve_reward_component(stmt, role="suppress")
+                )
+            else:
+                # Hard gate → existing IRInhibit (v0.1 semantics).
+                self.inhibits[stmt.name] = self._resolve_inhibit(stmt)
+                self._topo.append(f"inhibit/{stmt.name}")
+        elif stmt.keyword == "reward":
+            rfields = self._assignments_dict(stmt.body)
+            if "continuous" in rfields or "event" in rfields:
+                self._reward_bundles[stmt.name] = self._resolve_reward_bundle(stmt)
+            else:
+                self._reward_components.append(
+                    self._resolve_reward_component(stmt, role="reward")
+                )
+        elif stmt.keyword == "custom":
+            self.customs[stmt.name] = self._resolve_custom(stmt)
+            self._topo.append(f"custom/{stmt.name}")
+        elif stmt.keyword == "block":
+            self._blocks[stmt.name] = self._resolve_block(stmt)
 
     def _resolve_input(self, decl: A.NamedDecl) -> IRInput:
         fields = self._assignments_dict(decl.body)
@@ -734,6 +754,82 @@ class _Resolver:
             budget=ResourceBudget(state_kb=state_kb, worst_case_us=worst_case_us),
             loc=decl.loc,
         )
+
+    def _resolve_block(self, decl: A.NamedDecl) -> IRBlock:
+        fields = self._assignments_dict(decl.body)
+        extra = set(fields) - {"threshold", "reward", "output", "inhibit"}
+        if extra:
+            raise ResolveError(
+                f'block "{decl.name}": unexpected field(s) {sorted(extra)}; '
+                "allowed: threshold, reward, output, inhibit.",
+                loc=decl.loc,
+            )
+
+        def _str_list(key: str) -> tuple[str, ...]:
+            e = fields.get(key)
+            if e is None:
+                return ()
+            if isinstance(e, A.StringLit):
+                return (e.value,)
+            if isinstance(e, A.Array):
+                out = []
+                for elt in e.elements:
+                    if not isinstance(elt, A.StringLit):
+                        raise ResolveError(
+                            f'block "{decl.name}".{key} entries must be strings',
+                            loc=elt.loc,
+                        )
+                    out.append(elt.value)
+                return tuple(out)
+            raise ResolveError(
+                f'block "{decl.name}".{key} must be a string or list of strings',
+                loc=e.loc,
+            )
+
+        reward_e = fields.get("reward")
+        reward_name = None
+        if reward_e is not None:
+            if not isinstance(reward_e, A.StringLit):
+                raise ResolveError(f'block "{decl.name}".reward must be a string', loc=reward_e.loc)
+            reward_name = reward_e.value
+        return IRBlock(
+            name=decl.name,
+            thresholds=_str_list("threshold"),
+            reward=reward_name,
+            outputs=_str_list("output"),
+            inhibits=_str_list("inhibit"),
+            loc=decl.loc,
+        )
+
+    def _validate_staging(self, session_ir: IRSession) -> None:
+        threshold_names = set(self.thresholds)
+        output_names = set(self.output)
+        inhibit_names = set(self.inhibits)
+        bundle_names = set(self._reward_bundles)
+        for b in self._blocks.values():
+            for t in b.thresholds:
+                if t not in threshold_names:
+                    raise ResolveError(f'block "{b.name}": unknown threshold "{t}"', loc=b.loc)
+            for o in b.outputs:
+                if o not in output_names:
+                    raise ResolveError(f'block "{b.name}": unknown output channel "{o}"', loc=b.loc)
+            for ih in b.inhibits:
+                if ih not in inhibit_names:
+                    raise ResolveError(f'block "{b.name}": unknown inhibit "{ih}"', loc=b.loc)
+            if b.reward is not None and b.reward not in bundle_names:
+                raise ResolveError(
+                    f'block "{b.name}": unknown reward bundle "{b.reward}"',
+                    loc=b.loc,
+                )
+        if self._blocks:
+            for ph in session_ir.phases:
+                if not ph.output_muted and ph.block is None:
+                    raise ResolveError(
+                        f'non-muted phase "{ph.name}" must name a `block` when blocks are declared',
+                        loc=ph.loc,
+                    )
+                if ph.block is not None and ph.block not in self._blocks:
+                    raise ResolveError(f'phase "{ph.name}": unknown block "{ph.block}"', loc=ph.loc)
 
     # -- Groups -------------------------------------------------------------
 
@@ -1222,17 +1318,48 @@ class _Resolver:
 
     # -- Reward -------------------------------------------------------------
 
+    def _resolve_reward_bundle(self, decl: A.NamedDecl) -> IRReward:
+        """Resolve a named, block-selectable reward bundle:
+        `reward "<name>" { continuous?, event? }`. Distinguished from a
+        weighted component (`signal`/`weight`) by these fields."""
+        fields = self._assignments_dict(decl.body)
+        extra = set(fields) - {"continuous", "event"}
+        if extra:
+            raise ResolveError(
+                f'reward "{decl.name}" bundle: unexpected field(s) {sorted(extra)}; '
+                "a block-selectable bundle uses `continuous` and/or `event`.",
+                loc=decl.loc,
+            )
+        cont = fields.get("continuous")
+        event = fields.get("event")
+        if cont is None and event is None:
+            raise ResolveError(
+                f'reward "{decl.name}" bundle must declare `continuous`, `event`, or both',
+                loc=decl.loc,
+            )
+        cont_ir = self._resolve_stream_expr(cont) if cont is not None else None
+        event_ir = self._resolve_stream_expr(event) if event is not None else None
+        return IRReward(
+            continuous=cont_ir, event=event_ir, combine="all", components=(), loc=decl.loc
+        )
+
     def _resolve_reward(self) -> None:
         components = tuple(self._reward_components)
         if self.reward_ast is None:
-            self.reward_ir = IRReward(continuous=None, event=None, components=components)
             if components:
                 # Components require a `reward { combine = "weighted" }` aggregator.
+                self.reward_ir = IRReward(continuous=None, event=None, components=components)
                 raise ResolveError(
                     "named reward/suppress components require a top-level "
                     '`reward { combine = "weighted" }` aggregator block',
                     loc=components[0].loc,
                 )
+            # No top-level reward section. When named bundles exist,
+            # `reward.continuous` / `reward.event` references in output resolve
+            # against the bundles for their stream TYPE (see _resolve_reward_field);
+            # the active bundle is bound per-block at eval time. The default reward
+            # stays empty so blockless / muted phases emit nothing.
+            self.reward_ir = IRReward(continuous=None, event=None, components=components)
             return
         fields = self._assignments_dict(self.reward_ast.body)
         cont_expr = fields.get("continuous")
@@ -1349,39 +1476,79 @@ class _Resolver:
             return IRSession(phases=(), loc=self.session_ast.loc)
         if not isinstance(phases_ast, A.Array):
             raise ResolveError("session.phases must be an array", loc=phases_ast.loc)
-        phases: list[IRPhase] = []
-        for elt in phases_ast.elements:
-            if not isinstance(elt, A.BlockExpr) or elt.name != "phase":
-                raise ResolveError(
-                    "session.phases entries must be `phase { ... }` blocks",
-                    loc=elt.loc,
-                )
-            phase_fields = self._assignments_dict(elt.body)
-            name_expr = phase_fields.get("name")
-            duration_expr = phase_fields.get("duration")
-            if name_expr is None or duration_expr is None:
-                raise ResolveError(
-                    "session phase needs both `name` and `duration` fields",
-                    loc=elt.loc,
-                )
-            if not isinstance(name_expr, A.StringLit):
-                raise ResolveError("phase.name must be a string", loc=name_expr.loc)
+        phases = [self._resolve_phase(elt) for elt in phases_ast.elements]
+        return IRSession(phases=tuple(phases), loc=self.session_ast.loc)
+
+    def _resolve_phase(self, elt: A.Expr) -> IRPhase:
+        if not isinstance(elt, A.BlockExpr) or elt.name != "phase":
+            raise ResolveError(
+                "session.phases entries must be `phase { ... }` blocks",
+                loc=elt.loc,
+            )
+        phase_fields = self._assignments_dict(elt.body)
+        name_expr = phase_fields.get("name")
+        if name_expr is None:
+            raise ResolveError("session phase needs a `name` field", loc=elt.loc)
+        if not isinstance(name_expr, A.StringLit):
+            raise ResolveError("phase.name must be a string", loc=name_expr.loc)
+        mode = self._resolve_phase_mode(phase_fields.get("mode"))
+        block = self._resolve_phase_block(phase_fields.get("block"))
+        duration_ms = self._resolve_phase_duration(phase_fields.get("duration"), mode, elt)
+        output_muted = self._bool_field(phase_fields, "output_muted", default=False)
+        return IRPhase(
+            name=name_expr.value,
+            duration_ms=duration_ms,
+            output_muted=output_muted,
+            mode=mode,
+            block=block,
+            loc=elt.loc,
+        )
+
+    def _resolve_phase_mode(self, mode_expr: A.Expr | None) -> str:
+        if mode_expr is None:
+            return "timed"
+        if isinstance(mode_expr, A.NameRef):
+            value = mode_expr.name
+        elif isinstance(mode_expr, A.StringLit):
+            value = mode_expr.value
+        else:
+            raise ResolveError(
+                "phase.mode must be a bare identifier or string literal",
+                loc=mode_expr.loc,
+            )
+        if value not in _PHASE_MODES:
+            raise ResolveError(
+                'phase.mode must be "timed", "open", or "timed_with_floor"',
+                loc=mode_expr.loc,
+            )
+        return value
+
+    def _resolve_phase_block(self, block_expr: A.Expr | None) -> str | None:
+        if block_expr is None:
+            return None
+        if isinstance(block_expr, A.StringLit):
+            return block_expr.value
+        raise ResolveError(
+            'phase.block must be a quoted string naming a block (e.g. block = "beta_up")',
+            loc=block_expr.loc,
+        )
+
+    def _resolve_phase_duration(
+        self, duration_expr: A.Expr | None, mode: str, elt: A.Expr
+    ) -> float:
+        if duration_expr is not None:
             if not isinstance(duration_expr, A.NumberLit) or duration_expr.unit not in ("ms", "s", "min"):
                 raise ResolveError(
                     "phase.duration must be a numeric literal in ms/s/min",
                     loc=duration_expr.loc,
                 )
-            duration_ms = _to_milliseconds(duration_expr)
-            output_muted = self._bool_field(phase_fields, "output_muted", default=False)
-            phases.append(
-                IRPhase(
-                    name=name_expr.value,
-                    duration_ms=duration_ms,
-                    output_muted=output_muted,
-                    loc=elt.loc,
-                )
+            return _to_milliseconds(duration_expr)
+        if mode != "open":
+            raise ResolveError(
+                "session phase needs a `duration` field (omit only when mode = open)",
+                loc=elt.loc,
             )
-        return IRSession(phases=tuple(phases), loc=self.session_ast.loc)
+        return 0.0
 
     # -- Expression resolution ---------------------------------------------
 
@@ -1525,6 +1692,16 @@ class _Resolver:
             loc=expr.loc,
         )
 
+    def _bundle_field_expr(self, field: str) -> IRExpr | None:
+        """Return a representative declared bundle's `continuous`/`event` expr,
+        used only to type `reward.*` references when no top-level reward declares
+        the field. Runtime bundle SELECTION is per active block (evaluator)."""
+        for bundle in self._reward_bundles.values():
+            expr = getattr(bundle, field)
+            if expr is not None:
+                return expr
+        return None
+
     def _resolve_reward_field(self, parts: tuple[str, ...], loc: Loc | None) -> IRRewardField:
         if self.reward_ir is None:
             raise ResolveError(
@@ -1532,19 +1709,20 @@ class _Resolver:
                 loc=loc,
             )
         if parts == ("continuous",):
-            if self.reward_ir.continuous is None:
+            cont_expr = self.reward_ir.continuous or self._bundle_field_expr("continuous")
+            if cont_expr is None:
                 raise ResolveError("reward.continuous is not declared in this protocol", loc=loc)
             return IRRewardField(
                 field_path="continuous",
-                stream_type=_expr_stream_type(self.reward_ir.continuous),
+                stream_type=_expr_stream_type(cont_expr),
                 loc=loc,
             )
         if parts == ("event",):
-            if self.reward_ir.event is None:
+            if self.reward_ir.event is None and self._bundle_field_expr("event") is None:
                 raise ResolveError("reward.event is not declared in this protocol", loc=loc)
             return IRRewardField(field_path="event", stream_type=EVENT_STREAM, loc=loc)
         if parts == ("event", "holds"):
-            if self.reward_ir.event is None:
+            if self.reward_ir.event is None and self._bundle_field_expr("event") is None:
                 raise ResolveError("reward.event is not declared in this protocol", loc=loc)
             return IRRewardField(field_path="event.holds", stream_type=BOOLEAN_STREAM, loc=loc)
         if parts == ("composite",):
@@ -1998,6 +2176,9 @@ def _control_kind_dims(kind: str, loc: Loc | None) -> Dimensions:
     if kind == "placement":
         return DIMENSIONLESS   # categorical (channel identifiers); no unit arithmetic
     raise ResolveError(f"unknown control type {kind!r}", loc=loc)
+
+
+_PHASE_MODES = ("timed", "open", "timed_with_floor")
 
 
 def _to_milliseconds(n: A.NumberLit) -> float:

@@ -56,11 +56,17 @@ IR_JSON_VERSION = "0.1"
 def _protocol_ir_version(ir: IRProtocol) -> str:
     """Lowest IR-JSON version that represents this protocol.
 
-    A protocol that uses no named components and no weighted combine emits
-    v0.1 (byte-identical to the pre-v0.2 emitter); anything using the new
-    composite features emits v0.2.
+    A protocol that uses no named components, no weighted combine, and no
+    staged-protocol features (blocks / named reward bundles) emits v0.1
+    (byte-identical to the pre-v0.2 emitter); anything using the v0.2
+    composite or staging features emits v0.2.
     """
-    if ir.reward.components or ir.reward.combine == "weighted":
+    if (
+        ir.reward.components
+        or ir.reward.combine == "weighted"
+        or ir.blocks
+        or ir.reward_bundles
+    ):
         return "0.2"
     return IR_JSON_VERSION
 
@@ -335,7 +341,23 @@ def _emit_control(c: IRControl, ctx: _EmitCtx) -> dict:
 
 
 def _emit_phase(p: IRPhase) -> dict:
-    return {"name": p.name, "duration_ms": p.duration_ms, "output_muted": p.output_muted}
+    return {
+        "name": p.name,
+        "duration_ms": p.duration_ms,
+        "output_muted": p.output_muted,
+        "mode": p.mode,
+        "block": p.block,
+    }
+
+
+def _emit_block(b) -> dict:
+    return {
+        "name": b.name,
+        "thresholds": list(b.thresholds),
+        "reward": b.reward,
+        "output": list(b.outputs),
+        "inhibits": list(b.inhibits),
+    }
 
 
 def _emit_session(s: IRSession) -> dict:
@@ -393,6 +415,10 @@ def ir_to_json_obj(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> di
             if c.type_kind != "placement"
         },
         "session": _emit_session(ir.session),
+        "blocks": {name: _emit_block(b) for name, b in ir.blocks.items()},
+        "reward_bundles": {
+            name: _emit_reward(rb, ctx, version) for name, rb in ir.reward_bundles.items()
+        },
         "topological_order": list(ir.topological_order),
     }
 

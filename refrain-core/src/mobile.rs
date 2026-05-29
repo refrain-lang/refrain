@@ -60,6 +60,36 @@ impl From<CoreEvent> for Event {
     }
 }
 
+/// Mirror of `eval::PhaseSnapshot` / `eval_.Evaluator.current_phase`: the phase
+/// the most recent chunk ran under (aligned with `last_taps`). `index == -1`
+/// once terminal / before any chunk.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct PhaseInfo {
+    pub index: i64,
+    pub name: Option<String>,
+    pub mode: Option<String>,
+    pub output_muted: bool,
+    pub block: Option<String>,
+    pub remaining_s: Option<f64>,
+    pub clock_frozen: bool,
+    pub held: bool,
+}
+
+impl From<crate::eval::PhaseSnapshot> for PhaseInfo {
+    fn from(s: crate::eval::PhaseSnapshot) -> Self {
+        PhaseInfo {
+            index: s.index,
+            name: s.name,
+            mode: s.mode,
+            output_muted: s.output_muted,
+            block: s.block,
+            remaining_s: s.remaining_s,
+            clock_frozen: s.clock_frozen,
+            held: s.held,
+        }
+    }
+}
+
 /// Mobile-facing handle that owns one `eval::Evaluator`. Thin wrapper: every
 /// method forwards to the evaluator. The `Mutex` provides the interior
 /// mutability uniffi's `&self` methods need (the evaluator's chunk methods are
@@ -123,6 +153,31 @@ impl RefrainCore {
             .into_iter()
             .map(Event::from)
             .collect()
+    }
+
+    /// `eval::Evaluator::advance_phase`: end the current phase now, enter the
+    /// next; past the last phase transitions to `stopped`. Returns false if
+    /// already stopped. (Clinician "Next →".)
+    pub fn advance_phase(&self) -> bool {
+        self.inner.lock().unwrap().advance_phase()
+    }
+
+    /// `eval::Evaluator::hold`: extend a `timed_with_floor` phase past its floor
+    /// (`hold(false)` re-arms). Returns true if it took effect.
+    pub fn hold(&self, held: bool) -> bool {
+        self.inner.lock().unwrap().hold(held)
+    }
+
+    /// `eval::Evaluator::set_clock_frozen`: freeze/resume the phase clock on any
+    /// phase type (transport pause); orthogonal to output muting.
+    pub fn set_clock_frozen(&self, frozen: bool) {
+        self.inner.lock().unwrap().set_clock_frozen(frozen);
+    }
+
+    /// `eval::Evaluator::current_phase`: snapshot of the phase the most recent
+    /// chunk ran under (aligned with the taps).
+    pub fn current_phase(&self) -> PhaseInfo {
+        self.inner.lock().unwrap().current_phase().into()
     }
 }
 

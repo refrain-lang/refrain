@@ -1480,20 +1480,28 @@
       {
         "name": "warmup",
         "duration_ms": 90000.0,
-        "output_muted": true
+        "output_muted": true,
+        "mode": "timed",
+        "block": null
       },
       {
         "name": "training",
         "duration_ms": 1800000.0,
-        "output_muted": false
+        "output_muted": false,
+        "mode": "timed",
+        "block": null
       },
       {
         "name": "cooldown",
         "duration_ms": 30000.0,
-        "output_muted": true
+        "output_muted": true,
+        "mode": "timed",
+        "block": null
       }
     ]
   },
+  "blocks": {},
+  "reward_bundles": {},
   "topological_order": [
     "control/smr_target_pct",
     "control/theta_target_pct",

@@ -914,6 +914,8 @@
   "session": {
     "phases": []
   },
+  "blocks": {},
+  "reward_bundles": {},
   "topological_order": [
     "control/w_smr",
     "control/w_theta",
