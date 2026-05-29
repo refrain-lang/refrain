@@ -22,6 +22,7 @@ from refrain.ir_json import ir_to_json, ir_to_json_obj
 from refrain.parser import parse, parse_file
 from refrain.primitive_impls import BandpassImpl, HilbertFirImpl, SmoothImpl
 from refrain.resolver import resolve
+from tests.conftest_staged import HET as _HET_SRC
 
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
@@ -366,3 +367,19 @@ def test_v01_emission_byte_identical_for_examples():
         assert set(obj["reward"]) == {"continuous", "event"}, path.name
         errors = list(validator.iter_errors(obj))
         assert not errors, f"{path.name}: {[e.message for e in errors]}"
+
+
+# ---------------------------------------------------------------------------
+# Task 6: emit phase mode/block, blocks, reward_bundles
+# ---------------------------------------------------------------------------
+
+
+def test_ir_json_emits_blocks_and_phase_fields():
+    obj = ir_to_json_obj(resolve(parse(_HET_SRC)))
+    phases = obj["session"]["phases"]
+    assert phases[1]["mode"] == "timed_with_floor"
+    assert phases[1]["block"] == "beta_up"
+    assert obj["blocks"]["beta_up"]["reward"] == "br"
+    assert obj["blocks"]["beta_up"]["output"] == ["audio"]
+    assert "br" in obj["reward_bundles"]
+    assert obj["reward_bundles"]["br"]["continuous"] is not None
