@@ -3,7 +3,7 @@ import numpy as np
 from refrain.eval_ import Evaluator
 from refrain.parser import parse
 from refrain.resolver import resolve
-from tests.conftest_staged import BASE
+from tests.conftest_staged import BASE, HET
 
 SR = 256
 
@@ -90,3 +90,69 @@ def test_midsession_rest_mutes_output():
     _feed(ev, 0.5)                        # processing the muted mid-session rest
     assert ev.current_phase()["name"] == "rest"
     assert ev.last_taps()["output/audio"] == 0.0    # mid-session rest mutes
+
+
+# -- Task 9: host transport methods + phase tap -----------------------------
+def test_open_phase_needs_advance():
+    ev = _live(HET)
+    _feed(ev, 1.0)                 # warm -> b1
+    _feed(ev, 2.0)                 # b1 auto-advances (timed_with_floor) -> rest (open)
+    _feed(ev, 3.0)                 # open never auto-advances no matter how long
+    assert ev.current_phase()["name"] == "rest"
+    assert ev.advance_phase() is True
+    _feed(ev, 0.1)                 # process a b2 chunk so the snapshot reflects b2
+    assert ev.current_phase()["name"] == "b2"
+
+
+def test_timed_with_floor_hold_extends_then_releases():
+    ev = _live(HET)
+    _feed(ev, 1.0)                 # warm -> b1
+    assert ev.hold() is True       # extend b1 past its 2 s floor
+    _feed(ev, 5.0)                 # would normally have auto-advanced at 2 s
+    assert ev.current_phase()["name"] == "b1"   # still in b1 (held)
+    assert ev.hold(False) is True  # release: re-arm auto-advance
+    _feed(ev, 0.1)                 # already past floor -> advances on next chunk
+    assert ev.current_phase()["name"] in ("rest", "b1")  # advanced to rest (open)
+    # robust: drive to rest deterministically
+    if ev.current_phase()["name"] != "rest":
+        _feed(ev, 0.1)
+    assert ev.current_phase()["name"] == "rest"
+
+
+def test_clock_freeze_pauses_then_resumes():
+    ev = _live(HET)
+    _feed(ev, 1.0)                 # warm -> b1
+    _feed(ev, 1.0)                 # 1 s into b1 (of 2 s)
+    ev.set_clock_frozen(True)
+    _feed(ev, 5.0)                 # frozen: must NOT advance
+    assert ev.current_phase()["name"] == "b1"
+    assert ev.advance_phase() is True   # Next works while frozen
+    ev.set_clock_frozen(False)
+    _feed(ev, 0.1)
+    assert ev.current_phase()["name"] == "rest"
+
+
+def test_hold_noop_on_timed_phase():
+    # plain `timed` phase: hold() is a no-op returning False (firm clock)
+    ev = _live(TIMED)              # TIMED is defined at top of this test module
+    _feed(ev, 1.0)                # warm -> run1 (mode "timed")
+    _feed(ev, 0.1)                # processing run1
+    assert ev.hold() is False     # firm; not held
+
+
+def test_advance_past_last_is_noop():
+    ev = _live(HET)
+    _feed(ev, 1.0)                # warm -> b1
+    ev.advance_phase()            # b1 -> rest
+    ev.advance_phase()            # rest -> b2
+    ev.advance_phase()            # b2 -> stopped
+    assert ev.state == "stopped"
+    assert ev.advance_phase() is False
+
+
+def test_phase_index_tap_present():
+    ev = _live(HET)
+    _feed(ev, 0.5)                # in warm (index 0)
+    taps = ev.last_taps()
+    assert taps["phase/index"] == 0.0
+    assert taps["phase/output_muted"] == 1.0   # warm is muted

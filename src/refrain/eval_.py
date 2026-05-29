@@ -440,6 +440,41 @@ class Evaluator:
             return dict(self._rust.current_phase())
         return dict(self._phase_snapshot)
 
+    def advance_phase(self) -> bool:
+        """End the current phase now and enter the next; advancing past the
+        last phase transitions to `stopped`. Returns False if already stopped."""
+        if self._rust is not None:
+            return bool(self._rust.advance_phase())
+        if self._state == "stopped":
+            return False
+        self._goto_next_phase()
+        self._snapshot_current_phase()
+        return True
+
+    def hold(self, held: bool = True) -> bool:
+        """Extend a `timed_with_floor` phase past its floor (suppress
+        auto-advance). `hold(False)` re-arms the countdown. Returns True if it
+        took effect (current phase is timed_with_floor), else False (open holds
+        implicitly; `timed` is firm)."""
+        if self._rust is not None:
+            return bool(self._rust.hold(held))
+        ph = self._current_phase_ir()
+        if ph is None or ph.mode != "timed_with_floor":
+            return False
+        self._held = bool(held)
+        self._snapshot_current_phase()
+        return True
+
+    def set_clock_frozen(self, frozen: bool) -> None:
+        """Freeze/resume the phase clock on ANY phase type (transport pause).
+        While frozen no auto-advance fires; the countdown resumes from where it
+        stopped. Orthogonal to output muting. advance_phase() still works."""
+        if self._rust is not None:
+            self._rust.set_clock_frozen(bool(frozen))
+            return
+        self._clock_frozen = bool(frozen)
+        self._snapshot_current_phase()
+
     def start(self, *, skip_warmup: bool = False) -> None:
         """Enter `warmup` (or directly `run` if the protocol has no
         warmup-muted phase). Call before the first `step_chunk`.
@@ -1044,6 +1079,12 @@ class Evaluator:
                 taps[key] = bool(out_chunk.any())
             else:
                 taps[key] = float(out_chunk[-1])
+
+        # Phase cursor taps (numeric — not booleans, so not in
+        # _rust_bool_tap_keys / event-channel set).
+        taps["phase/index"] = float(self._phase_index)
+        _ph = self._current_phase_ir()
+        taps["phase/output_muted"] = 1.0 if (_ph is not None and _ph.output_muted) else 0.0
 
     def last_taps(self) -> dict[str, float | bool]:
         """Return last-sample values for internal taps from the most
