@@ -69,3 +69,9 @@ def test_phase_mode_string_literal():
       ] }
     ''')
     assert ir.session.phases[0].mode == "timed"
+
+
+def test_protocol_has_blocks_and_reward_bundles_maps():
+    ir = _resolve(BASE % 'session { phases = [ phase { name="w"; duration=1 s; output_muted=true } ] }')
+    assert ir.blocks == {}               # no blocks declared
+    assert ir.reward_bundles == {}       # no named bundles declared

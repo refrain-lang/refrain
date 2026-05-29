@@ -294,6 +294,25 @@ class IRPhase:
 
 
 @dataclass(frozen=True, slots=True)
+class IRBlock:
+    """A named activation set referenced by `phase.block`.
+
+    `thresholds` is declarative (validation + telemetry). `reward` names a
+    reward bundle (key into `IRProtocol.reward_bundles`) or None to use the
+    default top-level reward. `outputs` is the set of output channels that may
+    emit during this block (empty tuple => all channels). `inhibits` is the set
+    of inhibits that gate during this block (empty tuple => all inhibits).
+    """
+
+    name: str
+    thresholds: tuple[str, ...]
+    reward: str | None
+    outputs: tuple[str, ...]
+    inhibits: tuple[str, ...]
+    loc: Loc | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class IRSession:
     phases: tuple[IRPhase, ...]
     loc: Loc | None = None
@@ -340,6 +359,8 @@ class IRProtocol:
     topological_order: tuple[str, ...]
     budget: ResourceBudget
     amp_profile: AmpProfile | None
+    blocks: dict[str, IRBlock] = field(default_factory=dict)
+    reward_bundles: dict[str, IRReward] = field(default_factory=dict)
     loc: Loc | None = None
 
 
@@ -347,6 +368,7 @@ __all__ = [
     "IRArg",
     "IRArray",
     "IRBinaryOp",
+    "IRBlock",
     "IRBlockExpr",
     "IRBoolLit",
     "IRCall",

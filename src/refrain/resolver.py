@@ -223,6 +223,8 @@ class _Resolver:
                 state_kb=self._state_kb,
                 worst_case_us=self._worst_case_us,
             ),
+            blocks={},
+            reward_bundles={},
             amp_profile=self.amp,
             loc=proto.loc,
         )
