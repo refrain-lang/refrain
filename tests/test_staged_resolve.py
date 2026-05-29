@@ -1,8 +1,8 @@
 import pytest
 
 from refrain.parser import parse
-from refrain.resolver import resolve, ResolveError
-from tests.conftest_staged import BASE   # shared fixtures, already exist & validated
+from refrain.resolver import ResolveError, resolve
+from tests.conftest_staged import BASE, HET  # shared fixtures, already exist & validated
 
 
 def _resolve(src: str):
@@ -72,7 +72,9 @@ def test_phase_mode_string_literal():
 
 
 def test_protocol_has_blocks_and_reward_bundles_maps():
-    ir = _resolve(BASE % 'session { phases = [ phase { name="w"; duration=1 s; output_muted=true } ] }')
+    ir = _resolve(
+        BASE % 'session { phases = [ phase { name="w"; duration=1 s; output_muted=true } ] }'
+    )
     assert ir.blocks == {}               # no blocks declared
     assert ir.reward_bundles == {}       # no named bundles declared
 
@@ -103,3 +105,59 @@ def test_reward_bundle_disambiguated_from_component():
     # active bundle is bound per-block at eval time.
     assert ir.reward.continuous is None
     assert ir.reward.event is None
+
+
+def test_blocks_resolved():
+    ir = _resolve(HET)
+    assert set(ir.blocks) == {"beta_up", "alpha_up"}
+    assert ir.blocks["beta_up"].reward == "br"
+    assert ir.blocks["beta_up"].thresholds == ("bt",)
+    assert ir.blocks["beta_up"].outputs == ("audio",)
+
+
+def test_nonmuted_phase_without_block_errors():
+    src = HET.replace(
+        'phase { name = "b1";   duration = 2 s; block = "beta_up";  mode = timed_with_floor },',
+        'phase { name = "b1";   duration = 2 s; mode = timed_with_floor },',
+    )
+    with pytest.raises(ResolveError, match="non-muted phase"):
+        _resolve(src)
+
+
+def test_block_unknown_reward_errors():
+    src = HET.replace('reward = "br"', 'reward = "nope"', 1)
+    with pytest.raises(ResolveError, match="unknown reward bundle"):
+        _resolve(src)
+
+
+def test_block_unknown_threshold_errors():
+    src = HET.replace('threshold = "bt"', 'threshold = "nope"', 1)
+    with pytest.raises(ResolveError, match="unknown threshold"):
+        _resolve(src)
+
+
+def test_block_unknown_output_errors():
+    src = HET.replace('output = ["audio"]', 'output = ["nope"]', 1)
+    with pytest.raises(ResolveError, match="unknown output channel"):
+        _resolve(src)
+
+
+def test_block_unknown_inhibit_errors():
+    src = HET.replace(
+        'block "beta_up"  { threshold = "bt"; reward = "br"; output = ["audio"] }',
+        'block "beta_up"  { threshold = "bt"; reward = "br"; output = ["audio"]; '
+        'inhibit = ["nope"] }',
+        1,
+    )
+    with pytest.raises(ResolveError, match="unknown inhibit"):
+        _resolve(src)
+
+
+def test_phase_unknown_block_errors():
+    src = HET.replace(
+        'block = "beta_up";  mode = timed_with_floor',
+        'block = "ghost";  mode = timed_with_floor',
+        1,
+    )
+    with pytest.raises(ResolveError, match="unknown block"):
+        _resolve(src)
