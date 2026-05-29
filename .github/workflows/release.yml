@@ -34,10 +34,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14            # Apple Silicon
-            target: aarch64-apple-darwin
-          - os: macos-13            # Intel
-            target: x86_64-apple-darwin
+          # One fat macOS wheel (Intel + Apple Silicon) built on the arm64
+          # runner. Replaces the separate aarch64 (macos-14) + x86_64 (macos-13)
+          # legs: GitHub is phasing out Intel `macos-13` runners and the
+          # x86_64-apple-darwin job was stalling indefinitely in `queued`,
+          # blocking the whole Release. `universal2` keeps Intel support without
+          # needing an Intel runner.
+          - os: macos-14            # Apple Silicon runner; builds universal2
+            target: universal2-apple-darwin
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
           - os: windows-latest
