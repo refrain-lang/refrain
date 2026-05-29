@@ -75,3 +75,31 @@ def test_protocol_has_blocks_and_reward_bundles_maps():
     ir = _resolve(BASE % 'session { phases = [ phase { name="w"; duration=1 s; output_muted=true } ] }')
     assert ir.blocks == {}               # no blocks declared
     assert ir.reward_bundles == {}       # no named bundles declared
+
+
+def test_reward_bundle_disambiguated_from_component():
+    ir = _resolve('''
+    protocol "p" {
+      requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "e" {
+        from = "raw"
+        pipeline = [
+          bandpass(band: (11 Hz, 15 Hz), order: 4),
+          hilbert(), magnitude(), smooth(tau: 200 ms),
+        ]
+      }
+      threshold "t" { signal = "e"; type = absolute(5 uV) }
+      reward "beta_reward" { continuous = sigmoid("e" / "t", midpoint: 1.0, steepness: 3) }
+      output { audio = reward.continuous }
+      session { phases = [ phase { name="w"; duration=1 s; output_muted=true } ] }
+    }
+    ''')
+    assert "beta_reward" in ir.reward_bundles
+    assert ir.reward_bundles["beta_reward"].continuous is not None
+    assert ir.reward.components == ()   # existing weighted-component path untouched
+    # The default top-level reward stays empty (no "first bundle" synthesis);
+    # `reward.continuous` in output resolves via the bundle for its type, and the
+    # active bundle is bound per-block at eval time.
+    assert ir.reward.continuous is None
+    assert ir.reward.event is None

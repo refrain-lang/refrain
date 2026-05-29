@@ -162,6 +162,9 @@ class _Resolver:
         # Reward components (named reward / suppress-inhibit) for v0.2 composite.
         self._reward_components: list[IRRewardComponent] = []
 
+        # Named reward bundles (block-selectable, contain continuous/event).
+        self._reward_bundles: dict[str, IRReward] = {}
+
     # -- Top-level entry ----------------------------------------------------
 
     def resolve(self) -> IRProtocol:
@@ -224,7 +227,7 @@ class _Resolver:
                 worst_case_us=self._worst_case_us,
             ),
             blocks={},
-            reward_bundles={},
+            reward_bundles=dict(self._reward_bundles),
             amp_profile=self.amp,
             loc=proto.loc,
         )
@@ -426,9 +429,13 @@ class _Resolver:
                         self.inhibits[stmt.name] = self._resolve_inhibit(stmt)
                         self._topo.append(f"inhibit/{stmt.name}")
                 elif stmt.keyword == "reward":
-                    self._reward_components.append(
-                        self._resolve_reward_component(stmt, role="reward")
-                    )
+                    rfields = self._assignments_dict(stmt.body)
+                    if "continuous" in rfields or "event" in rfields:
+                        self._reward_bundles[stmt.name] = self._resolve_reward_bundle(stmt)
+                    else:
+                        self._reward_components.append(
+                            self._resolve_reward_component(stmt, role="reward")
+                        )
                 elif stmt.keyword == "custom":
                     self.customs[stmt.name] = self._resolve_custom(stmt)
                     self._topo.append(f"custom/{stmt.name}")
@@ -1224,17 +1231,48 @@ class _Resolver:
 
     # -- Reward -------------------------------------------------------------
 
+    def _resolve_reward_bundle(self, decl: A.NamedDecl) -> IRReward:
+        """Resolve a named, block-selectable reward bundle:
+        `reward "<name>" { continuous?, event? }`. Distinguished from a
+        weighted component (`signal`/`weight`) by these fields."""
+        fields = self._assignments_dict(decl.body)
+        extra = set(fields) - {"continuous", "event"}
+        if extra:
+            raise ResolveError(
+                f'reward "{decl.name}" bundle: unexpected field(s) {sorted(extra)}; '
+                "a block-selectable bundle uses `continuous` and/or `event`.",
+                loc=decl.loc,
+            )
+        cont = fields.get("continuous")
+        event = fields.get("event")
+        if cont is None and event is None:
+            raise ResolveError(
+                f'reward "{decl.name}" bundle must declare `continuous`, `event`, or both',
+                loc=decl.loc,
+            )
+        cont_ir = self._resolve_stream_expr(cont) if cont is not None else None
+        event_ir = self._resolve_stream_expr(event) if event is not None else None
+        return IRReward(
+            continuous=cont_ir, event=event_ir, combine="all", components=(), loc=decl.loc
+        )
+
     def _resolve_reward(self) -> None:
         components = tuple(self._reward_components)
         if self.reward_ast is None:
-            self.reward_ir = IRReward(continuous=None, event=None, components=components)
             if components:
                 # Components require a `reward { combine = "weighted" }` aggregator.
+                self.reward_ir = IRReward(continuous=None, event=None, components=components)
                 raise ResolveError(
                     "named reward/suppress components require a top-level "
                     '`reward { combine = "weighted" }` aggregator block',
                     loc=components[0].loc,
                 )
+            # No top-level reward section. When named bundles exist,
+            # `reward.continuous` / `reward.event` references in output resolve
+            # against the bundles for their stream TYPE (see _resolve_reward_field);
+            # the active bundle is bound per-block at eval time. The default reward
+            # stays empty so blockless / muted phases emit nothing.
+            self.reward_ir = IRReward(continuous=None, event=None, components=components)
             return
         fields = self._assignments_dict(self.reward_ast.body)
         cont_expr = fields.get("continuous")
@@ -1567,6 +1605,16 @@ class _Resolver:
             loc=expr.loc,
         )
 
+    def _bundle_field_expr(self, field: str) -> IRExpr | None:
+        """Return a representative declared bundle's `continuous`/`event` expr,
+        used only to type `reward.*` references when no top-level reward declares
+        the field. Runtime bundle SELECTION is per active block (evaluator)."""
+        for bundle in self._reward_bundles.values():
+            expr = getattr(bundle, field)
+            if expr is not None:
+                return expr
+        return None
+
     def _resolve_reward_field(self, parts: tuple[str, ...], loc: Loc | None) -> IRRewardField:
         if self.reward_ir is None:
             raise ResolveError(
@@ -1574,19 +1622,20 @@ class _Resolver:
                 loc=loc,
             )
         if parts == ("continuous",):
-            if self.reward_ir.continuous is None:
+            cont_expr = self.reward_ir.continuous or self._bundle_field_expr("continuous")
+            if cont_expr is None:
                 raise ResolveError("reward.continuous is not declared in this protocol", loc=loc)
             return IRRewardField(
                 field_path="continuous",
-                stream_type=_expr_stream_type(self.reward_ir.continuous),
+                stream_type=_expr_stream_type(cont_expr),
                 loc=loc,
             )
         if parts == ("event",):
-            if self.reward_ir.event is None:
+            if self.reward_ir.event is None and self._bundle_field_expr("event") is None:
                 raise ResolveError("reward.event is not declared in this protocol", loc=loc)
             return IRRewardField(field_path="event", stream_type=EVENT_STREAM, loc=loc)
         if parts == ("event", "holds"):
-            if self.reward_ir.event is None:
+            if self.reward_ir.event is None and self._bundle_field_expr("event") is None:
                 raise ResolveError("reward.event is not declared in this protocol", loc=loc)
             return IRRewardField(field_path="event.holds", stream_type=BOOLEAN_STREAM, loc=loc)
         if parts == ("composite",):
