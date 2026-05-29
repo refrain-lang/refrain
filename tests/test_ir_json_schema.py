@@ -9,10 +9,16 @@ into the check_equivalence drift gate)."""
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
 import pytest
+
+from refrain.ir_json import ir_to_json_obj
+from refrain.parser import parse
+from refrain.resolver import resolve
+from tests.conftest_staged import HET
 
 jsonschema = pytest.importorskip("jsonschema")
 
@@ -96,3 +102,29 @@ def test_missing_required_top_level_field_is_rejected(validators):
     doc = _valid_envelope()
     del doc["sample_rate_hz"]
     assert not validators["0.1"].is_valid(doc)
+
+
+def _het_obj():
+    """Resolve + emit the HET (staged, two-block) protocol IR-JSON."""
+    return ir_to_json_obj(resolve(parse(HET)))
+
+
+def _v02_schema():
+    return json.loads(SCHEMA_BY_VERSION["0.2"].read_text())
+
+
+def test_staged_protocol_emits_v02():
+    # A protocol using blocks / reward bundles must be tagged v0.2 (not v0.1),
+    # since those fields live in the v0.2 schema.
+    assert _het_obj()["refrain_ir_version"] == "0.2"
+
+
+def test_staged_ir_validates_against_schema():
+    jsonschema.validate(_het_obj(), _v02_schema())   # raises on failure
+
+
+def test_schema_rejects_bad_phase_mode():
+    obj = copy.deepcopy(_het_obj())
+    obj["session"]["phases"][1]["mode"] = "bogus_mode"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(obj, _v02_schema())

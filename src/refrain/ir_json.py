@@ -56,11 +56,17 @@ IR_JSON_VERSION = "0.1"
 def _protocol_ir_version(ir: IRProtocol) -> str:
     """Lowest IR-JSON version that represents this protocol.
 
-    A protocol that uses no named components and no weighted combine emits
-    v0.1 (byte-identical to the pre-v0.2 emitter); anything using the new
-    composite features emits v0.2.
+    A protocol that uses no named components, no weighted combine, and no
+    staged-protocol features (blocks / named reward bundles) emits v0.1
+    (byte-identical to the pre-v0.2 emitter); anything using the v0.2
+    composite or staging features emits v0.2.
     """
-    if ir.reward.components or ir.reward.combine == "weighted":
+    if (
+        ir.reward.components
+        or ir.reward.combine == "weighted"
+        or ir.blocks
+        or ir.reward_bundles
+    ):
         return "0.2"
     return IR_JSON_VERSION
 
