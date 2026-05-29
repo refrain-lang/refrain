@@ -12,6 +12,13 @@
 
 **Conventions for every task:** run Python tests with `.venv/bin/python -m pytest`. The venv was created during worktree setup; if absent run `python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"`. Commit after each task with the message shown.
 
+> ## ⚠️ ERRATA / API reference (read first — verified against the codebase)
+> Several illustrative snippets below were drafted before validation. The following are the **authoritative** facts; when a task's code conflicts, these win:
+> - **Parser API:** `from refrain.parser import parse` then `resolve(parse(src))`. There is **no** `parse_protocol` — every test snippet that writes `parse_protocol(...)` means `parse(...)`. `resolve` takes an optional amp-profile second arg; omit it (a default is used).
+> - **Protocol fixtures:** `BASE`, `HET`, `PCT_SRC` live in `tests/conftest_staged.py` (Task A0, already created and validated). **Import them** — do NOT hand-author protocol DSL inline. BASE resolves today; PCT_SRC resolves today (its `mode` field is currently ignored); HET fails only on the `block` keyword until Task 4.
+> - **DSL syntax is case-sensitive and specific** (see `examples/smr_cz.refrain`): units are `Hz`/`uV`/`ms`/`min`/`s`/`%` (NOT lowercase); `requires { sample_rate = ">= 256 Hz"; channels = [...] }`; `input "<name>" { montage = referential(active: "Cz", reference: "linked_ears") }`; derives use `from = "<src>"` + `pipeline = [ bandpass(band: (11 Hz, 15 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 200 ms) ]` (there is **no `|>` pipe operator**); `threshold "t" { signal = "e"; type = absolute(5 uV) }` or `type = percentile(target_pct: 75, window: 2 s)`.
+> - **Reuse, don't reinvent:** extend the existing impls/helpers named in each task; do not add new primitives, parsers, or DSP. If a task seems to need a new primitive, that's a signal to STOP and report — it almost certainly already exists.
+
 ---
 
 ## File structure
