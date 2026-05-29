@@ -993,10 +993,15 @@ impl Evaluator {
         let n = chunk.len();
         let mut env: HashMap<String, Val> = HashMap::new();
 
-        // Taps snapshot for this chunk (mirrors `_capture_taps`). Built
-        // alongside the per-chunk computation — booleans stored as 0.0/1.0.
-        // Populated identically in warmup and run (NOT warmup-suppressed).
-        let mut taps: BTreeMap<String, f64> = BTreeMap::new();
+        // Taps snapshot for this chunk (mirrors `_capture_taps`). Booleans
+        // stored as 0.0/1.0; populated identically in warmup and run.
+        // Like the Python `_capture_taps`, this UPDATES the previous snapshot
+        // in place rather than rebuilding it, so a conditionally-written key
+        // (e.g. `reward/continuous`, tapped only while a reward bundle is
+        // active) persists with its last value once any chunk has written it.
+        // For stable-keyset (blockless) protocols this is identical to a fresh
+        // map; for staged protocols it keeps the Rust keyset matching Python's.
+        let mut taps: BTreeMap<String, f64> = std::mem::take(&mut self.last_taps);
 
         // Staged-protocol phase context for this chunk. All values are owned so
         // nothing borrows `self` across the mutable stage iterations below.
