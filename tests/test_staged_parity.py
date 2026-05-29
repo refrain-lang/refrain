@@ -96,7 +96,7 @@ def _assert_parity(py, rust):
     assert pe == re, "event streams differ"
     assert pp == rp, "phase introspection differs"
     assert len(pt) == len(rt)
-    for a, b in zip(pt, rt):
+    for a, b in zip(pt, rt, strict=True):
         assert set(a) == set(b), f"tap key-set differs: {set(a) ^ set(b)}"
         for k in a:
             assert a[k] == b[k], f"tap {k!r} differs: {a[k]} vs {b[k]}"
@@ -128,10 +128,12 @@ def test_parity_clock_freeze_and_hold():
 
 
 def test_parity_percentile_freeze():
+    # PCT_SRC phases are 1 s each; the muted rest is phase 2 (samples 2*SR..3*SR).
+    rest_start, rest_end = 2 * SR, 3 * SR
+
     # Big spike during the muted rest; both backends must freeze the window.
     def sig(n, pushed):
-        # rest is phase 2 (samples 512..768); spike there.
-        amp = 50.0 if 512 <= pushed < 768 else 1.0
+        amp = 50.0 if rest_start <= pushed < rest_end else 1.0
         return _sine_3ch(n, pushed, amp=amp)
 
     script = [("feed", 1.0), ("feed", 1.0), ("feed", 1.0), ("feed", 1.0)]
