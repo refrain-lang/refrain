@@ -1358,26 +1358,80 @@ class _Resolver:
                 )
             phase_fields = self._assignments_dict(elt.body)
             name_expr = phase_fields.get("name")
-            duration_expr = phase_fields.get("duration")
-            if name_expr is None or duration_expr is None:
+            if name_expr is None:
                 raise ResolveError(
-                    "session phase needs both `name` and `duration` fields",
+                    "session phase needs a `name` field",
                     loc=elt.loc,
                 )
             if not isinstance(name_expr, A.StringLit):
                 raise ResolveError("phase.name must be a string", loc=name_expr.loc)
-            if not isinstance(duration_expr, A.NumberLit) or duration_expr.unit not in ("ms", "s", "min"):
+            # -- mode --
+            _valid_modes = ("timed", "open", "timed_with_floor")
+            mode_expr = phase_fields.get("mode")
+            if mode_expr is None:
+                mode = "timed"
+            elif isinstance(mode_expr, A.NameRef):
+                if mode_expr.name not in _valid_modes:
+                    raise ResolveError(
+                        f"phase.mode must be one of {_valid_modes}",
+                        loc=mode_expr.loc,
+                    )
+                mode = mode_expr.name
+            elif isinstance(mode_expr, A.StringLit):
+                if mode_expr.value not in _valid_modes:
+                    raise ResolveError(
+                        f"phase.mode must be one of {_valid_modes}",
+                        loc=mode_expr.loc,
+                    )
+                mode = mode_expr.value
+            else:
                 raise ResolveError(
-                    "phase.duration must be a numeric literal in ms/s/min",
-                    loc=duration_expr.loc,
+                    "phase.mode must be a bare identifier or string literal",
+                    loc=mode_expr.loc,
                 )
-            duration_ms = _to_milliseconds(duration_expr)
+            # -- block --
+            block_expr = phase_fields.get("block")
+            if block_expr is None:
+                block = None
+            elif isinstance(block_expr, A.StringLit):
+                block = block_expr.value
+            else:
+                raise ResolveError(
+                    "phase.block must be a string literal",
+                    loc=block_expr.loc,
+                )
+            # -- duration --
+            duration_expr = phase_fields.get("duration")
+            if mode == "open":
+                if duration_expr is not None:
+                    if not isinstance(duration_expr, A.NumberLit) or duration_expr.unit not in ("ms", "s", "min"):
+                        raise ResolveError(
+                            "phase.duration must be a numeric literal in ms/s/min",
+                            loc=duration_expr.loc,
+                        )
+                    duration_ms = _to_milliseconds(duration_expr)
+                else:
+                    duration_ms = 0.0
+            else:
+                if duration_expr is None:
+                    raise ResolveError(
+                        "session phase needs a `duration` field (omit only when mode = open)",
+                        loc=elt.loc,
+                    )
+                if not isinstance(duration_expr, A.NumberLit) or duration_expr.unit not in ("ms", "s", "min"):
+                    raise ResolveError(
+                        "phase.duration must be a numeric literal in ms/s/min",
+                        loc=duration_expr.loc,
+                    )
+                duration_ms = _to_milliseconds(duration_expr)
             output_muted = self._bool_field(phase_fields, "output_muted", default=False)
             phases.append(
                 IRPhase(
                     name=name_expr.value,
                     duration_ms=duration_ms,
                     output_muted=output_muted,
+                    mode=mode,
+                    block=block,
                     loc=elt.loc,
                 )
             )

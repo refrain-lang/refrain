@@ -288,6 +288,8 @@ class IRPhase:
     name: str
     duration_ms: float
     output_muted: bool
+    mode: str = "timed"          # "timed" | "open" | "timed_with_floor"
+    block: str | None = None     # name of the block active during this phase
     loc: Loc | None = None
 
 
