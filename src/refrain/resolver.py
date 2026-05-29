@@ -1349,84 +1349,79 @@ class _Resolver:
             return IRSession(phases=(), loc=self.session_ast.loc)
         if not isinstance(phases_ast, A.Array):
             raise ResolveError("session.phases must be an array", loc=phases_ast.loc)
-        phases: list[IRPhase] = []
-        for elt in phases_ast.elements:
-            if not isinstance(elt, A.BlockExpr) or elt.name != "phase":
-                raise ResolveError(
-                    "session.phases entries must be `phase { ... }` blocks",
-                    loc=elt.loc,
-                )
-            phase_fields = self._assignments_dict(elt.body)
-            name_expr = phase_fields.get("name")
-            if name_expr is None:
-                raise ResolveError(
-                    "session phase needs a `name` field",
-                    loc=elt.loc,
-                )
-            if not isinstance(name_expr, A.StringLit):
-                raise ResolveError("phase.name must be a string", loc=name_expr.loc)
-            # -- mode --
-            mode_expr = phase_fields.get("mode")
-            if mode_expr is None:
-                mode = "timed"
-            elif isinstance(mode_expr, A.NameRef):
-                if mode_expr.name not in _PHASE_MODES:
-                    raise ResolveError(
-                        'phase.mode must be "timed", "open", or "timed_with_floor"',
-                        loc=mode_expr.loc,
-                    )
-                mode = mode_expr.name
-            elif isinstance(mode_expr, A.StringLit):
-                if mode_expr.value not in _PHASE_MODES:
-                    raise ResolveError(
-                        'phase.mode must be "timed", "open", or "timed_with_floor"',
-                        loc=mode_expr.loc,
-                    )
-                mode = mode_expr.value
-            else:
-                raise ResolveError(
-                    "phase.mode must be a bare identifier or string literal",
-                    loc=mode_expr.loc,
-                )
-            # -- block --
-            block_expr = phase_fields.get("block")
-            if block_expr is None:
-                block = None
-            elif isinstance(block_expr, A.StringLit):
-                block = block_expr.value
-            else:
-                raise ResolveError(
-                    'phase.block must be a quoted string naming a block (e.g. block = "beta_up")',
-                    loc=block_expr.loc,
-                )
-            # -- duration --
-            duration_expr = phase_fields.get("duration")
-            if duration_expr is not None:
-                if not isinstance(duration_expr, A.NumberLit) or duration_expr.unit not in ("ms", "s", "min"):
-                    raise ResolveError(
-                        "phase.duration must be a numeric literal in ms/s/min",
-                        loc=duration_expr.loc,
-                    )
-                duration_ms = _to_milliseconds(duration_expr)
-            elif mode != "open":
-                raise ResolveError(
-                    "session phase needs a `duration` field (omit only when mode = open)",
-                    loc=elt.loc,
-                )
-            else:
-                duration_ms = 0.0
-            output_muted = self._bool_field(phase_fields, "output_muted", default=False)
-            phases.append(
-                IRPhase(
-                    name=name_expr.value,
-                    duration_ms=duration_ms,
-                    output_muted=output_muted,
-                    mode=mode,
-                    block=block,
-                    loc=elt.loc,
-                )
-            )
+        phases = [self._resolve_phase(elt) for elt in phases_ast.elements]
         return IRSession(phases=tuple(phases), loc=self.session_ast.loc)
+
+    def _resolve_phase(self, elt: A.Expr) -> IRPhase:
+        if not isinstance(elt, A.BlockExpr) or elt.name != "phase":
+            raise ResolveError(
+                "session.phases entries must be `phase { ... }` blocks",
+                loc=elt.loc,
+            )
+        phase_fields = self._assignments_dict(elt.body)
+        name_expr = phase_fields.get("name")
+        if name_expr is None:
+            raise ResolveError("session phase needs a `name` field", loc=elt.loc)
+        if not isinstance(name_expr, A.StringLit):
+            raise ResolveError("phase.name must be a string", loc=name_expr.loc)
+        mode = self._resolve_phase_mode(phase_fields.get("mode"))
+        block = self._resolve_phase_block(phase_fields.get("block"))
+        duration_ms = self._resolve_phase_duration(phase_fields.get("duration"), mode, elt)
+        output_muted = self._bool_field(phase_fields, "output_muted", default=False)
+        return IRPhase(
+            name=name_expr.value,
+            duration_ms=duration_ms,
+            output_muted=output_muted,
+            mode=mode,
+            block=block,
+            loc=elt.loc,
+        )
+
+    def _resolve_phase_mode(self, mode_expr: A.Expr | None) -> str:
+        if mode_expr is None:
+            return "timed"
+        if isinstance(mode_expr, A.NameRef):
+            value = mode_expr.name
+        elif isinstance(mode_expr, A.StringLit):
+            value = mode_expr.value
+        else:
+            raise ResolveError(
+                "phase.mode must be a bare identifier or string literal",
+                loc=mode_expr.loc,
+            )
+        if value not in _PHASE_MODES:
+            raise ResolveError(
+                'phase.mode must be "timed", "open", or "timed_with_floor"',
+                loc=mode_expr.loc,
+            )
+        return value
+
+    def _resolve_phase_block(self, block_expr: A.Expr | None) -> str | None:
+        if block_expr is None:
+            return None
+        if isinstance(block_expr, A.StringLit):
+            return block_expr.value
+        raise ResolveError(
+            'phase.block must be a quoted string naming a block (e.g. block = "beta_up")',
+            loc=block_expr.loc,
+        )
+
+    def _resolve_phase_duration(
+        self, duration_expr: A.Expr | None, mode: str, elt: A.Expr
+    ) -> float:
+        if duration_expr is not None:
+            if not isinstance(duration_expr, A.NumberLit) or duration_expr.unit not in ("ms", "s", "min"):
+                raise ResolveError(
+                    "phase.duration must be a numeric literal in ms/s/min",
+                    loc=duration_expr.loc,
+                )
+            return _to_milliseconds(duration_expr)
+        if mode != "open":
+            raise ResolveError(
+                "session phase needs a `duration` field (omit only when mode = open)",
+                loc=elt.loc,
+            )
+        return 0.0
 
     # -- Expression resolution ---------------------------------------------
 
