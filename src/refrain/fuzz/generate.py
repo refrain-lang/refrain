@@ -93,8 +93,10 @@ def _pivotal_scenarios_for_leaf(
     leaves at a favourable baseline (no specific suppression — quiet); FALSE-
     pivotal drives `leaf` to its FALSE side.
 
-    The leaf is always evaluated post-window-fill, so percentile leaves use
-    the long-form scenario; absolute leaves can use shorter scenarios.
+    Every pivotal scenario fills the longest percentile window across the
+    surface before the spike (see the comment below) so the oracle's pre-fill
+    DON'T-CARE region cannot swallow the whole scenario — this holds even when
+    the pivoted leaf is absolute and needs no warmup of its own.
     """
     fs = surface.sample_rate_hz
     leaf_id = f"leaf:{leaf.op}:{leaf.signal}:{leaf.threshold}"
