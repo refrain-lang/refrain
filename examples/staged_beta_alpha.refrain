@@ -1,0 +1,101 @@
+// Staged / segmented session: beta-up then alpha-up at Cz, one baseline.
+//
+// Demonstrates Refrain's staged-protocol features (R1-R4 + R6):
+//   - N short training blocks with rests between them, one baseline up front
+//   - heterogeneous blocks: block 1 trains beta-up, block 2 alpha-up
+//   - the three phase types: timed, open (clinician ends it), timed_with_floor
+//   - named blocks that select which threshold / reward bundle / output is live
+//
+// Clinical shape: 2 min warmup (settle + baseline) -> 5 min beta-up (clinician
+// may extend or end early) -> open rest (ended when the patient is ready) ->
+// 5 min alpha-up -> 2 min timed rest -> 30 s cooldown.
+//
+// Derives for BOTH bands run the whole session (always-on), so each block's
+// signal is already warm when it goes active — no filter re-settling at the
+// boundary. Thresholds are baseline-fixed `absolute(value: <control>)`: the
+// recorder measures each band during warmup and seeds the control once at
+// warmup->run (immune to rest-period artifact; see R5/R6).
+
+protocol "staged_beta_alpha_v1" {
+
+  meta {
+    version     = "1.0.0"
+    description = "Staged beta-up then alpha-up uptraining at Cz, single baseline"
+    population  = "adults"
+    indication  = "attention_then_relaxation"
+  }
+
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels    = ["Cz", "A1", "A2"]
+  }
+
+  input "raw" {
+    montage = referential(active: "Cz", reference: "linked_ears")
+  }
+
+  // Both band envelopes computed for the whole session (warm at every boundary).
+  derive "beta_envelope" {
+    from = "raw"
+    pipeline = [
+      bandpass(band: (15 Hz, 20 Hz), order: 4),
+      hilbert(),
+      magnitude(),
+      smooth(tau: 250 ms),
+    ]
+  }
+
+  derive "alpha_envelope" {
+    from = "raw"
+    pipeline = [
+      bandpass(band: (8 Hz, 12 Hz), order: 4),
+      hilbert(),
+      magnitude(),
+      smooth(tau: 250 ms),
+    ]
+  }
+
+  // Baseline-fixed thresholds. The recorder seeds `beta_uv` / `alpha_uv` once
+  // from the warmup tail; setting the control freezes each threshold at the
+  // measured value for the whole session.
+  threshold "beta_t"  { signal = "beta_envelope";  type = absolute(value: beta_uv) }
+  threshold "alpha_t" { signal = "alpha_envelope"; type = absolute(value: alpha_uv) }
+
+  // Named, block-selectable reward bundles (continuous gain + discrete chime).
+  reward "beta_reward" {
+    continuous = sigmoid("beta_envelope" / "beta_t", midpoint: 1.0, steepness: 3)
+    event      = dwell(condition: above("beta_envelope", "beta_t"), duration: 500 ms)
+  }
+  reward "alpha_reward" {
+    continuous = sigmoid("alpha_envelope" / "alpha_t", midpoint: 1.0, steepness: 3)
+    event      = dwell(condition: above("alpha_envelope", "alpha_t"), duration: 500 ms)
+  }
+
+  // Output channels declared once. `reward.*` resolves to the ACTIVE block's
+  // bundle, so the same channels play beta feedback in block 1 and alpha in
+  // block 2.
+  output {
+    audio_gain  = reward.continuous
+    audio_chime = reward.event
+  }
+
+  // Blocks bundle the threshold + reward + outputs that are live per phase.
+  block "beta_up"  { threshold = "beta_t";  reward = "beta_reward";  output = ["audio_gain", "audio_chime"] }
+  block "alpha_up" { threshold = "alpha_t"; reward = "alpha_reward"; output = ["audio_gain", "audio_chime"] }
+
+  controls {
+    beta_uv  = voltage { default = 5 uV; label = "Beta threshold (seeded at warmup)";  live_tunable = true }
+    alpha_uv = voltage { default = 5 uV; label = "Alpha threshold (seeded at warmup)"; live_tunable = true }
+  }
+
+  session {
+    phases = [
+      phase { name = "warmup";   duration = 120 s; output_muted = true },                  // baseline + settle
+      phase { name = "block1";   duration = 5 min;  block = "beta_up";  mode = timed_with_floor },
+      phase { name = "rest1";    output_muted = true; mode = open },                       // clinician ends it
+      phase { name = "block2";   duration = 5 min;  block = "alpha_up"; mode = timed_with_floor },
+      phase { name = "rest2";    duration = 2 min;  output_muted = true },                 // timed rest
+      phase { name = "cooldown"; duration = 30 s;   output_muted = true },
+    ]
+  }
+}
