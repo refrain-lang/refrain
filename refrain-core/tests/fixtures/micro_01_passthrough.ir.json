@@ -93,6 +93,8 @@
   "session": {
     "phases": []
   },
+  "blocks": {},
+  "reward_bundles": {},
   "topological_order": [
     "input/raw"
   ]

@@ -212,6 +212,11 @@ pub struct Percentile {
     target_pct: ControlCell,
     cap: usize,
     buf: VecDeque<f64>,
+    /// When false, `step` still EMITS the current percentile over the existing
+    /// buffer but does NOT ingest incoming samples — the evaluator freezes the
+    /// window during mid-session muted rests (R6), mirroring
+    /// `PercentileImpl.set_ingesting`.
+    ingesting: bool,
 }
 
 impl Percentile {
@@ -223,18 +228,32 @@ impl Percentile {
     /// keep a clone in its control registry.
     pub fn from_cell(target_pct: ControlCell, window_samples: usize) -> Self {
         let cap = window_samples.max(1);
-        Percentile { target_pct, cap, buf: VecDeque::with_capacity(cap) }
+        Percentile { target_pct, cap, buf: VecDeque::with_capacity(cap), ingesting: true }
+    }
+
+    /// Freeze (false) or resume (true) buffer ingestion. A frozen window keeps
+    /// emitting over its existing buffer (R6 mid-session-rest handling).
+    pub fn set_ingesting(&mut self, ingesting: bool) {
+        self.ingesting = ingesting;
     }
 
     pub fn step(&mut self, x: &[f64]) -> Vec<f64> {
         let target_pct = *self.target_pct.lock().unwrap();
         let mut out = Vec::with_capacity(x.len());
         for &v in x {
-            if self.buf.len() == self.cap {
-                self.buf.pop_front();
+            if self.ingesting {
+                if self.buf.len() == self.cap {
+                    self.buf.pop_front();
+                }
+                self.buf.push_back(v);
             }
-            self.buf.push_back(v);
-            out.push(percentile_linear(&self.buf, target_pct));
+            // A frozen empty buffer (e.g. window never populated) emits 0.0,
+            // matching the Python `np.zeros(1)` fallback.
+            if self.buf.is_empty() {
+                out.push(0.0);
+            } else {
+                out.push(percentile_linear(&self.buf, target_pct));
+            }
         }
         out
     }
