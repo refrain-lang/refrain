@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Union
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +34,7 @@ class BandNoise:
     rms_uv: float
 
 
-BandContent = Union[Tone, BandNoise]
+BandContent = Tone | BandNoise
 
 
 @dataclass(frozen=True, slots=True)

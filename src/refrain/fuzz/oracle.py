@@ -19,13 +19,15 @@ This file is built incrementally:
 from __future__ import annotations
 
 import bisect
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Iterable, Sequence
+from typing import TYPE_CHECKING
 
 import numpy as np
 from scipy.signal import freqz_sos
 
-from .scenario import DontCareReason
+from .scenario import DontCareReason, Tone
+from .surface import ConditionLeaf, ConditionNode
 
 if TYPE_CHECKING:
     from .scenario import Scenario
@@ -166,6 +168,23 @@ def combine_condition_tree(op: str, kids: Iterable[bool | None]) -> bool | None:
     raise ValueError(f"unsupported condition op: {op!r}")
 
 
+def _muted_intervals(muted_mask: Sequence[bool], n: int) -> list[DontCareInterval]:
+    """Collapse a per-sample muted mask into PHASE_MUTED DON'T-CARE intervals."""
+    intervals: list[DontCareInterval] = []
+    in_muted = False
+    mstart = 0
+    for i, m in enumerate(muted_mask):
+        if m and not in_muted:
+            in_muted = True
+            mstart = i
+        elif not m and in_muted:
+            in_muted = False
+            intervals.append(DontCareInterval(mstart, i, DontCareReason.PHASE_MUTED))
+    if in_muted:
+        intervals.append(DontCareInterval(mstart, n, DontCareReason.PHASE_MUTED))
+    return intervals
+
+
 def apply_dwell(
     truth_per_sample: Sequence[bool | None],
     *,
@@ -210,18 +229,8 @@ def apply_dwell(
             transitions.append(i)
         last_t = t
 
-    # Phase-muted intervals: collapse runs and emit DON'T-CARE intervals.
-    in_muted = False
-    mstart = 0
-    for i, m in enumerate(muted_mask):
-        if m and not in_muted:
-            in_muted = True
-            mstart = i
-        elif not m and in_muted:
-            in_muted = False
-            dont_care.append(DontCareInterval(mstart, i, DontCareReason.PHASE_MUTED))
-    if in_muted:
-        dont_care.append(DontCareInterval(mstart, n, DontCareReason.PHASE_MUTED))
+    # Phase-muted intervals: the output is suppressed there → DON'T-CARE.
+    dont_care.extend(_muted_intervals(muted_mask, n))
 
     # Drop fire events that land inside muted intervals (output suppressed).
     # O(F×M) scan — fine for v1 (few events, ≤handful of intervals); if either
@@ -331,7 +340,6 @@ def _predicted_envelope_timeline(derive, scenario, n_samples, fs) -> list[float]
     env = [_noise_floor_envelope(derive, fs)] * n_samples
     if derive.sos is None:
         return env
-    from .scenario import Tone
     for seg in scenario.segments:
         if seg.channel != derive.channel:
             continue
@@ -345,8 +353,7 @@ def _predicted_envelope_timeline(derive, scenario, n_samples, fs) -> list[float]
             a = int(round(seg.start_s * fs))
             b = int(round(seg.end_s * fs))
             for i in range(max(0, a), min(n_samples, b)):
-                if steady > env[i]:
-                    env[i] = steady
+                env[i] = max(env[i], steady)
     return env
 
 
@@ -409,7 +416,6 @@ def _ordinal_percentile_truth(env: list[float], thr, window_samples: int) -> lis
 
 
 def _walk_condition(node, leaf_truth, n_samples) -> list[bool | None]:
-    from .surface import ConditionLeaf, ConditionNode
     if isinstance(node, ConditionLeaf):
         return [
             _flip_for_op(node.op, leaf_truth[(node.signal, node.threshold)][i])
@@ -460,8 +466,7 @@ def _add_pre_fill_dont_care(timeline, surface, fs: int, n_samples: int) -> Expec
     for thr in surface.thresholds:
         if thr.kind == "percentile":
             w = int(round(thr.percentile_window_ms / 1000.0 * fs))
-            if w > longest:
-                longest = w
+            longest = max(longest, w)
     if longest <= 0:
         return timeline
     end = min(n_samples, longest)
