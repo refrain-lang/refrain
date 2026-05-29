@@ -359,6 +359,7 @@ def test_v01_emission_byte_identical_for_examples():
         if path.name in {
             "othmer_ilf_cz_pz.refrain",            # needs a library loader (extends)
             "dyadic_alpha_coherence_pz.refrain",   # two-participant layout (Pz_A/Pz_B), not on Q21
+            "staged_beta_alpha.refrain",           # staged protocol: blocks/bundles => v0.2 by design
         }:
             continue
         ir = resolve(parse_file(path), _AMP)
