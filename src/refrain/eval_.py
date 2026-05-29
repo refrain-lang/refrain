@@ -822,9 +822,22 @@ class Evaluator:
                 d.expression, stream_values, control_chunks_cache, actual_chunk_size
             )
 
+        # Freeze adaptive-window ingestion during mid-session muted rests so a
+        # later block's window isn't polluted by rest-period artifact: ingest
+        # during the initial phase (warmup populates) and any non-muted phase;
+        # FREEZE during `output_muted` phases AFTER the first ("one baseline up
+        # front"). Equivalent to: output_muted and phase_index > 0.
+        _ph = self._current_phase_ir()
+        freeze_ingest = (
+            bool(_ph.output_muted and self._phase_index > 0) if _ph is not None else False
+        )
+
         # Thresholds: per-threshold call, fed the signal it tracks.
         for t in self.ir.thresholds.values():
             impl = self._impls[id(t.threshold_call)]
+            setter = getattr(impl, "set_ingesting", None)
+            if setter is not None:
+                setter(not freeze_ingest)
             if isinstance(impl, impls.AbsoluteThresholdImpl):
                 stream_values[t.canonical_name] = impl.step(np.zeros(actual_chunk_size))
             else:

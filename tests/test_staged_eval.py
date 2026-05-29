@@ -3,7 +3,7 @@ import numpy as np
 from refrain.eval_ import Evaluator
 from refrain.parser import parse
 from refrain.resolver import resolve
-from tests.conftest_staged import BASE, HET
+from tests.conftest_staged import BASE, HET, PCT_SRC
 
 SR = 256
 
@@ -245,3 +245,60 @@ def test_setcontrol_on_inactive_block_threshold_during_warmup():
     ev.set_control("at_uv", new_at)  # seed inactive block's threshold-control
     _feed(ev, 0.5)
     assert ev.last_taps()["threshold/at"] == new_at  # took effect though b2 inactive
+
+
+# PCT_SRC tracks a percentile threshold over the derived envelope `e`, which
+# is built from `referential(active:"Cz", reference:"linked_ears")`. With a
+# single-channel source the linked-ears fallback is common-average over the
+# one channel, so `Cz - mean(Cz) == 0` and the envelope is identically zero
+# regardless of input — the percentile window would only ever see zeros.
+# Supplying ear channels (A1/A2 held at 0) makes the montage pass Cz through,
+# so an in-band sine produces a real, non-zero envelope to populate the window.
+_PCT_CHANS = ("Cz", "A1", "A2")
+
+
+def _live_pct():
+    ev = Evaluator.live(resolve(parse(PCT_SRC)), sample_rate_hz=SR,
+                        channel_names=_PCT_CHANS, backend="python")
+    ev.start()
+    return ev
+
+
+def _feed_pct(ev, seconds, amp, freq=13.0):
+    """Feed an in-band (13 Hz, inside the 11-15 Hz bandpass) sine on Cz with
+    the ear channels at 0, so the referential montage yields a real signal."""
+    total = int(seconds * SR)
+    pushed = 0
+    while pushed < total:
+        n = min(64, total - pushed)
+        idx = np.arange(pushed, pushed + n)
+        cz = amp * np.sin(2 * np.pi * freq * idx / SR)
+        block = np.zeros((n, len(_PCT_CHANS)), dtype=np.float64)
+        block[:, 0] = cz
+        ev.step_chunk(block)
+        pushed += n
+
+
+def test_percentile_window_freezes_during_midsession_rest():
+    # PCT_SRC: warm(1s,muted) / b1(1s) / rest(1s,muted) / b2(1s), all timed,
+    # threshold "t" = percentile(target_pct: 75, window: 2 s). Feed a large
+    # spike ONLY during the muted rest; the frozen window must not ingest it,
+    # so the threshold value is unchanged across the rest.
+    ev = _live_pct()
+    _feed_pct(ev, 1.0, amp=1.0)       # warm (populates window)
+    _feed_pct(ev, 1.0, amp=1.0)       # b1 (ingests)
+    t_before = ev.last_taps()["threshold/t"]
+    _feed_pct(ev, 1.0, amp=50.0)      # rest (muted, index 2) — huge artifact, frozen
+    assert ev.current_phase()["name"] == "rest"
+    t_after = ev.last_taps()["threshold/t"]
+    # window did NOT move during the rest
+    assert np.isclose(t_after, t_before, rtol=0.0, atol=1e-9)
+
+
+def test_percentile_window_ingests_during_active_phase():
+    ev = _live_pct()
+    _feed_pct(ev, 1.0, amp=1.0)       # warm
+    t0 = ev.last_taps()["threshold/t"]
+    _feed_pct(ev, 1.0, amp=50.0)      # b1 (NOT muted) — spike SHOULD move the window
+    assert ev.current_phase()["name"] == "b1"
+    assert ev.last_taps()["threshold/t"] != t0
