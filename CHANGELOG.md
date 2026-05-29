@@ -5,7 +5,7 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
-## [Unreleased]
+## [0.7.0] — 2026-05-29
 
 ### Added
 - **Staged / segmented protocols (R1–R4 + R6).** A `.refrain` protocol can now
