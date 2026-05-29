@@ -47,3 +47,25 @@ def test_non_open_phase_missing_duration_raises():
 def test_block_must_be_string():
     with pytest.raises(ResolveError):
         _resolve(BASE % 'session { phases = [ phase { name="x"; duration=1 s; block = 3 } ] }')
+
+
+def test_phase_block_string_stored():
+    # BASE has no block declarations, but Task 1 does not validate block existence;
+    # the string should be stored as-is on the IRPhase.
+    ir = _resolve(BASE % '''
+      session { phases = [
+        phase { name = "warm"; duration = 1 s; output_muted = true },
+        phase { name = "go";   duration = 2 s; block = "beta_up" },
+      ] }
+    ''')
+    assert ir.session.phases[1].block == "beta_up"
+
+
+def test_phase_mode_string_literal():
+    # mode = "timed" as a StringLit (quoted) should resolve to mode == "timed".
+    ir = _resolve(BASE % '''
+      session { phases = [
+        phase { name = "warm"; duration = 1 s; mode = "timed" },
+      ] }
+    ''')
+    assert ir.session.phases[0].mode == "timed"

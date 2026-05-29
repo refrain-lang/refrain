@@ -1366,21 +1366,20 @@ class _Resolver:
             if not isinstance(name_expr, A.StringLit):
                 raise ResolveError("phase.name must be a string", loc=name_expr.loc)
             # -- mode --
-            _valid_modes = ("timed", "open", "timed_with_floor")
             mode_expr = phase_fields.get("mode")
             if mode_expr is None:
                 mode = "timed"
             elif isinstance(mode_expr, A.NameRef):
-                if mode_expr.name not in _valid_modes:
+                if mode_expr.name not in _PHASE_MODES:
                     raise ResolveError(
-                        f"phase.mode must be one of {_valid_modes}",
+                        'phase.mode must be "timed", "open", or "timed_with_floor"',
                         loc=mode_expr.loc,
                     )
                 mode = mode_expr.name
             elif isinstance(mode_expr, A.StringLit):
-                if mode_expr.value not in _valid_modes:
+                if mode_expr.value not in _PHASE_MODES:
                     raise ResolveError(
-                        f"phase.mode must be one of {_valid_modes}",
+                        'phase.mode must be "timed", "open", or "timed_with_floor"',
                         loc=mode_expr.loc,
                     )
                 mode = mode_expr.value
@@ -1397,33 +1396,25 @@ class _Resolver:
                 block = block_expr.value
             else:
                 raise ResolveError(
-                    "phase.block must be a string literal",
+                    'phase.block must be a quoted string naming a block (e.g. block = "beta_up")',
                     loc=block_expr.loc,
                 )
             # -- duration --
             duration_expr = phase_fields.get("duration")
-            if mode == "open":
-                if duration_expr is not None:
-                    if not isinstance(duration_expr, A.NumberLit) or duration_expr.unit not in ("ms", "s", "min"):
-                        raise ResolveError(
-                            "phase.duration must be a numeric literal in ms/s/min",
-                            loc=duration_expr.loc,
-                        )
-                    duration_ms = _to_milliseconds(duration_expr)
-                else:
-                    duration_ms = 0.0
-            else:
-                if duration_expr is None:
-                    raise ResolveError(
-                        "session phase needs a `duration` field (omit only when mode = open)",
-                        loc=elt.loc,
-                    )
+            if duration_expr is not None:
                 if not isinstance(duration_expr, A.NumberLit) or duration_expr.unit not in ("ms", "s", "min"):
                     raise ResolveError(
                         "phase.duration must be a numeric literal in ms/s/min",
                         loc=duration_expr.loc,
                     )
                 duration_ms = _to_milliseconds(duration_expr)
+            elif mode != "open":
+                raise ResolveError(
+                    "session phase needs a `duration` field (omit only when mode = open)",
+                    loc=elt.loc,
+                )
+            else:
+                duration_ms = 0.0
             output_muted = self._bool_field(phase_fields, "output_muted", default=False)
             phases.append(
                 IRPhase(
@@ -2052,6 +2043,9 @@ def _control_kind_dims(kind: str, loc: Loc | None) -> Dimensions:
     if kind == "placement":
         return DIMENSIONLESS   # categorical (channel identifiers); no unit arithmetic
     raise ResolveError(f"unknown control type {kind!r}", loc=loc)
+
+
+_PHASE_MODES = ("timed", "open", "timed_with_floor")
 
 
 def _to_milliseconds(n: A.NumberLit) -> float:
