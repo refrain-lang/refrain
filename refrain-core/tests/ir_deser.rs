@@ -74,3 +74,49 @@ fn v01_reward_defaults_combine_all_no_components() {
     assert_eq!(r.combine, "all");
     assert!(r.components.is_empty());
 }
+
+#[test]
+fn deserializes_phase_mode_block_and_staging() {
+    // Staged-protocol IR-JSON: phases carry mode/block, plus top-level
+    // `blocks` and `reward_bundles`. Older fixtures omit all of these and
+    // still deserialize because every new field is `#[serde(default)]`.
+    let json = r#"{
+        "refrain_ir_version": "0.2",
+        "sample_rate_hz": 256.0,
+        "channels": ["Cz"],
+        "inputs": {},
+        "derives": {},
+        "thresholds": {},
+        "inhibits": {},
+        "output": {},
+        "controls": {},
+        "topological_order": [],
+        "session": { "phases": [
+            { "name": "warm", "duration_ms": 1000.0, "output_muted": true },
+            { "name": "b1", "duration_ms": 2000.0, "output_muted": false,
+              "mode": "timed_with_floor", "block": "beta_up" },
+            { "name": "rest", "duration_ms": 0.0, "output_muted": true, "mode": "open" }
+        ]},
+        "blocks": { "beta_up": {
+            "name": "beta_up", "thresholds": ["bt"], "reward": "br",
+            "output": ["audio"], "inhibits": []
+        }},
+        "reward_bundles": { "br": {
+            "continuous": {"node": "number", "value": 0.5},
+            "event": null, "combine": "all", "components": []
+        }}
+    }"#;
+    let p: Protocol = serde_json::from_str(json).expect("parse staged IR");
+    let s = p.session.as_ref().unwrap();
+    assert_eq!(s.phases[0].mode, "timed"); // serde default
+    assert_eq!(s.phases[0].block, None);
+    assert_eq!(s.phases[1].mode, "timed_with_floor");
+    assert_eq!(s.phases[1].block.as_deref(), Some("beta_up"));
+    assert_eq!(s.phases[2].mode, "open");
+    let b = p.blocks.get("beta_up").expect("beta_up block");
+    assert_eq!(b.thresholds, vec!["bt"]);
+    assert_eq!(b.reward.as_deref(), Some("br"));
+    assert_eq!(b.output, vec!["audio"]);
+    assert!(p.reward_bundles.contains_key("br"));
+    assert!(p.reward_bundles["br"].continuous.is_some());
+}
