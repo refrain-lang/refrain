@@ -156,3 +156,92 @@ def test_phase_index_tap_present():
     taps = ev.last_taps()
     assert taps["phase/index"] == 0.0
     assert taps["phase/output_muted"] == 1.0   # warm is muted
+
+
+# -- Task 10: active-block masking + reward-bundle selection (R4) -----------
+# HET uses a `device` (hardware) reference, so a fed step transient produces a
+# real, non-zero envelope. HET_DIFF gives the alpha block a huge threshold so
+# the beta and alpha bundles drive observably different audio.
+HET_DIFF = HET.replace('threshold "at" { signal = "ae"; type = absolute(5 uV) }',
+                       'threshold "at" { signal = "ae"; type = absolute(500 uV) }')
+
+# Two output channels; beta_up's output set lists only "audio", so "extra" must
+# be muted while the beta block is active (exercises the output-mask branch).
+HET_2CH = HET_DIFF.replace(
+    'output { audio = reward.continuous }',
+    'output {\n    audio = reward.continuous\n    extra = reward.continuous\n  }',
+)
+
+
+def test_active_block_selects_reward_bundle():
+    # audio = reward.continuous. During b1 it must track the beta bundle; during
+    # b2 the alpha bundle. With at=500 uV the alpha sigmoid sits near 0, so the
+    # two blocks produce clearly different audio.
+    ev = _live(HET_DIFF)
+    _feed(ev, 1.0)                 # warm -> b1
+    _feed(ev, 0.5)                 # processing b1 (beta bundle active)
+    assert ev.current_phase()["name"] == "b1"
+    beta_audio = ev.last_taps()["output/audio"]
+    ev.advance_phase()             # b1 -> rest
+    ev.advance_phase()             # rest -> b2
+    _feed(ev, 0.5)                 # processing b2 (alpha bundle active)
+    assert ev.current_phase()["name"] == "b2"
+    alpha_audio = ev.last_taps()["output/audio"]
+    assert beta_audio != alpha_audio          # different bundle drives audio
+    assert beta_audio > alpha_audio           # alpha threshold huge -> ~0
+
+
+def test_nonactive_output_channel_is_muted():
+    # beta_up's output set is ["audio"]; "extra" is not a member, so during b1
+    # the active "audio" channel emits while "extra" is forced silent.
+    ev = _live(HET_2CH)
+    _feed(ev, 1.0)                 # warm -> b1
+    _feed(ev, 0.5)                 # processing b1
+    assert ev.current_phase()["name"] == "b1"
+    assert ev.last_taps()["output/audio"] > 0.0     # active channel emits
+    assert ev.last_taps()["output/extra"] == 0.0    # non-member channel muted
+
+
+def test_derives_stay_warm_regardless_of_active_block():
+    ev = _live(HET)
+    _feed(ev, 1.0, val=1.0)        # warm
+    _feed(ev, 0.1, val=0.5)        # step transient into b1 (beta active);
+    #                                the alpha derive must still run
+    assert ev.last_taps()["derive/ae"] != 0.0   # alpha envelope computed though beta block active
+    assert ev.last_taps()["derive/be"] != 0.0
+
+
+def test_setcontrol_on_inactive_block_threshold_during_warmup():
+    # control-backed absolute() threshold for the alpha block, seeded during
+    # warmup while the alpha block is NOT active. The update must take effect.
+    src = '''
+    protocol "p" {
+      requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+      controls { at_uv = voltage { default = 5 uV; live_tunable = true } }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "be" { from = "raw"
+        pipeline = [ bandpass(band: (15 Hz, 18 Hz), order: 4), hilbert(),
+                     magnitude(), smooth(tau: 200 ms) ] }
+      derive "ae" { from = "raw"
+        pipeline = [ bandpass(band: (8 Hz, 12 Hz), order: 4), hilbert(),
+                     magnitude(), smooth(tau: 200 ms) ] }
+      threshold "bt" { signal = "be"; type = absolute(5 uV) }
+      threshold "at" { signal = "ae"; type = absolute(at_uv) }
+      reward "br" { continuous = sigmoid("be" / "bt", midpoint: 1.0, steepness: 3) }
+      reward "ar" { continuous = sigmoid("ae" / "at", midpoint: 1.0, steepness: 3) }
+      output { audio = reward.continuous }
+      block "beta_up"  { threshold = "bt"; reward = "br"; output = ["audio"] }
+      block "alpha_up" { threshold = "at"; reward = "ar"; output = ["audio"] }
+      session { phases = [
+        phase { name="warm"; duration=1 s; output_muted=true },
+        phase { name="b1";   duration=1 s; block="beta_up";  mode=timed },
+        phase { name="b2";   duration=1 s; block="alpha_up"; mode=timed },
+      ] }
+    }
+    '''
+    new_at = 42.0
+    ev = _live(src)
+    _feed(ev, 0.5)                  # mid-warmup; alpha block inactive
+    ev.set_control("at_uv", new_at)  # seed inactive block's threshold-control
+    _feed(ev, 0.5)
+    assert ev.last_taps()["threshold/at"] == new_at  # took effect though b2 inactive

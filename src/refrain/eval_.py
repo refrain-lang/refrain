@@ -632,6 +632,14 @@ class Evaluator:
         # Component signals (named reward / suppress-inhibit, v0.2 composite).
         for comp in self.ir.reward.components:
             self._instantiate_expr(comp.signal)
+        # Reward bundles (staged protocols): instantiate every declared
+        # bundle's exprs so their impls exist and stay warm even while the
+        # bundle's block is inactive (dwell timers must keep ticking).
+        for rb in self.ir.reward_bundles.values():
+            if rb.continuous is not None:
+                self._instantiate_expr(rb.continuous)
+            if rb.event is not None:
+                self._instantiate_expr(rb.event)
         # Output bindings.
         for expr in self.ir.output.values():
             self._instantiate_expr(expr)
@@ -883,8 +891,41 @@ class Evaluator:
                 reward_component_signals=reward_component_signals,
             )
 
-        # Combined inhibit gate — also exposed as the `muted` tap.
-        muted = self._compute_muted(inhibit_active, actual_chunk_size)
+        # Active block (from the current phase) selects which reward bundle and
+        # which output/inhibit set are live. All bundles are EVALUATED every
+        # chunk (keeping dwell timers warm); only the active one drives output.
+        # When there is no active block (warmup / rest / blockless protocol),
+        # the default top-level reward results computed above remain in effect.
+        ph = self._current_phase_ir()
+        active_block = None
+        if ph is not None and ph.block is not None:
+            active_block = self.ir.blocks.get(ph.block)
+        active_bundle = active_block.reward if active_block is not None else None
+        for name, rb in self.ir.reward_bundles.items():
+            if rb.continuous is not None:
+                c = self._eval_expr(
+                    rb.continuous, stream_values, control_chunks_cache, actual_chunk_size
+                )
+                if name == active_bundle:
+                    reward_continuous = c
+            if rb.event is not None:
+                ev_res, subs = self._eval_reward_event(
+                    rb.event, stream_values, control_chunks_cache, actual_chunk_size
+                )
+                if name == active_bundle:
+                    reward_event, reward_sub_chunks = ev_res, subs
+
+        # Active-channel set for output masking: channels NOT in the active
+        # block's `.outputs` are forced silent. Empty `.outputs` (or no active
+        # block) => all channels live (back-compat with blockless protocols).
+        if active_block is not None and active_block.outputs:
+            active_channels = set(active_block.outputs)
+        else:
+            active_channels = set(self.ir.output.keys())
+
+        # Combined inhibit gate — also exposed as the `muted` tap. Inhibits not
+        # in the active block's `.inhibits` set do not contribute to the gate.
+        muted = self._compute_muted(inhibit_active, actual_chunk_size, active_block)
 
         # Pre-compute each output binding's gated/clamped values now so
         # we can capture them as `output/<channel>` taps *and* emit
@@ -902,7 +943,18 @@ class Evaluator:
                 reward_component_signals=reward_component_signals,
             )
             is_event = self._is_event_channel(expr)
-            if is_event:
+            if channel not in active_channels:
+                # Inactive-block channel: forced silent (same effect as an
+                # output_muted phase) — mirror the warmup zeroing pattern.
+                if is_event:
+                    per_channel_output[channel] = (
+                        np.zeros_like(values, dtype=bool), True
+                    )
+                else:
+                    per_channel_output[channel] = (
+                        np.zeros_like(values, dtype=np.float64), False
+                    )
+            elif is_event:
                 # Event channels: gate by inhibits, keep as boolean.
                 gated_bool = values.astype(bool) & ~muted
                 per_channel_output[channel] = (gated_bool, True)
@@ -1414,14 +1466,27 @@ class Evaluator:
         return self._eval_expr(w, {}, control_chunks, chunk_size)
 
     def _compute_muted(
-        self, inhibit_active: dict[str, np.ndarray], chunk_size: int
+        self, inhibit_active: dict[str, np.ndarray], chunk_size: int, active_block=None
     ) -> np.ndarray:
         """Combine all inhibits' output gates into a single boolean
-        `output is muted this sample` stream."""
+        `output is muted this sample` stream.
+
+        When `active_block` declares a non-empty `.inhibits` set, only those
+        inhibits contribute to the gate; inhibits outside the set still compute
+        (so their state stays warm) but do not mute output. An empty set (or no
+        active block) gates on all inhibits (back-compat)."""
         if not inhibit_active:
             return np.zeros(chunk_size, dtype=bool)
+        allowed = (
+            set(active_block.inhibits)
+            if (active_block is not None and active_block.inhibits)
+            else None
+        )
         muted = np.zeros(chunk_size, dtype=bool)
         for canonical, active in inhibit_active.items():
+            short = canonical.split("/", 1)[-1]
+            if allowed is not None and short not in allowed:
+                continue
             action = self._inhibit_actions.get(canonical)
             if action is None or isinstance(action, impls.FlagAction):
                 continue

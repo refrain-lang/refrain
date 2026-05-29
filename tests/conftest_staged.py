@@ -36,7 +36,7 @@ protocol "p" {
 HET = '''
 protocol "p" {
   requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
-  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  input "raw" { montage = referential(active: "Cz", reference: "device") }
   derive "be" {
     from = "raw"
     pipeline = [
