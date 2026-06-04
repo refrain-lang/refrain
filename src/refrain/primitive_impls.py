@@ -266,13 +266,22 @@ class HilbertFirImpl(PrimitiveImpl):
 
 
 class HilbertIirAllpassImpl(PrimitiveImpl):
-    """`hilbert(kind="iir_allpass")` — not yet implemented in this
-    evaluator. The language admits it; future evaluators may supply it."""
+    """`hilbert(kind="iir_allpass")` — intentionally not implemented.
+
+    A low-latency two-all-pass IIR Hilbert is accurate only mid-band; near DC
+    it collapses to ~0 dB image rejection (see docs/DESIGN-NOTES.md §"IIR
+    Hilbert"). Every realistic NF/HRV band sits near DC at typical sample
+    rates (EEG 4-20 Hz @256 Hz, HRV 0.04-0.15 Hz @4 Hz), so this path cannot
+    deliver a usable low-latency analytic envelope. Use the documented
+    alternatives instead."""
 
     def __init__(self, **_kwargs: Any):
         raise NotImplementedError(
-            "hilbert(kind=\"iir_allpass\") is not yet implemented in the "
-            "Phase 0d evaluator; use the default kind=\"fir\" for now"
+            'hilbert(kind="iir_allpass") is intentionally not implemented: a '
+            "low-latency IIR Hilbert is inaccurate near DC, where NF/HRV bands "
+            "sit. For a low-sample-rate (e.g. 4 Hz) envelope use rectify() + "
+            'smooth(tau); otherwise use the default hilbert(kind="fir"). '
+            "See docs/DESIGN-NOTES.md."
         )
 
 

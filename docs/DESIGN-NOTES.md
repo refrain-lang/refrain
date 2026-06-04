@@ -898,3 +898,51 @@ core.*
   `referential` documentation as a third magic reference value
   alongside `linked_ears` and `common_average`. Used for amps with a
   dedicated hardware reference electrode.
+
+## 7. HRV biofeedback M1 (v0.8.0) — what landed
+
+Three additive, non-breaking changes for the Coherence Recorder's HRV feature
+(spec: `docs/superpowers/specs/2026-06-03-hrv-biofeedback-support-design.md`):
+
+- **`passthrough()` montage** — a first-class single-channel identity montage
+  (Python `PassthroughImpl` + Rust `Montage::Passthrough`), replacing the
+  `referential(reference: "device")` workaround. Parity fixture
+  `micro_passthrough_identity`.
+- **Adaptive-state seed/export** — `Evaluator.export_state()` and the
+  `seed_state=` constructor arg persist/restore the compact `auto_range` /
+  `percentile` anchors (`{low, high, n_eff}` / `{value, target_pct, n_eff}`)
+  across sessions, keyed `"<entity>.<callee>"`. **Runtime state, not IR** — the
+  IR-JSON schema is unchanged. Seeding pre-fills the rolling window with a
+  deterministic synthetic distribution (uniform ramp for `auto_range`, constant
+  for `percentile`); both backends apply the identical fill, so Python↔Rust
+  parity is structural (gated to 1e-6).
+
+### §7a. IIR-allpass Hilbert — why it stays `NotImplementedError`
+
+Ask 1 wanted a low-latency analytic envelope at low Fs, ideally via
+`hilbert(kind="iir_allpass")`. We investigated thoroughly (8 design spikes) and
+**deliberately did not implement it**, because the result is fundamentally
+limited for the bands NF/HRV actually use:
+
+- A two-all-pass IIR Hilbert (sections `(a+z⁻²)/(1+a z⁻²)`, real branch +
+  `z⁻¹`·imag branch) gives **40–48 dB image rejection mid-band** (`0.2π–0.8π`)
+  but collapses to **~0–1.6 dB near DC** (`0.02π–0.2π`). Raising the order does
+  not fix near-DC accuracy, and near-DC group delay blows up.
+- **Every realistic band is near DC** at typical rates: EEG 4–20 Hz @256 Hz =
+  `0.03π–0.16π`; HRV 0.04–0.15 Hz @4 Hz = `0.02π–0.075π`. So the IIR Hilbert is
+  not usable for either.
+- **The latency floor is physical, not a design miss.** The envelope of a
+  ~0.1 Hz rhythm only has meaning over ~one cycle (~10 s); the lowpass/smoother
+  that cleans it is the binding constraint for *any* causal method. Measured at
+  4 Hz on a 0.1 Hz AM rhythm: `rectify+smooth(4s)` → corr 0.98, lag 3.75 s;
+  complex demodulation → corr 0.97–0.9999 on the *same* latency/quality curve
+  (marginally cleaner, never faster); the acausal FFT-Hilbert upper bound is the
+  only thing at 0 lag and it is not realizable live.
+
+**Decision:** `rectify() + smooth(tau)` is the sanctioned low-Fs envelope (it
+adds ~0 latency beyond the `smooth` a protocol already budgets, vs the FIR
+Hilbert's 8 s at 4 Hz); it is documented in PRIMITIVES.md and validated in
+`tests/test_low_fs_envelope.py`. `hilbert(kind="iir_allpass")` raises a clear
+error pointing here. Complex demodulation (`demodulate(center, bandwidth)`)
+remains a possible *future* primitive for marginally cleaner narrowband
+envelopes — a quality, not latency, improvement — if a use case wants it.
