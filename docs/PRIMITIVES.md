@@ -136,6 +136,24 @@ input "raw_19ch" {
 }
 ```
 
+### `passthrough`
+
+```
+passthrough() -> stream<scalar uV>
+```
+
+Identity montage: carries a **single** raw channel through unchanged, with no
+software re-referencing. The first-class form of the
+`referential(reference: "device")` workaround — use it for non-EEG single-channel
+inputs (e.g. an HRV tachogram). Requires a one-channel source; for a
+multi-channel source, name the channel with `referential`/`bipolar` instead.
+
+```refrain
+input "tachogram" {        // 4 Hz cardiac tachogram, single channel
+  montage = passthrough()
+}
+```
+
 ### `select_channel`
 
 ```
@@ -339,6 +357,15 @@ auto_range(window: 5 min, percentile: (5, 95))
 ```
 
 The percentile estimator uses the P² online algorithm, so memory is constant in window size.
+
+**Cross-session persistence (seed/export).** `auto_range` (and `percentile`)
+trackers start cold each session. To carry a user-adaptive ceiling across
+sessions, the host can read the final compact state with
+`Evaluator.export_state()` — `{ "<entity>.auto_range": {low, high, n_eff}, … }` —
+persist it to the patient record, and re-prime the next run with
+`Evaluator.live(..., seed_state=<prior export>)`. State is a small,
+rate-independent summary (not a raw buffer) and is runtime-only — it does not
+change the protocol IR. See `docs/EMBEDDING.md`.
 
 ### `percentile`
 
