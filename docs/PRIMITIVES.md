@@ -185,13 +185,23 @@ bandpass(center: orf, bandwidth: ratio(2.5))
 hilbert() -> stream<complex uV>
 ```
 
-Analytic signal via Hilbert transform. Implemented as a windowed FIR with bounded group delay declared in the primitive's budget. Output is complex; pair with `magnitude()` for envelope.
+Analytic signal via Hilbert transform. Default `kind="fir"` is a windowed FIR with bounded group delay declared in the primitive's budget. Output is complex; pair with `magnitude()` for envelope.
 
 ```refrain
 pipeline = [
   bandpass(band: (8 Hz, 13 Hz)),
   hilbert(),
   magnitude(),  // -> envelope in uV
+]
+```
+
+**Low sample rates (e.g. a 4 Hz HRV tachogram).** The FIR Hilbert's group delay is fixed in *samples* (`taps=65` → 32 samples = **8 s at 4 Hz**), which is far too slow for biofeedback. `hilbert(kind="iir_allpass")` provides a low-group-delay analytic signal for EEG-rate bands, but near DC (the 0.04–0.15 Hz band sits at 2–7.5 % of a 4 Hz Nyquist) even an IIR Hilbert is latency-bound. **For low-Fs envelopes, prefer `rectify() + smooth(tau)`** — it adds essentially no latency beyond the `smooth` the protocol already budgets and tracks the rhythm's amplitude faithfully (validated correlation ≈0.96 against a known envelope on a 0.1 Hz rhythm at `tau=4 s`):
+
+```refrain
+pipeline = [
+  bandpass(band: (0.04 Hz, 0.15 Hz), order: 4),
+  rectify(),
+  smooth(tau: 4 s),   // -> low-latency LF envelope at 4 Hz
 ]
 ```
 
