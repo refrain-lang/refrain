@@ -117,3 +117,38 @@ def test_unseeded_evaluator_export_is_empty_or_cold():
     ev.start(skip_warmup=True)
     state = ev.export_state()
     assert state["rs.auto_range"]["n_eff"] == 0  # nothing stepped yet
+
+
+def _run_export(backend: str, seed: dict | None = None) -> dict:
+    ir = resolve(parse(_HRV_PROTO))
+    ev = Evaluator.live(
+        ir, sample_rate_hz=4.0, channel_names=("tachogram",),
+        backend=backend, seed_state=seed,
+    )
+    ev.start(skip_warmup=True)
+    rng = np.random.default_rng(7)
+    for _ in range(60):
+        ev.step_chunk(rng.uniform(0.0, 0.1, size=(8, 1)))
+    return ev.export_state()
+
+
+def test_export_and_seed_parity_python_vs_rust():
+    """Ask 2 parity: the Rust core reproduces the Python evaluator's
+    export_state() — and a seeded run — to 1e-6, both keys and values."""
+    pytest.importorskip(
+        "refrain_core",
+        reason="refrain_core wheel not installed — build with: "
+        "cd refrain-core && maturin develop --release",
+    )
+    py, rs = _run_export("python"), _run_export("rust")
+    assert set(py) == set(rs)
+    for key in py:
+        assert set(py[key]) == set(rs[key])
+        for field in py[key]:
+            assert py[key][field] == pytest.approx(rs[key][field], abs=1e-6, rel=1e-6)
+
+    # Seed both backends from the same prior state; exports stay in lockstep.
+    py2, rs2 = _run_export("python", seed=py), _run_export("rust", seed=py)
+    for key in py2:
+        for field in py2[key]:
+            assert py2[key][field] == pytest.approx(rs2[key][field], abs=1e-6, rel=1e-6)

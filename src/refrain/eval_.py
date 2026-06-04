@@ -22,6 +22,7 @@ JSON-lines, aggregate, or stream to a downstream consumer.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -437,7 +438,7 @@ class Evaluator:
         )
         if backend == "rust":
             ev._backend = "rust"
-            ev._rust = _build_rust_evaluator(ir, sample_rate_hz, channel_names)
+            ev._rust = _build_rust_evaluator(ir, sample_rate_hz, channel_names, seed_state)
             # Pre-compute the set of tap keys whose values should be returned
             # as Python booleans. Rust stores all taps as f64 (0.0/1.0 for
             # booleans); we coerce them back at the Python boundary.
@@ -1751,11 +1752,16 @@ def _build_rust_evaluator(
     ir: IRProtocol,
     sample_rate_hz: float,
     channel_names: tuple[str, ...],
+    seed_state: dict | None = None,
 ) -> Any:
     """Lazily import `refrain_core` and construct a `RustEvaluator`.
 
     Raises a clear `ImportError` if the wheel is not installed — the user
     must run `maturin develop --release` inside `refrain-core/` first.
+
+    `seed_state` (Ask 2), if given, is JSON-serialized and handed to the Rust
+    core, which re-primes its adaptive trackers at construction — mirroring the
+    Python `Evaluator(seed_state=...)` path.
     """
     try:
         import refrain_core  # type: ignore[import-not-found]
@@ -1767,8 +1773,9 @@ def _build_rust_evaluator(
 
     from .ir_json import ir_to_json
     ir_json = ir_to_json(ir, sample_rate_hz=sample_rate_hz)
+    seed_json = json.dumps(seed_state) if seed_state else None
     return refrain_core.RustEvaluator(
-        ir_json, float(sample_rate_hz), list(channel_names)
+        ir_json, float(sample_rate_hz), list(channel_names), seed_json
     )
 
 
