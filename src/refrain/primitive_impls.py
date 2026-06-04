@@ -142,6 +142,29 @@ class ReferentialImpl(PrimitiveImpl):
         return active - ref
 
 
+class PassthroughImpl(PrimitiveImpl):
+    """`passthrough()` — first-class identity montage.
+
+    Emits the source's single channel verbatim, with no software
+    re-referencing. The sanctioned replacement for the
+    `referential(reference="device")` single-channel workaround. Requires
+    exactly one source channel (for a multi-channel source, name the
+    channel with `referential`/`bipolar` instead)."""
+
+    def __init__(self, *, channel_names: tuple[str, ...]):
+        if len(channel_names) != 1:
+            raise ValueError(
+                "passthrough() requires a single-channel source "
+                f"(got {len(channel_names)} channels: {list(channel_names)}); "
+                "use referential/bipolar to select a channel from a multi-channel source"
+            )
+        self.channel_names = channel_names
+
+    def step(self, raw_chunk: np.ndarray) -> np.ndarray:
+        # raw_chunk shape: (n_samples, 1). Output shape: (n_samples,).
+        return raw_chunk[:, 0]
+
+
 # ---------------------------------------------------------------------------
 # Bandpass (with filter-family dispatch)
 # ---------------------------------------------------------------------------
@@ -243,13 +266,22 @@ class HilbertFirImpl(PrimitiveImpl):
 
 
 class HilbertIirAllpassImpl(PrimitiveImpl):
-    """`hilbert(kind="iir_allpass")` — not yet implemented in this
-    evaluator. The language admits it; future evaluators may supply it."""
+    """`hilbert(kind="iir_allpass")` — intentionally not implemented.
+
+    A low-latency two-all-pass IIR Hilbert is accurate only mid-band; near DC
+    it collapses to ~0 dB image rejection (see docs/DESIGN-NOTES.md §"IIR
+    Hilbert"). Every realistic NF/HRV band sits near DC at typical sample
+    rates (EEG 4-20 Hz @256 Hz, HRV 0.04-0.15 Hz @4 Hz), so this path cannot
+    deliver a usable low-latency analytic envelope. Use the documented
+    alternatives instead."""
 
     def __init__(self, **_kwargs: Any):
         raise NotImplementedError(
-            "hilbert(kind=\"iir_allpass\") is not yet implemented in the "
-            "Phase 0d evaluator; use the default kind=\"fir\" for now"
+            'hilbert(kind="iir_allpass") is intentionally not implemented: a '
+            "low-latency IIR Hilbert is inaccurate near DC, where NF/HRV bands "
+            "sit. For a low-sample-rate (e.g. 4 Hz) envelope use rectify() + "
+            'smooth(tau); otherwise use the default hilbert(kind="fir"). '
+            "See docs/DESIGN-NOTES.md."
         )
 
 
@@ -382,6 +414,7 @@ class PercentileImpl(PrimitiveImpl):
         # muted rests so rest-period artifact can't pollute a later block's
         # window ("one baseline up front").
         self._ingesting = True
+        self._seen = 0  # samples ingested; reported (capped) as n_eff
         # Track which control names map to which parameters, populated
         # via update_control. The map is empty until the evaluator has
         # registered control->impl deps; PercentileImpl supports
@@ -396,11 +429,37 @@ class PercentileImpl(PrimitiveImpl):
         for i, v in enumerate(x):
             if self._ingesting:
                 self._buffer.append(float(v))
+                self._seen += 1
             # Compute percentile over current buffer (warm-up: short buffer is OK).
             # A frozen window still emits over its existing buffer.
             arr = np.fromiter(self._buffer, dtype=np.float64) if len(self._buffer) else np.zeros(1)
             out[i] = float(np.percentile(arr, self.target_pct))
         return out
+
+    def export_state(self) -> dict:
+        """Compact summary for cross-session persistence (Ask 2): the current
+        threshold value at `target_pct` plus the effective sample count."""
+        if len(self._buffer):
+            value = float(np.percentile(
+                np.fromiter(self._buffer, dtype=np.float64), self.target_pct))
+        else:
+            value = 0.0
+        return {
+            "value": value,
+            "target_pct": float(self.target_pct),
+            "n_eff": int(min(self._seen, self.window_samples)),
+        }
+
+    def seed(self, state: dict) -> None:
+        """Fill the window with `value` repeated, so percentile(target_pct) ==
+        value exactly at session start; real samples then displace it. Both
+        backends apply the identical constant pre-fill (parity by construction)."""
+        value = float(state["value"])
+        n = int(min(state.get("n_eff", self.window_samples), self.window_samples))
+        n = max(n, 1)
+        self._buffer.clear()
+        self._buffer.extend([value] * n)
+        self._seen = n
 
     def update_control(self, target: str, value: float) -> None:
         """Set `target_pct` to a new value. Percentile is typically the
@@ -428,16 +487,51 @@ class AutoRangeImpl(PrimitiveImpl):
         self.low_pct = low_pct
         self.high_pct = high_pct
         self._buffer: deque[float] = deque(maxlen=self.window_samples)
+        self._seen = 0  # samples ingested; reported (capped) as n_eff
 
     def step(self, x: np.ndarray) -> np.ndarray:
         out = np.empty(x.shape[0], dtype=np.float64)
         for i, v in enumerate(x):
             self._buffer.append(float(v))
+            self._seen += 1
             arr = np.fromiter(self._buffer, dtype=np.float64)
             low, high = np.percentile(arr, [self.low_pct, self.high_pct])
             span = max(high - low, 1e-9)
             out[i] = float(np.clip((v - low) / span, 0.0, 1.0))
         return out
+
+    def export_state(self) -> dict:
+        """Compact summary for cross-session persistence (Ask 2): the current
+        low/high anchors plus the effective sample count. Rate-independent and
+        human-readable — the patient-record ceiling that rises week to week."""
+        if len(self._buffer):
+            arr = np.fromiter(self._buffer, dtype=np.float64)
+            low, high = np.percentile(arr, [self.low_pct, self.high_pct])
+        else:
+            low = high = 0.0
+        return {
+            "low": float(low),
+            "high": float(high),
+            "n_eff": int(min(self._seen, self.window_samples)),
+        }
+
+    def seed(self, state: dict) -> None:
+        """Pre-fill the rolling window with a deterministic synthetic ramp whose
+        `low_pct`/`high_pct` percentiles reproduce the seeded anchors. For a
+        uniform ramp a..b, percentile(p) = a + (p/100)(b-a); solve so
+        percentile(low_pct)=low and percentile(high_pct)=high. Because the seed
+        is expressed as initial buffer contents, `step()` is unchanged and both
+        backends apply the identical pre-fill (parity by construction)."""
+        low, high = float(state["low"]), float(state["high"])
+        n = int(min(state.get("n_eff", self.window_samples), self.window_samples))
+        n = max(n, 1)
+        span_pct = max(self.high_pct - self.low_pct, 1e-9)
+        b_minus_a = (high - low) * 100.0 / span_pct
+        a = low - (self.low_pct / 100.0) * b_minus_a
+        ramp = np.linspace(a, a + b_minus_a, n)
+        self._buffer.clear()
+        self._buffer.extend(float(v) for v in ramp)
+        self._seen = n
 
 
 # ---------------------------------------------------------------------------
@@ -848,6 +942,8 @@ def make_filter_impl(
             reference=static_args["reference"],
             channel_names=channel_names,
         )
+    if callee == "passthrough":
+        return PassthroughImpl(channel_names=channel_names)
     if callee == "bandpass":
         return BandpassImpl(
             band=static_args.get("band"),

@@ -136,6 +136,24 @@ input "raw_19ch" {
 }
 ```
 
+### `passthrough`
+
+```
+passthrough() -> stream<scalar uV>
+```
+
+Identity montage: carries a **single** raw channel through unchanged, with no
+software re-referencing. The first-class form of the
+`referential(reference: "device")` workaround — use it for non-EEG single-channel
+inputs (e.g. an HRV tachogram). Requires a one-channel source; for a
+multi-channel source, name the channel with `referential`/`bipolar` instead.
+
+```refrain
+input "tachogram" {        // 4 Hz cardiac tachogram, single channel
+  montage = passthrough()
+}
+```
+
 ### `select_channel`
 
 ```
@@ -185,13 +203,23 @@ bandpass(center: orf, bandwidth: ratio(2.5))
 hilbert() -> stream<complex uV>
 ```
 
-Analytic signal via Hilbert transform. Implemented as a windowed FIR with bounded group delay declared in the primitive's budget. Output is complex; pair with `magnitude()` for envelope.
+Analytic signal via Hilbert transform. Default `kind="fir"` is a windowed FIR with bounded group delay declared in the primitive's budget. Output is complex; pair with `magnitude()` for envelope.
 
 ```refrain
 pipeline = [
   bandpass(band: (8 Hz, 13 Hz)),
   hilbert(),
   magnitude(),  // -> envelope in uV
+]
+```
+
+**Low sample rates (e.g. a 4 Hz HRV tachogram).** The FIR Hilbert's group delay is fixed in *samples* (`taps=65` → 32 samples = **8 s at 4 Hz**), which is far too slow for biofeedback. `hilbert(kind="iir_allpass")` provides a low-group-delay analytic signal for EEG-rate bands, but near DC (the 0.04–0.15 Hz band sits at 2–7.5 % of a 4 Hz Nyquist) even an IIR Hilbert is latency-bound. **For low-Fs envelopes, prefer `rectify() + smooth(tau)`** — it adds essentially no latency beyond the `smooth` the protocol already budgets and tracks the rhythm's amplitude faithfully (validated correlation ≈0.96 against a known envelope on a 0.1 Hz rhythm at `tau=4 s`):
+
+```refrain
+pipeline = [
+  bandpass(band: (0.04 Hz, 0.15 Hz), order: 4),
+  rectify(),
+  smooth(tau: 4 s),   // -> low-latency LF envelope at 4 Hz
 ]
 ```
 
@@ -329,6 +357,15 @@ auto_range(window: 5 min, percentile: (5, 95))
 ```
 
 The percentile estimator uses the P² online algorithm, so memory is constant in window size.
+
+**Cross-session persistence (seed/export).** `auto_range` (and `percentile`)
+trackers start cold each session. To carry a user-adaptive ceiling across
+sessions, the host can read the final compact state with
+`Evaluator.export_state()` — `{ "<entity>.auto_range": {low, high, n_eff}, … }` —
+persist it to the patient record, and re-prime the next run with
+`Evaluator.live(..., seed_state=<prior export>)`. State is a small,
+rate-independent summary (not a raw buffer) and is runtime-only — it does not
+change the protocol IR. See `docs/EMBEDDING.md`.
 
 ### `percentile`
 

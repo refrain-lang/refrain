@@ -5,6 +5,47 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.8.0] — 2026-06-04
+
+HRV biofeedback support for the Coherence Recorder (M1). All additive — no
+existing protocol changes behavior, the IR-JSON schema is unchanged, and
+Python↔Rust parity is preserved (gated to 1e-6). Consumers opt in by moving
+their pin.
+
+### Added
+- **`passthrough()` montage.** A first-class single-channel identity montage —
+  carries one raw channel through unchanged (e.g. a non-EEG HRV tachogram),
+  replacing the `referential(reference: "device")` workaround. Implemented in
+  both the Python evaluator (`PassthroughImpl`) and the Rust core
+  (`Montage::Passthrough`), with the `micro_passthrough_identity` parity
+  fixture. Requires a single-channel source.
+- **Cross-session adaptive-state seed/export.** `Evaluator.export_state()`
+  returns a compact, rate-independent summary of every `auto_range` /
+  `percentile` tracker (`{low, high, n_eff}` / `{value, target_pct, n_eff}`,
+  keyed `"<entity>.<callee>"`); `Evaluator.live(..., seed_state=...)` (and the
+  `RustEvaluator` constructor) re-primes a run from a prior session's export.
+  This is the longitudinal "user-adaptive ceiling that rises across sessions"
+  signal. **Runtime state, not IR** — the protocol IR-JSON is unchanged.
+  Available on both backends with parity; seeding pre-fills the rolling window
+  with a deterministic synthetic distribution.
+- **Low-Fs envelope guidance.** `rectify() + smooth(tau)` is documented and
+  validated as the sanctioned low-latency envelope for low-sample-rate signals
+  (e.g. a 4 Hz tachogram), where the FIR Hilbert's 8 s group delay is
+  prohibitive.
+
+### Changed
+- `hilbert(kind="iir_allpass")` now raises a clear, actionable error pointing to
+  `rectify()+smooth()` (low Fs) / the default FIR (mid-band). It remains
+  intentionally unimplemented: a low-latency IIR Hilbert is accurate only
+  mid-band and useless near DC, where all real NF/HRV bands sit (see
+  `docs/DESIGN-NOTES.md` §7a).
+
+### Notes
+- The Rust core's PyO3 (wheel) surface gained `export_state()` and an optional
+  `seed_state` constructor argument. The uniffi (Swift/Kotlin mobile) exposure
+  of seed/export is deferred as an additive follow-up; existing mobile call
+  sites are unaffected.
+
 ## [0.7.0] — 2026-05-29
 
 ### Added

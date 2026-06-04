@@ -22,6 +22,7 @@ JSON-lines, aggregate, or stream to a downstream consumer.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -233,6 +234,36 @@ def _massage_static_args(callee: str, static: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Stateful-tracker seed/export (Ask 2)
+# ---------------------------------------------------------------------------
+
+# Trackers whose rolling-window state persists across sessions. `smooth` is
+# fast-settling and deliberately excluded.
+_STATEFUL_CALLEES = ("auto_range", "percentile")
+
+
+def _walk_calls(expr: IRExpr):
+    """Yield every IRCall in `expr`, depth-first (args before parent). Mirrors
+    the traversal `_instantiate_expr` uses, but yields the calls themselves so
+    callers can locate stateful trackers within a derive/threshold."""
+    if isinstance(expr, IRCall):
+        for arg in expr.args:
+            yield from _walk_calls(arg.value)
+        yield expr
+    elif isinstance(expr, IRBinaryOp):
+        yield from _walk_calls(expr.left)
+        yield from _walk_calls(expr.right)
+    elif isinstance(expr, IRConditional):
+        yield from _walk_calls(expr.cond)
+        yield from _walk_calls(expr.then_branch)
+        yield from _walk_calls(expr.else_branch)
+    elif isinstance(expr, IRArray):
+        for elt in expr.elements:
+            yield from _walk_calls(elt)
+    # Other leaves (refs, literals, member access) carry no impl.
+
+
+# ---------------------------------------------------------------------------
 # Evaluator
 # ---------------------------------------------------------------------------
 
@@ -276,6 +307,7 @@ class Evaluator:
         sample_rate_hz: float | None = None,
         channel_names: tuple[str, ...] | None = None,
         record_streams: bool = False,
+        seed_state: dict | None = None,
     ):
         if source is not None:
             if sample_rate_hz is not None or channel_names is not None:
@@ -307,6 +339,11 @@ class Evaluator:
         self._control_deps: dict[str, list[impls.PrimitiveImpl]] = {}
         # Pre-instantiate input/derive/threshold/inhibit primitives.
         self._build_pipeline()
+        # Seed adaptive tracker state from a prior session (Ask 2). Opt-in;
+        # None => today's cold start (bit-identical). Applied after the
+        # pipeline exists so the stateful impls are constructed.
+        if seed_state:
+            self._apply_seed_state(seed_state)
         # Inhibit actions are at the output stage.
         self._inhibit_actions: dict[str, Any] = self._build_inhibit_actions()
         # Track output-binding canonical names for event emission order.
@@ -366,6 +403,7 @@ class Evaluator:
         channel_names: tuple[str, ...],
         record_streams: bool = False,
         backend: str = "auto",
+        seed_state: dict | None = None,
     ) -> Evaluator:
         """Construct a push-mode evaluator. The host calls `start()`,
         then `step_chunk(chunk)` per arriving sample chunk, then `stop()`.
@@ -396,10 +434,11 @@ class Evaluator:
             sample_rate_hz=sample_rate_hz,
             channel_names=channel_names,
             record_streams=record_streams,
+            seed_state=seed_state,
         )
         if backend == "rust":
             ev._backend = "rust"
-            ev._rust = _build_rust_evaluator(ir, sample_rate_hz, channel_names)
+            ev._rust = _build_rust_evaluator(ir, sample_rate_hz, channel_names, seed_state)
             # Pre-compute the set of tap keys whose values should be returned
             # as Python booleans. Rust stores all taps as f64 (0.0/1.0 for
             # booleans); we coerce them back at the Python boundary.
@@ -686,6 +725,58 @@ class Evaluator:
         self._impls[id(call)] = impl
         for target in control_targets:
             self._control_deps.setdefault(target, []).append(impl)
+
+    # -- Adaptive-state seed/export (Ask 2) ---------------------------------
+
+    def _collect_stateful_impls(self) -> dict[str, Any]:
+        """Map a stable `"<entity>.<callee>"` key to each stateful tracker impl
+        (`auto_range`/`percentile`) found in a derive or threshold. The key
+        scheme mirrors the canonical tap names (`derive/<n>` → `<n>`); on the
+        rare collision (two same-callee trackers in one entity) a `#<n>` suffix
+        keeps keys unique. This single scheme is reused verbatim by the Rust
+        core so seed/export keys match across backends."""
+        out: dict[str, Any] = {}
+
+        def add(short: str, call: IRCall) -> None:
+            if call.callee not in _STATEFUL_CALLEES:
+                return
+            impl = self._impls.get(id(call))
+            if impl is None:
+                return
+            base = f"{short}.{call.callee}"
+            key, i = base, 1
+            while key in out:
+                i += 1
+                key = f"{base}#{i}"
+            out[key] = impl
+
+        for d in self.ir.derives.values():
+            short = d.canonical_name.split("/", 1)[-1]
+            for c in _walk_calls(d.expression):
+                add(short, c)
+        for t in self.ir.thresholds.values():
+            short = t.canonical_name.split("/", 1)[-1]
+            for c in _walk_calls(t.threshold_call):
+                add(short, c)
+        return out
+
+    def export_state(self) -> dict[str, dict]:
+        """Return the compact adaptive-tracker state for cross-session
+        persistence (Ask 2): `{ "<entity>.<callee>": {<anchors>}, ... }`.
+        Separate from `last_taps()` so the strict tap key-set is untouched."""
+        if self._rust is not None:
+            return dict(self._rust.export_state())
+        return {k: impl.export_state() for k, impl in self._collect_stateful_impls().items()}
+
+    def _apply_seed_state(self, seed_state: dict) -> None:
+        """Re-prime stateful trackers from a prior session's `export_state()`.
+        Unknown keys are ignored (protocol may have changed). The Rust backend
+        is seeded at rust-evaluator construction, not here."""
+        by_key = self._collect_stateful_impls()
+        for key, st in seed_state.items():
+            impl = by_key.get(key)
+            if impl is not None:
+                impl.seed(st)
 
     def _build_inhibit_actions(self) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -1661,11 +1752,16 @@ def _build_rust_evaluator(
     ir: IRProtocol,
     sample_rate_hz: float,
     channel_names: tuple[str, ...],
+    seed_state: dict | None = None,
 ) -> Any:
     """Lazily import `refrain_core` and construct a `RustEvaluator`.
 
     Raises a clear `ImportError` if the wheel is not installed — the user
     must run `maturin develop --release` inside `refrain-core/` first.
+
+    `seed_state` (Ask 2), if given, is JSON-serialized and handed to the Rust
+    core, which re-primes its adaptive trackers at construction — mirroring the
+    Python `Evaluator(seed_state=...)` path.
     """
     try:
         import refrain_core  # type: ignore[import-not-found]
@@ -1677,8 +1773,9 @@ def _build_rust_evaluator(
 
     from .ir_json import ir_to_json
     ir_json = ir_to_json(ir, sample_rate_hz=sample_rate_hz)
+    seed_json = json.dumps(seed_state) if seed_state else None
     return refrain_core.RustEvaluator(
-        ir_json, float(sample_rate_hz), list(channel_names)
+        ir_json, float(sample_rate_hz), list(channel_names), seed_json
     )
 
 

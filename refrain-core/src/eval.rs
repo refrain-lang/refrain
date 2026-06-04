@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::dsp::{
     control_cell, smooth_alpha_from_tau_ms, AutoRange, Bandpower, Biquad, Coherence, ControlCell,
-    Differentiate, Dwell, HilbertFir, Magnitude, Percentile, Signal, Smooth, Stage,
+    Differentiate, Dwell, HilbertFir, Magnitude, Percentile, Signal, Smooth, Stage, TrackerState,
 };
 use crate::ir::{Coeffs, Expr, Protocol};
 
@@ -176,6 +176,7 @@ fn num_named_controllable(args: &[crate::ir::Arg], name: &str) -> Option<(f64, O
 enum Montage {
     Referential(Referential),
     Bipolar { plus_idx: usize, minus_idx: usize }, // BipolarImpl: plus - minus
+    Passthrough { idx: usize },                    // PassthroughImpl: identity, single channel
 }
 
 struct Referential {
@@ -203,12 +204,25 @@ impl Montage {
         Montage::Referential(Referential::new(active, reference, channels))
     }
 
+    /// `passthrough()` — identity on a single-channel source (mirrors
+    /// `PassthroughImpl`). Requires exactly one source channel.
+    fn passthrough(channels: &[String]) -> Self {
+        assert!(
+            channels.len() == 1,
+            "passthrough() requires a single-channel source (got {} channels: {:?})",
+            channels.len(),
+            channels
+        );
+        Montage::Passthrough { idx: 0 }
+    }
+
     fn run(&self, chunk: &[Vec<f64>]) -> Vec<f64> {
         match self {
             Montage::Referential(r) => r.run(chunk),
             Montage::Bipolar { plus_idx, minus_idx } => {
                 chunk.iter().map(|row| row[*plus_idx] - row[*minus_idx]).collect()
             }
+            Montage::Passthrough { idx } => chunk.iter().map(|row| row[*idx]).collect(),
         }
     }
 }
@@ -568,6 +582,137 @@ fn step_reward_event(
 
 // --- Evaluator ------------------------------------------------------------
 
+// --- Adaptive-tracker seed/export walk (Ask 2) ----------------------------
+
+fn callee_of(st: &TrackerState) -> &'static str {
+    match st {
+        TrackerState::AutoRange { .. } => "auto_range",
+        TrackerState::Percentile { .. } => "percentile",
+    }
+}
+
+/// `"<entity>.<callee>"`, with a `#<n>` suffix on the 2nd+ same-keyed tracker —
+/// the identical scheme as Python's `_collect_stateful_impls`.
+fn next_tracker_key(name: &str, callee: &str, counts: &mut HashMap<String, u32>) -> String {
+    let base = format!("{name}.{callee}");
+    let c = counts.entry(base.clone()).or_insert(0);
+    *c += 1;
+    if *c == 1 {
+        base
+    } else {
+        format!("{base}#{c}")
+    }
+}
+
+/// Collect tracker exports under `name`, depth-first (mirrors the Python walk
+/// order: derive/threshold entities, stages then upstream input).
+fn export_node(
+    name: &str,
+    node: &CNode,
+    counts: &mut HashMap<String, u32>,
+    out: &mut BTreeMap<String, TrackerState>,
+) {
+    match node {
+        CNode::Pipeline(stages, input) => {
+            for s in stages {
+                if let Some(st) = s.tracker_export() {
+                    let key = next_tracker_key(name, callee_of(&st), counts);
+                    out.insert(key, st);
+                }
+            }
+            export_node(name, input, counts, out);
+        }
+        CNode::Pct(perc, input) => {
+            let st = perc.export_state();
+            let key = next_tracker_key(name, "percentile", counts);
+            out.insert(key, st);
+            export_node(name, input, counts, out);
+        }
+        CNode::Coherence { a, b, .. } => {
+            export_node(name, a, counts, out);
+            export_node(name, b, counts, out);
+        }
+        CNode::Above(l, r) | CNode::Below(l, r) => {
+            export_node(name, l, counts, out);
+            export_node(name, r, counts, out);
+        }
+        CNode::Binop(_, l, r) => {
+            export_node(name, l, counts, out);
+            export_node(name, r, counts, out);
+        }
+        CNode::Inside { input, .. }
+        | CNode::Sigmoid { input, .. }
+        | CNode::Linear { input, .. } => export_node(name, input, counts, out),
+        CNode::AllOf(items) | CNode::AnyOf(items) => {
+            for c in items {
+                export_node(name, c, counts, out);
+            }
+        }
+        CNode::Cond(a, b, c) => {
+            export_node(name, a, counts, out);
+            export_node(name, b, counts, out);
+            export_node(name, c, counts, out);
+        }
+        _ => {}
+    }
+}
+
+/// Apply seeds under `name`, walking in the same order/key scheme as
+/// `export_node` so keys line up with the host's `export_state()`.
+fn seed_node(
+    name: &str,
+    node: &mut CNode,
+    seeds: &HashMap<String, TrackerState>,
+    counts: &mut HashMap<String, u32>,
+) {
+    match node {
+        CNode::Pipeline(stages, input) => {
+            for s in stages.iter_mut() {
+                if let Some(st) = s.tracker_export() {
+                    let key = next_tracker_key(name, callee_of(&st), counts);
+                    if let Some(seed) = seeds.get(&key) {
+                        s.tracker_seed(seed);
+                    }
+                }
+            }
+            seed_node(name, input, seeds, counts);
+        }
+        CNode::Pct(perc, input) => {
+            let key = next_tracker_key(name, "percentile", counts);
+            if let Some(TrackerState::Percentile { value, n_eff, .. }) = seeds.get(&key) {
+                perc.seed(*value, *n_eff);
+            }
+            seed_node(name, input, seeds, counts);
+        }
+        CNode::Coherence { a, b, .. } => {
+            seed_node(name, a, seeds, counts);
+            seed_node(name, b, seeds, counts);
+        }
+        CNode::Above(l, r) | CNode::Below(l, r) => {
+            seed_node(name, l, seeds, counts);
+            seed_node(name, r, seeds, counts);
+        }
+        CNode::Binop(_, l, r) => {
+            seed_node(name, l, seeds, counts);
+            seed_node(name, r, seeds, counts);
+        }
+        CNode::Inside { input, .. }
+        | CNode::Sigmoid { input, .. }
+        | CNode::Linear { input, .. } => seed_node(name, input, seeds, counts),
+        CNode::AllOf(items) | CNode::AnyOf(items) => {
+            for c in items {
+                seed_node(name, c, seeds, counts);
+            }
+        }
+        CNode::Cond(a, b, c) => {
+            seed_node(name, a, seeds, counts);
+            seed_node(name, b, seeds, counts);
+            seed_node(name, c, seeds, counts);
+        }
+        _ => {}
+    }
+}
+
 pub struct Evaluator {
     inputs: Vec<(String, Montage)>, // (bare input name, montage)
     derives: Vec<(String, CNode)>,
@@ -824,6 +969,71 @@ impl Evaluator {
                 .values()
                 .map(|c| c.canonical_name.clone())
                 .collect(),
+        }
+    }
+
+    /// Compact adaptive-tracker state for cross-session persistence (Ask 2).
+    /// Walks derives then thresholds (the same entities the Python
+    /// `Evaluator.export_state` collects), keying each `auto_range`/`percentile`
+    /// tracker by `"<entity>.<callee>"`. Parity with Python is structural: the
+    /// same key scheme and the same `percentile_linear` math.
+    pub fn export_state(&self) -> BTreeMap<String, TrackerState> {
+        let mut out = BTreeMap::new();
+        let mut counts: HashMap<String, u32> = HashMap::new();
+        for (name, node) in self.derives.iter() {
+            export_node(name, node, &mut counts, &mut out);
+        }
+        for (name, node) in self.thresholds.iter() {
+            export_node(name, node, &mut counts, &mut out);
+        }
+        out
+    }
+
+    /// Re-prime stateful trackers from a prior session's `export_state()`,
+    /// passed as the JSON object the Python host serializes. Unknown keys are
+    /// ignored (the protocol may have changed). Applied at construction.
+    pub fn seed_from_json(&mut self, json: &str) {
+        let raw: HashMap<String, serde_json::Value> = match serde_json::from_str(json) {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let seeds: HashMap<String, TrackerState> = raw
+            .iter()
+            .filter_map(|(k, v)| {
+                let obj = v.as_object()?;
+                let n_eff = obj.get("n_eff").and_then(|x| x.as_u64()).unwrap_or(0);
+                if obj.contains_key("low") {
+                    Some((
+                        k.clone(),
+                        TrackerState::AutoRange {
+                            low: obj.get("low")?.as_f64()?,
+                            high: obj.get("high")?.as_f64()?,
+                            n_eff,
+                        },
+                    ))
+                } else if obj.contains_key("value") {
+                    Some((
+                        k.clone(),
+                        TrackerState::Percentile {
+                            value: obj.get("value")?.as_f64()?,
+                            target_pct: obj.get("target_pct").and_then(|x| x.as_f64()).unwrap_or(0.0),
+                            n_eff,
+                        },
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if seeds.is_empty() {
+            return;
+        }
+        let mut counts: HashMap<String, u32> = HashMap::new();
+        for (name, node) in self.derives.iter_mut() {
+            seed_node(name, node, &seeds, &mut counts);
+        }
+        for (name, node) in self.thresholds.iter_mut() {
+            seed_node(name, node, &seeds, &mut counts);
         }
     }
 
@@ -1613,7 +1823,8 @@ fn build_montage(expr: &Expr, channels: &[String]) -> Montage {
             string_arg(args, "minus").expect("bipolar needs `minus`"),
             channels,
         ),
-        _ => panic!("PoC supports only referential and bipolar montages"),
+        Expr::Call { callee, .. } if callee == "passthrough" => Montage::passthrough(channels),
+        _ => panic!("PoC supports only referential, bipolar, and passthrough montages"),
     }
 }
 

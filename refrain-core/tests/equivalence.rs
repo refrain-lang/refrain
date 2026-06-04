@@ -76,6 +76,12 @@ fn micro_01_passthrough_equivalent() {
 }
 
 #[test]
+fn micro_passthrough_identity_equivalent() {
+    // Ask 4: the first-class passthrough() identity montage (single channel).
+    run_protocol("micro_passthrough_identity");
+}
+
+#[test]
 fn micro_02_bandpass_equivalent() {
     run_protocol("micro_02_bandpass");
 }
