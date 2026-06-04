@@ -38,15 +38,19 @@ SEED = 0
 
 
 def _reference(
-    ir, signal: np.ndarray
+    ir, signal: np.ndarray, *,
+    channels: tuple[str, ...] = CHANNELS, sample_rate: float = SAMPLE_RATE_HZ,
 ) -> tuple[dict[str, np.ndarray], list[dict], list[dict]]:
     """Drive the canonical Python evaluator once over `signal`, capturing the
     reference output *streams* (ground truth for `equivalence.rs`), the
     `list[Event]` returned per chunk (ground truth for `events.rs`), and the
     per-chunk `last_taps()` snapshot (ground truth for `taps.rs`). One run,
-    same seeded signal/evaluator — no duplicated signal generation or setup."""
+    same seeded signal/evaluator — no duplicated signal generation or setup.
+
+    `channels`/`sample_rate` default to the corpus-wide constants but may be
+    overridden per fixture (e.g. a single-channel `passthrough()` source)."""
     ev = Evaluator.live(
-        ir, sample_rate_hz=SAMPLE_RATE_HZ, channel_names=CHANNELS, record_streams=True,
+        ir, sample_rate_hz=sample_rate, channel_names=channels, record_streams=True,
         backend="python"
     )
     ev.start(skip_warmup=True)
@@ -161,7 +165,10 @@ EVENT_BEARING = frozenset({"micro_05_reward", "realistic_smr", "micro_09_inhibit
 TAP_BEARING = frozenset({"realistic_smr", "micro_09_inhibit"})
 
 
-def generate(stem: str) -> None:
+def generate(
+    stem: str, *,
+    channels: tuple[str, ...] = CHANNELS, sample_rate: float = SAMPLE_RATE_HZ,
+) -> None:
     ir = resolve(parse_file(REPO / "bench" / "protocols" / f"{stem}.refrain"), AMP)
     # Bake at the rate the runtime actually uses (a host choice >= the
     # protocol minimum), which can differ from the resolver's default.
@@ -171,16 +178,16 @@ def generate(stem: str) -> None:
     # serialization would let the Rust golden suite drift from the canonical
     # transformation it is meant to pin. `indent` only affects readability.
     (FIX / f"{stem}.ir.json").write_text(
-        json.dumps(ir_to_json_obj(ir, sample_rate_hz=SAMPLE_RATE_HZ), indent=2)
+        json.dumps(ir_to_json_obj(ir, sample_rate_hz=sample_rate), indent=2)
     )
 
     rng = np.random.default_rng(SEED)
-    signal = rng.standard_normal((N_SAMPLES, len(CHANNELS))) * 10.0
-    streams, events, taps = _reference(ir, signal)
+    signal = rng.standard_normal((N_SAMPLES, len(channels))) * 10.0
+    streams, events, taps = _reference(ir, signal, channels=channels, sample_rate=sample_rate)
 
     io = {
-        "sample_rate_hz": SAMPLE_RATE_HZ,
-        "channels": list(CHANNELS),
+        "sample_rate_hz": sample_rate,
+        "channels": list(channels),
         "chunk_size": CHUNK_SIZE,
         "warmup_samples": WARMUP_SAMPLES,
         "n_samples": N_SAMPLES,
@@ -239,3 +246,7 @@ if __name__ == "__main__":
         "composite_smr_theta",
     ):
         generate(stem)
+    # passthrough() is a single-channel identity montage, so it needs a
+    # single-channel source (the corpus-wide CHANNELS triple would trip its
+    # one-channel guard).
+    generate("micro_passthrough_identity", channels=("Cz",))

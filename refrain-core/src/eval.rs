@@ -176,6 +176,7 @@ fn num_named_controllable(args: &[crate::ir::Arg], name: &str) -> Option<(f64, O
 enum Montage {
     Referential(Referential),
     Bipolar { plus_idx: usize, minus_idx: usize }, // BipolarImpl: plus - minus
+    Passthrough { idx: usize },                    // PassthroughImpl: identity, single channel
 }
 
 struct Referential {
@@ -203,12 +204,25 @@ impl Montage {
         Montage::Referential(Referential::new(active, reference, channels))
     }
 
+    /// `passthrough()` — identity on a single-channel source (mirrors
+    /// `PassthroughImpl`). Requires exactly one source channel.
+    fn passthrough(channels: &[String]) -> Self {
+        assert!(
+            channels.len() == 1,
+            "passthrough() requires a single-channel source (got {} channels: {:?})",
+            channels.len(),
+            channels
+        );
+        Montage::Passthrough { idx: 0 }
+    }
+
     fn run(&self, chunk: &[Vec<f64>]) -> Vec<f64> {
         match self {
             Montage::Referential(r) => r.run(chunk),
             Montage::Bipolar { plus_idx, minus_idx } => {
                 chunk.iter().map(|row| row[*plus_idx] - row[*minus_idx]).collect()
             }
+            Montage::Passthrough { idx } => chunk.iter().map(|row| row[*idx]).collect(),
         }
     }
 }
@@ -1613,7 +1627,8 @@ fn build_montage(expr: &Expr, channels: &[String]) -> Montage {
             string_arg(args, "minus").expect("bipolar needs `minus`"),
             channels,
         ),
-        _ => panic!("PoC supports only referential and bipolar montages"),
+        Expr::Call { callee, .. } if callee == "passthrough" => Montage::passthrough(channels),
+        _ => panic!("PoC supports only referential, bipolar, and passthrough montages"),
     }
 }
 
