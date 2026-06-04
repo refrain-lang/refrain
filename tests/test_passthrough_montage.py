@@ -50,3 +50,15 @@ def test_passthrough_resolves_to_single_scalar_channel():
     assert inp.montage.callee == "passthrough"
     # identity montage carries the single source channel through as a scalar
     assert inp.stream_type.value_kind == "scalar"
+
+
+def test_passthrough_equals_raw_channel():
+    ir = resolve(parse(_PROTO))
+    ev = Evaluator.live(
+        ir, sample_rate_hz=4.0, channel_names=("tachogram",), backend="python"
+    )
+    ev.start(skip_warmup=True)
+    chunk = np.array([[0.5], [-0.5], [2.0]], dtype=np.float64)  # (n_samples, 1)
+    ev.step_chunk(chunk)
+    # passthrough -> rectify == abs of the raw channel; last sample is 2.0
+    assert ev.last_taps()["derive/env"] == pytest.approx(2.0)

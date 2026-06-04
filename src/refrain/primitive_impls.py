@@ -142,6 +142,29 @@ class ReferentialImpl(PrimitiveImpl):
         return active - ref
 
 
+class PassthroughImpl(PrimitiveImpl):
+    """`passthrough()` — first-class identity montage.
+
+    Emits the source's single channel verbatim, with no software
+    re-referencing. The sanctioned replacement for the
+    `referential(reference="device")` single-channel workaround. Requires
+    exactly one source channel (for a multi-channel source, name the
+    channel with `referential`/`bipolar` instead)."""
+
+    def __init__(self, *, channel_names: tuple[str, ...]):
+        if len(channel_names) != 1:
+            raise ValueError(
+                "passthrough() requires a single-channel source "
+                f"(got {len(channel_names)} channels: {list(channel_names)}); "
+                "use referential/bipolar to select a channel from a multi-channel source"
+            )
+        self.channel_names = channel_names
+
+    def step(self, raw_chunk: np.ndarray) -> np.ndarray:
+        # raw_chunk shape: (n_samples, 1). Output shape: (n_samples,).
+        return raw_chunk[:, 0]
+
+
 # ---------------------------------------------------------------------------
 # Bandpass (with filter-family dispatch)
 # ---------------------------------------------------------------------------
@@ -848,6 +871,8 @@ def make_filter_impl(
             reference=static_args["reference"],
             channel_names=channel_names,
         )
+    if callee == "passthrough":
+        return PassthroughImpl(channel_names=channel_names)
     if callee == "bandpass":
         return BandpassImpl(
             band=static_args.get("band"),
