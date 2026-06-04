@@ -14,7 +14,26 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from refrain.eval_ import Evaluator
+from refrain.parser import parse
 from refrain.primitive_impls import AutoRangeImpl, PercentileImpl
+from refrain.resolver import resolve
+
+_HRV_PROTO = """
+    protocol "seed_export_test" {
+      meta { version = "1.0"; evidence = "demo"; description = "seed/export" }
+      requires { sample_rate = ">= 4 Hz"; channels = ["tachogram"] }
+      input "tach" { montage = passthrough() }
+      derive "env" { from = "tach"; pipeline = [ rectify(), smooth(tau: 4 s) ] }
+      derive "rs"  { from = "env";  pipeline = [ auto_range(window: 5 min, percentile: (1, 99)) ] }
+      threshold "rs_t" { signal = "rs"; type = percentile(target_pct: 70, window: 5 min) }
+      reward {
+        continuous = "rs"
+        event = dwell(condition: all_of([ above("rs", "rs_t") ]), duration: 5 s)
+      }
+      output { audio_gain = reward.continuous; audio_chime = reward.event }
+    }
+"""
 
 
 def test_auto_range_export_after_run():
@@ -59,3 +78,42 @@ def test_unseeded_percentile_is_cold_start():
     b = PercentileImpl(target_pct=70, window_ms=1000, sample_rate_hz=4.0)
     x = np.linspace(0, 1, 10)
     assert np.array_equal(a.step(x), b.step(x))  # no seed => identical to today
+
+
+def test_evaluator_export_and_seed_continuity():
+    ir = resolve(parse(_HRV_PROTO))
+    ev = Evaluator.live(
+        ir, sample_rate_hz=4.0, channel_names=("tachogram",), backend="python"
+    )
+    ev.start(skip_warmup=True)
+    rng = np.random.default_rng(1)
+    for _ in range(50):
+        ev.step_chunk(rng.uniform(0.0, 0.1, size=(8, 1)))
+    state = ev.export_state()
+    assert "rs.auto_range" in state and "rs_t.percentile" in state
+    assert set(state["rs.auto_range"]) == {"low", "high", "n_eff"}
+    assert set(state["rs_t.percentile"]) == {"value", "target_pct", "n_eff"}
+
+    # Seed a fresh run from the prior state — export is stable across the seed.
+    ev2 = Evaluator.live(
+        ir, sample_rate_hz=4.0, channel_names=("tachogram",),
+        backend="python", seed_state=state,
+    )
+    ev2.start(skip_warmup=True)
+    seeded = ev2.export_state()
+    assert seeded["rs.auto_range"]["low"] == pytest.approx(
+        state["rs.auto_range"]["low"], abs=2e-3)
+    assert seeded["rs.auto_range"]["high"] == pytest.approx(
+        state["rs.auto_range"]["high"], abs=2e-3)
+    assert seeded["rs_t.percentile"]["value"] == pytest.approx(
+        state["rs_t.percentile"]["value"], abs=1e-9)  # constant fill is exact
+
+
+def test_unseeded_evaluator_export_is_empty_or_cold():
+    """No seed_state => behavior identical to today; export reflects the
+    cold-started trackers (n_eff grows from zero)."""
+    ir = resolve(parse(_HRV_PROTO))
+    ev = Evaluator.live(ir, sample_rate_hz=4.0, channel_names=("tachogram",), backend="python")
+    ev.start(skip_warmup=True)
+    state = ev.export_state()
+    assert state["rs.auto_range"]["n_eff"] == 0  # nothing stepped yet
