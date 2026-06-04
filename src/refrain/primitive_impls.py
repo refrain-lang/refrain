@@ -451,16 +451,51 @@ class AutoRangeImpl(PrimitiveImpl):
         self.low_pct = low_pct
         self.high_pct = high_pct
         self._buffer: deque[float] = deque(maxlen=self.window_samples)
+        self._seen = 0  # samples ingested; reported (capped) as n_eff
 
     def step(self, x: np.ndarray) -> np.ndarray:
         out = np.empty(x.shape[0], dtype=np.float64)
         for i, v in enumerate(x):
             self._buffer.append(float(v))
+            self._seen += 1
             arr = np.fromiter(self._buffer, dtype=np.float64)
             low, high = np.percentile(arr, [self.low_pct, self.high_pct])
             span = max(high - low, 1e-9)
             out[i] = float(np.clip((v - low) / span, 0.0, 1.0))
         return out
+
+    def export_state(self) -> dict:
+        """Compact summary for cross-session persistence (Ask 2): the current
+        low/high anchors plus the effective sample count. Rate-independent and
+        human-readable — the patient-record ceiling that rises week to week."""
+        if len(self._buffer):
+            arr = np.fromiter(self._buffer, dtype=np.float64)
+            low, high = np.percentile(arr, [self.low_pct, self.high_pct])
+        else:
+            low = high = 0.0
+        return {
+            "low": float(low),
+            "high": float(high),
+            "n_eff": int(min(self._seen, self.window_samples)),
+        }
+
+    def seed(self, state: dict) -> None:
+        """Pre-fill the rolling window with a deterministic synthetic ramp whose
+        `low_pct`/`high_pct` percentiles reproduce the seeded anchors. For a
+        uniform ramp a..b, percentile(p) = a + (p/100)(b-a); solve so
+        percentile(low_pct)=low and percentile(high_pct)=high. Because the seed
+        is expressed as initial buffer contents, `step()` is unchanged and both
+        backends apply the identical pre-fill (parity by construction)."""
+        low, high = float(state["low"]), float(state["high"])
+        n = int(min(state.get("n_eff", self.window_samples), self.window_samples))
+        n = max(n, 1)
+        span_pct = max(self.high_pct - self.low_pct, 1e-9)
+        b_minus_a = (high - low) * 100.0 / span_pct
+        a = low - (self.low_pct / 100.0) * b_minus_a
+        ramp = np.linspace(a, a + b_minus_a, n)
+        self._buffer.clear()
+        self._buffer.extend(float(v) for v in ramp)
+        self._seen = n
 
 
 # ---------------------------------------------------------------------------
