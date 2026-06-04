@@ -42,3 +42,20 @@ def test_unseeded_auto_range_is_cold_start():
     b = AutoRangeImpl(window_ms=1000, low_pct=5, high_pct=95, sample_rate_hz=4.0)
     x = np.linspace(0, 1, 10)
     assert np.array_equal(a.step(x), b.step(x))  # no seed => identical to today
+
+
+def test_percentile_export_and_seed_roundtrip():
+    impl = PercentileImpl(target_pct=70, window_ms=5 * 60 * 1000, sample_rate_hz=4.0)
+    impl.seed({"value": 0.04, "target_pct": 70, "n_eff": 1200})
+    st = impl.export_state()
+    assert set(st) == {"value", "target_pct", "n_eff"}
+    assert st["value"] == pytest.approx(0.04, abs=1e-9)  # constant fill is exact
+    assert st["target_pct"] == 70
+    assert st["n_eff"] == 1200
+
+
+def test_unseeded_percentile_is_cold_start():
+    a = PercentileImpl(target_pct=70, window_ms=1000, sample_rate_hz=4.0)
+    b = PercentileImpl(target_pct=70, window_ms=1000, sample_rate_hz=4.0)
+    x = np.linspace(0, 1, 10)
+    assert np.array_equal(a.step(x), b.step(x))  # no seed => identical to today

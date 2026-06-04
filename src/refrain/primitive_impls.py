@@ -405,6 +405,7 @@ class PercentileImpl(PrimitiveImpl):
         # muted rests so rest-period artifact can't pollute a later block's
         # window ("one baseline up front").
         self._ingesting = True
+        self._seen = 0  # samples ingested; reported (capped) as n_eff
         # Track which control names map to which parameters, populated
         # via update_control. The map is empty until the evaluator has
         # registered control->impl deps; PercentileImpl supports
@@ -419,11 +420,37 @@ class PercentileImpl(PrimitiveImpl):
         for i, v in enumerate(x):
             if self._ingesting:
                 self._buffer.append(float(v))
+                self._seen += 1
             # Compute percentile over current buffer (warm-up: short buffer is OK).
             # A frozen window still emits over its existing buffer.
             arr = np.fromiter(self._buffer, dtype=np.float64) if len(self._buffer) else np.zeros(1)
             out[i] = float(np.percentile(arr, self.target_pct))
         return out
+
+    def export_state(self) -> dict:
+        """Compact summary for cross-session persistence (Ask 2): the current
+        threshold value at `target_pct` plus the effective sample count."""
+        if len(self._buffer):
+            value = float(np.percentile(
+                np.fromiter(self._buffer, dtype=np.float64), self.target_pct))
+        else:
+            value = 0.0
+        return {
+            "value": value,
+            "target_pct": float(self.target_pct),
+            "n_eff": int(min(self._seen, self.window_samples)),
+        }
+
+    def seed(self, state: dict) -> None:
+        """Fill the window with `value` repeated, so percentile(target_pct) ==
+        value exactly at session start; real samples then displace it. Both
+        backends apply the identical constant pre-fill (parity by construction)."""
+        value = float(state["value"])
+        n = int(min(state.get("n_eff", self.window_samples), self.window_samples))
+        n = max(n, 1)
+        self._buffer.clear()
+        self._buffer.extend([value] * n)
+        self._seen = n
 
     def update_control(self, target: str, value: float) -> None:
         """Set `target_pct` to a new value. Percentile is typically the
