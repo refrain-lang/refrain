@@ -464,7 +464,7 @@ controls {
 }
 ```
 
-Control types: `frequency`, `duration`, `voltage`, `percent`, `enum`, `boolean`, and `placement` (see below). Each value declared in `controls` is referenceable by name (e.g., `orf` in §4.4).
+Control types: `frequency`, `duration`, `voltage`, `percent`, `number`, `enum`, `boolean`, and `placement` (see below). Each value declared in `controls` is referenceable by name (e.g., `orf` in §4.4). `number` is a **unitless scalar** (dimensionless, value used as-is) — the right kind for relative weights and gains; prefer it over `percent` when the value is not actually a percentage (a host renders `percent` with a "%" unit, `number` with none).
 
 #### `placement` control type
 

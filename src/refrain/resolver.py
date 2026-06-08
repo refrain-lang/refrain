@@ -2171,6 +2171,11 @@ def _control_kind_dims(kind: str, loc: Loc | None) -> Dimensions:
         return VOLTAGE
     if kind == "percent":
         return DIMENSIONLESS
+    if kind == "number":
+        # Unitless scalar. The honest kind for relative weights / gains and
+        # other dimensionless knobs — same dims as `percent` but without the
+        # misleading "%" a host renders for percent controls. Value used raw.
+        return DIMENSIONLESS
     if kind in ("boolean", "enum"):
         return DIMENSIONLESS
     if kind == "placement":
