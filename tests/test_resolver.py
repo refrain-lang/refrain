@@ -592,6 +592,45 @@ def test_othmer_ilf_has_log_scale_frequency_control(amp):
     assert orf.dims == FREQUENCY
 
 
+def test_number_control_resolves_dimensionless():
+    """`number` — a unitless scalar control. The honest kind for relative
+    weights / gains (vs `percent`, which wears a misleading unit). Same
+    DIMENSIONLESS dims as percent; the value is used raw (no /100)."""
+    from refrain.types_ import DIMENSIONLESS
+    src = '''
+        protocol "p" {
+          meta { version = "1.0"; evidence = "demo"; description = "x" }
+          controls { w = number { default = 1.0; range = (0, 4); label = "Weight" } }
+          input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+          reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+          output { audio_gain = reward.continuous }
+        }
+    '''
+    ir = resolve(parse(src))
+    c = ir.controls["w"]
+    assert c.type_kind == "number"
+    assert c.dims == DIMENSIONLESS
+
+
+def test_number_control_works_as_composite_weight():
+    """The motivating use: weights in a weighted composite resolve as `number`
+    (unitless relative weights), not `percent`."""
+    src = '''
+        protocol "p" {
+          meta { version = "1.0"; evidence = "demo"; description = "x" }
+          requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+          input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+          derive "smr" { from = "raw"; pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 250 ms) ] }
+          reward "a" { signal = sigmoid("smr", midpoint: 6 uV, steepness: 1); weight = w }
+          reward { combine = "weighted"; continuous = reward.composite }
+          output { audio_gain = reward.composite }
+          controls { w = number { default = 1.0; range = (0, 4); label = "weight" } }
+        }
+    '''
+    ir = resolve(parse(src))
+    assert ir.controls["w"].type_kind == "number"
+
+
 def test_othmer_ilf_derive_band_depends_on_orf_control(amp):
     ir = resolve(parse_file(EXAMPLES / "othmer_ilf_t3t4.refrain"), amp)
     band = ir.derives["band"]

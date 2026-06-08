@@ -5,6 +5,19 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.9.0] — 2026-06-08
+
+Additive — no existing protocol changes behavior; Python↔Rust parity and the
+IR-JSON schema are unchanged (the new kind is front-end-only: it resolves to
+`DIMENSIONLESS`, and the Rust core does not read control `type_kind`).
+
+### Added
+- **`number` control kind** — a unitless scalar control. The honest kind for
+  relative weights and gains: same `DIMENSIONLESS` dims as `percent`, but a
+  host renders it with **no unit** (where `percent` shows a misleading "%").
+  Use it for weighted-composite weights and any dimensionless knob whose value
+  is not actually a percentage. The value is used raw (no `/100`).
+
 ## [0.8.0] — 2026-06-04
 
 HRV biofeedback support for the Coherence Recorder (M1). All additive — no
