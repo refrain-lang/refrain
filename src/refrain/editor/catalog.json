@@ -1,0 +1,54 @@
+{
+  "catalog_version": "1",
+  "blocks": [
+    {"id": "derive.envelope", "kind": "derive", "form": "pipeline",
+     "slots": [
+       {"name": "center", "type": "frequency", "control_bindable": true},
+       {"name": "ratio", "type": "number", "control_bindable": false, "default": 1.25},
+       {"name": "smooth_tau_ms", "type": "duration_ms", "control_bindable": false, "default": 250}
+     ],
+     "template": "bandpass(center: {center}, bandwidth: ratio({ratio}), order: 4),\n      hilbert(),\n      magnitude(),\n      smooth(tau: {smooth_tau_ms} ms)"},
+
+    {"id": "montage.referential", "kind": "montage",
+     "slots": [
+       {"name": "active", "type": "site", "control_bindable": true},
+       {"name": "reference", "type": "site", "control_bindable": false, "default": "linked_ears"}
+     ],
+     "template": "referential(active: {active}, reference: {reference})"},
+
+    {"id": "threshold.percentile", "kind": "threshold",
+     "slots": [
+       {"name": "target_pct", "type": "percent", "control_bindable": true},
+       {"name": "window_ms", "type": "duration", "control_bindable": false, "default": 120000}
+     ],
+     "template": "type = percentile(target_pct: {target_pct}, window: {window_ms})"},
+
+    {"id": "threshold.absolute", "kind": "threshold",
+     "slots": [{"name": "value", "type": "voltage", "control_bindable": true}],
+     "template": "type = absolute(value: {value})"},
+
+    {"id": "reward.operant", "kind": "reward",
+     "slots": [
+       {"name": "direction", "type": "enum", "control_bindable": false},
+       {"name": "signal", "type": "ref", "control_bindable": false},
+       {"name": "threshold", "type": "ref", "control_bindable": false},
+       {"name": "cont_num", "type": "ref", "control_bindable": false},
+       {"name": "cont_den", "type": "ref", "control_bindable": false},
+       {"name": "dwell_ms", "type": "duration_ms", "control_bindable": false, "default": 250},
+       {"name": "midpoint", "type": "number", "control_bindable": false, "default": 1.0},
+       {"name": "steepness", "type": "number", "control_bindable": false, "default": 3}
+     ],
+     "template": "event      = dwell(condition: {direction}(\"{signal}\", \"{threshold}\"), duration: {dwell_ms} ms)\n    continuous = sigmoid(\"{cont_num}\" / \"{cont_den}\", midpoint: {midpoint}, steepness: {steepness})"},
+
+    {"id": "derive.ratio", "kind": "derive", "form": "formula",
+     "slots": [{"name": "a", "type": "ref"}, {"name": "b", "type": "ref"}],
+     "template": "\"{a}\" / \"{b}\""},
+
+    {"id": "derive.coherence", "kind": "derive", "form": "formula",
+     "slots": [
+       {"name": "input_a", "type": "ref"}, {"name": "input_b", "type": "ref"},
+       {"name": "band", "type": "raw"}, {"name": "window_ms", "type": "duration"}
+     ],
+     "template": "coherence(input_a: \"{input_a}\", input_b: \"{input_b}\", band: {band}, window: {window_ms})"}
+  ]
+}
