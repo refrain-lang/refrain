@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import refrain.ast as A
 from refrain.amp_profile import load_amp_profile
 from refrain.ir import IRArray, IRCall
 from refrain.parser import parse
@@ -183,3 +184,25 @@ def test_unknown_group_as_set_default_rejected():
     # the same "unknown group" error, not a misleading "no sites to replicate".
     with pytest.raises(ResolveError, match="unknown group 'nosuch'"):
         resolve(parse(_UNKNOWN_GROUP_DEFAULT), _AMP)
+
+
+# ---------------------------------------------------------------------------
+# Band fan-out (Plan 2): bands { } block + band-axis replication
+# ---------------------------------------------------------------------------
+
+
+def test_bands_block_parses_as_section_block():
+    src = '''
+    protocol "p" {
+      meta { version="0.1.0"; evidence="demo"; description="x" }
+      requires { sample_rate=">= 256 Hz"; channels=["Cz"] }
+      bands { theta = (4 Hz, 8 Hz); alpha = (8 Hz, 12 Hz) }
+      input "raw" { montage = referential(active:"Cz", reference:"device") }
+      output { audio_gain = 0 }
+    }'''
+    proto = parse(src).protocol
+    blk = next(s for s in proto.body if isinstance(s, A.SectionBlock) and s.keyword == "bands")
+    entries = {s.target: s.value for s in blk.body if isinstance(s, A.Assignment)}
+    assert set(entries) == {"theta", "alpha"}
+    assert isinstance(entries["theta"], A.Tuple)
+    assert entries["theta"].elements == (A.NumberLit(4.0, "Hz"), A.NumberLit(8.0, "Hz"))
