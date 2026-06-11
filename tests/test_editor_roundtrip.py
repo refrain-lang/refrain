@@ -1,3 +1,5 @@
+import pytest
+
 import refrain
 from refrain.resolver import resolve
 from refrain.ir_json import ir_to_json_obj
@@ -109,3 +111,15 @@ def test_coherence_round_trips():
     d = describe_protocol(COH)
     assert d["in_subset"] is True
     assert _ir(COH) == _ir(render_protocol(d["model"]))
+
+
+def test_public_api_exports():
+    assert hasattr(refrain, "describe_protocol")
+    assert hasattr(refrain, "render_protocol")
+
+
+@pytest.mark.parametrize("src", [SMR, BASELINE, FAA, COH])
+def test_all_in_subset_round_trip(src):
+    d = describe_protocol(src)
+    assert d["in_subset"] is True
+    assert _ir(src) == _ir(render_protocol(d["model"]))
