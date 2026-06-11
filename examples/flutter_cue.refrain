@@ -92,10 +92,12 @@ protocol "flutter_cue_v1" {
   derive "ac1"  { from = "env"; pipeline = [ autocorr(lag: 125 ms, window: 4 s) ] }  // -> [-1,1]
   derive "acN"  { from = "ac1"; pipeline = [ auto_range(window: 30 s) ] }   // -> [0,1]
 
-  // Fuse the two normalized indicators into one EWS score. max() = OR-like
-  // (fire if EITHER surges). For AND-like specificity use "varN" * "acN".
+  // Fuse the two normalized indicators into one EWS score via the
+  // probabilistic-OR identity  a + b - a*b  (OR-like: ~1 if EITHER surges;
+  // arithmetic-only so it runs on both backends). For AND-like specificity
+  // use "varN" * "acN".
   derive "score" {
-    formula = ("varN" > "acN") ? "varN" : "acN"
+    formula = "varN" + "acN" - "varN" * "acN"
   }
 
   // The takeaway: when the EWS score surges above its own recent baseline, mute
