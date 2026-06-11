@@ -241,6 +241,7 @@
         "alpha": { "type": "number" },
         "dt": { "type": "number" },
         "window_samples": { "type": "integer" },
+        "lag_samples": { "type": "integer" },
         "dwell_samples": { "type": "integer" },
         "nperseg": { "type": "integer" },
         "noverlap": { "type": "integer" }

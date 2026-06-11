@@ -384,3 +384,24 @@ def test_ir_json_emits_blocks_and_phase_fields():
     assert obj["blocks"]["beta_up"]["output"] == ["audio"]
     assert "br" in obj["reward_bundles"]
     assert obj["reward_bundles"]["br"]["continuous"] is not None
+
+
+# ---------------------------------------------------------------------------
+# autocorr: bakes window_samples + lag_samples at the target rate
+# ---------------------------------------------------------------------------
+
+
+def test_autocorr_bakes_window_and_lag_samples():
+    src = '''
+    protocol "ac_emit" {
+      meta { version="0.1.0" evidence="demo" description="x" }
+      requires { sample_rate=">= 256 Hz" channels=["Cz"] }
+      input "raw" { montage = referential(active:"Cz", reference:"linked_ears") }
+      derive "env" { from="raw" pipeline=[ bandpass(band:(8 Hz,12 Hz)), hilbert(), magnitude() ] }
+      derive "ac1" { from="env" pipeline=[ autocorr(lag: 125 ms, window: 1 s) ] }
+      output { audio_gain = 0 }
+    }'''
+    obj = ir_to_json_obj(resolve(parse(src)), sample_rate_hz=256.0)
+    ac = _find_call(obj["derives"]["ac1"]["expression"], "autocorr")
+    assert ac["coeffs"]["window_samples"] == 256   # 1 s * 256 Hz
+    assert ac["coeffs"]["lag_samples"] == 32        # 125 ms * 256 Hz

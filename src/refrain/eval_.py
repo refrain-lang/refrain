@@ -105,6 +105,7 @@ _DYNAMIC_ARG_KEYS: dict[str, tuple[str, ...]] = {
     "linear": ("_pos_0",),
     "bandpower": ("input",),
     "coherence": ("input_a", "input_b"),
+    "autocorr": ("_pos_0",),     # single-input pipeline stage; input is positional 0
     # threshold/inhibit constructors with no dynamic inputs
     "mute": (),
     "freeze": (),
