@@ -24,6 +24,25 @@ def load_catalog(path: Path | None = None) -> Catalog:
     return Catalog(version=data["catalog_version"], _by_id={b["id"]: b for b in data["blocks"]})
 
 
+def _fmt_num(v) -> str:
+    return f"{v:.6g}"
+
+
+def render_slot(value, slot_type: str) -> str:
+    """Format one slot value for insertion into a .refrain template."""
+    if isinstance(value, dict) and "bind" in value:
+        return value["bind"]                       # control binding -> bare name
+    if slot_type == "frequency":
+        return f"{_fmt_num(value)} Hz"
+    if slot_type in ("number", "percent", "duration_ms"):
+        return _fmt_num(value)
+    if slot_type == "site":
+        return f'"{value}"'
+    if slot_type in ("ref", "enum", "raw"):
+        return str(value)
+    raise ValueError(f"unknown slot type {slot_type!r}")
+
+
 _MODEL_SCHEMA_PATH = Path(__file__).with_name("protocol-model.schema.json")
 
 
