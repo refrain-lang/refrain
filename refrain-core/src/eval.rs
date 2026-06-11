@@ -13,7 +13,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::dsp::{
-    control_cell, smooth_alpha_from_tau_ms, AutoRange, Bandpower, Biquad, Coherence, ControlCell,
+    control_cell, smooth_alpha_from_tau_ms, AutoRange, Autocorr, Bandpower, Biquad, Coherence,
+    ControlCell,
     Differentiate, Dwell, HilbertFir, Magnitude, Percentile, Signal, Smooth, Stage, TrackerState,
 };
 use crate::ir::{Coeffs, Expr, Protocol};
@@ -1755,6 +1756,7 @@ fn is_dsp(callee: &str) -> bool {
             | "differentiate"
             | "auto_range"
             | "bandpower"
+            | "autocorr"
     )
 }
 
@@ -1875,6 +1877,14 @@ fn build_stage(
             Box::new(Bandpower::new(
                 c.sos.as_ref().expect("sos"),
                 c.window_samples.expect("bandpower window_samples"),
+            ))
+        }
+        "autocorr" => {
+            // Rolling lag-k Pearson autocorrelation; window + lag baked at rate.
+            let c = need();
+            Box::new(Autocorr::new(
+                c.window_samples.expect("autocorr window_samples"),
+                c.lag_samples.expect("autocorr lag_samples"),
             ))
         }
         other => panic!("PoC: unsupported DSP primitive {other:?}"),
