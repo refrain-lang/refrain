@@ -146,13 +146,17 @@ def _match_threshold(decl: A.NamedDecl) -> dict:
     bm = _body_map(decl)
     t = bm["type"]
     if isinstance(t, A.Call) and t.callee == "percentile":
-        return {"name": decl.name, "block": "threshold.percentile", "signal": bm["signal"].value,
+        node = {"name": decl.name, "block": "threshold.percentile", "signal": bm["signal"].value,
                 "slots": {"target_pct": _slot_from_expr(_arg(t, "target_pct")),
                           "window_ms": _to_ms(_arg(t, "window"))}}
-    if isinstance(t, A.Call) and t.callee == "absolute":
-        return {"name": decl.name, "block": "threshold.absolute", "signal": bm["signal"].value,
+    elif isinstance(t, A.Call) and t.callee == "absolute":
+        node = {"name": decl.name, "block": "threshold.absolute", "signal": bm["signal"].value,
                 "slots": {"value": _slot_from_expr(_arg(t, "value"))}}
-    raise _NotInSubset(f"threshold {getattr(t, 'callee', '?')} not in subset")
+    else:
+        raise _NotInSubset(f"threshold {getattr(t, 'callee', '?')} not in subset")
+    if bool(getattr(bm.get("live_tunable"), "value", False)):  # threshold-level live flag
+        node["live_tunable"] = True
+    return node
 
 
 def _match_reward(block: A.SectionBlock) -> dict:

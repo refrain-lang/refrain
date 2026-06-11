@@ -29,6 +29,7 @@
     "blockNode": {"type": "object", "required": ["block", "slots"],
       "properties": {"name": {"type": ["string", "null"]}, "block": {"type": "string"},
         "from": {"type": "string"}, "signal": {"type": "string"},
+        "live_tunable": {"type": "boolean"},
         "slots": {"type": "object", "additionalProperties": {"$ref": "#/$defs/slotValue"}}}},
     "control": {"type": "object", "required": ["name", "kind"],
       "properties": {"name": {"type": "string"}, "kind": {"type": "string"},
