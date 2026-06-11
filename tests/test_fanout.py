@@ -9,6 +9,7 @@ import pytest
 import refrain.ast as A
 from refrain.amp_profile import load_amp_profile
 from refrain.ir import IRArray, IRCall
+from refrain.ir_json import ir_to_json_obj
 from refrain.parser import parse
 from refrain.resolver import ResolveError, resolve
 
@@ -206,3 +207,103 @@ def test_bands_block_parses_as_section_block():
     assert set(entries) == {"theta", "alpha"}
     assert isinstance(entries["theta"], A.Tuple)
     assert entries["theta"].elements == (A.NumberLit(4.0, "Hz"), A.NumberLit(8.0, "Hz"))
+
+
+_BANDS = """
+    protocol "bandfan" {
+      meta { version="1.0"; evidence="clinical"; description="x" }
+      requires { sample_rate=">= 256 Hz"; channels=["Cz"] }
+      bands { theta = (4 Hz, 8 Hz); alpha = (8 Hz, 12 Hz); smr = (12 Hz, 15 Hz) }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "env"   { from = "raw"; pipeline = [bandpass(band: bands, order: 4), hilbert(), magnitude()] }
+      derive "score" { from = "env"; pipeline = [auto_range(window: 30 s)] }
+      inhibit "flutter" { metric = rectify("score"); threshold = percentile(target_pct: 90, window: 2 min); action = mute(release: 400 ms) }
+      reward { continuous = 1.0 }
+      output { audio_gain = reward.continuous }
+    }
+"""
+
+
+def _walk_json(node):
+    if isinstance(node, dict):
+        yield node
+        for v in node.values():
+            yield from _walk_json(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _walk_json(v)
+
+
+def _bandpass_band_of(ir, derive_name):
+    obj = ir_to_json_obj(ir, sample_rate_hz=256.0)
+    expr = obj["derives"][derive_name]["expression"]
+    bp = next(n for n in _walk_json(expr)
+              if n.get("node") == "call" and n.get("callee") == "bandpass")
+    band = next(a["value"] for a in bp["args"] if a.get("name") == "band")
+    return tuple(e["value"] for e in band["elements"])
+
+
+def test_band_fan_out_replicates_per_band():
+    ir = resolve(parse(_BANDS), _AMP)
+    assert set(ir.derives) == {
+        "env@theta", "env@alpha", "env@smr",
+        "score@theta", "score@alpha", "score@smr",
+    }
+    assert set(ir.inhibits) == {"flutter@theta", "flutter@alpha", "flutter@smr"}
+    # `raw` is shared (upstream of the seed), NOT replicated.
+    assert set(ir.inputs) == {"raw"}
+
+
+def test_band_fan_out_substitutes_band_tuple():
+    ir = resolve(parse(_BANDS), _AMP)
+    assert _bandpass_band_of(ir, "env@theta") == (4.0, 8.0)
+    assert _bandpass_band_of(ir, "env@alpha") == (8.0, 12.0)
+    assert _bandpass_band_of(ir, "env@smr") == (12.0, 15.0)
+
+
+def test_band_fan_out_per_band_wiring():
+    ir = resolve(parse(_BANDS), _AMP)
+    assert ir.derives["score@theta"].upstream == ("derive/env@theta",)
+    assert ir.derives["score@alpha"].upstream == ("derive/env@alpha",)
+
+
+def test_bands_block_rejects_inverted_range():
+    src = _BANDS.replace("theta = (4 Hz, 8 Hz)", "theta = (8 Hz, 4 Hz)")
+    with pytest.raises(ResolveError, match="low .* must be < high"):
+        resolve(parse(src), _AMP)
+
+
+def test_bands_block_rejects_non_frequency_tuple():
+    src = _BANDS.replace("theta = (4 Hz, 8 Hz)", "theta = (4, 8)")
+    with pytest.raises(ResolveError, match="frequency 2-tuple"):
+        resolve(parse(src), _AMP)
+
+
+_BANDS_X_SITES = """
+    protocol "xfan" {
+      meta { version="1.0"; evidence="clinical"; description="x" }
+      requires { sample_rate=">= 256 Hz"; channels=["C3","C4"] }
+      bands { theta = (4 Hz, 8 Hz); alpha = (8 Hz, 12 Hz) }
+      controls { sites = placement { kind="set"; default=["C3","C4"]; allowed=["C3","C4"]; min=1; max=2 } }
+      input "raw" { montage = referential(active: sites, reference: "linked_ears") }
+      derive "env"   { from = "raw"; pipeline = [bandpass(band: bands, order: 4), hilbert(), magnitude()] }
+      derive "score" { from = "env"; pipeline = [auto_range(window: 30 s)] }
+      inhibit "flutter" { metric = rectify("score"); threshold = percentile(target_pct: 90, window: 2 min); action = mute(release: 400 ms) }
+      reward { continuous = 1.0 }
+      output { audio_gain = reward.continuous }
+    }
+"""
+
+
+def test_band_cross_site_full_grid():
+    ir = resolve(parse(_BANDS_X_SITES), _AMP, bindings={"sites": ["C3", "C4"]})
+    # 2 bands x 2 channels = 4 of each replicated entity.
+    assert set(ir.inputs) == {"raw@C3", "raw@C4"}
+    assert set(ir.derives) == {
+        "env@theta@C3", "env@theta@C4", "env@alpha@C3", "env@alpha@C4",
+        "score@theta@C3", "score@theta@C4", "score@alpha@C3", "score@alpha@C4",
+    }
+    assert set(ir.inhibits) == {
+        "flutter@theta@C3", "flutter@theta@C4",
+        "flutter@alpha@C3", "flutter@alpha@C4",
+    }

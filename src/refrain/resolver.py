@@ -141,6 +141,8 @@ class _Resolver:
         self.session_ast: A.SectionBlock | None = None
         self.groups_ast: A.SectionBlock | None = None
         self.groups: dict[str, tuple[str, ...]] = {}
+        self.bands_ast: A.SectionBlock | None = None
+        self.bands: dict[str, tuple[float, float]] = {}
 
         # Resolved named entities (filled in source order).
         self.inputs: dict[str, IRInput] = {}
@@ -203,6 +205,7 @@ class _Resolver:
         #   - reward / output / session last, since they reference
         #     everything declared above
         self._resolve_groups()
+        self._resolve_bands()
         self._resolve_controls()
         requires_ir = self._resolve_requires()
         self._resolve_named_decls(proto)
@@ -252,6 +255,7 @@ class _Resolver:
                     "controls": "controls_ast",
                     "session": "session_ast",
                     "groups": "groups_ast",
+                    "bands": "bands_ast",
                 }.get(stmt.keyword)
                 if attr is None:
                     raise ResolveError(
@@ -870,6 +874,41 @@ class _Resolver:
             if not channels:
                 raise ResolveError(f"group {name!r} is empty", loc=stmt.value.loc)
             self.groups[name] = tuple(channels)
+
+    def _resolve_bands(self) -> None:
+        if self.bands_ast is None:
+            return
+        control_names = {
+            s.target for s in (self.controls_ast.body if self.controls_ast else [])
+            if isinstance(s, A.Assignment)
+        }
+        for stmt in self.bands_ast.body:
+            if not isinstance(stmt, A.Assignment):
+                raise ResolveError(
+                    "bands block may only contain `name = (low Hz, high Hz)` entries",
+                    loc=getattr(stmt, "loc", None),
+                )
+            name = stmt.target
+            if name in control_names:
+                raise ResolveError(
+                    f"band {name!r} collides with a control of the same name", loc=stmt.loc
+                )
+            v = stmt.value
+            if not (
+                isinstance(v, A.Tuple)
+                and len(v.elements) == 2
+                and all(isinstance(e, A.NumberLit) and e.unit == "Hz" for e in v.elements)
+            ):
+                raise ResolveError(
+                    f"band {name!r} must be a frequency 2-tuple like (4 Hz, 8 Hz)",
+                    loc=getattr(v, "loc", None),
+                )
+            lo, hi = v.elements[0].value, v.elements[1].value
+            if not (lo < hi):
+                raise ResolveError(
+                    f"band {name!r}: low ({lo}) must be < high ({hi})", loc=v.loc
+                )
+            self.bands[name] = (lo, hi)
 
     # -- Controls -----------------------------------------------------------
 
@@ -2258,8 +2297,11 @@ def resolve(
     # flat per-site protocol AST before resolution. Returns `composed`
     # unchanged when no `set` placement is declared (the single-site path).
     # Imported lazily to avoid a module-load cycle (fanout imports ResolveError).
-    from .fanout import fan_out
+    from .fanout import band_fan_out, fan_out
 
+    # Band axis first (replicate the per-band subgraph per `bands` entry), then
+    # the per-site set axis — composing into the band × channel cross product.
+    composed = band_fan_out(composed)
     composed = fan_out(composed, bindings or {}, amp=amp)
     return _Resolver(composed, amp, bindings).resolve()
 

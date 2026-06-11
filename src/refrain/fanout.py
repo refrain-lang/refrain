@@ -27,8 +27,18 @@ from typing import Any
 from . import ast as A
 from .resolver import ResolveError
 
-# Decl keywords that participate in per-site replication.
-_PER_SITE_KEYWORDS = ("input", "derive", "threshold")
+# Decl keywords that participate in per-site replication. `inhibit` is included
+# so per-band flutter inhibits get per-site replicated in the band × channel
+# cross product (band_fan_out runs first, then this site pass).
+_PER_SITE_KEYWORDS = ("input", "derive", "threshold", "inhibit")
+
+# Decl keywords for the band axis: derive/threshold/inhibit (NOT input — the
+# channel is the site axis). See `band_fan_out`.
+_PER_BAND_KEYWORDS = ("derive", "threshold", "inhibit")
+
+# The bare NameRef an author uses in `bandpass(band: bands)` to mark the band
+# axis (analogous to a set-placement control name in a montage channel slot).
+_BAND_PLACEHOLDER = "bands"
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +108,180 @@ def fan_out(file_ast: A.File, bindings: dict[str, Any], *, amp: Any = None) -> A
 
     # --- Steps 6-8: rewrite ------------------------------------------------
     return _rewrite(file_ast, proto, sites, decls, per_site)
+
+
+# ---------------------------------------------------------------------------
+# Band axis: replicate a band-parameterized subgraph per `bands` entry
+# ---------------------------------------------------------------------------
+
+
+def band_fan_out(file_ast: A.File) -> A.File:
+    """Replicate the band-parameterized subgraph once per ``bands`` entry.
+
+    No-op when there is no ``bands`` block. The seed is every derive whose
+    ``bandpass(band: bands)`` references the ``bands`` placeholder; the forward
+    closure (derive/threshold/inhibit) is replicated per band with the band's
+    concrete frequency tuple substituted into ``bandpass(band:)`` and refs
+    renamed ``<name>@<band>``. Front-end only — emits a flat AST of existing
+    node types. Runs *before* the per-site :func:`fan_out`, so band copies then
+    get per-site replicated (the band × channel cross product).
+    """
+    proto = file_ast.protocol
+    bands = _bands_table(proto)
+    if not bands:
+        return file_ast
+
+    decls = _index_decls(proto, _PER_BAND_KEYWORDS)
+    seeds = _band_seed_derives(decls)
+    if not seeds:
+        # `bands` declared but never referenced via `bandpass(band: bands)`;
+        # leave the AST alone (the resolver validates the bands block).
+        return file_ast
+
+    entity_names = {name for (_kw, name) in decls.keys()}
+    refs = {
+        name: _referenced_entities(decl, entity_names) - {name}
+        for (_kw, name), decl in decls.items()
+    }
+    per_band = _transitive_per_site(seeds, refs)
+    _check_scoping(proto, decls, refs, per_band, entity_names)
+    return _rewrite_bands(file_ast, proto, bands, per_band, seeds)
+
+
+def _bands_table(proto: A.Protocol) -> dict[str, A.Tuple]:
+    """name -> frequency 2-tuple, from the protocol's ``bands`` block. Lenient
+    read for the pre-pass; the resolver's ``_resolve_bands`` validates shape."""
+    for stmt in proto.body:
+        if isinstance(stmt, A.SectionBlock) and stmt.keyword == "bands":
+            out: dict[str, A.Tuple] = {}
+            for inner in stmt.body:
+                if isinstance(inner, A.Assignment) and isinstance(inner.value, A.Tuple):
+                    out[inner.target] = inner.value
+            return out
+    return {}
+
+
+def _band_seed_derives(decls: dict[tuple[str, str], A.NamedDecl]) -> set[str]:
+    """Derives whose pipeline/formula contains ``bandpass(band: bands)``."""
+    return {
+        name
+        for (kw, name), decl in decls.items()
+        if kw == "derive" and _references_band_placeholder(decl)
+    }
+
+
+def _references_band_placeholder(node: A.Node) -> bool:
+    """True if ``node`` contains a ``bandpass`` call with ``band`` bound to the
+    ``bands`` placeholder NameRef."""
+    if isinstance(node, A.Call):
+        if node.callee == "bandpass":
+            for a in node.args:
+                if (
+                    a.name in (None, "band")
+                    and isinstance(a.value, A.NameRef)
+                    and a.value.name == _BAND_PLACEHOLDER
+                ):
+                    return True
+        return any(_references_band_placeholder(a.value) for a in node.args)
+    if isinstance(node, A.NamedDecl):
+        return any(_references_band_placeholder(s) for s in node.body)
+    if isinstance(node, A.Assignment):
+        return _references_band_placeholder(node.value)
+    if isinstance(node, (A.Array, A.Tuple)):
+        return any(_references_band_placeholder(e) for e in node.elements)
+    return False
+
+
+def _bind_band_nameref(node: A.Expr, band_tuple: A.Tuple) -> A.Expr:
+    """Rewrite ``bandpass(band: NameRef(bands))`` -> ``bandpass(band: <tuple>)``,
+    recursing through calls and arrays/tuples (e.g. a `pipeline` list)."""
+    if isinstance(node, A.Call):
+        return A.Call(
+            callee=node.callee,
+            args=tuple(
+                A.Arg(
+                    name=a.name,
+                    value=(
+                        band_tuple
+                        if isinstance(a.value, A.NameRef)
+                        and a.value.name == _BAND_PLACEHOLDER
+                        else _bind_band_nameref(a.value, band_tuple)
+                    ),
+                    loc=a.loc,
+                )
+                for a in node.args
+            ),
+            loc=node.loc,
+        )
+    if isinstance(node, (A.Array, A.Tuple)):
+        return type(node)(
+            elements=tuple(_bind_band_nameref(e, band_tuple) for e in node.elements),
+            loc=node.loc,
+        )
+    return node
+
+
+def _rewrite_bands(
+    file_ast: A.File,
+    proto: A.Protocol,
+    bands: dict[str, A.Tuple],
+    per_band: set[str],
+    seeds: set[str],
+) -> A.File:
+    # Drop the original (un-suffixed) per-band decls; replicate below.
+    new_body: list[A.Statement] = [
+        stmt
+        for stmt in proto.body
+        if not (
+            isinstance(stmt, A.NamedDecl)
+            and stmt.keyword in _PER_BAND_KEYWORDS
+            and stmt.name in per_band
+        )
+    ]
+    ordered: list[A.NamedDecl] = [
+        stmt
+        for stmt in proto.body
+        if isinstance(stmt, A.NamedDecl)
+        and stmt.keyword in _PER_BAND_KEYWORDS
+        and stmt.name in per_band
+    ]
+    replicas: list[A.Statement] = []
+    for band_name, band_tuple in bands.items():
+        for decl in ordered:
+            rep = _replicate_dependent(decl, per_band, band_name)
+            if decl.name in seeds:
+                # Also substitute this band's concrete frequency tuple into the
+                # `bandpass(band: bands)` slot (ref-renaming above only touches
+                # StringLits; the band placeholder is a NameRef).
+                rep = A.NamedDecl(
+                    keyword=rep.keyword,
+                    name=rep.name,
+                    body=tuple(
+                        A.Assignment(
+                            target=s.target,
+                            value=_bind_band_nameref(s.value, band_tuple),
+                            loc=s.loc,
+                        )
+                        if isinstance(s, A.Assignment)
+                        else s
+                        for s in rep.body
+                    ),
+                    loc=rep.loc,
+                )
+            replicas.append(rep)
+
+    insert_at = _first_per_site_index(new_body, proto, per_band)
+    final_body = tuple(new_body[:insert_at] + replicas + new_body[insert_at:])
+    return A.File(
+        imports=file_ast.imports,
+        protocol=A.Protocol(
+            name=proto.name,
+            extends=proto.extends,
+            body=final_body,
+            loc=proto.loc,
+        ),
+        loc=file_ast.loc,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -233,10 +417,12 @@ def _bound_sites(proto: A.Protocol, set_name: str, bindings: dict[str, Any]) -> 
 # ---------------------------------------------------------------------------
 
 
-def _index_decls(proto: A.Protocol) -> dict[tuple[str, str], A.NamedDecl]:
+def _index_decls(
+    proto: A.Protocol, keywords: tuple[str, ...] = _PER_SITE_KEYWORDS
+) -> dict[tuple[str, str], A.NamedDecl]:
     out: dict[tuple[str, str], A.NamedDecl] = {}
     for stmt in proto.body:
-        if isinstance(stmt, A.NamedDecl) and stmt.keyword in _PER_SITE_KEYWORDS:
+        if isinstance(stmt, A.NamedDecl) and stmt.keyword in keywords:
             out[(stmt.keyword, stmt.name)] = stmt
     return out
 
@@ -306,7 +492,7 @@ def _expr_children(node: A.Node) -> Iterator[A.Expr]:
 # these fields avoids spuriously matching an unrelated string field (e.g. a
 # `label`) that happens to equal an entity name, which would otherwise create a
 # false dependency edge and trip the ambiguous-boundary guard.
-_REF_FIELDS = frozenset({"from", "pipeline", "formula", "signal"})
+_REF_FIELDS = frozenset({"from", "pipeline", "formula", "signal", "metric"})
 
 
 def _referenced_entities(decl: A.NamedDecl, entity_names: set[str]) -> set[str]:
@@ -326,14 +512,17 @@ def _referenced_entities(decl: A.NamedDecl, entity_names: set[str]) -> set[str]:
     return found
 
 
-def _transitive_per_site(seed: str, refs: dict[str, set[str]]) -> set[str]:
-    """Forward closure: entities reachable *from* the set-bound input.
+def _transitive_per_site(
+    seed: str | set[str], refs: dict[str, set[str]]
+) -> set[str]:
+    """Forward closure: entities reachable *from* the seed(s).
 
-    An entity is per-site iff it (transitively) consumes the set-bound input.
-    Iterate to a fixpoint: add any entity that references an already-per-site
-    entity.
+    An entity is per-axis iff it (transitively) consumes a seed. `seed` is the
+    set-bound input name (site axis) or the set of band-parameterized derive
+    names (band axis). Iterate to a fixpoint: add any entity that references an
+    already-included entity.
     """
-    per_site = {seed}
+    per_site = {seed} if isinstance(seed, str) else set(seed)
     changed = True
     while changed:
         changed = False
