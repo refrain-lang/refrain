@@ -1,0 +1,12 @@
+{
+  "catalog_version": "1",
+  "blocks": [
+    {"id": "derive.envelope", "kind": "derive", "form": "pipeline",
+     "slots": [
+       {"name": "center", "type": "frequency", "control_bindable": true},
+       {"name": "ratio", "type": "number", "control_bindable": false, "default": 1.25},
+       {"name": "smooth_tau_ms", "type": "duration_ms", "control_bindable": false, "default": 250}
+     ],
+     "template": "bandpass(center: {center}, bandwidth: ratio({ratio}), order: 4),\n      hilbert(),\n      magnitude(),\n      smooth(tau: {smooth_tau_ms} ms)"}
+  ]
+}
