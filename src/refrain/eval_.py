@@ -223,6 +223,11 @@ def _massage_static_args(callee: str, static: dict[str, Any]) -> dict[str, Any]:
         out["window_ms"] = out.pop("window")
     if callee == "coherence" and "window" in out:
         out["window_ms"] = out.pop("window")
+    if callee == "autocorr":
+        if "window" in out:
+            out["window_ms"] = out.pop("window")
+        if "lag" in out:
+            out["lag_ms"] = out.pop("lag")
     if callee == "absolute" and "_pos_0" in out:
         out["value"] = out.pop("_pos_0")
     if callee == "above" or callee == "below":

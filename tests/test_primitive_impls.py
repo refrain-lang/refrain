@@ -19,6 +19,7 @@ from refrain.primitive_impls import (
     AbsoluteThresholdImpl,
     AllOfImpl,
     AnyOfImpl,
+    AutocorrImpl,
     BandpassImpl,
     BandpowerImpl,
     BelowImpl,
@@ -523,3 +524,51 @@ def test_coherence_window_too_short_rejected():
     A 100 ms window must be rejected with a clear diagnostic."""
     with pytest.raises(ValueError, match="window must be"):
         CoherenceImpl(band=(8.0, 12.0), window_ms=100.0, sample_rate_hz=SR)
+
+
+# ---------------------------------------------------------------------------
+# autocorr — rolling lag-k Pearson autocorrelation (critical slowing down)
+# ---------------------------------------------------------------------------
+
+
+def test_autocorr_warmup_returns_zero():
+    """Before lag+2 samples accumulate, autocorr returns 0.0."""
+    impl = AutocorrImpl(window_ms=1000.0, lag_samples=1, sample_rate_hz=SR)
+    out = impl.step(np.array([1.0, 2.0]))  # n=1 then n=2; both < lag+2 == 3
+    assert out[0] == 0.0 and out[1] == 0.0
+
+
+def test_autocorr_white_noise_near_zero():
+    """Lag-1 autocorrelation of white noise is ~0."""
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal(4000)
+    impl = AutocorrImpl(window_ms=1000.0, lag_samples=1, sample_rate_hz=SR)
+    out = impl.step(x)
+    assert abs(out[-1]) < 0.15  # last (fully warm) sample
+
+
+def test_autocorr_smooth_signal_near_one():
+    """A slowly-varying (highly autocorrelated) signal -> lag-1 ac near 1."""
+    t = np.arange(4000) / SR
+    x = np.sin(2 * np.pi * 0.5 * t)  # 0.5 Hz: adjacent samples nearly identical
+    impl = AutocorrImpl(window_ms=1000.0, lag_samples=1, sample_rate_hz=SR)
+    out = impl.step(x)
+    assert out[-1] > 0.9
+
+
+def test_autocorr_constant_input_is_zero():
+    """Constant input (zero variance, den=0) -> 0.0, not NaN; output bounded."""
+    impl = AutocorrImpl(window_ms=1000.0, lag_samples=1, sample_rate_hz=SR)
+    out = impl.step(np.full(1000, 3.0))
+    assert np.all(out == 0.0)
+
+
+def test_autocorr_streaming_matches_single_shot():
+    """Chunked stepping == one-shot over the same samples (persistent buffer)."""
+    rng = np.random.default_rng(1)
+    x = rng.standard_normal(2000)
+    a = AutocorrImpl(window_ms=500.0, lag_samples=2, sample_rate_hz=SR)
+    b = AutocorrImpl(window_ms=500.0, lag_samples=2, sample_rate_hz=SR)
+    one = a.step(x)
+    chunked = np.concatenate([b.step(x[i:i + 64]) for i in range(0, len(x), 64)])
+    np.testing.assert_allclose(one, chunked, atol=1e-12)

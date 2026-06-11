@@ -396,6 +396,33 @@ _COHERENCE = PrimitiveSpec(
 )
 
 
+def _autocorr_output(args: dict[str, ResolvedArg]) -> StreamType:
+    # Pearson autocorrelation is dimensionless in [-1, 1].
+    return scalar_stream(DIMENSIONLESS)
+
+
+_AUTOCORR = PrimitiveSpec(
+    name="autocorr",
+    category="signal",
+    signatures=(
+        Signature(
+            params=(
+                # Single implicit pipeline input (like bandpass/smooth — no
+                # input ParamSpec). lag/window are durations, baked to sample
+                # counts at the target rate.
+                ParamSpec("lag", "duration"),
+                ParamSpec("window", "duration"),
+            ),
+            output=_autocorr_output,
+        ),
+    ),
+    budget=ResourceBudget(state_kb=8, worst_case_us=400),
+    doc="Rolling lag-k Pearson autocorrelation of a stream over a sliding "
+        "window. Returns scalar in [-1, 1]; 0.0 during warm-up. The "
+        "critical-slowing-down early-warning indicator.",
+)
+
+
 # Time-series math ---------------------------------------------------------
 
 _DIFFERENTIATE = PrimitiveSpec(
@@ -697,6 +724,7 @@ _REGISTRY: dict[str, PrimitiveSpec] = {
         _HILBERT,
         _BANDPOWER,
         _COHERENCE,
+        _AUTOCORR,
         _DIFFERENTIATE,
         _MAGNITUDE,
         _RECTIFY,
