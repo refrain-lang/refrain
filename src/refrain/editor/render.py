@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from refrain.editor.catalog import Catalog, load_catalog, render_slot
+from refrain.editor.catalog import Catalog, _fmt_duration, _fmt_num, load_catalog, render_slot
 
 _CONTROL_BODY = {
     "frequency": '{name} = frequency {{\n      default = {default} Hz\n      range   = ({lo} Hz, {hi} Hz)\n      label   = "{label}"{live}\n    }}',
@@ -9,9 +9,13 @@ _CONTROL_BODY = {
     "number":    '{name} = number {{\n      default = {default}\n      range   = ({lo}, {hi})\n      label   = "{label}"{live}\n    }}',
 }
 
+# The control kinds render can emit. `describe` gates `in_subset` on this so a
+# protocol with a kind we cannot render degrades gracefully instead of crashing.
+RENDERABLE_CONTROL_KINDS = frozenset(_CONTROL_BODY)
+
 
 def _fmtnum(v):
-    return v if v is None else f"{v:.6g}"
+    return None if v is None else _fmt_num(v)
 
 
 def _fill(template: str, slots_def: list[dict], slot_values: dict) -> str:
@@ -28,15 +32,24 @@ def _render_control(c: dict) -> str:
 
 
 def _render_phase(p: dict) -> str:
-    secs = p["duration_ms"] / 1000.0
-    dur = f"{int(secs)} s" if secs < 120 else f"{int(secs // 60)} min"
+    parts = [f'name = "{p["name"]}"']
+    if p.get("duration_ms") is not None:
+        parts.append(f"duration = {_fmt_duration(p['duration_ms'])}")
+    if p.get("mode"):
+        parts.append(f"mode = {p['mode']}")
     if p.get("output_muted"):
-        return f'      phase {{ name = "{p["name"]}"; duration = {dur}; output_muted = true }}'
-    return f'      phase {{ name = "{p["name"]}"; duration = {dur}; mode = timed_with_floor }}'
+        parts.append("output_muted = true")
+    return "      phase { " + "; ".join(parts) + " }"
 
 
 def _quote(v):
-    return f'"{v}"' if isinstance(v, str) else str(v)
+    if isinstance(v, bool):                       # bool before int (bool is an int subclass)
+        return "true" if v else "false"
+    if isinstance(v, str):
+        return f'"{v}"'
+    if isinstance(v, (int, float)):
+        return _fmt_num(v)
+    return str(v)
 
 
 def render_protocol(model: dict, catalog: Catalog | None = None) -> str:

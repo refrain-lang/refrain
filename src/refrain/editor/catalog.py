@@ -25,7 +25,15 @@ def load_catalog(path: Path | None = None) -> Catalog:
 
 
 def _fmt_num(v) -> str:
-    return f"{v:.6g}"
+    """Format a number so it re-parses to the same value (no precision loss).
+
+    Integers (and integral floats) render without a decimal point; other
+    floats use `repr`, the shortest string that round-trips exactly.
+    """
+    f = float(v)
+    if f.is_integer():
+        return str(int(f))
+    return repr(f)
 
 
 def _fmt_duration(ms: float) -> str:

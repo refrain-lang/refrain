@@ -4,6 +4,8 @@ from typing import Any
 
 import refrain
 from refrain import ast as A
+from refrain.editor.catalog import _fmt_num
+from refrain.editor.render import RENDERABLE_CONTROL_KINDS
 from refrain.resolver import resolve
 
 
@@ -80,7 +82,7 @@ def _to_ms(num: A.NumberLit) -> float:
 
 def _expr_to_str(e) -> str:
     if isinstance(e, A.NumberLit):
-        return f"{e.value:.6g}" + (f" {e.unit}" if e.unit else "")
+        return _fmt_num(e.value) + (f" {e.unit}" if e.unit else "")
     if isinstance(e, A.StringLit):
         return f'"{e.value}"'
     if isinstance(e, A.BoolLit):
@@ -193,14 +195,24 @@ def _match_session(block: A.SectionBlock) -> dict:
     phases = []
     for ph in _body_map(block)["phases"].elements:
         f = _body_map(ph)
-        phases.append({"name": f["name"].value,
-                       "duration_ms": _to_ms(f["duration"]),
-                       "output_muted": bool(getattr(f.get("output_muted"), "value", False))})
+        phase = {"name": f["name"].value,
+                 "output_muted": bool(getattr(f.get("output_muted"), "value", False))}
+        if "duration" in f:                       # absent for open-ended phases
+            phase["duration_ms"] = _to_ms(f["duration"])
+        if "mode" in f:                           # `mode = timed_with_floor | open | ...`
+            m = f["mode"]
+            phase["mode"] = getattr(m, "name", None) or getattr(m, "value", None)
+        phases.append(phase)
     return {"phases": phases}
 
 
 def _build_model(ast, controls) -> dict:
     p = ast.protocol
+    if p.extends is not None:                          # inheritance is not modelled
+        raise _NotInSubset("extends not in subset")
+    for c in controls:                                 # only kinds render can emit
+        if c["kind"] not in RENDERABLE_CONTROL_KINDS:
+            raise _NotInSubset(f"control kind '{c['kind']}' not renderable")
     inputs, derives, thresholds, outputs = [], [], [], []
     reward, requires, session = None, {"sample_rate": "", "channels": []}, {"phases": []}
     for stmt in p.body:
@@ -222,7 +234,10 @@ def _build_model(ast, controls) -> dict:
                 requires = _match_requires(stmt)
             elif stmt.keyword == "session":
                 session = _match_session(stmt)
-            # meta / controls handled by describe_protocol
+            elif stmt.keyword in ("meta", "controls"):
+                pass  # handled by describe_protocol
+            else:
+                raise _NotInSubset(f"section '{stmt.keyword}' not in subset")
     return {"name": p.name, "meta": _meta_from_ast(ast), "requires": requires,
             "inputs": inputs, "derives": derives, "thresholds": thresholds,
             "inhibits": [], "reward": reward, "outputs": outputs,
@@ -249,7 +264,9 @@ def describe_protocol(source: str, *, amp: Any = None) -> dict:
     try:
         model = _build_model(ast, controls)
         in_subset = True
-    except _NotInSubset:
+    except (_NotInSubset, KeyError, AttributeError, TypeError, IndexError):
+        # Intentional out-of-subset, or a matcher hit an unexpected AST shape:
+        # either way degrade gracefully — never crash on a resolvable protocol.
         model, in_subset = None, False
     return {"ok": True, "diagnostics": [], "meta": _meta_from_ast(ast),
             "in_subset": in_subset, "controls": controls, "placements": placements,
