@@ -36,3 +36,12 @@ def test_describe_reports_parse_error():
     assert d["ok"] is False
     assert d["diagnostics"]
     assert d["model"] is None
+
+
+def test_extra_pipeline_stage_is_out_of_subset_but_tunable():
+    src = SMR.replace("smooth(tau: 250 ms) ]", "smooth(tau: 250 ms), differentiate() ]")
+    d = describe_protocol(src)
+    assert d["ok"] is True
+    assert d["in_subset"] is False
+    assert d["model"] is None
+    assert any(c["name"] == "env_center" for c in d["controls"])  # still tunable
