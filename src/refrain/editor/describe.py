@@ -110,6 +110,19 @@ def _match_input(decl: A.NamedDecl) -> dict:
 
 def _match_derive(decl: A.NamedDecl) -> dict:
     bm = _body_map(decl)
+    if "formula" in bm:
+        f = bm["formula"]
+        if isinstance(f, A.BinaryOp) and f.op == "/" \
+           and isinstance(f.left, A.StringLit) and isinstance(f.right, A.StringLit):
+            return {"name": decl.name, "block": "derive.ratio",
+                    "slots": {"a": f.left.value, "b": f.right.value}}
+        if isinstance(f, A.Call) and f.callee == "coherence":
+            return {"name": decl.name, "block": "derive.coherence",
+                    "slots": {"input_a": _arg(f, "input_a").value,
+                              "input_b": _arg(f, "input_b").value,
+                              "band": _expr_to_str(_arg(f, "band")),
+                              "window_ms": _to_ms(_arg(f, "window"))}}
+        raise _NotInSubset(f"formula derive '{decl.name}' not in subset")
     pipe = bm.get("pipeline")
     if not isinstance(pipe, A.Array):
         raise _NotInSubset(f"derive '{decl.name}' is not pipeline-form")
@@ -150,10 +163,16 @@ def _match_reward(block: A.SectionBlock) -> dict:
         raise _NotInSubset("reward condition not above/below")
     if not isinstance(cont, A.Call) or cont.callee != "sigmoid":
         raise _NotInSubset("reward.continuous not a sigmoid()")
+    ratio = cont.args[0].value  # first positional arg of sigmoid = the BinaryOp ratio
+    if not (isinstance(ratio, A.BinaryOp) and ratio.op == "/"
+            and isinstance(ratio.left, A.StringLit) and isinstance(ratio.right, A.StringLit)):
+        raise _NotInSubset("sigmoid arg not a ref/ref ratio")
     return {"name": None, "block": "reward.operant",
             "slots": {"direction": cond.callee,
                       "signal": cond.args[0].value.value,
                       "threshold": cond.args[1].value.value,
+                      "cont_num": ratio.left.value,
+                      "cont_den": ratio.right.value,
                       "dwell_ms": _to_ms(_arg(ev, "duration")),
                       "midpoint": _arg(cont, "midpoint").value,
                       "steepness": _arg(cont, "steepness").value}}

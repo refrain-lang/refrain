@@ -59,3 +59,53 @@ def test_baseline_absolute_round_trips():
     d = describe_protocol(BASELINE)
     assert d["in_subset"] is True
     assert _ir(BASELINE) == _ir(render_protocol(d["model"]))
+
+
+FAA = '''
+protocol "faa_f3f4" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["mood_regulation"] }
+  requires { sample_rate = ">= 256 Hz"; channels = ["F3", "F4"] }
+  input "left"  { montage = referential(active: "F3", reference: "linked_ears") }
+  input "right" { montage = referential(active: "F4", reference: "linked_ears") }
+  derive "alpha_l" { from = "left"
+    pipeline = [ bandpass(center: alpha_center, bandwidth: ratio(1.5), order: 4), hilbert(), magnitude(), smooth(tau: 500 ms) ] }
+  derive "alpha_r" { from = "right"
+    pipeline = [ bandpass(center: alpha_center, bandwidth: ratio(1.5), order: 4), hilbert(), magnitude(), smooth(tau: 500 ms) ] }
+  derive "faa" { formula = "alpha_l" / "alpha_r" }
+  threshold "faa_t" { signal = "faa"; type = percentile(target_pct: reward_pct, window: 2 min) }
+  reward { event = dwell(condition: below("faa", "faa_t"), duration: 500 ms)
+           continuous = sigmoid("faa_t" / "faa", midpoint: 1.0, steepness: 3) }
+  output { audio_gain = reward.continuous; audio_chime = reward.event }
+  controls {
+    alpha_center = frequency { default = 9.79796 Hz; range = (7.84 Hz, 11.76 Hz); label = "Alpha band center" }
+    reward_pct = percent { default = 50; range = (30, 70); label = "Target reward %"; live_tunable = true }
+  }
+}
+'''
+
+COH = '''
+protocol "alpha_coherence_c3c4" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["flow_connectivity"] }
+  requires { sample_rate = ">= 256 Hz"; channels = ["C3", "C4"] }
+  input "left"  { montage = referential(active: "C3", reference: "linked_ears") }
+  input "right" { montage = referential(active: "C4", reference: "linked_ears") }
+  derive "alpha_coh" { formula = coherence(input_a: "left", input_b: "right", band: (8 Hz, 12 Hz), window: 2 s) }
+  threshold "coh_t" { signal = "alpha_coh"; type = percentile(target_pct: reward_pct, window: 2 min) }
+  reward { event = dwell(condition: above("alpha_coh", "coh_t"), duration: 500 ms)
+           continuous = sigmoid("alpha_coh" / "coh_t", midpoint: 1.0, steepness: 3) }
+  output { audio_gain = reward.continuous; audio_chime = reward.event }
+  controls { reward_pct = percent { default = 70; range = (50, 90); label = "Target reward %"; live_tunable = true } }
+}
+'''
+
+
+def test_faa_round_trips():
+    d = describe_protocol(FAA)
+    assert d["in_subset"] is True
+    assert _ir(FAA) == _ir(render_protocol(d["model"]))
+
+
+def test_coherence_round_trips():
+    d = describe_protocol(COH)
+    assert d["in_subset"] is True
+    assert _ir(COH) == _ir(render_protocol(d["model"]))

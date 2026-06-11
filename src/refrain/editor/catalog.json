@@ -32,10 +32,23 @@
        {"name": "direction", "type": "enum", "control_bindable": false},
        {"name": "signal", "type": "ref", "control_bindable": false},
        {"name": "threshold", "type": "ref", "control_bindable": false},
+       {"name": "cont_num", "type": "ref", "control_bindable": false},
+       {"name": "cont_den", "type": "ref", "control_bindable": false},
        {"name": "dwell_ms", "type": "duration_ms", "control_bindable": false, "default": 250},
        {"name": "midpoint", "type": "number", "control_bindable": false, "default": 1.0},
        {"name": "steepness", "type": "number", "control_bindable": false, "default": 3}
      ],
-     "template": "event      = dwell(condition: {direction}(\"{signal}\", \"{threshold}\"), duration: {dwell_ms} ms)\n    continuous = sigmoid(\"{signal}\" / \"{threshold}\", midpoint: {midpoint}, steepness: {steepness})"}
+     "template": "event      = dwell(condition: {direction}(\"{signal}\", \"{threshold}\"), duration: {dwell_ms} ms)\n    continuous = sigmoid(\"{cont_num}\" / \"{cont_den}\", midpoint: {midpoint}, steepness: {steepness})"},
+
+    {"id": "derive.ratio", "kind": "derive", "form": "formula",
+     "slots": [{"name": "a", "type": "ref"}, {"name": "b", "type": "ref"}],
+     "template": "\"{a}\" / \"{b}\""},
+
+    {"id": "derive.coherence", "kind": "derive", "form": "formula",
+     "slots": [
+       {"name": "input_a", "type": "ref"}, {"name": "input_b", "type": "ref"},
+       {"name": "band", "type": "raw"}, {"name": "window_ms", "type": "duration"}
+     ],
+     "template": "coherence(input_a: \"{input_a}\", input_b: \"{input_b}\", band: {band}, window: {window_ms})"}
   ]
 }
