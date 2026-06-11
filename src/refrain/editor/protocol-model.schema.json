@@ -13,6 +13,7 @@
     "derives": {"type": "array", "items": {"$ref": "#/$defs/blockNode"}},
     "thresholds": {"type": "array", "items": {"$ref": "#/$defs/blockNode"}},
     "inhibits": {"type": "array", "items": {"$ref": "#/$defs/blockNode"}},
+    "reward_components": {"type": "array", "items": {"$ref": "#/$defs/blockNode"}},
     "reward": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/blockNode"}]},
     "outputs": {"type": "array",
                 "items": {"type": "object", "required": ["channel", "route"],
