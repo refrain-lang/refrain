@@ -23,6 +23,10 @@
      ],
      "template": "type = percentile(target_pct: {target_pct}, window: {window_ms})"},
 
+    {"id": "threshold.absolute", "kind": "threshold",
+     "slots": [{"name": "value", "type": "voltage", "control_bindable": true}],
+     "template": "type = absolute(value: {value})"},
+
     {"id": "reward.operant", "kind": "reward",
      "slots": [
        {"name": "direction", "type": "enum", "control_bindable": false},

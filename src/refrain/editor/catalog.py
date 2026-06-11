@@ -51,6 +51,8 @@ def render_slot(value, slot_type: str) -> str:
         return f'"{value}"'
     if slot_type in ("ref", "enum", "raw"):
         return str(value)
+    if slot_type == "voltage":
+        return f"{_fmt_num(value)} uV"
     raise ValueError(f"unknown slot type {slot_type!r}")
 
 

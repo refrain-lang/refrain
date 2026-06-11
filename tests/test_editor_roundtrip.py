@@ -33,3 +33,29 @@ def test_smr_is_in_subset_and_round_trips():
     d = describe_protocol(SMR)
     assert d["in_subset"] is True and d["model"] is not None
     assert _ir(SMR) == _ir(render_protocol(d["model"]))
+
+
+BASELINE = '''
+protocol "smr_up_c4_baseline" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["sensorimotor_sleep"] }
+  requires { sample_rate = ">= 256 Hz"; channels = ["C4"] }
+  input "raw" { montage = referential(active: "C4", reference: "linked_ears") }
+  derive "env" { from = "raw"
+    pipeline = [ bandpass(center: env_center, bandwidth: ratio(1.25), order: 4),
+                 hilbert(), magnitude(), smooth(tau: 250 ms) ] }
+  threshold "env_t" { signal = "env"; type = absolute(value: thr_uv) }
+  reward { event = dwell(condition: above("env", "env_t"), duration: 250 ms)
+           continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+  output { audio_chime = reward.event; audio_gain = reward.event.holds ? reward.continuous : 0 }
+  controls {
+    env_center = frequency { default = 13.4164 Hz; range = (10.73 Hz, 16.1 Hz); label = "SMR band center" }
+    thr_uv = voltage { default = 2.0 uV; range = (0.5 uV, 30.0 uV); label = "Threshold"; live_tunable = true }
+  }
+}
+'''
+
+
+def test_baseline_absolute_round_trips():
+    d = describe_protocol(BASELINE)
+    assert d["in_subset"] is True
+    assert _ir(BASELINE) == _ir(render_protocol(d["model"]))

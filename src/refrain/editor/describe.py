@@ -130,11 +130,14 @@ def _match_derive(decl: A.NamedDecl) -> dict:
 def _match_threshold(decl: A.NamedDecl) -> dict:
     bm = _body_map(decl)
     t = bm["type"]
-    if not isinstance(t, A.Call) or t.callee != "percentile":
-        raise _NotInSubset(f"threshold {getattr(t, 'callee', '?')} not in subset")
-    return {"name": decl.name, "block": "threshold.percentile", "signal": bm["signal"].value,
-            "slots": {"target_pct": _slot_from_expr(_arg(t, "target_pct")),
-                      "window_ms": _to_ms(_arg(t, "window"))}}
+    if isinstance(t, A.Call) and t.callee == "percentile":
+        return {"name": decl.name, "block": "threshold.percentile", "signal": bm["signal"].value,
+                "slots": {"target_pct": _slot_from_expr(_arg(t, "target_pct")),
+                          "window_ms": _to_ms(_arg(t, "window"))}}
+    if isinstance(t, A.Call) and t.callee == "absolute":
+        return {"name": decl.name, "block": "threshold.absolute", "signal": bm["signal"].value,
+                "slots": {"value": _slot_from_expr(_arg(t, "value"))}}
+    raise _NotInSubset(f"threshold {getattr(t, 'callee', '?')} not in subset")
 
 
 def _match_reward(block: A.SectionBlock) -> dict:
