@@ -138,3 +138,30 @@ def test_unknown_section_is_out_of_subset():
     except _NotInSubset:
         raised = True
     assert raised
+
+
+# --- threshold-level `live_tunable` survives the round-trip (baseline variants) ---
+
+def test_threshold_live_tunable_round_trips():
+    src = '''
+protocol "p" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["sensorimotor_sleep"] }
+  requires { sample_rate = ">= 256 Hz"; channels = ["C4"] }
+  input "raw" { montage = referential(active: "C4", reference: "linked_ears") }
+  derive "env" { from = "raw"
+    pipeline = [ bandpass(center: env_center, bandwidth: ratio(1.25), order: 4),
+                 hilbert(), magnitude(), smooth(tau: 250 ms) ] }
+  threshold "env_t" { signal = "env"; type = absolute(value: thr_uv); live_tunable = true }
+  reward { event = dwell(condition: above("env", "env_t"), duration: 250 ms)
+           continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+  output { audio_chime = reward.event; audio_gain = reward.event.holds ? reward.continuous : 0 }
+  controls {
+    env_center = frequency { default = 13.4164 Hz; range = (10.73 Hz, 16.1 Hz); label = "c" }
+    thr_uv = voltage { default = 2.0 uV; range = (0.5 uV, 30.0 uV); label = "t"; live_tunable = true }
+  }
+}
+'''
+    d = describe_protocol(src)
+    assert d["in_subset"] is True
+    assert d["model"]["thresholds"][0].get("live_tunable") is True
+    assert _ir(src) == _ir(render_protocol(d["model"]))

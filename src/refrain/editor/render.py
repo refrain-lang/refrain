@@ -78,7 +78,8 @@ def render_protocol(model: dict, catalog: Catalog | None = None) -> str:
 
     for n in model["thresholds"]:
         b = cat.block(n["block"])
-        L.append(f'  threshold "{n["name"]}" {{ signal = "{n["signal"]}"; {_fill(b["template"], b["slots"], n["slots"])} }}')
+        lt = "; live_tunable = true" if n.get("live_tunable") else ""
+        L.append(f'  threshold "{n["name"]}" {{ signal = "{n["signal"]}"; {_fill(b["template"], b["slots"], n["slots"])}{lt} }}')
 
     r = model["reward"]
     if r:
