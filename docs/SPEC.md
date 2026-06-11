@@ -584,7 +584,7 @@ When bound to `["C3","Cz","C4"]`, this resolves to a flat IR with:
 - Three thresholds: `smr_t@C3`, `smr_t@Cz`, `smr_t@C4`.
 - One combined reward: `dwell(condition: all_of([above("smr@C3","smr_t@C3"), above("smr@Cz","smr_t@Cz"), above("smr@C4","smr_t@C4")]), ...)`.
 
-The fan-out computes the **per-site subgraph** as the transitive closure of derives and thresholds downstream of the set-bound input; only those entities are replicated. Entities that do not depend on the set-bound input (e.g., a fixed-channel inhibit) remain single.
+The fan-out computes the **per-site subgraph** as the transitive closure of derives, thresholds, and inhibits downstream of the set-bound input; only those entities are replicated. Entities that do not depend on the set-bound input (e.g., a fixed-channel inhibit) remain single.
 
 **`reward.combine`** selects how per-site conditions are joined:
 - `"all"` (default): `all_of([...])` — reward fires only when every site meets its condition.
@@ -649,6 +649,27 @@ The `groups` block merges across `extends` using the same field-level merge as `
 #### Wire invariant
 
 Groups expand at resolve time. The IR-JSON wire format carries no `groups` key; `IR_JSON_VERSION` remains `0.1`. See also §4.9 `controls` for the placement control types that accept group references.
+
+#### 4.9.3 `bands` — band-axis fan-out
+
+A `bands` block is a **top-level block** (a sibling of `controls`/`groups`) that declares **named frequency bands** and drives a **second fan-out axis**: a band-parameterized subgraph is replicated once per band, analogous to per-site replication (§4.9.1).
+
+```refrain
+bands {
+  theta = (4 Hz, 8 Hz)
+  alpha = (8 Hz, 12 Hz)
+  smr   = (12 Hz, 15 Hz)
+}
+derive "env" { from = "raw"; pipeline = [ bandpass(band: bands, order: 4), hilbert(), magnitude() ] }
+```
+
+Each entry is `<ident> = (low Hz, high Hz)`: a frequency 2-tuple with `low < high`. The bare NameRef `bands` in a `bandpass(band: bands)` slot marks the **band-axis seed**. The resolver replicates that derive and its forward closure (derive/threshold/inhibit) once per band, substituting the band's concrete tuple into `bandpass(band:)` and naming copies `<name>@<band>`. Upstream entities the seed merely *consumes* (e.g. the shared input) are not replicated.
+
+**Composition with per-site fan-out (the cross product).** Band fan-out runs *before* the per-site pass. When a protocol declares both a `bands` block and a `kind="set"` placement bound into the shared input, the band copies are then per-site replicated, yielding the **band × channel cross product** `<name>@<band>@<site>` (e.g. 10 bands × {C3, C4} = 20 envelopes). Inhibits participate in both axes.
+
+**Validation:** a band value must be a frequency 2-tuple with `low < high`; a band name colliding with a control name raises `ResolveError`.
+
+**Wire invariant:** front-end only — the fanned IR uses existing node types; the `bands` block is resolve-time-only and omitted from the wire. `IR_JSON_VERSION` unchanged.
 
 ### 4.10 `session`
 
