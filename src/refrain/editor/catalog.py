@@ -28,6 +28,15 @@ def _fmt_num(v) -> str:
     return f"{v:.6g}"
 
 
+def _fmt_duration(ms: float) -> str:
+    """Format a millisecond value with the most natural unit (min > s > ms)."""
+    if ms >= 60_000 and ms % 60_000 == 0:
+        return f"{_fmt_num(ms / 60_000)} min"
+    if ms >= 1_000 and ms % 1_000 == 0:
+        return f"{_fmt_num(ms / 1_000)} s"
+    return f"{_fmt_num(ms)} ms"
+
+
 def render_slot(value, slot_type: str) -> str:
     """Format one slot value for insertion into a .refrain template."""
     if isinstance(value, dict) and "bind" in value:
@@ -36,6 +45,8 @@ def render_slot(value, slot_type: str) -> str:
         return f"{_fmt_num(value)} Hz"
     if slot_type in ("number", "percent", "duration_ms"):
         return _fmt_num(value)
+    if slot_type == "duration":
+        return _fmt_duration(value)
     if slot_type == "site":
         return f'"{value}"'
     if slot_type in ("ref", "enum", "raw"):

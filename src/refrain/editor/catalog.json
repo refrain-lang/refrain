@@ -19,9 +19,9 @@
     {"id": "threshold.percentile", "kind": "threshold",
      "slots": [
        {"name": "target_pct", "type": "percent", "control_bindable": true},
-       {"name": "window_ms", "type": "duration_ms", "control_bindable": false, "default": 120000}
+       {"name": "window_ms", "type": "duration", "control_bindable": false, "default": 120000}
      ],
-     "template": "type = percentile(target_pct: {target_pct}, window: {window_ms} ms)"},
+     "template": "type = percentile(target_pct: {target_pct}, window: {window_ms})"},
 
     {"id": "reward.operant", "kind": "reward",
      "slots": [
