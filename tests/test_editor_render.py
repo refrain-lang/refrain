@@ -17,7 +17,7 @@ MODEL = {
     "reward": {"block": "reward.operant",
                "slots": {"direction": "above", "signal": "env", "threshold": "env_t",
                          "cont_num": "env", "cont_den": "env_t",
-                         "dwell_ms": 250, "midpoint": 1.0, "steepness": 3}},
+                         "dwell": "250 ms", "midpoint": 1.0, "steepness": 3}},
     "outputs": [{"channel": "audio_chime", "route": "reward.event"},
                 {"channel": "audio_gain", "route": "reward.event.holds ? reward.continuous : 0"}],
     "controls": [

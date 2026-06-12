@@ -81,6 +81,10 @@ def render_protocol(model: dict, catalog: Catalog | None = None) -> str:
         lt = "; live_tunable = true" if n.get("live_tunable") else ""
         L.append(f'  threshold "{n["name"]}" {{ signal = "{n["signal"]}"; {_fill(b["template"], b["slots"], n["slots"])}{lt} }}')
 
+    for n in model.get("reward_components", []):  # named weighted-composite reward/inhibit decls
+        b = cat.block(n["block"])
+        L.append(f'  {n["kind"]} "{n["name"]}" {{ {_fill(b["template"], b["slots"], n["slots"])} }}')
+
     r = model["reward"]
     if r:
         b = cat.block(r["block"])

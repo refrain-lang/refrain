@@ -103,11 +103,13 @@ def _expr_to_str(e) -> str:
 
 def _match_input(decl: A.NamedDecl) -> dict:
     montage = _body_map(decl).get("montage")
-    if not isinstance(montage, A.Call) or montage.callee != "referential":
-        raise _NotInSubset("montage not referential")
-    return {"name": decl.name, "block": "montage.referential",
-            "slots": {"active": _slot_from_expr(_arg(montage, "active")),
-                      "reference": _slot_from_expr(_arg(montage, "reference"))}}
+    if isinstance(montage, A.Call) and montage.callee == "referential":
+        return {"name": decl.name, "block": "montage.referential",
+                "slots": {"active": _slot_from_expr(_arg(montage, "active")),
+                          "reference": _slot_from_expr(_arg(montage, "reference"))}}
+    if isinstance(montage, A.Call) and montage.callee == "passthrough":
+        return {"name": decl.name, "block": "montage.passthrough", "slots": {}}
+    raise _NotInSubset("montage not referential/passthrough")
 
 
 def _match_derive(decl: A.NamedDecl) -> dict:
@@ -130,16 +132,43 @@ def _match_derive(decl: A.NamedDecl) -> dict:
         raise _NotInSubset(f"derive '{decl.name}' is not pipeline-form")
     calls = pipe.elements
     names = [c.callee for c in calls if isinstance(c, A.Call)]
-    if names != ["bandpass", "hilbert", "magnitude", "smooth"] or len(calls) != 4:
-        raise _NotInSubset(f"derive '{decl.name}' pipeline {names} not the envelope pattern")
-    bp, sm = calls[0], calls[3]
-    center, bw = _arg(bp, "center"), _arg(bp, "bandwidth")
-    if center is None or not (isinstance(bw, A.Call) and bw.callee == "ratio"):
-        raise _NotInSubset("envelope needs center + bandwidth: ratio(R)")
-    return {"name": decl.name, "block": "derive.envelope", "from": bm["from"].value,
-            "slots": {"center": _slot_from_expr(center),
-                      "ratio": bw.args[0].value.value,
-                      "smooth_tau_ms": _to_ms(_arg(sm, "tau"))}}
+    if names == ["bandpass", "hilbert", "magnitude", "smooth"] and len(calls) == 4:
+        bp, sm = calls[0], calls[3]
+        center, bw = _arg(bp, "center"), _arg(bp, "bandwidth")
+        if center is None or not (isinstance(bw, A.Call) and bw.callee == "ratio"):
+            raise _NotInSubset("envelope needs center + bandwidth: ratio(R)")
+        return {"name": decl.name, "block": "derive.envelope", "from": bm["from"].value,
+                "slots": {"center": _slot_from_expr(center),
+                          "ratio": bw.args[0].value.value,
+                          "smooth_tau_ms": _to_ms(_arg(sm, "tau"))}}
+    if names == ["bandpass", "rectify", "smooth"] and len(calls) == 3:  # low-Fs envelope (HRV)
+        bp, sm = calls[0], calls[2]
+        band = _arg(bp, "band")
+        if band is None:
+            raise _NotInSubset("lf_envelope bandpass needs a literal band")
+        return {"name": decl.name, "block": "derive.lf_envelope", "from": bm["from"].value,
+                "slots": {"band": _expr_to_str(band), "smooth_tau": _to_ms(_arg(sm, "tau"))}}
+    if names == ["auto_range"] and len(calls) == 1:
+        ar = calls[0]
+        return {"name": decl.name, "block": "derive.auto_range", "from": bm["from"].value,
+                "slots": {"window_ms": _to_ms(_arg(ar, "window")),
+                          "percentile": _expr_to_str(_arg(ar, "percentile"))}}
+    raise _NotInSubset(f"derive '{decl.name}' pipeline {names} not in subset")
+
+
+def _match_reward_component(decl: A.NamedDecl) -> dict:
+    bm = _body_map(decl)
+    sig = bm.get("signal")
+    if not isinstance(sig, A.Call) or sig.callee != "sigmoid":
+        raise _NotInSubset("reward component signal not a sigmoid()")
+    ref = sig.args[0].value
+    midpoint = _arg(sig, "midpoint")
+    if not isinstance(ref, A.StringLit) or midpoint is None or midpoint.unit != "uV":
+        raise _NotInSubset("reward component needs sigmoid(<ref>, midpoint: <uV>, steepness:)")
+    return {"name": decl.name, "kind": decl.keyword, "block": "reward.component",
+            "slots": {"signal": ref.value, "midpoint": midpoint.value,
+                      "steepness": _arg(sig, "steepness").value,
+                      "weight": _slot_from_expr(bm.get("weight"))}}
 
 
 def _match_threshold(decl: A.NamedDecl) -> dict:
@@ -161,27 +190,41 @@ def _match_threshold(decl: A.NamedDecl) -> dict:
 
 def _match_reward(block: A.SectionBlock) -> dict:
     bm = _body_map(block)
+    if "combine" in bm:                                   # weighted composite
+        cont = bm.get("continuous")
+        ev = bm.get("event")
+        cond = _arg(ev, "condition") if isinstance(ev, A.Call) else None
+        if not (isinstance(cont, A.MemberAccess) and cont.member == "composite"):
+            raise _NotInSubset("weighted reward continuous not reward.composite")
+        if not (isinstance(ev, A.Call) and ev.callee == "dwell"
+                and isinstance(cond, A.Call) and cond.callee == "above"
+                and isinstance(cond.args[0].value, A.MemberAccess)
+                and cond.args[0].value.member == "composite"):
+            raise _NotInSubset("weighted reward event not dwell(above(reward.composite, ..))")
+        return {"name": None, "block": "reward.weighted",
+                "slots": {"threshold": cond.args[1].value.value,
+                          "dwell": _expr_to_str(_arg(ev, "duration"))}}
     ev, cont = bm.get("event"), bm.get("continuous")
     if not isinstance(ev, A.Call) or ev.callee != "dwell":
         raise _NotInSubset("reward.event not a dwell()")
     cond = _arg(ev, "condition")
     if not isinstance(cond, A.Call) or cond.callee not in ("above", "below"):
         raise _NotInSubset("reward condition not above/below")
-    if not isinstance(cont, A.Call) or cont.callee != "sigmoid":
-        raise _NotInSubset("reward.continuous not a sigmoid()")
-    ratio = cont.args[0].value  # first positional arg of sigmoid = the BinaryOp ratio
-    if not (isinstance(ratio, A.BinaryOp) and ratio.op == "/"
-            and isinstance(ratio.left, A.StringLit) and isinstance(ratio.right, A.StringLit)):
-        raise _NotInSubset("sigmoid arg not a ref/ref ratio")
-    return {"name": None, "block": "reward.operant",
-            "slots": {"direction": cond.callee,
-                      "signal": cond.args[0].value.value,
-                      "threshold": cond.args[1].value.value,
-                      "cont_num": ratio.left.value,
-                      "cont_den": ratio.right.value,
-                      "dwell_ms": _to_ms(_arg(ev, "duration")),
-                      "midpoint": _arg(cont, "midpoint").value,
-                      "steepness": _arg(cont, "steepness").value}}
+    base = {"direction": cond.callee, "signal": cond.args[0].value.value,
+            "threshold": cond.args[1].value.value, "dwell": _expr_to_str(_arg(ev, "duration"))}
+    if isinstance(cont, A.Call) and cont.callee == "sigmoid":
+        ratio = cont.args[0].value  # first positional arg of sigmoid = the BinaryOp ratio
+        if not (isinstance(ratio, A.BinaryOp) and ratio.op == "/"
+                and isinstance(ratio.left, A.StringLit) and isinstance(ratio.right, A.StringLit)):
+            raise _NotInSubset("sigmoid arg not a ref/ref ratio")
+        return {"name": None, "block": "reward.operant",
+                "slots": {**base, "cont_num": ratio.left.value, "cont_den": ratio.right.value,
+                          "midpoint": _arg(cont, "midpoint").value,
+                          "steepness": _arg(cont, "steepness").value}}
+    if isinstance(cont, A.StringLit):                     # bare-ref continuous (HRV)
+        return {"name": None, "block": "reward.passthrough",
+                "slots": {**base, "cont_ref": cont.value}}
+    raise _NotInSubset("reward.continuous not a sigmoid() or a bare ref")
 
 
 def _match_outputs(block: A.SectionBlock) -> list:
@@ -217,7 +260,7 @@ def _build_model(ast, controls) -> dict:
     for c in controls:                                 # only kinds render can emit
         if c["kind"] not in RENDERABLE_CONTROL_KINDS:
             raise _NotInSubset(f"control kind '{c['kind']}' not renderable")
-    inputs, derives, thresholds, outputs = [], [], [], []
+    inputs, derives, thresholds, outputs, reward_components = [], [], [], [], []
     reward, requires, session = None, {"sample_rate": "", "channels": []}, {"phases": []}
     for stmt in p.body:
         if isinstance(stmt, A.NamedDecl):
@@ -227,6 +270,8 @@ def _build_model(ast, controls) -> dict:
                 derives.append(_match_derive(stmt))
             elif stmt.keyword == "threshold":
                 thresholds.append(_match_threshold(stmt))
+            elif stmt.keyword in ("reward", "inhibit"):  # named weighted-composite components
+                reward_components.append(_match_reward_component(stmt))
             else:
                 raise _NotInSubset(f"named decl '{stmt.keyword}' not in subset")
         elif isinstance(stmt, A.SectionBlock):
@@ -244,8 +289,8 @@ def _build_model(ast, controls) -> dict:
                 raise _NotInSubset(f"section '{stmt.keyword}' not in subset")
     return {"name": p.name, "meta": _meta_from_ast(ast), "requires": requires,
             "inputs": inputs, "derives": derives, "thresholds": thresholds,
-            "inhibits": [], "reward": reward, "outputs": outputs,
-            "controls": controls, "session": session}
+            "inhibits": [], "reward_components": reward_components, "reward": reward,
+            "outputs": outputs, "controls": controls, "session": session}
 
 
 def describe_protocol(source: str, *, amp: Any = None) -> dict:
