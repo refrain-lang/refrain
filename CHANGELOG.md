@@ -5,6 +5,32 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [Unreleased]
+
+Additive — a new primitive, a new fan-out axis, and a worked example. Python↔Rust
+parity is preserved (gated to 1e-6); the IR-JSON schema gains an additive
+`lag_samples` coeff field (v0.1 + v0.2). No existing protocol changes behavior.
+
+### Added
+- **`autocorr(lag, window)` primitive** — rolling lag-k Pearson autocorrelation,
+  the critical-slowing-down early-warning indicator (Scheffer 2009; Maturana
+  2020). Full shared-core: Python reference impl + Rust `Autocorr` `Stage` at
+  machine-precision parity (`micro_10_autocorr` equivalence fixture) + baked
+  `window_samples`/`lag_samples` coeffs.
+- **`bands { }` block + band-axis fan-out** — declare named frequency bands and
+  author a band-parameterized subgraph once (`bandpass(band: bands)`); the
+  resolver replicates it per declared band (`<name>@<band>`). Composes with the
+  per-site `set` fan-out for the **band × channel cross product**
+  (`<name>@<band>@<site>`); inhibits now replicate on both axes. Front-end only;
+  IR-JSON/Rust core unchanged. See SPEC §4.9.3.
+- **`examples/critical_fluctuation_cue.refrain`** — a dynamical critical-fluctuation
+  cue protocol: an early-warning detector (variance + autocorrelation) per band per
+  site (e.g. 10 bands × 2 sites = 20 envelopes; any site(s), defaulting to one
+  midline electrode) against a self-calibrating percentile threshold, and a tonic
+  reward muted by per-envelope critical-fluctuation inhibits (the audio cue). Design
+  spec: `docs/superpowers/specs/2026-06-11-flutter-cue-protocol-design.md`;
+  gap RFC: `docs/proposals/2026-06-11-dynamical-neurofeedback-gaps.md`.
+
 ## [0.9.0] — 2026-06-08
 
 Additive — no existing protocol changes behavior; Python↔Rust parity and the

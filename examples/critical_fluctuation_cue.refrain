@@ -1,0 +1,121 @@
+// Dynamical neurofeedback: detect "critical fluctuations" — early-warning
+// signals (rising variance + critical slowing down) that a band's dynamics are
+// approaching a critical transition — and cue the trainee with a brief
+// interruption of the audio (a perturbation delivered at the critical window).
+// There is no operant target: the cue is information, not reward.
+//
+// General by design — train at ANY site(s): the `sites` control defaults to one
+// midline electrode but accepts any montage (allowed = "any", 1..8 sites).
+//
+// Grounded in the early-warning-signals / critical-slowing-down literature:
+//   Scheffer et al. 2009 (Nature 461:53-59) — variance + autocorrelation rise
+//     before a critical transition;
+//   Dakos et al. 2012 (PLoS ONE 7:e41010) — methods for computing them;
+//   Maturana et al. 2020 (Nat. Commun. 11:2172) — validated in human EEG;
+//   Yang et al. 2012 (J. Neurosci. 32:1061) — variability of synchrony is
+//     maximal at the cortical critical point.
+// Research software, not a medical device.
+
+protocol "critical_fluctuation_cue_v1" {
+
+  meta {
+    version           = "0.1.0"
+    evidence          = "demo"
+    description       = "Dynamical neurofeedback: cue on critical fluctuations (early-warning signals) across bands, at any site(s)"
+    author            = "Bay Area Peak Performance"
+    citation          = "Scheffer et al. 2009 Nature 461:53-59; Maturana et al. 2020 Nat Commun 11:2172; Yang et al. 2012 J Neurosci 32:1061"
+    population         = "adults_18_plus"
+    indication         = "self_regulation_wellness"
+    safety_monitoring  = ["pre_session_check", "intra_session_clinician_observation"]
+  }
+
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels    = ["Cz"]   // default site; the `sites` control re-targets any montage
+  }
+
+  // Band axis: a broad log-spaced set. delta..gamma; sub-Hz is impractical for a
+  // live early-warning cue (see the gap RFC). Authored once, fanned out per band.
+  bands {
+    delta  = (1 Hz, 4 Hz)
+    theta1 = (4 Hz, 6 Hz)
+    theta2 = (6 Hz, 8 Hz)
+    alpha1 = (8 Hz, 10 Hz)
+    alpha2 = (10 Hz, 12 Hz)
+    smr    = (12 Hz, 15 Hz)
+    beta1  = (15 Hz, 18 Hz)
+    beta2  = (18 Hz, 22 Hz)
+    beta3  = (22 Hz, 30 Hz)
+    gamma  = (30 Hz, 45 Hz)
+  }
+
+  controls {
+    // Site axis: any 1..8 sites. Default to one midline electrode so it runs
+    // out-of-the-box, but it is NOT montage-locked — bind any site(s).
+    sites = placement {
+      kind    = "set"
+      default = ["Cz"]
+      allowed = "any"
+      min     = 1
+      max     = 8
+      label   = "Training site(s)"
+    }
+    // The one live knob = detector sensitivity (self-calibrating per trainee /
+    // per band / per site). Higher pct => fewer, more selective cues.
+    sensitivity = percent {
+      default      = 90
+      range        = (70, 99)
+      label        = "Critical-fluctuation sensitivity (EWS score percentile)"
+      live_tunable = true
+    }
+  }
+
+  // ----- per-band x per-site subgraph (authored once; fanned out) -----
+
+  input "raw" {
+    montage = referential(active: sites, reference: "linked_ears")
+  }
+
+  // Band envelope. `bands` is the band-axis placeholder — the resolver
+  // replicates this subgraph per declared band (and per bound site).
+  derive "env" {
+    from = "raw"
+    pipeline = [ bandpass(band: bands, order: 4), hilbert(), magnitude() ]
+  }
+
+  // Indicator 1 (fast): rolling variance  Var = E[e^2] - E[e]^2. `smooth` runs
+  // in pipeline form so its identity-typing tracks the squared unit (uV^2).
+  derive "esq"       { formula = "env" * "env" }                              // uV^2
+  derive "mean_esq"  { from = "esq"; pipeline = [ smooth(tau: 1 s) ] }        // E[e^2]
+  derive "mean_e"    { from = "env"; pipeline = [ smooth(tau: 1 s) ] }        // E[e]
+  derive "mean_e_sq" { formula = "mean_e" * "mean_e" }                        // E[e]^2
+  derive "var"       { formula = "mean_esq" - "mean_e_sq" }                   // Var, uV^2
+  derive "varN"      { from = "var"; pipeline = [ auto_range(window: 30 s) ] }  // -> [0,1]
+
+  // Indicator 2 (principled): critical slowing down — lag-1 autocorrelation of
+  // the envelope. lag 125 ms (not 1 sample!) so it spans a meaningful interval.
+  derive "ac1"  { from = "env"; pipeline = [ autocorr(lag: 125 ms, window: 4 s) ] }  // -> [-1,1]
+  derive "acN"  { from = "ac1"; pipeline = [ auto_range(window: 30 s) ] }   // -> [0,1]
+
+  // Fuse the two normalized indicators into one early-warning score via the
+  // probabilistic-OR identity  a + b - a*b  (OR-like: ~1 if EITHER surges;
+  // arithmetic-only so it runs on both backends). For AND-like specificity
+  // (the full validated signature) use "varN" * "acN".
+  derive "score" {
+    formula = "varN" + "acN" - "varN" * "acN"
+  }
+
+  // The cue: when the early-warning score surges above its own recent baseline,
+  // briefly interrupt the audio. Per-envelope inhibits OR-compose, so a critical
+  // fluctuation anywhere delivers the cue. (release doubles as the refractory.)
+  // `rectify` is an identity on the [0,1] score (an inhibit metric must be a call).
+  inhibit "critical_fluctuation" {
+    metric    = rectify("score")
+    threshold = percentile(target_pct: sensitivity, window: 2 min)
+    action    = mute(release: 400 ms)
+  }
+
+  // Tonic audio, no operant target. The inhibits interrupt it at critical windows.
+  reward { continuous = 1.0 }
+  output { audio_gain = reward.continuous }
+}

@@ -912,6 +912,69 @@ class CoherenceImpl(PrimitiveImpl):
         return np.full(n, msc, dtype=np.float64)
 
 
+class AutocorrImpl(PrimitiveImpl):
+    """`autocorr(lag, window)` — rolling lag-k Pearson autocorrelation.
+
+    Single-input pipeline stage. A `deque(maxlen=window_samples)` holds the
+    trailing window; per input sample the lag-`k` autocorrelation of the buffer
+    ending at that sample is emitted. Returns 0.0 until `lag + 2` samples
+    accumulate (warm-up, matching the BandpowerImpl/CoherenceImpl convention)
+    and 0.0 for a constant window (zero variance, avoiding NaN). Output in
+    [-1, 1]. This is the "critical slowing down" early-warning indicator: as a
+    system nears a phase-state transition its lag-1 autocorrelation rises
+    (Scheffer et al., Nature 2009; Maturana et al., Nat. Commun. 2020).
+
+    O(window) per sample (the same complexity class as BandpowerImpl's rolling
+    mean) — the Rust core mirrors this math exactly for parity.
+    """
+
+    def __init__(
+        self,
+        *,
+        window_ms: float,
+        sample_rate_hz: float,
+        lag_ms: float | None = None,
+        lag_samples: int | None = None,
+    ):
+        ws = max(1, int(round(window_ms / 1000.0 * sample_rate_hz)))
+        if lag_ms is not None:
+            ls = max(1, int(round(lag_ms / 1000.0 * sample_rate_hz)))
+        elif lag_samples is not None:
+            ls = max(1, int(lag_samples))
+        else:
+            raise ValueError("autocorr: one of lag_ms / lag_samples is required")
+        if ws < ls + 2:
+            raise ValueError(
+                f"autocorr: window ({ws} samples) must be >= lag+2 ({ls + 2}) "
+                f"for a meaningful lag-{ls} autocorrelation"
+            )
+        self.window_samples = ws
+        self.lag = ls
+        self._buffer: deque[float] = deque(maxlen=ws)
+
+    def step(self, x: np.ndarray) -> np.ndarray:
+        out = np.empty(x.shape[0], dtype=np.float64)
+        buf = self._buffer
+        lag = self.lag
+        for i in range(x.shape[0]):
+            buf.append(float(x[i]))
+            n = len(buf)
+            if n < lag + 2:
+                # Warm-up: not enough samples for a lag-k estimate.
+                out[i] = 0.0
+                continue
+            arr = np.fromiter(buf, dtype=np.float64, count=n)
+            d = arr - arr.mean()
+            den = float(np.dot(d, d))
+            if den == 0.0:
+                # Constant window: zero variance -> undefined; report 0.0.
+                out[i] = 0.0
+                continue
+            num = float(np.dot(d[lag:], d[:-lag]))
+            out[i] = max(-1.0, min(1.0, num / den))
+        return out
+
+
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
@@ -1029,6 +1092,12 @@ def make_filter_impl(
         return CoherenceImpl(
             band=tuple(static_args["band"]),
             window_ms=float(static_args.get("window_ms", 1000.0)),
+            sample_rate_hz=sample_rate_hz,
+        )
+    if callee == "autocorr":
+        return AutocorrImpl(
+            window_ms=float(static_args["window_ms"]),
+            lag_ms=float(static_args["lag_ms"]),
             sample_rate_hz=sample_rate_hz,
         )
     raise NotImplementedError(f"no evaluator impl for primitive {callee!r}")

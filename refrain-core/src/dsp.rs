@@ -466,6 +466,58 @@ impl Stage for Bandpower {
     }
 }
 
+/// `autocorr(lag, window)` — rolling lag-`k` Pearson autocorrelation over a
+/// sliding window of `window_samples`. Emits one value per input sample; 0.0
+/// until `lag + 2` samples accumulate (warm-up) and 0.0 for a constant window
+/// (zero variance, avoiding NaN). Output in [-1, 1]. Mirrors `AutocorrImpl`
+/// byte-for-byte (same buffer eviction, mean-centering, and summation order)
+/// — the critical-slowing-down early-warning indicator.
+pub struct Autocorr {
+    cap: usize,
+    lag: usize,
+    buf: VecDeque<f64>,
+}
+
+impl Autocorr {
+    pub fn new(window_samples: usize, lag_samples: usize) -> Self {
+        let cap = window_samples.max(1);
+        Autocorr { cap, lag: lag_samples.max(1), buf: VecDeque::with_capacity(cap) }
+    }
+
+    fn lag_autocorr(&self) -> f64 {
+        let n = self.buf.len();
+        if n < self.lag + 2 {
+            return 0.0;
+        }
+        let mean = self.buf.iter().sum::<f64>() / n as f64;
+        let d: Vec<f64> = self.buf.iter().map(|&v| v - mean).collect();
+        let den: f64 = d.iter().map(|&v| v * v).sum();
+        if den == 0.0 {
+            return 0.0;
+        }
+        let mut num = 0.0;
+        for i in self.lag..n {
+            num += d[i] * d[i - self.lag];
+        }
+        (num / den).clamp(-1.0, 1.0)
+    }
+}
+
+impl Stage for Autocorr {
+    fn process(&mut self, input: Signal) -> Signal {
+        let x = input.into_real();
+        let mut out = Vec::with_capacity(x.len());
+        for &v in &x {
+            if self.buf.len() == self.cap {
+                self.buf.pop_front();
+            }
+            self.buf.push_back(v);
+            out.push(self.lag_autocorr());
+        }
+        Signal::Real(out)
+    }
+}
+
 /// `np.percentile(..., method="linear")` over the current buffer.
 ///
 /// Uses selection (`select_nth_unstable`), not a full sort, to match NumPy's

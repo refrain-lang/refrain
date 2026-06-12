@@ -122,6 +122,8 @@ def _extract_coeffs(impl: object) -> dict | None:
         c["dt"] = float(impl.dt)
     if hasattr(impl, "window_samples"):
         c["window_samples"] = int(impl.window_samples)
+    if hasattr(impl, "lag"):
+        c["lag_samples"] = int(impl.lag)
     if hasattr(impl, "dwell_samples"):
         c["dwell_samples"] = int(impl.dwell_samples)
     if hasattr(impl, "nperseg"):

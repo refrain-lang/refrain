@@ -202,6 +202,8 @@ pub struct Coeffs {
     pub nperseg: Option<usize>,
     #[serde(default)]
     pub noverlap: Option<usize>,
+    #[serde(default)]
+    pub lag_samples: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]

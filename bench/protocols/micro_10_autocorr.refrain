@@ -1,0 +1,29 @@
+// Bench: rolling lag-k autocorrelation (critical slowing down) of an alpha
+// envelope. Parity fixture for the `autocorr` primitive — the Rust core must
+// reproduce the Python evaluator's `ac1` stream within tolerance.
+
+protocol "micro_10_autocorr" {
+  meta {
+    version     = "0.1.0"
+    evidence    = "demo"
+    description = "Bench: rolling lag-k autocorrelation of an alpha envelope"
+  }
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels    = ["Cz"]
+  }
+  input "raw" {
+    montage = referential(active: "Cz", reference: "device")
+  }
+  derive "env" {
+    from = "raw"
+    pipeline = [ bandpass(band: (8 Hz, 12 Hz), order: 4), hilbert(), magnitude() ]
+  }
+  derive "ac1" {
+    from = "env"
+    pipeline = [ autocorr(lag: 125 ms, window: 1 s) ]
+  }
+  output {
+    audio_gain = 0
+  }
+}

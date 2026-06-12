@@ -127,6 +127,13 @@ fn micro_09_inhibit_equivalent() {
 }
 
 #[test]
+fn micro_10_autocorr_equivalent() {
+    // autocorr derive (rolling lag-k Pearson autocorrelation): the `ac1` stream
+    // must reproduce the Python AutocorrImpl within tolerance.
+    run_protocol("micro_10_autocorr");
+}
+
+#[test]
 fn realistic_smr_equivalent() {
     run_protocol("realistic_smr");
 }

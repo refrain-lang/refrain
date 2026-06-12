@@ -49,7 +49,7 @@ block: "{" statement* "}"
           | assignment
 
 section_block: SECTION_KW block
-SECTION_KW: "meta" | "requires" | "reward" | "output" | "controls" | "session" | "groups"
+SECTION_KW: "meta" | "requires" | "reward" | "output" | "controls" | "session" | "groups" | "bands"
 
 named_decl: DECL_KW string_lit block
 DECL_KW: "reward" | "input" | "derive" | "threshold" | "inhibit" | "custom" | "block"

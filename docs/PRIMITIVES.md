@@ -382,6 +382,33 @@ threshold "smr_t" {
 }
 ```
 
+### `autocorr`
+
+```
+autocorr(lag: duration, window: duration) -> stream<scalar in [-1, 1]>
+```
+
+Rolling lag-`k` Pearson autocorrelation of a stream over a sliding `window`,
+emitted per sample. Returns `0.0` during warm-up (until `lag + 2` samples
+accumulate) and `0.0` for a constant window (zero variance). This is the
+**critical-slowing-down** early-warning indicator: as a system nears a
+phase-state transition it recovers more slowly from perturbations, so its lag-1
+autocorrelation rises (Scheffer et al., *Nature* 2009, 461:53–59; validated in
+EEG by Maturana et al., *Nat. Commun.* 2020, 11:2172).
+
+```refrain
+derive "ac1" {
+  from = "alpha_envelope"
+  pipeline = [ autocorr(lag: 125 ms, window: 1 s) ]
+}
+```
+
+**Avoid the oversampling footgun.** At 256 Hz, lag-1-*sample* autocorrelation is
+≈1 always (adjacent samples are nearly identical). Compute `autocorr` on a slow
+signal (a band *envelope*) and set `lag` to a meaningful interval (e.g.
+`125 ms`). `autocorr` mean-centers within its window but does not remove a slow
+linear trend — detrend upstream (subtract a long `smooth`) if the signal drifts.
+
 ---
 
 ## Mappings
