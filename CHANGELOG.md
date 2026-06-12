@@ -5,7 +5,7 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
-## [Unreleased]
+## [0.10.0] — 2026-06-12
 
 Additive — a new primitive, a new fan-out axis, and a worked example. Python↔Rust
 parity is preserved (gated to 1e-6); the IR-JSON schema gains an additive
