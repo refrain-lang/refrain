@@ -28,7 +28,7 @@ from . import ast as A
 from .resolver import ResolveError
 
 # Decl keywords that participate in per-site replication. `inhibit` is included
-# so per-band flutter inhibits get per-site replicated in the band × channel
+# so per-band inhibits get per-site replicated in the band × channel
 # cross product (band_fan_out runs first, then this site pass).
 _PER_SITE_KEYWORDS = ("input", "derive", "threshold", "inhibit")
 

@@ -23,11 +23,12 @@ parity is preserved (gated to 1e-6); the IR-JSON schema gains an additive
   per-site `set` fan-out for the **band × channel cross product**
   (`<name>@<band>@<site>`); inhibits now replicate on both axes. Front-end only;
   IR-JSON/Rust core unchanged. See SPEC §4.9.3.
-- **`examples/flutter_cue.refrain`** — a NeurOptimal-style dynamical flutter-cue
-  protocol: 20 envelopes (10 bands × C3/C4), a per-envelope early-warning
-  detector (variance + autocorrelation) against a self-calibrating percentile
-  threshold, and a tonic reward muted by per-envelope flutter inhibits (the audio
-  "takeaway"). Design spec: `docs/superpowers/specs/2026-06-11-flutter-cue-protocol-design.md`;
+- **`examples/critical_fluctuation_cue.refrain`** — a dynamical critical-fluctuation
+  cue protocol: an early-warning detector (variance + autocorrelation) per band per
+  site (e.g. 10 bands × 2 sites = 20 envelopes; any site(s), defaulting to one
+  midline electrode) against a self-calibrating percentile threshold, and a tonic
+  reward muted by per-envelope critical-fluctuation inhibits (the audio cue). Design
+  spec: `docs/superpowers/specs/2026-06-11-flutter-cue-protocol-design.md`;
   gap RFC: `docs/proposals/2026-06-11-dynamical-neurofeedback-gaps.md`.
 
 ## [0.9.0] — 2026-06-08

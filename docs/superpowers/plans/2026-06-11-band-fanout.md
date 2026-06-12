@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.10+, the Lark grammar (`src/refrain/grammar.lark`), the AST (`src/refrain/ast.py`), pytest. **Front-end only — no Rust-core or IR-JSON change** (fan-out emits a flat AST of existing node types, exactly like per-site Mode 2a).
 
-**This is plan 2 of 3** from `docs/superpowers/specs/2026-06-11-flutter-cue-protocol-design.md`. It depends on nothing in plan 1 (`autocorr`); plan 3 (the `flutter_cue` protocol) depends on both.
+**This is plan 2 of 3** from `docs/superpowers/specs/2026-06-11-flutter-cue-protocol-design.md`. It depends on nothing in plan 1 (`autocorr`); plan 3 (the `critical_fluctuation_cue` protocol) depends on both.
 
 ---
 
@@ -25,10 +25,10 @@ bands {
 // control name is the site-axis placeholder in a montage slot.
 derive "env"   { from = "raw"; pipeline = [ bandpass(band: bands), hilbert(), magnitude() ] }
 derive "score" { from = "env"; pipeline = [ auto_range(window: 30 s) ] }
-inhibit "flutter" { metric = "score"; threshold = percentile(target_pct: 90, window: 2 min); action = mute(release: 400 ms) }
+inhibit "critical_fluctuation" { metric = "score"; threshold = percentile(target_pct: 90, window: 2 min); action = mute(release: 400 ms) }
 ```
 
-After band fan-out (3 bands): `env@theta`, `env@alpha`, `env@smr`, likewise `score@*` and `flutter@*`, each with its band's concrete tuple baked into `bandpass(band: (…))` and refs renamed. `raw` is shared (upstream of the seed, not in the forward closure), so it is **not** replicated. If `raw` is itself bound to a `set` placement of channels, the subsequent per-site `fan_out` replicates every `@band` copy per channel → the cross product.
+After band fan-out (3 bands): `env@theta`, `env@alpha`, `env@smr`, likewise `score@*` and `critical_fluctuation@*`, each with its band's concrete tuple baked into `bandpass(band: (…))` and refs renamed. `raw` is shared (upstream of the seed, not in the forward closure), so it is **not** replicated. If `raw` is itself bound to a `set` placement of channels, the subsequent per-site `fan_out` replicates every `@band` copy per channel → the cross product.
 
 ---
 
@@ -138,7 +138,7 @@ _BANDS = """
       input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
       derive "env"   { from = "raw"; pipeline = [bandpass(band: bands), hilbert(), magnitude()] }
       derive "score" { from = "env"; pipeline = [auto_range(window: 30 s)] }
-      inhibit "flutter" { metric = "score"; threshold = percentile(target_pct: 90, window: 2 min); action = mute(release: 400 ms) }
+      inhibit "critical_fluctuation" { metric = "score"; threshold = percentile(target_pct: 90, window: 2 min); action = mute(release: 400 ms) }
       reward { continuous = 1.0 }
       output { audio_gain = reward.continuous }
     }
@@ -147,7 +147,7 @@ _BANDS = """
 def test_band_fan_out_replicates_per_band():
     ir = resolve(parse(_BANDS), _AMP)
     assert set(ir.derives) == {"env@theta","env@alpha","env@smr","score@theta","score@alpha","score@smr"}
-    assert set(ir.inhibits) == {"flutter@theta","flutter@alpha","flutter@smr"}
+    assert set(ir.inhibits) == {"critical_fluctuation@theta","critical_fluctuation@alpha","critical_fluctuation@smr"}
     # `raw` is shared (upstream of the seed), NOT replicated.
     assert set(ir.inputs) == {"raw"}
 
@@ -160,7 +160,7 @@ def test_band_fan_out_substitutes_band_tuple():
 def test_band_fan_out_per_band_refs():
     ir = resolve(parse(_BANDS), _AMP)
     assert ir.derives["score@theta"].upstream == ("derive/env@theta",)
-    assert ir.inhibits["flutter@theta"].metric_ref == "derive/score@theta"  # match real IR field name
+    assert ir.inhibits["critical_fluctuation@theta"].metric_ref == "derive/score@theta"  # match real IR field name
 ```
 
 > Add helper `_bandpass_band_of(ir, derive_name)` near `_active_of` in the test file: walk the derive's IR expr to the `bandpass` call and return its `band` arg as a `(low, high)` float tuple. Use the real `ir.inhibits` accessor + inhibit metric field name (grep `ir.py` for the inhibit IR dataclass — adjust `metric_ref` to the actual attribute).
@@ -453,7 +453,7 @@ _BANDS_X_SITES = """
       input "raw" { montage = referential(active: sites, reference: "linked_ears") }
       derive "env"   { from = "raw"; pipeline = [bandpass(band: bands), hilbert(), magnitude()] }
       derive "score" { from = "env"; pipeline = [auto_range(window: 30 s)] }
-      inhibit "flutter" { metric = "score"; threshold = percentile(target_pct: 90, window: 2 min); action = mute(release: 400 ms) }
+      inhibit "critical_fluctuation" { metric = "score"; threshold = percentile(target_pct: 90, window: 2 min); action = mute(release: 400 ms) }
       reward { continuous = 1.0 }
       output { audio_gain = reward.continuous }
     }
@@ -468,7 +468,7 @@ def test_band_cross_site_produces_full_grid():
         "score@theta@C3","score@theta@C4","score@alpha@C3","score@alpha@C4",
     }
     assert set(ir.inhibits) == {
-        "flutter@theta@C3","flutter@theta@C4","flutter@alpha@C3","flutter@alpha@C4",
+        "critical_fluctuation@theta@C3","critical_fluctuation@theta@C4","critical_fluctuation@alpha@C3","critical_fluctuation@alpha@C4",
     }
 
 def test_cross_product_wiring_and_bands():
@@ -476,7 +476,7 @@ def test_cross_product_wiring_and_bands():
     assert _bandpass_band_of(ir, "env@theta@C3") == (4.0, 8.0)
     assert _active_of(ir, "raw@C3") == "C3"
     assert ir.derives["score@theta@C3"].upstream == ("derive/env@theta@C3",)
-    assert ir.inhibits["flutter@alpha@C4"].metric_ref == "derive/score@alpha@C4"
+    assert ir.inhibits["critical_fluctuation@alpha@C4"].metric_ref == "derive/score@alpha@C4"
 ```
 
 - [ ] **Step 2: Run it**

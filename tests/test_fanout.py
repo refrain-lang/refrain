@@ -217,7 +217,7 @@ _BANDS = """
       input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
       derive "env"   { from = "raw"; pipeline = [bandpass(band: bands, order: 4), hilbert(), magnitude()] }
       derive "score" { from = "env"; pipeline = [auto_range(window: 30 s)] }
-      inhibit "flutter" { metric = rectify("score"); threshold = percentile(target_pct: 90, window: 2 min); action = mute(release: 400 ms) }
+      inhibit "critical_fluctuation" { metric = rectify("score"); threshold = percentile(target_pct: 90, window: 2 min); action = mute(release: 400 ms) }
       reward { continuous = 1.0 }
       output { audio_gain = reward.continuous }
     }
@@ -249,7 +249,7 @@ def test_band_fan_out_replicates_per_band():
         "env@theta", "env@alpha", "env@smr",
         "score@theta", "score@alpha", "score@smr",
     }
-    assert set(ir.inhibits) == {"flutter@theta", "flutter@alpha", "flutter@smr"}
+    assert set(ir.inhibits) == {"critical_fluctuation@theta", "critical_fluctuation@alpha", "critical_fluctuation@smr"}
     # `raw` is shared (upstream of the seed), NOT replicated.
     assert set(ir.inputs) == {"raw"}
 
@@ -288,7 +288,7 @@ _BANDS_X_SITES = """
       input "raw" { montage = referential(active: sites, reference: "linked_ears") }
       derive "env"   { from = "raw"; pipeline = [bandpass(band: bands, order: 4), hilbert(), magnitude()] }
       derive "score" { from = "env"; pipeline = [auto_range(window: 30 s)] }
-      inhibit "flutter" { metric = rectify("score"); threshold = percentile(target_pct: 90, window: 2 min); action = mute(release: 400 ms) }
+      inhibit "critical_fluctuation" { metric = rectify("score"); threshold = percentile(target_pct: 90, window: 2 min); action = mute(release: 400 ms) }
       reward { continuous = 1.0 }
       output { audio_gain = reward.continuous }
     }
@@ -304,6 +304,6 @@ def test_band_cross_site_full_grid():
         "score@theta@C3", "score@theta@C4", "score@alpha@C3", "score@alpha@C4",
     }
     assert set(ir.inhibits) == {
-        "flutter@theta@C3", "flutter@theta@C4",
-        "flutter@alpha@C3", "flutter@alpha@C4",
+        "critical_fluctuation@theta@C3", "critical_fluctuation@theta@C4",
+        "critical_fluctuation@alpha@C3", "critical_fluctuation@alpha@C4",
     }

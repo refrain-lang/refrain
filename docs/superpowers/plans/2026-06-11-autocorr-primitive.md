@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a single-input streaming primitive `autocorr(lag, window)` that computes the rolling lag-k Pearson autocorrelation of a stream — the "critical slowing down" indicator for the flutter-cue protocol — with full Python↔Rust parity.
+**Goal:** Add a single-input streaming primitive `autocorr(lag, window)` that computes the rolling lag-k Pearson autocorrelation of a stream — the "critical slowing down" indicator for the critical-fluctuation cue protocol — with full Python↔Rust parity.
 
 **Architecture:** `autocorr` is a single-input pipeline stage (like `bandpower`/`auto_range`): the input is threaded implicitly, `window` and `lag` are baked to sample counts at the target rate, and the rolling lag-k Pearson autocorrelation is computed O(window)-per-sample (mirroring `bandpower`'s rolling mean). Python `AutocorrImpl` is the reference; the Rust `Autocorr` `Stage` mirrors it byte-for-byte; a golden fixture gates parity.
 
@@ -10,7 +10,7 @@
 
 **Plan note — deliberate spec trim:** the design spec lists a `detrend: bool = true` param. v1 implements the minimal `autocorr(lag, window)` (mean-centered windowed Pearson — the standard estimator); detrending of slow trends is handled upstream in the protocol (subtract a long `smooth`). A `detrend` param is tracked for a follow-up. This keeps the primitive minimal and exactly parity-able.
 
-**This is one of three sequenced plans** from `docs/superpowers/specs/2026-06-11-flutter-cue-protocol-design.md`: (1) this `autocorr` primitive, (2) band fan-out, (3) the `flutter_cue.refrain` protocol + gap RFC.
+**This is one of three sequenced plans** from `docs/superpowers/specs/2026-06-11-flutter-cue-protocol-design.md`: (1) this `autocorr` primitive, (2) band fan-out, (3) the `critical_fluctuation_cue.refrain` protocol + gap RFC.
 
 ---
 
@@ -566,7 +566,7 @@ Rolling lag-`k` Pearson autocorrelation of a stream over a sliding `window`,
 emitted per sample. Returns `0.0` during warm-up (until `lag + 2` samples
 accumulate) and `0.0` for a constant window (zero variance). This is the
 **critical-slowing-down** early-warning indicator: as a system nears a
-phase-state transition it recovers more slowly from perturbations, so its
+critical transition it recovers more slowly from perturbations, so its
 lag-1 autocorrelation rises (Scheffer et al., *Nature* 2009; validated in EEG
 by Maturana et al., *Nat. Commun.* 2020).
 
