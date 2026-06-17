@@ -9,6 +9,15 @@
      ],
      "template": "bandpass(center: {center}, bandwidth: ratio({ratio}), order: 4),\n      hilbert(),\n      magnitude(),\n      smooth(tau: {smooth_tau_ms} ms)"},
 
+    {"id": "derive.envelope_band", "kind": "derive", "form": "pipeline",
+     "slots": [
+       {"name": "band_low_hz", "type": "frequency", "control_bindable": false},
+       {"name": "band_high_hz", "type": "frequency", "control_bindable": false},
+       {"name": "order", "type": "number", "control_bindable": false, "default": 4},
+       {"name": "smooth_tau_ms", "type": "duration_ms", "control_bindable": false, "default": 250}
+     ],
+     "template": "bandpass(band: ({band_low_hz}, {band_high_hz}), order: {order}),\n      hilbert(),\n      magnitude(),\n      smooth(tau: {smooth_tau_ms} ms)"},
+
     {"id": "montage.referential", "kind": "montage",
      "slots": [
        {"name": "active", "type": "site", "control_bindable": true},

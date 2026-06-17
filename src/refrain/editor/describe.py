@@ -134,13 +134,23 @@ def _match_derive(decl: A.NamedDecl) -> dict:
     names = [c.callee for c in calls if isinstance(c, A.Call)]
     if names == ["bandpass", "hilbert", "magnitude", "smooth"] and len(calls) == 4:
         bp, sm = calls[0], calls[3]
-        center, bw = _arg(bp, "center"), _arg(bp, "bandwidth")
-        if center is None or not (isinstance(bw, A.Call) and bw.callee == "ratio"):
-            raise _NotInSubset("envelope needs center + bandwidth: ratio(R)")
-        return {"name": decl.name, "block": "derive.envelope", "from": bm["from"].value,
-                "slots": {"center": _slot_from_expr(center),
-                          "ratio": bw.args[0].value.value,
-                          "smooth_tau_ms": _to_ms(_arg(sm, "tau"))}}
+        center, bw, band = _arg(bp, "center"), _arg(bp, "bandwidth"), _arg(bp, "band")
+        if center is not None:                              # center + ratio form
+            if not (isinstance(bw, A.Call) and bw.callee == "ratio"):
+                raise _NotInSubset("envelope needs center + bandwidth: ratio(R)")
+            return {"name": decl.name, "block": "derive.envelope", "from": bm["from"].value,
+                    "slots": {"center": _slot_from_expr(center),
+                              "ratio": bw.args[0].value.value,
+                              "smooth_tau_ms": _to_ms(_arg(sm, "tau"))}}
+        if isinstance(band, (A.Tuple, A.Array)) and len(band.elements) == 2 \
+                and all(isinstance(e, A.NumberLit) for e in band.elements):  # explicit-edge form
+            order = _arg(bp, "order")
+            return {"name": decl.name, "block": "derive.envelope_band", "from": bm["from"].value,
+                    "slots": {"band_low_hz": band.elements[0].value,
+                              "band_high_hz": band.elements[1].value,
+                              "order": order.value if order is not None else 4,
+                              "smooth_tau_ms": _to_ms(_arg(sm, "tau"))}}
+        raise _NotInSubset("envelope needs center + bandwidth: ratio(R), or band: (lo, hi)")
     if names == ["bandpass", "rectify", "smooth"] and len(calls) == 3:  # low-Fs envelope (HRV)
         bp, sm = calls[0], calls[2]
         band = _arg(bp, "band")
@@ -234,8 +244,9 @@ def _match_outputs(block: A.SectionBlock) -> list:
 
 def _match_requires(block: A.SectionBlock) -> dict:
     bm = _body_map(block)
-    return {"sample_rate": bm["sample_rate"].value,
-            "channels": [e.value for e in bm["channels"].elements]}
+    chans = bm.get("channels")  # placement protocols declare sites, not a channels list
+    return {"sample_rate": getattr(bm.get("sample_rate"), "value", ""),
+            "channels": [e.value for e in chans.elements] if chans is not None else []}
 
 
 def _match_session(block: A.SectionBlock) -> dict:

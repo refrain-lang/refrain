@@ -63,6 +63,47 @@ def test_baseline_absolute_round_trips():
     assert _ir(BASELINE) == _ir(render_protocol(d["model"]))
 
 
+# Explicit-edge envelope (`bandpass(band: (lo, hi))`) — the clinical fixed-band
+# form, distinct from the center+ratio envelope above.
+BAND = '''
+protocol "smr_band_cz" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["sensorimotor_sleep"] }
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "env" { from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4),
+                 hilbert(), magnitude(), smooth(tau: 250 ms) ] }
+  threshold "env_t" { signal = "env"; type = percentile(target_pct: reward_pct, window: 2 min) }
+  reward { event = dwell(condition: above("env", "env_t"), duration: 250 ms)
+           continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+  output { audio_chime = reward.event; audio_gain = reward.event.holds ? reward.continuous : 0 }
+  controls {
+    reward_pct = percent { default = 70; range = (50, 90); label = "Target reward %"; live_tunable = true }
+  }
+}
+'''
+
+
+def test_band_envelope_in_subset_and_round_trips():
+    d = describe_protocol(BAND)
+    assert d["in_subset"] is True and d["model"] is not None
+    env = next(x for x in d["model"]["derives"] if x["block"] == "derive.envelope_band")
+    assert env["slots"]["band_low_hz"] == 12 and env["slots"]["band_high_hz"] == 15
+    assert env["slots"]["order"] == 4 and env["slots"]["smooth_tau_ms"] == 250
+    assert _ir(BAND) == _ir(render_protocol(d["model"]))
+
+
+def test_band_edges_edit_changes_the_band():
+    """Editing band edges in the model renders a new band that resolves."""
+    d = describe_protocol(BAND)
+    model = d["model"]
+    env = next(x for x in model["derives"] if x["block"] == "derive.envelope_band")
+    env["slots"]["band_low_hz"], env["slots"]["band_high_hz"] = 11, 14
+    out = render_protocol(model)
+    assert "band: (11 Hz, 14 Hz)" in out
+    resolve(refrain.parse(out))  # still resolves with the edited band
+
+
 FAA = '''
 protocol "faa_f3f4" {
   meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["mood_regulation"] }
