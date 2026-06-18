@@ -130,8 +130,9 @@ def test_extends_is_out_of_subset():
 
 
 def test_unknown_section_is_out_of_subset():
+    # `bands` is a valid grammar section but not one the editor models.
     ast = refrain.parse('protocol "g" { meta { description = "d"; status = "draft"; goals = [] } '
-                        'telemetry { sink = "udp" } }')
+                        'bands { alpha = (8 Hz, 12 Hz) } }')
     try:
         _build_model(ast, [])
         raised = False
