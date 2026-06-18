@@ -36,6 +36,39 @@
      "slots": [{"name": "value", "type": "voltage", "control_bindable": true}],
      "template": "type = absolute(value: {value})"},
 
+    {"id": "reward.component_ratio", "kind": "reward_component",
+     "slots": [
+       {"name": "num", "type": "ref"},
+       {"name": "den", "type": "ref"},
+       {"name": "midpoint", "type": "number"},
+       {"name": "steepness", "type": "number"},
+       {"name": "weight", "type": "ref"}
+     ],
+     "template": "signal = sigmoid(\"{num}\" / \"{den}\", midpoint: {midpoint}, steepness: {steepness}); weight = {weight}"},
+
+    {"id": "reward.operant_compound", "kind": "reward",
+     "slots": [
+       {"name": "conditions", "type": "raw"},
+       {"name": "cont_num", "type": "ref", "control_bindable": false},
+       {"name": "cont_den", "type": "ref", "control_bindable": false},
+       {"name": "midpoint", "type": "number", "control_bindable": false, "default": 1.0},
+       {"name": "steepness", "type": "number", "control_bindable": false, "default": 3},
+       {"name": "dwell", "type": "raw", "control_bindable": false, "default": 250}
+     ],
+     "template": "event      = dwell(condition: all_of([{conditions}]), duration: {dwell})\n    continuous = sigmoid(\"{cont_num}\" / \"{cont_den}\", midpoint: {midpoint}, steepness: {steepness})"},
+
+    {"id": "inhibit.artifact", "kind": "inhibit",
+     "slots": [
+       {"name": "input", "type": "ref"},
+       {"name": "band_low_hz", "type": "frequency"},
+       {"name": "band_high_hz", "type": "frequency"},
+       {"name": "metric_window_ms", "type": "duration_ms"},
+       {"name": "target_pct", "type": "number"},
+       {"name": "thr_window_ms", "type": "duration"},
+       {"name": "release_ms", "type": "duration_ms"}
+     ],
+     "template": "metric = bandpower(input: \"{input}\", band: ({band_low_hz}, {band_high_hz}), window: {metric_window_ms} ms); threshold = percentile(target_pct: {target_pct}, window: {thr_window_ms}); action = mute(release: {release_ms} ms)"},
+
     {"id": "reward.operant", "kind": "reward",
      "slots": [
        {"name": "direction", "type": "enum", "control_bindable": false},

@@ -168,11 +168,28 @@ def _match_derive(decl: A.NamedDecl) -> dict:
 
 def _match_reward_component(decl: A.NamedDecl) -> dict:
     bm = _body_map(decl)
+    if "metric" in bm and "action" in bm:  # artifact-rejection inhibit (bandpower + mute)
+        metric, thr, action = bm["metric"], bm["threshold"], bm["action"]
+        band = _arg(metric, "band")
+        return {"name": decl.name, "kind": decl.keyword, "block": "inhibit.artifact",
+                "slots": {"input": _arg(metric, "input").value,
+                          "band_low_hz": band.elements[0].value,
+                          "band_high_hz": band.elements[1].value,
+                          "metric_window_ms": _to_ms(_arg(metric, "window")),
+                          "target_pct": _arg(thr, "target_pct").value,
+                          "thr_window_ms": _to_ms(_arg(thr, "window")),
+                          "release_ms": _to_ms(_arg(action, "release"))}}
     sig = bm.get("signal")
     if not isinstance(sig, A.Call) or sig.callee != "sigmoid":
         raise _NotInSubset("reward component signal not a sigmoid()")
     ref = sig.args[0].value
     midpoint = _arg(sig, "midpoint")
+    if (isinstance(ref, A.BinaryOp) and ref.op == "/"  # graded: sigmoid(<a>/<b>, midpoint: <num>)
+            and isinstance(ref.left, A.StringLit) and isinstance(ref.right, A.StringLit)):
+        return {"name": decl.name, "kind": decl.keyword, "block": "reward.component_ratio",
+                "slots": {"num": ref.left.value, "den": ref.right.value,
+                          "midpoint": midpoint.value, "steepness": _arg(sig, "steepness").value,
+                          "weight": _slot_from_expr(bm.get("weight"))}}
     if not isinstance(ref, A.StringLit) or midpoint is None or midpoint.unit != "uV":
         raise _NotInSubset("reward component needs sigmoid(<ref>, midpoint: <uV>, steepness:)")
     return {"name": decl.name, "kind": decl.keyword, "block": "reward.component",
@@ -218,6 +235,27 @@ def _match_reward(block: A.SectionBlock) -> dict:
     if not isinstance(ev, A.Call) or ev.callee != "dwell":
         raise _NotInSubset("reward.event not a dwell()")
     cond = _arg(ev, "condition")
+    if isinstance(cond, A.Call) and cond.callee == "all_of":  # compound operant: target + inhibits
+        arr = cond.args[0].value
+        if not isinstance(arr, (A.Array, A.Tuple)):
+            raise _NotInSubset("all_of arg not a list")
+        parts = []
+        for c in arr.elements:
+            if not (isinstance(c, A.Call) and c.callee in ("above", "below")):
+                raise _NotInSubset("all_of condition not above/below")
+            parts.append(f'{c.callee}("{c.args[0].value.value}", "{c.args[1].value.value}")')
+        if not (isinstance(cont, A.Call) and cont.callee == "sigmoid"):
+            raise _NotInSubset("compound reward continuous not a sigmoid()")
+        ratio = cont.args[0].value
+        if not (isinstance(ratio, A.BinaryOp) and ratio.op == "/"
+                and isinstance(ratio.left, A.StringLit) and isinstance(ratio.right, A.StringLit)):
+            raise _NotInSubset("sigmoid arg not a ref/ref ratio")
+        return {"name": None, "block": "reward.operant_compound",
+                "slots": {"conditions": ", ".join(parts),
+                          "cont_num": ratio.left.value, "cont_den": ratio.right.value,
+                          "midpoint": _arg(cont, "midpoint").value,
+                          "steepness": _arg(cont, "steepness").value,
+                          "dwell": _expr_to_str(_arg(ev, "duration"))}}
     if not isinstance(cond, A.Call) or cond.callee not in ("above", "below"):
         raise _NotInSubset("reward condition not above/below")
     base = {"direction": cond.callee, "signal": cond.args[0].value.value,
@@ -243,10 +281,18 @@ def _match_outputs(block: A.SectionBlock) -> list:
 
 
 def _match_requires(block: A.SectionBlock) -> dict:
-    bm = _body_map(block)
-    chans = bm.get("channels")  # placement protocols declare sites, not a channels list
-    return {"sample_rate": getattr(bm.get("sample_rate"), "value", ""),
-            "channels": [e.value for e in chans.elements] if chans is not None else []}
+    # Preserve every requires field in source order (coupling/impedance/markers,
+    # not just sample_rate/channels) so the clone round-trips losslessly.
+    out: dict = {}
+    for a in block.body:
+        if not isinstance(a, A.Assignment):
+            continue
+        v = a.value
+        out[a.target] = ([e.value for e in v.elements] if isinstance(v, (A.Array, A.Tuple))
+                         else getattr(v, "value", None))
+    out.setdefault("sample_rate", "")
+    out.setdefault("channels", [])  # placement protocols declare sites, not a channels list
+    return out
 
 
 def _match_session(block: A.SectionBlock) -> dict:

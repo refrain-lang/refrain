@@ -61,8 +61,11 @@ def render_protocol(model: dict, catalog: Catalog | None = None) -> str:
     L.append("  }")
 
     req = model["requires"]
-    chans = ", ".join(_quote(c) for c in req["channels"])
-    L.append(f'  requires {{ sample_rate = "{req["sample_rate"]}"; channels = [{chans}] }}')
+    req_parts = [
+        f"{k} = [{', '.join(_quote(x) for x in v)}]" if isinstance(v, list) else f"{k} = {_quote(v)}"
+        for k, v in req.items()
+    ]
+    L.append(f"  requires {{ {'; '.join(req_parts)} }}")
 
     for n in model["inputs"]:
         b = cat.block(n["block"])
