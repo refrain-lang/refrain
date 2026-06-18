@@ -19,6 +19,10 @@
                 "items": {"type": "object", "required": ["channel", "route"],
                           "properties": {"channel": {"type": "string"}, "route": {"type": "string"}}}},
     "controls": {"type": "array", "items": {"$ref": "#/$defs/control"}},
+    "blocks": {"type": "array",
+               "items": {"type": "object", "required": ["name", "thresholds"],
+                         "properties": {"name": {"type": "string"},
+                                        "thresholds": {"type": "array", "items": {"type": "string"}}}}},
     "session": {"type": "object"}
   },
   "$defs": {

@@ -46,6 +46,18 @@
      ],
      "template": "signal = sigmoid(\"{num}\" / \"{den}\", midpoint: {midpoint}, steepness: {steepness}); weight = {weight}"},
 
+    {"id": "reward.operant_abs", "kind": "reward",
+     "slots": [
+       {"name": "direction", "type": "enum", "control_bindable": false},
+       {"name": "signal", "type": "ref", "control_bindable": false},
+       {"name": "threshold", "type": "ref", "control_bindable": false},
+       {"name": "dwell", "type": "raw", "control_bindable": false, "default": 250},
+       {"name": "cont_signal", "type": "ref", "control_bindable": false},
+       {"name": "midpoint_uv", "type": "voltage", "control_bindable": false},
+       {"name": "steepness", "type": "number", "control_bindable": false, "default": 1}
+     ],
+     "template": "event      = dwell(condition: {direction}(\"{signal}\", \"{threshold}\"), duration: {dwell})\n    continuous = sigmoid(\"{cont_signal}\", midpoint: {midpoint_uv}, steepness: {steepness})"},
+
     {"id": "reward.operant_compound", "kind": "reward",
      "slots": [
        {"name": "conditions", "type": "raw"},
@@ -85,6 +97,14 @@
     {"id": "derive.ratio", "kind": "derive", "form": "formula",
      "slots": [{"name": "a", "type": "ref"}, {"name": "b", "type": "ref"}],
      "template": "\"{a}\" / \"{b}\""},
+
+    {"id": "derive.difference", "kind": "derive", "form": "formula",
+     "slots": [{"name": "a", "type": "ref"}, {"name": "b", "type": "ref"}],
+     "template": "\"{a}\" - \"{b}\""},
+
+    {"id": "derive.rectify", "kind": "derive", "form": "pipeline",
+     "slots": [],
+     "template": "rectify()"},
 
     {"id": "derive.coherence", "kind": "derive", "form": "formula",
      "slots": [
