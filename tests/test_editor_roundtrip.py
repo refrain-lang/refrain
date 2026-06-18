@@ -164,3 +164,47 @@ def test_all_in_subset_round_trip(src):
     d = describe_protocol(src)
     assert d["in_subset"] is True
     assert _ir(src) == _ir(render_protocol(d["model"]))
+
+
+# Compound operant reward (all_of([above, below])) + EMG artifact inhibit +
+# rich requires (coupling/impedance) — the standard BrainBit SMR/theta design.
+COMPOUND = '''
+protocol "smr_compound_cz" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["sensorimotor_sleep"] }
+  requires { coupling = "ac"; sample_rate = ">= 256 Hz"; channels = ["Cz"]; impedance = "not_required" }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "smr" { from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 250 ms) ] }
+  derive "theta" { from = "raw"
+    pipeline = [ bandpass(band: (4 Hz, 8 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 250 ms) ] }
+  threshold "smr_t" { signal = "smr"; type = percentile(target_pct: smr_pct, window: 2 min) }
+  threshold "theta_t" { signal = "theta"; type = percentile(target_pct: theta_pct, window: 2 min) }
+  inhibit "emg" {
+    metric = bandpower(input: "raw", band: (50 Hz, 100 Hz), window: 100 ms)
+    threshold = percentile(target_pct: 95, window: 2 min)
+    action = mute(release: 200 ms)
+  }
+  reward {
+    event = dwell(condition: all_of([above("smr", "smr_t"), below("theta", "theta_t")]), duration: 250 ms)
+    continuous = sigmoid("smr" / "smr_t", midpoint: 1.0, steepness: 3)
+  }
+  output { audio_chime = reward.event }
+  controls {
+    smr_pct = percent { default = 40; range = (15, 70); label = "SMR reward %"; live_tunable = true }
+    theta_pct = percent { default = 80; range = (50, 95); label = "Theta inhibit %"; live_tunable = true }
+  }
+}
+'''
+
+
+def test_compound_reward_and_artifact_inhibit_round_trip():
+    d = describe_protocol(COMPOUND)
+    assert d["in_subset"] is True
+    m = d["model"]
+    assert m["reward"]["block"] == "reward.operant_compound"
+    assert 'above("smr", "smr_t")' in m["reward"]["slots"]["conditions"]
+    assert 'below("theta", "theta_t")' in m["reward"]["slots"]["conditions"]
+    inh = [c for c in m["reward_components"] if c["block"] == "inhibit.artifact"]
+    assert inh and inh[0]["slots"]["band_low_hz"] == 50 and inh[0]["slots"]["release_ms"] == 200
+    assert m["requires"]["coupling"] == "ac"  # rich requires preserved losslessly
+    assert _ir(COMPOUND) == _ir(render_protocol(m))
