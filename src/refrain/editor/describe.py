@@ -116,9 +116,10 @@ def _match_derive(decl: A.NamedDecl) -> dict:
     bm = _body_map(decl)
     if "formula" in bm:
         f = bm["formula"]
-        if isinstance(f, A.BinaryOp) and f.op == "/" \
+        if isinstance(f, A.BinaryOp) and f.op in ("/", "-") \
            and isinstance(f.left, A.StringLit) and isinstance(f.right, A.StringLit):
-            return {"name": decl.name, "block": "derive.ratio",
+            block = "derive.ratio" if f.op == "/" else "derive.difference"
+            return {"name": decl.name, "block": block,
                     "slots": {"a": f.left.value, "b": f.right.value}}
         if isinstance(f, A.Call) and f.callee == "coherence":
             return {"name": decl.name, "block": "derive.coherence",
@@ -132,6 +133,8 @@ def _match_derive(decl: A.NamedDecl) -> dict:
         raise _NotInSubset(f"derive '{decl.name}' is not pipeline-form")
     calls = pipe.elements
     names = [c.callee for c in calls if isinstance(c, A.Call)]
+    if names == ["rectify"] and len(calls) == 1:  # e.g. |theta - alpha| asymmetry
+        return {"name": decl.name, "block": "derive.rectify", "from": bm["from"].value, "slots": {}}
     if names == ["bandpass", "hilbert", "magnitude", "smooth"] and len(calls) == 4:
         bp, sm = calls[0], calls[3]
         center, bw, band = _arg(bp, "center"), _arg(bp, "bandwidth"), _arg(bp, "band")
@@ -261,14 +264,18 @@ def _match_reward(block: A.SectionBlock) -> dict:
     base = {"direction": cond.callee, "signal": cond.args[0].value.value,
             "threshold": cond.args[1].value.value, "dwell": _expr_to_str(_arg(ev, "duration"))}
     if isinstance(cont, A.Call) and cont.callee == "sigmoid":
-        ratio = cont.args[0].value  # first positional arg of sigmoid = the BinaryOp ratio
-        if not (isinstance(ratio, A.BinaryOp) and ratio.op == "/"
-                and isinstance(ratio.left, A.StringLit) and isinstance(ratio.right, A.StringLit)):
-            raise _NotInSubset("sigmoid arg not a ref/ref ratio")
-        return {"name": None, "block": "reward.operant",
-                "slots": {**base, "cont_num": ratio.left.value, "cont_den": ratio.right.value,
-                          "midpoint": _arg(cont, "midpoint").value,
-                          "steepness": _arg(cont, "steepness").value}}
+        arg = cont.args[0].value  # first positional arg of sigmoid
+        mid = _arg(cont, "midpoint")
+        if (isinstance(arg, A.BinaryOp) and arg.op == "/"
+                and isinstance(arg.left, A.StringLit) and isinstance(arg.right, A.StringLit)):
+            return {"name": None, "block": "reward.operant",
+                    "slots": {**base, "cont_num": arg.left.value, "cont_den": arg.right.value,
+                              "midpoint": mid.value, "steepness": _arg(cont, "steepness").value}}
+        if isinstance(arg, A.StringLit) and mid is not None and mid.unit == "uV":  # sigmoid(<ref>, <uV>)
+            return {"name": None, "block": "reward.operant_abs",
+                    "slots": {**base, "cont_signal": arg.value, "midpoint_uv": mid.value,
+                              "steepness": _arg(cont, "steepness").value}}
+        raise _NotInSubset("sigmoid arg not a ref/ref ratio or bare ref with uV midpoint")
     if isinstance(cont, A.StringLit):                     # bare-ref continuous (HRV)
         return {"name": None, "block": "reward.passthrough",
                 "slots": {**base, "cont_ref": cont.value}}
@@ -295,6 +302,13 @@ def _match_requires(block: A.SectionBlock) -> dict:
     return out
 
 
+def _match_block(decl: A.NamedDecl) -> dict:
+    thr = _body_map(decl).get("threshold")  # staged block activates a set of thresholds
+    if not isinstance(thr, (A.Array, A.Tuple)):
+        raise _NotInSubset("block needs threshold = [...]")
+    return {"name": decl.name, "thresholds": [e.value for e in thr.elements]}
+
+
 def _match_session(block: A.SectionBlock) -> dict:
     phases = []
     for ph in _body_map(block)["phases"].elements:
@@ -303,6 +317,8 @@ def _match_session(block: A.SectionBlock) -> dict:
                  "output_muted": bool(getattr(f.get("output_muted"), "value", False))}
         if "duration" in f:                       # absent for open-ended phases
             phase["duration_ms"] = _to_ms(f["duration"])
+        if "block" in f:                          # staged: activates a named block
+            phase["block"] = f["block"].value
         if "mode" in f:                           # `mode = timed_with_floor | open | ...`
             m = f["mode"]
             phase["mode"] = getattr(m, "name", None) or getattr(m, "value", None)
@@ -317,7 +333,7 @@ def _build_model(ast, controls) -> dict:
     for c in controls:                                 # only kinds render can emit
         if c["kind"] not in RENDERABLE_CONTROL_KINDS:
             raise _NotInSubset(f"control kind '{c['kind']}' not renderable")
-    inputs, derives, thresholds, outputs, reward_components = [], [], [], [], []
+    inputs, derives, thresholds, outputs, reward_components, blocks = [], [], [], [], [], []
     reward, requires, session = None, {"sample_rate": "", "channels": []}, {"phases": []}
     for stmt in p.body:
         if isinstance(stmt, A.NamedDecl):
@@ -327,6 +343,8 @@ def _build_model(ast, controls) -> dict:
                 derives.append(_match_derive(stmt))
             elif stmt.keyword == "threshold":
                 thresholds.append(_match_threshold(stmt))
+            elif stmt.keyword == "block":                # staged: per-phase threshold set
+                blocks.append(_match_block(stmt))
             elif stmt.keyword in ("reward", "inhibit"):  # named weighted-composite components
                 reward_components.append(_match_reward_component(stmt))
             else:
@@ -347,7 +365,7 @@ def _build_model(ast, controls) -> dict:
     return {"name": p.name, "meta": _meta_from_ast(ast), "requires": requires,
             "inputs": inputs, "derives": derives, "thresholds": thresholds,
             "inhibits": [], "reward_components": reward_components, "reward": reward,
-            "outputs": outputs, "controls": controls, "session": session}
+            "outputs": outputs, "controls": controls, "blocks": blocks, "session": session}
 
 
 def describe_protocol(source: str, *, amp: Any = None) -> dict:

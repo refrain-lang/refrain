@@ -35,6 +35,8 @@ def _render_phase(p: dict) -> str:
     parts = [f'name = "{p["name"]}"']
     if p.get("duration_ms") is not None:
         parts.append(f"duration = {_fmt_duration(p['duration_ms'])}")
+    if p.get("block"):
+        parts.append(f'block = "{p["block"]}"')
     if p.get("mode"):
         parts.append(f"mode = {p['mode']}")
     if p.get("output_muted"):
@@ -102,6 +104,10 @@ def render_protocol(model: dict, catalog: Catalog | None = None) -> str:
         L.append("  controls {")
         L.extend("    " + _render_control(c) for c in model["controls"])
         L.append("  }")
+
+    for blk in model.get("blocks", []):           # staged: per-phase threshold sets
+        thr = ", ".join(_quote(t) for t in blk["thresholds"])
+        L.append(f'  block "{blk["name"]}" {{ threshold = [{thr}] }}')
 
     phases = model.get("session", {}).get("phases") or []
     if phases:

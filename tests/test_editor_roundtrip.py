@@ -208,3 +208,66 @@ def test_compound_reward_and_artifact_inhibit_round_trip():
     assert inh and inh[0]["slots"]["band_low_hz"] == 50 and inh[0]["slots"]["release_ms"] == 200
     assert m["requires"]["coupling"] == "ac"  # rich requires preserved losslessly
     assert _ir(COMPOUND) == _ir(render_protocol(m))
+
+
+# Staged / N-phase: a `block` decl activated by a phase's `block = "..."` field.
+STAGED = '''
+protocol "staged_smr_cz" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["adhd_attention"] }
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "smr" { from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 250 ms) ] }
+  threshold "smr_t" { signal = "smr"; type = percentile(target_pct: smr_pct, window: 2 min) }
+  reward { event = dwell(condition: above("smr", "smr_t"), duration: 250 ms)
+           continuous = sigmoid("smr" / "smr_t", midpoint: 1.0, steepness: 3) }
+  output { audio_chime = reward.event }
+  controls { smr_pct = percent { default = 40; range = (15, 70); label = "SMR %"; live_tunable = true } }
+  block "focus" { threshold = ["smr_t"] }
+  session { phases = [
+    phase { name = "warmup"; duration = 60 s; output_muted = true },
+    phase { name = "block1"; duration = 5 min; block = "focus"; mode = timed_with_floor }
+  ] }
+}
+'''
+
+
+def test_staged_block_round_trips():
+    d = describe_protocol(STAGED)
+    assert d["in_subset"] is True
+    m = d["model"]
+    assert m["blocks"] == [{"name": "focus", "thresholds": ["smr_t"]}]
+    assert any(p.get("block") == "focus" for p in m["session"]["phases"])
+    assert _ir(STAGED) == _ir(render_protocol(m))
+
+
+# Alpha asymmetry: difference derive + rectify pipeline + sigmoid(<ref>, midpoint: <uV>).
+ALPHA = '''
+protocol "alpha_asym_c3c4" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["mood_regulation"] }
+  requires { sample_rate = ">= 256 Hz"; channels = ["C3", "C4"] }
+  input "l" { montage = referential(active: "C3", reference: "linked_ears") }
+  input "r" { montage = referential(active: "C4", reference: "linked_ears") }
+  derive "al" { from = "l"
+    pipeline = [ bandpass(band: (8 Hz, 12 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 500 ms) ] }
+  derive "ar" { from = "r"
+    pipeline = [ bandpass(band: (8 Hz, 12 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 500 ms) ] }
+  derive "diff" { formula = "al" - "ar" }
+  derive "asym" { from = "diff"; pipeline = [rectify()] }
+  threshold "asym_t" { signal = "asym"; type = percentile(target_pct: rate, window: 2 min) }
+  reward { event = dwell(condition: below("asym", "asym_t"), duration: 500 ms)
+           continuous = sigmoid("asym", midpoint: 0 uV, steepness: 0.5) }
+  output { audio_gain = reward.continuous }
+  controls { rate = percent { default = 50; range = (30, 70); label = "Rate"; live_tunable = true } }
+}
+'''
+
+
+def test_alpha_difference_rectify_abs_round_trips():
+    d = describe_protocol(ALPHA)
+    assert d["in_subset"] is True
+    m = d["model"]
+    assert any(x["block"] == "derive.difference" for x in m["derives"])
+    assert any(x["block"] == "derive.rectify" for x in m["derives"])
+    assert m["reward"]["block"] == "reward.operant_abs"
+    assert _ir(ALPHA) == _ir(render_protocol(m))
