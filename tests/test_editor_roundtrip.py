@@ -271,3 +271,33 @@ def test_alpha_difference_rectify_abs_round_trips():
     assert any(x["block"] == "derive.rectify" for x in m["derives"])
     assert m["reward"]["block"] == "reward.operant_abs"
     assert _ir(ALPHA) == _ir(render_protocol(m))
+
+
+# Placement: an `active` site picker (groups inlined into allowed).
+PLACEMENT = '''
+protocol "place_smr" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["adhd_attention"] }
+  requires { sample_rate = ">= 256 Hz" }
+  groups { sensorimotor = ["C3", "Cz", "C4"] }
+  controls {
+    site = placement { kind = "active"; default = "Cz"; allowed = sensorimotor; label = "Site" }
+    pct = percent { default = 70; range = (50, 90); label = "Pct"; live_tunable = true }
+  }
+  input "raw" { montage = referential(active: site, reference: "device") }
+  derive "env" { from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 250 ms) ] }
+  threshold "t" { signal = "env"; type = percentile(target_pct: pct, window: 2 min) }
+  reward { event = dwell(condition: all_of([above("env", "t")]), duration: 250 ms)
+           continuous = sigmoid("env" / "t", midpoint: 1.0, steepness: 3) }
+  output { audio_chime = reward.event }
+}
+'''
+
+
+def test_active_placement_round_trips():
+    d = describe_protocol(PLACEMENT)
+    assert d["in_subset"] is True
+    pl = d["model"]["placements"]
+    assert pl and pl[0]["kind"] == "active" and pl[0]["default"] == ["Cz"]
+    assert pl[0]["allowed"] == ["C3", "Cz", "C4"]
+    assert _ir(PLACEMENT) == _ir(render_protocol(d["model"]))

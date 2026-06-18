@@ -26,12 +26,15 @@ def _control_view(name: str, ctl: Any) -> dict:
 
 
 def _placement_view(name: str, ctl: Any) -> dict:
-    return {
+    view = {
         "name": name, "kind": ctl.kind,
         "allowed": [list(a) if isinstance(a, tuple) else a for a in ctl.allowed],
         "default": list(ctl.default_placement),
         "label": ctl.label or name, "final": bool(ctl.final),
     }
+    if ctl.kind == "set":
+        view["set_min"], view["set_max"] = ctl.set_min, ctl.set_max
+    return view
 
 
 def _diag(exc: Exception) -> dict:
@@ -73,6 +76,8 @@ def _slot_from_expr(expr):
         return expr.value
     if isinstance(expr, A.NameRef):
         return {"bind": expr.name}
+    if isinstance(expr, A.MemberAccess):           # pair placement member, e.g. coh.a
+        return {"bind": f"{expr.target.name}.{expr.member}"}
     raise _NotInSubset(f"unsupported slot expr {type(expr).__name__}")
 
 
@@ -109,7 +114,10 @@ def _match_input(decl: A.NamedDecl) -> dict:
                           "reference": _slot_from_expr(_arg(montage, "reference"))}}
     if isinstance(montage, A.Call) and montage.callee == "passthrough":
         return {"name": decl.name, "block": "montage.passthrough", "slots": {}}
-    raise _NotInSubset("montage not referential/passthrough")
+    if isinstance(montage, A.Call) and montage.callee == "bipolar":
+        return {"name": decl.name, "block": "montage.bipolar",
+                "slots": {"pair": _slot_from_expr(_arg(montage, "pair"))}}
+    raise _NotInSubset("montage not referential/passthrough/bipolar")
 
 
 def _match_derive(decl: A.NamedDecl) -> dict:
@@ -122,11 +130,17 @@ def _match_derive(decl: A.NamedDecl) -> dict:
             return {"name": decl.name, "block": block,
                     "slots": {"a": f.left.value, "b": f.right.value}}
         if isinstance(f, A.Call) and f.callee == "coherence":
+            ia = _arg(f, "input_a") or (f.args[0].value if len(f.args) > 0 else None)
+            ib = _arg(f, "input_b") or (f.args[1].value if len(f.args) > 1 else None)
+            win = _arg(f, "window")
+            if win is None:                       # positional, window-less form
+                return {"name": decl.name, "block": "derive.coherence_band",
+                        "slots": {"input_a": ia.value, "input_b": ib.value,
+                                  "band": _expr_to_str(_arg(f, "band"))}}
             return {"name": decl.name, "block": "derive.coherence",
-                    "slots": {"input_a": _arg(f, "input_a").value,
-                              "input_b": _arg(f, "input_b").value,
+                    "slots": {"input_a": ia.value, "input_b": ib.value,
                               "band": _expr_to_str(_arg(f, "band")),
-                              "window_ms": _to_ms(_arg(f, "window"))}}
+                              "window_ms": _to_ms(win)}}
         raise _NotInSubset(f"formula derive '{decl.name}' not in subset")
     pipe = bm.get("pipeline")
     if not isinstance(pipe, A.Array):
@@ -209,8 +223,13 @@ def _match_threshold(decl: A.NamedDecl) -> dict:
                 "slots": {"target_pct": _slot_from_expr(_arg(t, "target_pct")),
                           "window_ms": _to_ms(_arg(t, "window"))}}
     elif isinstance(t, A.Call) and t.callee == "absolute":
-        node = {"name": decl.name, "block": "threshold.absolute", "signal": bm["signal"].value,
-                "slots": {"value": _slot_from_expr(_arg(t, "value"))}}
+        named = _arg(t, "value")
+        if named is not None:                     # absolute(value: <control|literal>)
+            node = {"name": decl.name, "block": "threshold.absolute", "signal": bm["signal"].value,
+                    "slots": {"value": _slot_from_expr(named)}}
+        else:                                     # positional: absolute(8 uV)
+            node = {"name": decl.name, "block": "threshold.absolute_lit", "signal": bm["signal"].value,
+                    "slots": {"value": _slot_from_expr(t.args[0].value)}}
     else:
         raise _NotInSubset(f"threshold {getattr(t, 'callee', '?')} not in subset")
     if bool(getattr(bm.get("live_tunable"), "value", False)):  # threshold-level live flag
@@ -220,6 +239,16 @@ def _match_threshold(decl: A.NamedDecl) -> dict:
 
 def _match_reward(block: A.SectionBlock) -> dict:
     bm = _body_map(block)
+    if getattr(bm.get("combine"), "value", None) == "all":   # Mode 2b: set placement, all sites
+        ev = bm.get("event")
+        cond = _arg(ev, "condition") if isinstance(ev, A.Call) else None
+        if not (isinstance(ev, A.Call) and ev.callee == "dwell"
+                and isinstance(cond, A.Call) and cond.callee in ("above", "below")):
+            raise _NotInSubset("set-all reward event not dwell(above/below)")
+        return {"name": None, "block": "reward.set_all",
+                "slots": {"direction": cond.callee, "signal": cond.args[0].value.value,
+                          "threshold": cond.args[1].value.value,
+                          "dwell": _expr_to_str(_arg(ev, "duration"))}}
     if "combine" in bm:                                   # weighted composite
         cont = bm.get("continuous")
         ev = bm.get("event")
@@ -249,16 +278,21 @@ def _match_reward(block: A.SectionBlock) -> dict:
             parts.append(f'{c.callee}("{c.args[0].value.value}", "{c.args[1].value.value}")')
         if not (isinstance(cont, A.Call) and cont.callee == "sigmoid"):
             raise _NotInSubset("compound reward continuous not a sigmoid()")
-        ratio = cont.args[0].value
-        if not (isinstance(ratio, A.BinaryOp) and ratio.op == "/"
-                and isinstance(ratio.left, A.StringLit) and isinstance(ratio.right, A.StringLit)):
-            raise _NotInSubset("sigmoid arg not a ref/ref ratio")
-        return {"name": None, "block": "reward.operant_compound",
-                "slots": {"conditions": ", ".join(parts),
-                          "cont_num": ratio.left.value, "cont_den": ratio.right.value,
-                          "midpoint": _arg(cont, "midpoint").value,
-                          "steepness": _arg(cont, "steepness").value,
-                          "dwell": _expr_to_str(_arg(ev, "duration"))}}
+        carg = cont.args[0].value
+        dwell = _expr_to_str(_arg(ev, "duration"))
+        if (isinstance(carg, A.BinaryOp) and carg.op == "/"
+                and isinstance(carg.left, A.StringLit) and isinstance(carg.right, A.StringLit)):
+            return {"name": None, "block": "reward.operant_compound",
+                    "slots": {"conditions": ", ".join(parts),
+                              "cont_num": carg.left.value, "cont_den": carg.right.value,
+                              "midpoint": _arg(cont, "midpoint").value,
+                              "steepness": _arg(cont, "steepness").value, "dwell": dwell}}
+        if isinstance(carg, A.StringLit):         # bare-ref continuous (e.g. coherence)
+            return {"name": None, "block": "reward.operant_compound_abs",
+                    "slots": {"conditions": ", ".join(parts), "cont_signal": carg.value,
+                              "midpoint": _arg(cont, "midpoint").value,
+                              "steepness": _arg(cont, "steepness").value, "dwell": dwell}}
+        raise _NotInSubset("compound sigmoid arg not a ref/ref ratio or bare ref")
     if not isinstance(cond, A.Call) or cond.callee not in ("above", "below"):
         raise _NotInSubset("reward condition not above/below")
     base = {"direction": cond.callee, "signal": cond.args[0].value.value,
@@ -326,7 +360,7 @@ def _match_session(block: A.SectionBlock) -> dict:
     return {"phases": phases}
 
 
-def _build_model(ast, controls) -> dict:
+def _build_model(ast, controls, placements=()) -> dict:
     p = ast.protocol
     if p.extends is not None:                          # inheritance is not modelled
         raise _NotInSubset("extends not in subset")
@@ -358,14 +392,16 @@ def _build_model(ast, controls) -> dict:
                 requires = _match_requires(stmt)
             elif stmt.keyword == "session":
                 session = _match_session(stmt)
-            elif stmt.keyword in ("meta", "controls"):
-                pass  # handled by describe_protocol
+            elif stmt.keyword in ("meta", "controls", "groups"):
+                pass  # meta/controls handled by describe_protocol; groups inlined into
+                      # placement `allowed` at render time, so the section is dropped
             else:
                 raise _NotInSubset(f"section '{stmt.keyword}' not in subset")
     return {"name": p.name, "meta": _meta_from_ast(ast), "requires": requires,
             "inputs": inputs, "derives": derives, "thresholds": thresholds,
             "inhibits": [], "reward_components": reward_components, "reward": reward,
-            "outputs": outputs, "controls": controls, "blocks": blocks, "session": session}
+            "outputs": outputs, "controls": controls, "placements": list(placements),
+            "blocks": blocks, "session": session}
 
 
 def describe_protocol(source: str, *, amp: Any = None) -> dict:
@@ -386,7 +422,7 @@ def describe_protocol(source: str, *, amp: Any = None) -> dict:
             _placement_view(name, ctl) if ctl.type_kind == "placement" else _control_view(name, ctl))
 
     try:
-        model = _build_model(ast, controls)
+        model = _build_model(ast, controls, placements)
         in_subset = True
     except (_NotInSubset, KeyError, AttributeError, TypeError, IndexError):
         # Intentional out-of-subset, or a matcher hit an unexpected AST shape:
