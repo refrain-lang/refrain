@@ -36,6 +36,10 @@
      "slots": [{"name": "value", "type": "voltage", "control_bindable": true}],
      "template": "type = absolute(value: {value})"},
 
+    {"id": "threshold.absolute_lit", "kind": "threshold",
+     "slots": [{"name": "value", "type": "voltage"}],
+     "template": "type = absolute({value})"},
+
     {"id": "reward.component_ratio", "kind": "reward_component",
      "slots": [
        {"name": "num", "type": "ref"},
@@ -57,6 +61,16 @@
        {"name": "steepness", "type": "number", "control_bindable": false, "default": 1}
      ],
      "template": "event      = dwell(condition: {direction}(\"{signal}\", \"{threshold}\"), duration: {dwell})\n    continuous = sigmoid(\"{cont_signal}\", midpoint: {midpoint_uv}, steepness: {steepness})"},
+
+    {"id": "reward.operant_compound_abs", "kind": "reward",
+     "slots": [
+       {"name": "conditions", "type": "raw"},
+       {"name": "cont_signal", "type": "ref", "control_bindable": false},
+       {"name": "midpoint", "type": "number", "control_bindable": false, "default": 0.5},
+       {"name": "steepness", "type": "number", "control_bindable": false, "default": 1},
+       {"name": "dwell", "type": "raw", "control_bindable": false, "default": 250}
+     ],
+     "template": "event      = dwell(condition: all_of([{conditions}]), duration: {dwell})\n    continuous = sigmoid(\"{cont_signal}\", midpoint: {midpoint}, steepness: {steepness})"},
 
     {"id": "reward.operant_compound", "kind": "reward",
      "slots": [
@@ -98,6 +112,20 @@
      "slots": [{"name": "a", "type": "ref"}, {"name": "b", "type": "ref"}],
      "template": "\"{a}\" / \"{b}\""},
 
+    {"id": "derive.coherence_band", "kind": "derive", "form": "formula",
+     "slots": [{"name": "input_a", "type": "ref"}, {"name": "input_b", "type": "ref"},
+               {"name": "band", "type": "raw"}],
+     "template": "coherence(\"{input_a}\", \"{input_b}\", band: {band})"},
+
+    {"id": "reward.set_all", "kind": "reward",
+     "slots": [
+       {"name": "direction", "type": "enum"},
+       {"name": "signal", "type": "ref"},
+       {"name": "threshold", "type": "ref"},
+       {"name": "dwell", "type": "raw", "default": 250}
+     ],
+     "template": "combine    = \"all\"\n    event      = dwell(condition: {direction}(\"{signal}\", \"{threshold}\"), duration: {dwell})"},
+
     {"id": "derive.difference", "kind": "derive", "form": "formula",
      "slots": [{"name": "a", "type": "ref"}, {"name": "b", "type": "ref"}],
      "template": "\"{a}\" - \"{b}\""},
@@ -116,6 +144,10 @@
     {"id": "montage.passthrough", "kind": "montage",
      "slots": [],
      "template": "passthrough()"},
+
+    {"id": "montage.bipolar", "kind": "montage",
+     "slots": [{"name": "pair", "type": "site", "control_bindable": true}],
+     "template": "bipolar(pair: {pair})"},
 
     {"id": "derive.lf_envelope", "kind": "derive", "form": "pipeline",
      "slots": [

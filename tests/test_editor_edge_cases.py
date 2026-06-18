@@ -131,7 +131,7 @@ def test_extends_is_out_of_subset():
 
 def test_unknown_section_is_out_of_subset():
     ast = refrain.parse('protocol "g" { meta { description = "d"; status = "draft"; goals = [] } '
-                        'groups { frontal = ["F3", "F4"] } }')
+                        'telemetry { sink = "udp" } }')
     try:
         _build_model(ast, [])
         raised = False

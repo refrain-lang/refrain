@@ -31,6 +31,29 @@ def _render_control(c: dict) -> str:
         lo=_fmtnum(lo), hi=_fmtnum(hi), label=c.get("label", c["name"]), live=live)
 
 
+def _render_placement(p: dict) -> str:
+    """Render a placement control (active/set/bipolar/pair) inside `controls`."""
+    def site(s):
+        return f'"{s}"'
+
+    def pair(t):
+        return f"({site(t[0])}, {site(t[1])})"
+
+    kind, default, allowed = p["kind"], p["default"], p["allowed"]
+    if kind == "active":
+        d, a = site(default[0]), "[" + ", ".join(site(s) for s in allowed) + "]"
+    elif kind == "set":
+        d = "[" + ", ".join(site(s) for s in default) + "]"
+        a = "[" + ", ".join(site(s) for s in allowed) + "]"
+    else:  # bipolar | pair — site pairs
+        d, a = pair(default), "[" + ", ".join(pair(t) for t in allowed) + "]"
+    parts = [f'kind = "{kind}"', f"default = {d}", f"allowed = {a}"]
+    if kind == "set":
+        parts += [f"min = {_fmt_num(p['set_min'])}", f"max = {_fmt_num(p['set_max'])}"]
+    parts.append(f'label = "{p["label"]}"')
+    return f'{p["name"]} = placement {{ {"; ".join(parts)} }}'
+
+
 def _render_phase(p: dict) -> str:
     parts = [f'name = "{p["name"]}"']
     if p.get("duration_ms") is not None:
@@ -100,8 +123,9 @@ def render_protocol(model: dict, catalog: Catalog | None = None) -> str:
         L.append(f'    {o["channel"]} = {o["route"]}')
     L.append("  }")
 
-    if model["controls"]:
+    if model["controls"] or model.get("placements"):
         L.append("  controls {")
+        L.extend("    " + _render_placement(pl) for pl in model.get("placements", []))
         L.extend("    " + _render_control(c) for c in model["controls"])
         L.append("  }")
 
