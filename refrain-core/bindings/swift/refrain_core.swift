@@ -541,6 +541,15 @@ public protocol RefrainCoreProtocol: AnyObject, Sendable {
     func hold(held: Bool)  -> Bool
     
     /**
+     * `eval::Evaluator::last_taps`: the most recent chunk's internal computed values —
+     * keys like `input/raw`, `derive/<name>`, `threshold/<name>`, `reward/continuous`,
+     * `output/<channel>` (booleans encoded as 0.0/1.0). For clinician observation /
+     * live tuning. Empty before the first chunk. (BTreeMap → HashMap so uniffi maps it
+     * to a Swift `[String: Double]` / Kotlin `Map`.)
+     */
+    func lastTaps()  -> [String: Double]
+    
+    /**
      * `eval::Evaluator::set_clock_frozen`: freeze/resume the phase clock on any
      * phase type (transport pause); orthogonal to output muting.
      */
@@ -678,6 +687,20 @@ open func hold(held: Bool) -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
     uniffi_refrain_core_fn_method_refraincore_hold(self.uniffiClonePointer(),
         FfiConverterBool.lower(held),$0
+    )
+})
+}
+    
+    /**
+     * `eval::Evaluator::last_taps`: the most recent chunk's internal computed values —
+     * keys like `input/raw`, `derive/<name>`, `threshold/<name>`, `reward/continuous`,
+     * `output/<channel>` (booleans encoded as 0.0/1.0). For clinician observation /
+     * live tuning. Empty before the first chunk. (BTreeMap → HashMap so uniffi maps it
+     * to a Swift `[String: Double]` / Kotlin `Map`.)
+     */
+open func lastTaps() -> [String: Double]  {
+    return try!  FfiConverterDictionaryStringDouble.lift(try! rustCall() {
+    uniffi_refrain_core_fn_method_refraincore_last_taps(self.uniffiClonePointer(),$0
     )
 })
 }
@@ -1233,6 +1256,32 @@ fileprivate struct FfiConverterSequenceTypeEvent: FfiConverterRustBuffer {
     }
 }
 
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterDictionaryStringDouble: FfiConverterRustBuffer {
+    public static func write(_ value: [String: Double], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for (key, value) in value {
+            FfiConverterString.write(key, into: &buf)
+            FfiConverterDouble.write(value, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String: Double] {
+        let len: Int32 = try readInt(&buf)
+        var dict = [String: Double]()
+        dict.reserveCapacity(Int(len))
+        for _ in 0..<len {
+            let key = try FfiConverterString.read(from: &buf)
+            let value = try FfiConverterDouble.read(from: &buf)
+            dict[key] = value
+        }
+        return dict
+    }
+}
+
 private enum InitializationResult {
     case ok
     case contractVersionMismatch
@@ -1255,6 +1304,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_refrain_core_checksum_method_refraincore_hold() != 38295) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_refrain_core_checksum_method_refraincore_last_taps() != 62853) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_refrain_core_checksum_method_refraincore_set_clock_frozen() != 49829) {

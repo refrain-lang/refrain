@@ -179,6 +179,15 @@ impl RefrainCore {
     pub fn current_phase(&self) -> PhaseInfo {
         self.inner.lock().unwrap().current_phase().into()
     }
+
+    /// `eval::Evaluator::last_taps`: the most recent chunk's internal computed values —
+    /// keys like `input/raw`, `derive/<name>`, `threshold/<name>`, `reward/continuous`,
+    /// `output/<channel>` (booleans encoded as 0.0/1.0). For clinician observation /
+    /// live tuning. Empty before the first chunk. (BTreeMap → HashMap so uniffi maps it
+    /// to a Swift `[String: Double]` / Kotlin `Map`.)
+    pub fn last_taps(&self) -> std::collections::HashMap<String, f64> {
+        self.inner.lock().unwrap().last_taps().into_iter().collect()
+    }
 }
 
 #[cfg(test)]
