@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "refrain"
-version = "0.10.0"
+version = "0.11.0"
 description = "An open description language for clinical neurofeedback protocols"
 readme = "README.md"
 license = { text = "Apache-2.0" }

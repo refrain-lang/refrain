@@ -5,6 +5,51 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.11.0] — 2026-06-21
+
+Additive — a new mobile-binding method plus editor-catalog coverage that brings
+the bundled BrainBit set to full clonability. No existing protocol changes
+behavior; Python↔Rust parity (gated to 1e-6) and the IR-JSON schema are
+unchanged. The editor changes are front-end catalog/model additions that
+round-trip to identical IR; the mobile change mirrors an existing pyo3 binding.
+
+### Added
+- **`last_taps()` on the mobile (uniffi) binding.** Surfaces the evaluator's
+  most-recent-chunk internal taps (envelope / threshold / reward / output) across
+  the FFI as a Swift `[String: Double]` / Kotlin `Map`, mirroring the pyo3
+  binding — for on-device clinician observation and live tuning. Regenerated the
+  Swift and Kotlin bindings. Consumed by the Coherence Companion mobile
+  neurofeedback feature.
+
+### Editor catalog — full BrainBit clonability (20/20)
+Front-end (refrain-editor) catalog/model additions only; each shape round-trips
+to an identical IR. The bundled BrainBit set went from 3/20 → 20/20 protocols
+that clone with clean IR round-trips.
+- **Compound operant reward + EMG artifact inhibit + lossless `requires`**
+  (3 → 11): `reward.operant_compound` (`dwell(all_of([...]))` + sigmoid
+  continuous), an EMG-style `inhibit.artifact` (bandpower + percentile + mute),
+  `reward.component_ratio` (weighted composite over a ratio sigmoid), and full
+  preservation of `requires` (coupling/impedance/markers, not just
+  sample_rate/channels).
+- **Staged blocks + alpha-asymmetry derives** (→ 16): a `block "name" {...}` decl
+  + per-phase `block = "..."` activation (new `blocks` model section),
+  `derive.difference` (`"a" - "b"`) and `derive.rectify`, and `reward.operant_abs`
+  (single-condition sigmoid-over-ref continuous).
+- **Placement controls — site/montage editing** (→ 20): placement controls
+  (active/set/bipolar/pair) with a new `placements` model section, inlined
+  `groups`, `montage.bipolar` with `coh.a`/`coh.b` member-access slots, and a
+  handful of placement-specific shapes (positional `absolute(8 uV)`,
+  `combine = "all"` set reward, window-less `coherence(...)`, compound
+  bare-ref-sigmoid reward).
+- **Explicit-band envelope block (`derive.envelope_band`).** Recognizes the
+  clinical fixed-band form `bandpass(band: (lo Hz, hi Hz), order: N)` as a second
+  envelope shape alongside the center+ratio derive; band edges and order become
+  editable model slots.
+- **Golden-fixture generator (`tools/gen_editor_fixtures.py`).** Committed the
+  parity-corpus generator that refrain-editor's `scripts/sync-vendor.sh` already
+  referenced; recurses into `protocols/` subfolders so device-specific sets are
+  included.
+
 ## [0.10.0] — 2026-06-12
 
 Additive — a new primitive, a new fan-out axis, and a worked example. Python↔Rust
