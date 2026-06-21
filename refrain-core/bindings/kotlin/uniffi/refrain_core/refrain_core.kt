@@ -732,6 +732,8 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -752,6 +754,8 @@ internal interface IntegrityCheckingUniffiLib : Library {
 fun uniffi_refrain_core_checksum_method_refraincore_current_phase(
 ): Short
 fun uniffi_refrain_core_checksum_method_refraincore_hold(
+): Short
+fun uniffi_refrain_core_checksum_method_refraincore_last_taps(
 ): Short
 fun uniffi_refrain_core_checksum_method_refraincore_set_clock_frozen(
 ): Short
@@ -826,6 +830,8 @@ fun uniffi_refrain_core_fn_method_refraincore_current_phase(`ptr`: Pointer,uniff
 ): RustBuffer.ByValue
 fun uniffi_refrain_core_fn_method_refraincore_hold(`ptr`: Pointer,`held`: Byte,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
+fun uniffi_refrain_core_fn_method_refraincore_last_taps(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_refrain_core_fn_method_refraincore_set_clock_frozen(`ptr`: Pointer,`frozen`: Byte,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_refrain_core_fn_method_refraincore_set_control(`ptr`: Pointer,`name`: RustBuffer.ByValue,`value`: Double,uniffi_out_err: UniffiRustCallStatus, 
@@ -969,6 +975,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_refrain_core_checksum_method_refraincore_hold() != 38295.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_refrain_core_checksum_method_refraincore_last_taps() != 62853.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_refrain_core_checksum_method_refraincore_set_clock_frozen() != 49829.toShort()) {
@@ -1408,6 +1417,15 @@ public interface RefrainCoreInterface {
     fun `hold`(`held`: kotlin.Boolean): kotlin.Boolean
     
     /**
+     * `eval::Evaluator::last_taps`: the most recent chunk's internal computed values —
+     * keys like `input/raw`, `derive/<name>`, `threshold/<name>`, `reward/continuous`,
+     * `output/<channel>` (booleans encoded as 0.0/1.0). For clinician observation /
+     * live tuning. Empty before the first chunk. (BTreeMap → HashMap so uniffi maps it
+     * to a Swift `[String: Double]` / Kotlin `Map`.)
+     */
+    fun `lastTaps`(): Map<kotlin.String, kotlin.Double>
+    
+    /**
      * `eval::Evaluator::set_clock_frozen`: freeze/resume the phase clock on any
      * phase type (transport pause); orthogonal to output muting.
      */
@@ -1586,6 +1604,25 @@ open class RefrainCore: Disposable, AutoCloseable, RefrainCoreInterface
     uniffiRustCall() { _status ->
     UniffiLib.INSTANCE.uniffi_refrain_core_fn_method_refraincore_hold(
         it, FfiConverterBoolean.lower(`held`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `eval::Evaluator::last_taps`: the most recent chunk's internal computed values —
+     * keys like `input/raw`, `derive/<name>`, `threshold/<name>`, `reward/continuous`,
+     * `output/<channel>` (booleans encoded as 0.0/1.0). For clinician observation /
+     * live tuning. Empty before the first chunk. (BTreeMap → HashMap so uniffi maps it
+     * to a Swift `[String: Double]` / Kotlin `Map`.)
+     */override fun `lastTaps`(): Map<kotlin.String, kotlin.Double> {
+            return FfiConverterMapStringDouble.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_refrain_core_fn_method_refraincore_last_taps(
+        it, _status)
 }
     }
     )
@@ -2051,6 +2088,45 @@ public object FfiConverterSequenceTypeEvent: FfiConverterRustBuffer<List<Event>>
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeEvent.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterMapStringDouble: FfiConverterRustBuffer<Map<kotlin.String, kotlin.Double>> {
+    override fun read(buf: ByteBuffer): Map<kotlin.String, kotlin.Double> {
+        val len = buf.getInt()
+        return buildMap<kotlin.String, kotlin.Double>(len) {
+            repeat(len) {
+                val k = FfiConverterString.read(buf)
+                val v = FfiConverterDouble.read(buf)
+                this[k] = v
+            }
+        }
+    }
+
+    override fun allocationSize(value: Map<kotlin.String, kotlin.Double>): ULong {
+        val spaceForMapSize = 4UL
+        val spaceForChildren = value.map { (k, v) ->
+            FfiConverterString.allocationSize(k) +
+            FfiConverterDouble.allocationSize(v)
+        }.sum()
+        return spaceForMapSize + spaceForChildren
+    }
+
+    override fun write(value: Map<kotlin.String, kotlin.Double>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        // The parens on `(k, v)` here ensure we're calling the right method,
+        // which is important for compatibility with older android devices.
+        // Ref https://blog.danlew.net/2017/03/16/kotlin-puzzler-whose-line-is-it-anyways/
+        value.forEach { (k, v) ->
+            FfiConverterString.write(k, buf)
+            FfiConverterDouble.write(v, buf)
         }
     }
 }
