@@ -22,6 +22,7 @@ from refrain.ir_json import ir_to_json, ir_to_json_obj
 from refrain.parser import parse, parse_file
 from refrain.primitive_impls import BandpassImpl, HilbertFirImpl, SmoothImpl
 from refrain.resolver import resolve
+from tests.conftest_staged import HET as _HET_SRC
 
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
@@ -358,6 +359,7 @@ def test_v01_emission_byte_identical_for_examples():
         if path.name in {
             "othmer_ilf_cz_pz.refrain",            # needs a library loader (extends)
             "dyadic_alpha_coherence_pz.refrain",   # two-participant layout (Pz_A/Pz_B), not on Q21
+            "staged_beta_alpha.refrain",           # staged protocol: blocks/bundles => v0.2 by design
         }:
             continue
         ir = resolve(parse_file(path), _AMP)
@@ -366,3 +368,40 @@ def test_v01_emission_byte_identical_for_examples():
         assert set(obj["reward"]) == {"continuous", "event"}, path.name
         errors = list(validator.iter_errors(obj))
         assert not errors, f"{path.name}: {[e.message for e in errors]}"
+
+
+# ---------------------------------------------------------------------------
+# Task 6: emit phase mode/block, blocks, reward_bundles
+# ---------------------------------------------------------------------------
+
+
+def test_ir_json_emits_blocks_and_phase_fields():
+    obj = ir_to_json_obj(resolve(parse(_HET_SRC)))
+    phases = obj["session"]["phases"]
+    assert phases[1]["mode"] == "timed_with_floor"
+    assert phases[1]["block"] == "beta_up"
+    assert obj["blocks"]["beta_up"]["reward"] == "br"
+    assert obj["blocks"]["beta_up"]["output"] == ["audio"]
+    assert "br" in obj["reward_bundles"]
+    assert obj["reward_bundles"]["br"]["continuous"] is not None
+
+
+# ---------------------------------------------------------------------------
+# autocorr: bakes window_samples + lag_samples at the target rate
+# ---------------------------------------------------------------------------
+
+
+def test_autocorr_bakes_window_and_lag_samples():
+    src = '''
+    protocol "ac_emit" {
+      meta { version="0.1.0" evidence="demo" description="x" }
+      requires { sample_rate=">= 256 Hz" channels=["Cz"] }
+      input "raw" { montage = referential(active:"Cz", reference:"linked_ears") }
+      derive "env" { from="raw" pipeline=[ bandpass(band:(8 Hz,12 Hz)), hilbert(), magnitude() ] }
+      derive "ac1" { from="env" pipeline=[ autocorr(lag: 125 ms, window: 1 s) ] }
+      output { audio_gain = 0 }
+    }'''
+    obj = ir_to_json_obj(resolve(parse(src)), sample_rate_hz=256.0)
+    ac = _find_call(obj["derives"]["ac1"]["expression"], "autocorr")
+    assert ac["coeffs"]["window_samples"] == 256   # 1 s * 256 Hz
+    assert ac["coeffs"]["lag_samples"] == 32        # 125 ms * 256 Hz

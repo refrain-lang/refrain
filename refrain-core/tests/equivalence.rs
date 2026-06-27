@@ -76,6 +76,12 @@ fn micro_01_passthrough_equivalent() {
 }
 
 #[test]
+fn micro_passthrough_identity_equivalent() {
+    // Ask 4: the first-class passthrough() identity montage (single channel).
+    run_protocol("micro_passthrough_identity");
+}
+
+#[test]
 fn micro_02_bandpass_equivalent() {
     run_protocol("micro_02_bandpass");
 }
@@ -118,6 +124,13 @@ fn micro_09_inhibit_equivalent() {
     // `output/audio_gain` stream must reproduce Python's muting (zeroed
     // samples while the inhibit is active, plus the release hangover).
     run_protocol("micro_09_inhibit");
+}
+
+#[test]
+fn micro_10_autocorr_equivalent() {
+    // autocorr derive (rolling lag-k Pearson autocorrelation): the `ac1` stream
+    // must reproduce the Python AutocorrImpl within tolerance.
+    run_protocol("micro_10_autocorr");
 }
 
 #[test]

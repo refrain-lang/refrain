@@ -1,0 +1,145 @@
+{
+  "refrain_ir_version": "0.1",
+  "name": "micro_passthrough_identity",
+  "extends": null,
+  "sample_rate_hz": 256.0,
+  "channels": [
+    "Cz"
+  ],
+  "requires": {
+    "coupling": null,
+    "sample_rate_min_hz": 4,
+    "sample_rate_chosen_hz": 2048,
+    "channels": [
+      "Cz"
+    ],
+    "impedance": "not_required",
+    "markers": "not_required"
+  },
+  "meta": {
+    "version": {
+      "node": "string",
+      "value": "0.1.0"
+    },
+    "evidence": {
+      "node": "string",
+      "value": "demo"
+    },
+    "description": {
+      "node": "string",
+      "value": "Passthrough identity montage \u2014 single channel, no re-reference"
+    }
+  },
+  "inputs": {
+    "raw": {
+      "canonical_name": "input/raw",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "montage": {
+        "node": "call",
+        "callee": "passthrough",
+        "args": [],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        }
+      }
+    }
+  },
+  "derives": {
+    "env": {
+      "canonical_name": "derive/env",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "expression": {
+        "node": "call",
+        "callee": "rectify",
+        "args": [
+          {
+            "name": null,
+            "value": {
+              "node": "stream_ref",
+              "target": "input/raw",
+              "stream_type": {
+                "value_kind": "scalar",
+                "dimensions": {
+                  "time": 0,
+                  "voltage": 1
+                },
+                "vector_size": null
+              }
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        }
+      },
+      "upstream": [
+        "input/raw"
+      ]
+    }
+  },
+  "thresholds": {},
+  "inhibits": {},
+  "reward": {
+    "continuous": {
+      "node": "stream_ref",
+      "target": "derive/env",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      }
+    },
+    "event": null
+  },
+  "output": {
+    "audio_gain": {
+      "node": "reward_field",
+      "field_path": "continuous",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      }
+    }
+  },
+  "controls": {},
+  "session": {
+    "phases": []
+  },
+  "blocks": {},
+  "reward_bundles": {},
+  "topological_order": [
+    "input/raw",
+    "derive/env"
+  ]
+}

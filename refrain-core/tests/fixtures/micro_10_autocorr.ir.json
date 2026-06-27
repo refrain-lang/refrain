@@ -1,0 +1,396 @@
+{
+  "refrain_ir_version": "0.1",
+  "name": "micro_10_autocorr",
+  "extends": null,
+  "sample_rate_hz": 256.0,
+  "channels": [
+    "Cz"
+  ],
+  "requires": {
+    "coupling": null,
+    "sample_rate_min_hz": 256,
+    "sample_rate_chosen_hz": 2048,
+    "channels": [
+      "Cz"
+    ],
+    "impedance": "not_required",
+    "markers": "not_required"
+  },
+  "meta": {
+    "version": {
+      "node": "string",
+      "value": "0.1.0"
+    },
+    "evidence": {
+      "node": "string",
+      "value": "demo"
+    },
+    "description": {
+      "node": "string",
+      "value": "Bench: rolling lag-k autocorrelation of an alpha envelope"
+    }
+  },
+  "inputs": {
+    "raw": {
+      "canonical_name": "input/raw",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "montage": {
+        "node": "call",
+        "callee": "referential",
+        "args": [
+          {
+            "name": "active",
+            "value": {
+              "node": "string",
+              "value": "Cz"
+            }
+          },
+          {
+            "name": "reference",
+            "value": {
+              "node": "string",
+              "value": "device"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        }
+      }
+    }
+  },
+  "derives": {
+    "env": {
+      "canonical_name": "derive/env",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "expression": {
+        "node": "call",
+        "callee": "magnitude",
+        "args": [
+          {
+            "name": null,
+            "value": {
+              "node": "call",
+              "callee": "hilbert",
+              "args": [
+                {
+                  "name": null,
+                  "value": {
+                    "node": "call",
+                    "callee": "bandpass",
+                    "args": [
+                      {
+                        "name": null,
+                        "value": {
+                          "node": "stream_ref",
+                          "target": "input/raw",
+                          "stream_type": {
+                            "value_kind": "scalar",
+                            "dimensions": {
+                              "time": 0,
+                              "voltage": 1
+                            },
+                            "vector_size": null
+                          }
+                        }
+                      },
+                      {
+                        "name": "band",
+                        "value": {
+                          "node": "tuple",
+                          "elements": [
+                            {
+                              "node": "number",
+                              "value": 8.0,
+                              "dims": {
+                                "time": -1,
+                                "voltage": 0
+                              },
+                              "unit": "Hz"
+                            },
+                            {
+                              "node": "number",
+                              "value": 12.0,
+                              "dims": {
+                                "time": -1,
+                                "voltage": 0
+                              },
+                              "unit": "Hz"
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "name": "order",
+                        "value": {
+                          "node": "number",
+                          "value": 4.0,
+                          "dims": {
+                            "time": 0,
+                            "voltage": 0
+                          },
+                          "unit": null
+                        }
+                      }
+                    ],
+                    "stream_type": {
+                      "value_kind": "scalar",
+                      "dimensions": {
+                        "time": 0,
+                        "voltage": 1
+                      },
+                      "vector_size": null
+                    },
+                    "coeffs": {
+                      "sos": [
+                        [
+                          5.1232059674179045e-06,
+                          1.0246411934835809e-05,
+                          5.1232059674179045e-06,
+                          1.0,
+                          -1.842443035197672,
+                          0.9067584100396576
+                        ],
+                        [
+                          1.0,
+                          2.0,
+                          1.0,
+                          1.0,
+                          -1.8724944411439604,
+                          0.9196792166714861
+                        ],
+                        [
+                          1.0,
+                          -2.0,
+                          1.0,
+                          1.0,
+                          -1.8747613725458832,
+                          0.9566011752524003
+                        ],
+                        [
+                          1.0,
+                          -2.0,
+                          1.0,
+                          1.0,
+                          -1.9308034937533751,
+                          0.9697804580331247
+                        ]
+                      ]
+                    }
+                  }
+                }
+              ],
+              "stream_type": {
+                "value_kind": "complex",
+                "dimensions": {
+                  "time": 0,
+                  "voltage": 1
+                },
+                "vector_size": null
+              },
+              "coeffs": {
+                "fir_taps": [
+                  0.0,
+                  -0.0016883777730945177,
+                  0.0,
+                  -0.0021910135612077217,
+                  0.0,
+                  -0.0031669763104787965,
+                  0.0,
+                  -0.004696094288160902,
+                  0.0,
+                  -0.006869378927253657,
+                  0.0,
+                  -0.009796593083986657,
+                  0.0,
+                  -0.013619275426681525,
+                  0.0,
+                  -0.01853357872227764,
+                  0.0,
+                  -0.024831901058551206,
+                  0.0,
+                  -0.03298331700384915,
+                  0.0,
+                  -0.043801899944842564,
+                  0.0,
+                  -0.058839293203350435,
+                  0.0,
+                  -0.08144957099328076,
+                  0.0,
+                  -0.1204081987548121,
+                  0.0,
+                  -0.20800332029398802,
+                  0.0,
+                  -0.6352096431910579,
+                  0.0,
+                  0.6352096431910579,
+                  0.0,
+                  0.20800332029398802,
+                  0.0,
+                  0.1204081987548121,
+                  0.0,
+                  0.08144957099328076,
+                  0.0,
+                  0.058839293203350435,
+                  0.0,
+                  0.043801899944842564,
+                  0.0,
+                  0.03298331700384915,
+                  0.0,
+                  0.024831901058551206,
+                  0.0,
+                  0.01853357872227764,
+                  0.0,
+                  0.013619275426681525,
+                  0.0,
+                  0.009796593083986657,
+                  0.0,
+                  0.006869378927253657,
+                  0.0,
+                  0.004696094288160902,
+                  0.0,
+                  0.0031669763104787965,
+                  0.0,
+                  0.0021910135612077217,
+                  0.0,
+                  0.0016883777730945177,
+                  0.0
+                ],
+                "group_delay": 32
+              }
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        }
+      },
+      "upstream": [
+        "input/raw"
+      ]
+    },
+    "ac1": {
+      "canonical_name": "derive/ac1",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      },
+      "expression": {
+        "node": "call",
+        "callee": "autocorr",
+        "args": [
+          {
+            "name": null,
+            "value": {
+              "node": "stream_ref",
+              "target": "derive/env",
+              "stream_type": {
+                "value_kind": "scalar",
+                "dimensions": {
+                  "time": 0,
+                  "voltage": 1
+                },
+                "vector_size": null
+              }
+            }
+          },
+          {
+            "name": "lag",
+            "value": {
+              "node": "number",
+              "value": 125.0,
+              "dims": {
+                "time": 1,
+                "voltage": 0
+              },
+              "unit": "ms"
+            }
+          },
+          {
+            "name": "window",
+            "value": {
+              "node": "number",
+              "value": 1.0,
+              "dims": {
+                "time": 1,
+                "voltage": 0
+              },
+              "unit": "s"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 0
+          },
+          "vector_size": null
+        },
+        "coeffs": {
+          "window_samples": 256,
+          "lag_samples": 32
+        }
+      },
+      "upstream": [
+        "derive/env"
+      ]
+    }
+  },
+  "thresholds": {},
+  "inhibits": {},
+  "reward": {
+    "continuous": null,
+    "event": null
+  },
+  "output": {
+    "audio_gain": {
+      "node": "number",
+      "value": 0.0,
+      "dims": {
+        "time": 0,
+        "voltage": 0
+      },
+      "unit": null
+    }
+  },
+  "controls": {},
+  "session": {
+    "phases": []
+  },
+  "blocks": {},
+  "reward_bundles": {},
+  "topological_order": [
+    "input/raw",
+    "derive/env",
+    "derive/ac1"
+  ]
+}

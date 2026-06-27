@@ -416,6 +416,22 @@ fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterInt64: FfiConverterPrimitive {
+    typealias FfiType = Int64
+    typealias SwiftType = Int64
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Int64 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: Int64, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterDouble: FfiConverterPrimitive {
     typealias FfiType = Double
     typealias SwiftType = Double
@@ -504,6 +520,40 @@ fileprivate struct FfiConverterString: FfiConverter {
  * `&mut self`) and is safe because uniffi shares this object as an `Arc`.
  */
 public protocol RefrainCoreProtocol: AnyObject, Sendable {
+    
+    /**
+     * `eval::Evaluator::advance_phase`: end the current phase now, enter the
+     * next; past the last phase transitions to `stopped`. Returns false if
+     * already stopped. (Clinician "Next →".)
+     */
+    func advancePhase()  -> Bool
+    
+    /**
+     * `eval::Evaluator::current_phase`: snapshot of the phase the most recent
+     * chunk ran under (aligned with the taps).
+     */
+    func currentPhase()  -> PhaseInfo
+    
+    /**
+     * `eval::Evaluator::hold`: extend a `timed_with_floor` phase past its floor
+     * (`hold(false)` re-arms). Returns true if it took effect.
+     */
+    func hold(held: Bool)  -> Bool
+    
+    /**
+     * `eval::Evaluator::last_taps`: the most recent chunk's internal computed values —
+     * keys like `input/raw`, `derive/<name>`, `threshold/<name>`, `reward/continuous`,
+     * `output/<channel>` (booleans encoded as 0.0/1.0). For clinician observation /
+     * live tuning. Empty before the first chunk. (BTreeMap → HashMap so uniffi maps it
+     * to a Swift `[String: Double]` / Kotlin `Map`.)
+     */
+    func lastTaps()  -> [String: Double]
+    
+    /**
+     * `eval::Evaluator::set_clock_frozen`: freeze/resume the phase clock on any
+     * phase type (transport pause); orthogonal to output muting.
+     */
+    func setClockFrozen(frozen: Bool) 
     
     /**
      * `eval::Evaluator::set_control`: live-retune a clinician control in place,
@@ -605,6 +655,66 @@ public convenience init(irJson: String, sampleRateHz: Double, channelNames: [Str
 
     
 
+    
+    /**
+     * `eval::Evaluator::advance_phase`: end the current phase now, enter the
+     * next; past the last phase transitions to `stopped`. Returns false if
+     * already stopped. (Clinician "Next →".)
+     */
+open func advancePhase() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_refrain_core_fn_method_refraincore_advance_phase(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * `eval::Evaluator::current_phase`: snapshot of the phase the most recent
+     * chunk ran under (aligned with the taps).
+     */
+open func currentPhase() -> PhaseInfo  {
+    return try!  FfiConverterTypePhaseInfo_lift(try! rustCall() {
+    uniffi_refrain_core_fn_method_refraincore_current_phase(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * `eval::Evaluator::hold`: extend a `timed_with_floor` phase past its floor
+     * (`hold(false)` re-arms). Returns true if it took effect.
+     */
+open func hold(held: Bool) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_refrain_core_fn_method_refraincore_hold(self.uniffiClonePointer(),
+        FfiConverterBool.lower(held),$0
+    )
+})
+}
+    
+    /**
+     * `eval::Evaluator::last_taps`: the most recent chunk's internal computed values —
+     * keys like `input/raw`, `derive/<name>`, `threshold/<name>`, `reward/continuous`,
+     * `output/<channel>` (booleans encoded as 0.0/1.0). For clinician observation /
+     * live tuning. Empty before the first chunk. (BTreeMap → HashMap so uniffi maps it
+     * to a Swift `[String: Double]` / Kotlin `Map`.)
+     */
+open func lastTaps() -> [String: Double]  {
+    return try!  FfiConverterDictionaryStringDouble.lift(try! rustCall() {
+    uniffi_refrain_core_fn_method_refraincore_last_taps(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * `eval::Evaluator::set_clock_frozen`: freeze/resume the phase clock on any
+     * phase type (transport pause); orthogonal to output muting.
+     */
+open func setClockFrozen(frozen: Bool)  {try! rustCall() {
+    uniffi_refrain_core_fn_method_refraincore_set_clock_frozen(self.uniffiClonePointer(),
+        FfiConverterBool.lower(frozen),$0
+    )
+}
+}
     
     /**
      * `eval::Evaluator::set_control`: live-retune a clinician control in place,
@@ -804,6 +914,129 @@ public func FfiConverterTypeEvent_lower(_ value: Event) -> RustBuffer {
 
 
 /**
+ * Mirror of `eval::PhaseSnapshot` / `eval_.Evaluator.current_phase`: the phase
+ * the most recent chunk ran under (aligned with `last_taps`). `index == -1`
+ * once terminal / before any chunk.
+ */
+public struct PhaseInfo {
+    public var index: Int64
+    public var name: String?
+    public var mode: String?
+    public var outputMuted: Bool
+    public var block: String?
+    public var remainingS: Double?
+    public var clockFrozen: Bool
+    public var held: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(index: Int64, name: String?, mode: String?, outputMuted: Bool, block: String?, remainingS: Double?, clockFrozen: Bool, held: Bool) {
+        self.index = index
+        self.name = name
+        self.mode = mode
+        self.outputMuted = outputMuted
+        self.block = block
+        self.remainingS = remainingS
+        self.clockFrozen = clockFrozen
+        self.held = held
+    }
+}
+
+#if compiler(>=6)
+extension PhaseInfo: Sendable {}
+#endif
+
+
+extension PhaseInfo: Equatable, Hashable {
+    public static func ==(lhs: PhaseInfo, rhs: PhaseInfo) -> Bool {
+        if lhs.index != rhs.index {
+            return false
+        }
+        if lhs.name != rhs.name {
+            return false
+        }
+        if lhs.mode != rhs.mode {
+            return false
+        }
+        if lhs.outputMuted != rhs.outputMuted {
+            return false
+        }
+        if lhs.block != rhs.block {
+            return false
+        }
+        if lhs.remainingS != rhs.remainingS {
+            return false
+        }
+        if lhs.clockFrozen != rhs.clockFrozen {
+            return false
+        }
+        if lhs.held != rhs.held {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(index)
+        hasher.combine(name)
+        hasher.combine(mode)
+        hasher.combine(outputMuted)
+        hasher.combine(block)
+        hasher.combine(remainingS)
+        hasher.combine(clockFrozen)
+        hasher.combine(held)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePhaseInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PhaseInfo {
+        return
+            try PhaseInfo(
+                index: FfiConverterInt64.read(from: &buf), 
+                name: FfiConverterOptionString.read(from: &buf), 
+                mode: FfiConverterOptionString.read(from: &buf), 
+                outputMuted: FfiConverterBool.read(from: &buf), 
+                block: FfiConverterOptionString.read(from: &buf), 
+                remainingS: FfiConverterOptionDouble.read(from: &buf), 
+                clockFrozen: FfiConverterBool.read(from: &buf), 
+                held: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PhaseInfo, into buf: inout [UInt8]) {
+        FfiConverterInt64.write(value.index, into: &buf)
+        FfiConverterOptionString.write(value.name, into: &buf)
+        FfiConverterOptionString.write(value.mode, into: &buf)
+        FfiConverterBool.write(value.outputMuted, into: &buf)
+        FfiConverterOptionString.write(value.block, into: &buf)
+        FfiConverterOptionDouble.write(value.remainingS, into: &buf)
+        FfiConverterBool.write(value.clockFrozen, into: &buf)
+        FfiConverterBool.write(value.held, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePhaseInfo_lift(_ buf: RustBuffer) throws -> PhaseInfo {
+    return try FfiConverterTypePhaseInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePhaseInfo_lower(_ value: PhaseInfo) -> RustBuffer {
+    return FfiConverterTypePhaseInfo.lower(value)
+}
+
+
+/**
  * Errors surfaced across the FFI boundary. Currently the only fallible step
  * is deserializing the IR-JSON wire format. `Display`/`Error` are implemented
  * by hand to avoid pulling in `thiserror` just for one variant.
@@ -927,6 +1160,30 @@ fileprivate struct FfiConverterOptionDouble: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
+    typealias SwiftType = String?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterString.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceDouble: FfiConverterRustBuffer {
     typealias SwiftType = [Double]
 
@@ -999,6 +1256,32 @@ fileprivate struct FfiConverterSequenceTypeEvent: FfiConverterRustBuffer {
     }
 }
 
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterDictionaryStringDouble: FfiConverterRustBuffer {
+    public static func write(_ value: [String: Double], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for (key, value) in value {
+            FfiConverterString.write(key, into: &buf)
+            FfiConverterDouble.write(value, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String: Double] {
+        let len: Int32 = try readInt(&buf)
+        var dict = [String: Double]()
+        dict.reserveCapacity(Int(len))
+        for _ in 0..<len {
+            let key = try FfiConverterString.read(from: &buf)
+            let value = try FfiConverterDouble.read(from: &buf)
+            dict[key] = value
+        }
+        return dict
+    }
+}
+
 private enum InitializationResult {
     case ok
     case contractVersionMismatch
@@ -1013,6 +1296,21 @@ private let initializationResult: InitializationResult = {
     let scaffolding_contract_version = ffi_refrain_core_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
+    }
+    if (uniffi_refrain_core_checksum_method_refraincore_advance_phase() != 31310) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_refrain_core_checksum_method_refraincore_current_phase() != 36666) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_refrain_core_checksum_method_refraincore_hold() != 38295) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_refrain_core_checksum_method_refraincore_last_taps() != 62853) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_refrain_core_checksum_method_refraincore_set_clock_frozen() != 49829) {
+        return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_refrain_core_checksum_method_refraincore_set_control() != 31390) {
         return InitializationResult.apiChecksumMismatch

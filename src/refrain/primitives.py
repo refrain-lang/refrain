@@ -260,6 +260,22 @@ _REFERENTIAL = PrimitiveSpec(
     doc="Single-active or multi-channel referential signal.",
 )
 
+_PASSTHROUGH = PrimitiveSpec(
+    name="passthrough",
+    category="signal",
+    signatures=(
+        # Identity montage: no args. Emits the source's single channel
+        # verbatim (no re-referencing). The sanctioned replacement for the
+        # `referential(reference: "device")` single-channel workaround.
+        Signature(
+            params=(),
+            output=_const_scalar(VOLTAGE),
+        ),
+    ),
+    budget=ResourceBudget(state_kb=0, worst_case_us=2),
+    doc="Identity montage — a single raw channel carried through unchanged.",
+)
+
 
 def _vector_size_from(args: dict[str, ResolvedArg], key: str) -> int:
     """Extract vector size hint from an array-of-strings argument."""
@@ -377,6 +393,33 @@ _COHERENCE = PrimitiveSpec(
     doc="Magnitude-squared coherence between two streams, averaged over "
         "a frequency band. Streaming Welch on a sliding window. Returns "
         "scalar in [0, 1].",
+)
+
+
+def _autocorr_output(args: dict[str, ResolvedArg]) -> StreamType:
+    # Pearson autocorrelation is dimensionless in [-1, 1].
+    return scalar_stream(DIMENSIONLESS)
+
+
+_AUTOCORR = PrimitiveSpec(
+    name="autocorr",
+    category="signal",
+    signatures=(
+        Signature(
+            params=(
+                # Single implicit pipeline input (like bandpass/smooth — no
+                # input ParamSpec). lag/window are durations, baked to sample
+                # counts at the target rate.
+                ParamSpec("lag", "duration"),
+                ParamSpec("window", "duration"),
+            ),
+            output=_autocorr_output,
+        ),
+    ),
+    budget=ResourceBudget(state_kb=8, worst_case_us=400),
+    doc="Rolling lag-k Pearson autocorrelation of a stream over a sliding "
+        "window. Returns scalar in [-1, 1]; 0.0 during warm-up. The "
+        "critical-slowing-down early-warning indicator.",
 )
 
 
@@ -676,10 +719,12 @@ _REGISTRY: dict[str, PrimitiveSpec] = {
     for spec in [
         _BIPOLAR,
         _REFERENTIAL,
+        _PASSTHROUGH,
         _BANDPASS,
         _HILBERT,
         _BANDPOWER,
         _COHERENCE,
+        _AUTOCORR,
         _DIFFERENTIATE,
         _MAGNITUDE,
         _RECTIFY,

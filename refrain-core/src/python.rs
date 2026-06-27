@@ -8,6 +8,7 @@ use pyo3::types::PyDict;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
+use crate::dsp::TrackerState;
 use crate::eval::{Evaluator, Event as CoreEvent, State};
 use crate::ir::Protocol;
 
@@ -70,15 +71,51 @@ struct RustEvaluator {
 #[pymethods]
 impl RustEvaluator {
     /// Build from the IR-JSON wire format plus the host's runtime sample
-    /// rate and channel layout.
+    /// rate and channel layout. `seed_state` (optional) is the JSON object the
+    /// host serializes from a prior session's `export_state()` (Ask 2); it
+    /// re-primes the adaptive trackers at construction.
     #[new]
-    fn new(ir_json: &str, sample_rate_hz: f64, channel_names: Vec<String>) -> PyResult<Self> {
+    #[pyo3(signature = (ir_json, sample_rate_hz, channel_names, seed_state = None))]
+    fn new(
+        ir_json: &str,
+        sample_rate_hz: f64,
+        channel_names: Vec<String>,
+        seed_state: Option<String>,
+    ) -> PyResult<Self> {
         let p: Protocol = serde_json::from_str(ir_json)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("IR-JSON: {e}")))?;
         let inner = guard("evaluator construction", || {
-            Evaluator::new(&p, sample_rate_hz, &channel_names)
+            let mut ev = Evaluator::new(&p, sample_rate_hz, &channel_names);
+            if let Some(ref s) = seed_state {
+                ev.seed_from_json(s);
+            }
+            ev
         })?;
         Ok(Self { inner })
+    }
+
+    /// Compact adaptive-tracker state for cross-session persistence (Ask 2),
+    /// returned as `{ "<entity>.<callee>": {<anchors>}, ... }` — the same shape
+    /// as the Python `Evaluator.export_state()`.
+    fn export_state<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let out = PyDict::new(py);
+        for (k, st) in self.inner.export_state() {
+            let d = PyDict::new(py);
+            match st {
+                TrackerState::AutoRange { low, high, n_eff } => {
+                    d.set_item("low", low)?;
+                    d.set_item("high", high)?;
+                    d.set_item("n_eff", n_eff)?;
+                }
+                TrackerState::Percentile { value, target_pct, n_eff } => {
+                    d.set_item("value", value)?;
+                    d.set_item("target_pct", target_pct)?;
+                    d.set_item("n_eff", n_eff)?;
+                }
+            }
+            out.set_item(k, d)?;
+        }
+        Ok(out)
     }
 
     /// Process one `(n_samples, n_channels)` chunk; return `{stream: ndarray}`
@@ -150,6 +187,43 @@ impl RustEvaluator {
     /// Returns 0.0 unless the evaluator is in `warmup` state.
     fn warmup_remaining_s(&self) -> f64 {
         self.inner.warmup_remaining_s()
+    }
+
+    /// `eval_.Evaluator.advance_phase`: end the current phase now and enter the
+    /// next; advancing past the last phase transitions to `stopped`. Returns
+    /// `False` if already stopped.
+    fn advance_phase(&mut self) -> bool {
+        self.inner.advance_phase()
+    }
+
+    /// `eval_.Evaluator.hold`: extend a `timed_with_floor` phase past its floor
+    /// (`hold(False)` re-arms). Returns `True` if it took effect.
+    #[pyo3(signature = (held = true))]
+    fn hold(&mut self, held: bool) -> bool {
+        self.inner.hold(held)
+    }
+
+    /// `eval_.Evaluator.set_clock_frozen`: freeze/resume the phase clock on any
+    /// phase type (transport pause); orthogonal to output muting.
+    fn set_clock_frozen(&mut self, frozen: bool) {
+        self.inner.set_clock_frozen(frozen);
+    }
+
+    /// `eval_.Evaluator.current_phase`: snapshot of the phase the most recent
+    /// chunk ran under (aligned with `last_taps`). Returns a dict with keys
+    /// index/name/mode/output_muted/block/remaining_s/clock_frozen/held.
+    fn current_phase<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let s = self.inner.current_phase();
+        let out = PyDict::new(py);
+        out.set_item("index", s.index)?;
+        out.set_item("name", s.name)?;
+        out.set_item("mode", s.mode)?;
+        out.set_item("output_muted", s.output_muted)?;
+        out.set_item("block", s.block)?;
+        out.set_item("remaining_s", s.remaining_s)?;
+        out.set_item("clock_frozen", s.clock_frozen)?;
+        out.set_item("held", s.held)?;
+        Ok(out)
     }
 
     /// Clinician-observation snapshot from the most recent `step_chunk_events`

@@ -1,0 +1,36 @@
+// micro_passthrough_identity.refrain
+// Parity fixture for Ask 4: the first-class passthrough() identity montage.
+// A single raw channel carried through unchanged, then rectified — exercises
+// the montage identity path on both backends.
+
+protocol "micro_passthrough_identity" {
+  meta {
+    version  = "0.1.0"
+    evidence = "demo"
+    description = "Passthrough identity montage — single channel, no re-reference"
+  }
+
+  requires {
+    sample_rate = ">= 4 Hz"
+    channels    = ["Cz"]
+  }
+
+  input "raw" {
+    montage = passthrough()
+  }
+
+  derive "env" {
+    from = "raw"
+    pipeline = [
+      rectify(),
+    ]
+  }
+
+  reward {
+    continuous = "env"
+  }
+
+  output {
+    audio_gain = reward.continuous
+  }
+}

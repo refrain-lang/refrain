@@ -1,0 +1,192 @@
+{
+  "catalog_version": "1",
+  "blocks": [
+    {"id": "derive.envelope", "kind": "derive", "form": "pipeline",
+     "slots": [
+       {"name": "center", "type": "frequency", "control_bindable": true},
+       {"name": "ratio", "type": "number", "control_bindable": false, "default": 1.25},
+       {"name": "smooth_tau_ms", "type": "duration_ms", "control_bindable": false, "default": 250}
+     ],
+     "template": "bandpass(center: {center}, bandwidth: ratio({ratio}), order: 4),\n      hilbert(),\n      magnitude(),\n      smooth(tau: {smooth_tau_ms} ms)"},
+
+    {"id": "derive.envelope_band", "kind": "derive", "form": "pipeline",
+     "slots": [
+       {"name": "band_low_hz", "type": "frequency", "control_bindable": false},
+       {"name": "band_high_hz", "type": "frequency", "control_bindable": false},
+       {"name": "order", "type": "number", "control_bindable": false, "default": 4},
+       {"name": "smooth_tau_ms", "type": "duration_ms", "control_bindable": false, "default": 250}
+     ],
+     "template": "bandpass(band: ({band_low_hz}, {band_high_hz}), order: {order}),\n      hilbert(),\n      magnitude(),\n      smooth(tau: {smooth_tau_ms} ms)"},
+
+    {"id": "montage.referential", "kind": "montage",
+     "slots": [
+       {"name": "active", "type": "site", "control_bindable": true},
+       {"name": "reference", "type": "site", "control_bindable": false, "default": "linked_ears"}
+     ],
+     "template": "referential(active: {active}, reference: {reference})"},
+
+    {"id": "threshold.percentile", "kind": "threshold",
+     "slots": [
+       {"name": "target_pct", "type": "percent", "control_bindable": true},
+       {"name": "window_ms", "type": "duration", "control_bindable": false, "default": 120000}
+     ],
+     "template": "type = percentile(target_pct: {target_pct}, window: {window_ms})"},
+
+    {"id": "threshold.absolute", "kind": "threshold",
+     "slots": [{"name": "value", "type": "voltage", "control_bindable": true}],
+     "template": "type = absolute(value: {value})"},
+
+    {"id": "threshold.absolute_lit", "kind": "threshold",
+     "slots": [{"name": "value", "type": "voltage"}],
+     "template": "type = absolute({value})"},
+
+    {"id": "reward.component_ratio", "kind": "reward_component",
+     "slots": [
+       {"name": "num", "type": "ref"},
+       {"name": "den", "type": "ref"},
+       {"name": "midpoint", "type": "number"},
+       {"name": "steepness", "type": "number"},
+       {"name": "weight", "type": "ref"}
+     ],
+     "template": "signal = sigmoid(\"{num}\" / \"{den}\", midpoint: {midpoint}, steepness: {steepness}); weight = {weight}"},
+
+    {"id": "reward.operant_abs", "kind": "reward",
+     "slots": [
+       {"name": "direction", "type": "enum", "control_bindable": false},
+       {"name": "signal", "type": "ref", "control_bindable": false},
+       {"name": "threshold", "type": "ref", "control_bindable": false},
+       {"name": "dwell", "type": "raw", "control_bindable": false, "default": 250},
+       {"name": "cont_signal", "type": "ref", "control_bindable": false},
+       {"name": "midpoint_uv", "type": "voltage", "control_bindable": false},
+       {"name": "steepness", "type": "number", "control_bindable": false, "default": 1}
+     ],
+     "template": "event      = dwell(condition: {direction}(\"{signal}\", \"{threshold}\"), duration: {dwell})\n    continuous = sigmoid(\"{cont_signal}\", midpoint: {midpoint_uv}, steepness: {steepness})"},
+
+    {"id": "reward.operant_compound_abs", "kind": "reward",
+     "slots": [
+       {"name": "conditions", "type": "raw"},
+       {"name": "cont_signal", "type": "ref", "control_bindable": false},
+       {"name": "midpoint", "type": "number", "control_bindable": false, "default": 0.5},
+       {"name": "steepness", "type": "number", "control_bindable": false, "default": 1},
+       {"name": "dwell", "type": "raw", "control_bindable": false, "default": 250}
+     ],
+     "template": "event      = dwell(condition: all_of([{conditions}]), duration: {dwell})\n    continuous = sigmoid(\"{cont_signal}\", midpoint: {midpoint}, steepness: {steepness})"},
+
+    {"id": "reward.operant_compound", "kind": "reward",
+     "slots": [
+       {"name": "conditions", "type": "raw"},
+       {"name": "cont_num", "type": "ref", "control_bindable": false},
+       {"name": "cont_den", "type": "ref", "control_bindable": false},
+       {"name": "midpoint", "type": "number", "control_bindable": false, "default": 1.0},
+       {"name": "steepness", "type": "number", "control_bindable": false, "default": 3},
+       {"name": "dwell", "type": "raw", "control_bindable": false, "default": 250}
+     ],
+     "template": "event      = dwell(condition: all_of([{conditions}]), duration: {dwell})\n    continuous = sigmoid(\"{cont_num}\" / \"{cont_den}\", midpoint: {midpoint}, steepness: {steepness})"},
+
+    {"id": "inhibit.artifact", "kind": "inhibit",
+     "slots": [
+       {"name": "input", "type": "ref"},
+       {"name": "band_low_hz", "type": "frequency"},
+       {"name": "band_high_hz", "type": "frequency"},
+       {"name": "metric_window_ms", "type": "duration_ms"},
+       {"name": "target_pct", "type": "number"},
+       {"name": "thr_window_ms", "type": "duration"},
+       {"name": "release_ms", "type": "duration_ms"}
+     ],
+     "template": "metric = bandpower(input: \"{input}\", band: ({band_low_hz}, {band_high_hz}), window: {metric_window_ms} ms); threshold = percentile(target_pct: {target_pct}, window: {thr_window_ms}); action = mute(release: {release_ms} ms)"},
+
+    {"id": "reward.operant", "kind": "reward",
+     "slots": [
+       {"name": "direction", "type": "enum", "control_bindable": false},
+       {"name": "signal", "type": "ref", "control_bindable": false},
+       {"name": "threshold", "type": "ref", "control_bindable": false},
+       {"name": "cont_num", "type": "ref", "control_bindable": false},
+       {"name": "cont_den", "type": "ref", "control_bindable": false},
+       {"name": "dwell", "type": "raw", "control_bindable": false, "default": 250},
+       {"name": "midpoint", "type": "number", "control_bindable": false, "default": 1.0},
+       {"name": "steepness", "type": "number", "control_bindable": false, "default": 3}
+     ],
+     "template": "event      = dwell(condition: {direction}(\"{signal}\", \"{threshold}\"), duration: {dwell})\n    continuous = sigmoid(\"{cont_num}\" / \"{cont_den}\", midpoint: {midpoint}, steepness: {steepness})"},
+
+    {"id": "derive.ratio", "kind": "derive", "form": "formula",
+     "slots": [{"name": "a", "type": "ref"}, {"name": "b", "type": "ref"}],
+     "template": "\"{a}\" / \"{b}\""},
+
+    {"id": "derive.coherence_band", "kind": "derive", "form": "formula",
+     "slots": [{"name": "input_a", "type": "ref"}, {"name": "input_b", "type": "ref"},
+               {"name": "band", "type": "raw"}],
+     "template": "coherence(\"{input_a}\", \"{input_b}\", band: {band})"},
+
+    {"id": "reward.set_all", "kind": "reward",
+     "slots": [
+       {"name": "direction", "type": "enum"},
+       {"name": "signal", "type": "ref"},
+       {"name": "threshold", "type": "ref"},
+       {"name": "dwell", "type": "raw", "default": 250}
+     ],
+     "template": "combine    = \"all\"\n    event      = dwell(condition: {direction}(\"{signal}\", \"{threshold}\"), duration: {dwell})"},
+
+    {"id": "derive.difference", "kind": "derive", "form": "formula",
+     "slots": [{"name": "a", "type": "ref"}, {"name": "b", "type": "ref"}],
+     "template": "\"{a}\" - \"{b}\""},
+
+    {"id": "derive.rectify", "kind": "derive", "form": "pipeline",
+     "slots": [],
+     "template": "rectify()"},
+
+    {"id": "derive.coherence", "kind": "derive", "form": "formula",
+     "slots": [
+       {"name": "input_a", "type": "ref"}, {"name": "input_b", "type": "ref"},
+       {"name": "band", "type": "raw"}, {"name": "window_ms", "type": "duration"}
+     ],
+     "template": "coherence(input_a: \"{input_a}\", input_b: \"{input_b}\", band: {band}, window: {window_ms})"},
+
+    {"id": "montage.passthrough", "kind": "montage",
+     "slots": [],
+     "template": "passthrough()"},
+
+    {"id": "montage.bipolar", "kind": "montage",
+     "slots": [{"name": "pair", "type": "site", "control_bindable": true}],
+     "template": "bipolar(pair: {pair})"},
+
+    {"id": "derive.lf_envelope", "kind": "derive", "form": "pipeline",
+     "slots": [
+       {"name": "band", "type": "raw"},
+       {"name": "smooth_tau", "type": "duration", "default": 4000}
+     ],
+     "template": "bandpass(band: {band}, order: 4),\n      rectify(),\n      smooth(tau: {smooth_tau})"},
+
+    {"id": "derive.auto_range", "kind": "derive", "form": "pipeline",
+     "slots": [
+       {"name": "window_ms", "type": "duration"},
+       {"name": "percentile", "type": "raw"}
+     ],
+     "template": "auto_range(window: {window_ms}, percentile: {percentile})"},
+
+    {"id": "reward.component", "kind": "reward_component",
+     "slots": [
+       {"name": "signal", "type": "ref"},
+       {"name": "midpoint", "type": "voltage"},
+       {"name": "steepness", "type": "number"},
+       {"name": "weight", "type": "ref"}
+     ],
+     "template": "signal = sigmoid(\"{signal}\", midpoint: {midpoint}, steepness: {steepness}); weight = {weight}"},
+
+    {"id": "reward.weighted", "kind": "reward",
+     "slots": [
+       {"name": "threshold", "type": "number", "default": 0.5},
+       {"name": "dwell", "type": "raw", "default": 250}
+     ],
+     "template": "combine    = \"weighted\"\n    continuous = reward.composite\n    event      = dwell(condition: above(reward.composite, {threshold}), duration: {dwell})"},
+
+    {"id": "reward.passthrough", "kind": "reward",
+     "slots": [
+       {"name": "direction", "type": "enum"},
+       {"name": "signal", "type": "ref"},
+       {"name": "threshold", "type": "ref"},
+       {"name": "dwell", "type": "raw", "default": 250},
+       {"name": "cont_ref", "type": "ref"}
+     ],
+     "template": "event      = dwell(condition: {direction}(\"{signal}\", \"{threshold}\"), duration: {dwell})\n    continuous = \"{cont_ref}\""}
+  ]
+}

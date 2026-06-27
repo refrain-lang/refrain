@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProtocolModel",
+  "type": "object",
+  "required": ["name", "meta", "requires", "inputs", "derives", "thresholds",
+               "inhibits", "reward", "outputs", "controls", "session"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {"type": "string"},
+    "meta": {"type": "object"},
+    "requires": {"type": "object"},
+    "inputs": {"type": "array", "items": {"$ref": "#/$defs/blockNode"}},
+    "derives": {"type": "array", "items": {"$ref": "#/$defs/blockNode"}},
+    "thresholds": {"type": "array", "items": {"$ref": "#/$defs/blockNode"}},
+    "inhibits": {"type": "array", "items": {"$ref": "#/$defs/blockNode"}},
+    "reward_components": {"type": "array", "items": {"$ref": "#/$defs/blockNode"}},
+    "reward": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/blockNode"}]},
+    "outputs": {"type": "array",
+                "items": {"type": "object", "required": ["channel", "route"],
+                          "properties": {"channel": {"type": "string"}, "route": {"type": "string"}}}},
+    "controls": {"type": "array", "items": {"$ref": "#/$defs/control"}},
+    "placements": {"type": "array",
+                   "items": {"type": "object", "required": ["name", "kind", "allowed", "default"],
+                             "properties": {"name": {"type": "string"}, "kind": {"type": "string"},
+                                            "allowed": {"type": "array"}, "default": {"type": "array"},
+                                            "label": {"type": "string"}, "final": {"type": "boolean"},
+                                            "set_min": {"type": "number"}, "set_max": {"type": "number"}}}},
+    "blocks": {"type": "array",
+               "items": {"type": "object", "required": ["name", "thresholds"],
+                         "properties": {"name": {"type": "string"},
+                                        "thresholds": {"type": "array", "items": {"type": "string"}}}}},
+    "session": {"type": "object"}
+  },
+  "$defs": {
+    "slotValue": {"anyOf": [
+      {"type": ["number", "string", "boolean"]},
+      {"type": "object", "required": ["bind"], "additionalProperties": false,
+       "properties": {"bind": {"type": "string"}}}
+    ]},
+    "blockNode": {"type": "object", "required": ["block", "slots"],
+      "properties": {"name": {"type": ["string", "null"]}, "block": {"type": "string"},
+        "from": {"type": "string"}, "signal": {"type": "string"},
+        "live_tunable": {"type": "boolean"},
+        "slots": {"type": "object", "additionalProperties": {"$ref": "#/$defs/slotValue"}}}},
+    "control": {"type": "object", "required": ["name", "kind"],
+      "properties": {"name": {"type": "string"}, "kind": {"type": "string"},
+        "default": {}, "unit": {"type": ["string", "null"]},
+        "range": {"type": ["array", "null"]}, "label": {"type": "string"},
+        "live_tunable": {"type": "boolean"}}}
+  }
+}

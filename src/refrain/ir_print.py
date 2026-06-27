@@ -156,12 +156,44 @@ def print_ir(ir: IRProtocol) -> str:
             lines.append(f"  {channel:20} = {_render_expr(expr)}")
         lines.append("")
 
+    # Reward bundles
+    if ir.reward_bundles:
+        lines.append("# reward bundles")
+        for bname, rb in ir.reward_bundles.items():
+            parts = []
+            if rb.continuous is not None:
+                parts.append("continuous")
+            if rb.event is not None:
+                parts.append("event")
+            lines.append(f"  {bname:30}  ({', '.join(parts)})")
+        lines.append("")
+
+    # Blocks
+    if ir.blocks:
+        lines.append("# blocks")
+        for blk in ir.blocks.values():
+            lines.append(f"  block {blk.name!r}")
+            if blk.thresholds:
+                lines.append(f"    thresholds = {list(blk.thresholds)}")
+            if blk.reward is not None:
+                lines.append(f"    reward     = {blk.reward!r}")
+            if blk.outputs:
+                lines.append(f"    outputs    = {list(blk.outputs)}")
+            if blk.inhibits:
+                lines.append(f"    inhibits   = {list(blk.inhibits)}")
+        lines.append("")
+
     # Session
     if ir.session.phases:
         lines.append("# session")
         for p in ir.session.phases:
             muted = " (output muted)" if p.output_muted else ""
-            lines.append(f"  phase {p.name!r:20} {_render_duration(p.duration_ms):>10}{muted}")
+            dur = _render_duration(p.duration_ms) if p.duration_ms else "open-ended"
+            lines.append(f"  phase {p.name!r:20} {dur:>10}{muted}")
+            if p.mode != "timed":
+                lines.append(f"    mode  = {p.mode}")
+            if p.block is not None:
+                lines.append(f"    block = {p.block!r}")
         total_ms = sum(p.duration_ms for p in ir.session.phases)
         lines.append(f"  total duration = {_render_duration(total_ms)}")
         lines.append("")

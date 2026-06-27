@@ -42,6 +42,23 @@ impl Signal {
 
 pub trait Stage: Send + Sync {
     fn process(&mut self, input: Signal) -> Signal;
+    /// Stateful trackers (`auto_range`) expose a compact cross-session summary
+    /// (Ask 2). Default: not a tracker.
+    fn tracker_export(&self) -> Option<TrackerState> {
+        None
+    }
+    /// Re-prime the tracker from a prior session's summary (Ask 2). No-op for
+    /// non-trackers.
+    fn tracker_seed(&mut self, _state: &TrackerState) {}
+}
+
+/// Compact, rate-independent adaptive-tracker state for cross-session
+/// persistence (Ask 2). Mirrors the Python `export_state()` dicts;
+/// `Evaluator::export_state` keys these by `"<entity>.<callee>"`.
+#[derive(Clone, Debug)]
+pub enum TrackerState {
+    AutoRange { low: f64, high: f64, n_eff: u64 },
+    Percentile { value: f64, target_pct: f64, n_eff: u64 },
 }
 
 /// IIR bandpass/bandpower as a cascade of second-order sections, in
@@ -212,6 +229,13 @@ pub struct Percentile {
     target_pct: ControlCell,
     cap: usize,
     buf: VecDeque<f64>,
+    /// When false, `step` still EMITS the current percentile over the existing
+    /// buffer but does NOT ingest incoming samples — the evaluator freezes the
+    /// window during mid-session muted rests (R6), mirroring
+    /// `PercentileImpl.set_ingesting`.
+    ingesting: bool,
+    /// Samples ingested; reported (capped at `cap`) as `n_eff` in export.
+    seen: u64,
 }
 
 impl Percentile {
@@ -223,18 +247,61 @@ impl Percentile {
     /// keep a clone in its control registry.
     pub fn from_cell(target_pct: ControlCell, window_samples: usize) -> Self {
         let cap = window_samples.max(1);
-        Percentile { target_pct, cap, buf: VecDeque::with_capacity(cap) }
+        Percentile { target_pct, cap, buf: VecDeque::with_capacity(cap), ingesting: true, seen: 0 }
+    }
+
+    /// Compact cross-session summary (Ask 2): the current threshold value at
+    /// `target_pct` plus the effective sample count. Mirrors
+    /// `PercentileImpl.export_state`.
+    pub fn export_state(&self) -> TrackerState {
+        let value = if self.buf.is_empty() {
+            0.0
+        } else {
+            percentile_linear(&self.buf, *self.target_pct.lock().unwrap())
+        };
+        TrackerState::Percentile {
+            value,
+            target_pct: *self.target_pct.lock().unwrap(),
+            n_eff: (self.seen).min(self.cap as u64),
+        }
+    }
+
+    /// Fill the window with `value` repeated so percentile(target_pct)==value
+    /// exactly at session start (mirrors `PercentileImpl.seed`; identical math
+    /// keeps parity structural).
+    pub fn seed(&mut self, value: f64, n_eff: u64) {
+        let n = (n_eff.min(self.cap as u64)).max(1) as usize;
+        self.buf.clear();
+        for _ in 0..n {
+            self.buf.push_back(value);
+        }
+        self.seen = n as u64;
+    }
+
+    /// Freeze (false) or resume (true) buffer ingestion. A frozen window keeps
+    /// emitting over its existing buffer (R6 mid-session-rest handling).
+    pub fn set_ingesting(&mut self, ingesting: bool) {
+        self.ingesting = ingesting;
     }
 
     pub fn step(&mut self, x: &[f64]) -> Vec<f64> {
         let target_pct = *self.target_pct.lock().unwrap();
         let mut out = Vec::with_capacity(x.len());
         for &v in x {
-            if self.buf.len() == self.cap {
-                self.buf.pop_front();
+            if self.ingesting {
+                if self.buf.len() == self.cap {
+                    self.buf.pop_front();
+                }
+                self.buf.push_back(v);
+                self.seen += 1;
             }
-            self.buf.push_back(v);
-            out.push(percentile_linear(&self.buf, target_pct));
+            // A frozen empty buffer (e.g. window never populated) emits 0.0,
+            // matching the Python `np.zeros(1)` fallback.
+            if self.buf.is_empty() {
+                out.push(0.0);
+            } else {
+                out.push(percentile_linear(&self.buf, target_pct));
+            }
         }
         out
     }
@@ -251,12 +318,45 @@ pub struct AutoRange {
     high_pct: f64,
     cap: usize,
     buf: VecDeque<f64>,
+    /// Samples ingested; reported (capped at `cap`) as `n_eff` in export.
+    seen: u64,
 }
 
 impl AutoRange {
     pub fn new(window_samples: usize, low_pct: f64, high_pct: f64) -> Self {
         let cap = window_samples.max(1);
-        AutoRange { low_pct, high_pct, cap, buf: VecDeque::with_capacity(cap) }
+        AutoRange { low_pct, high_pct, cap, buf: VecDeque::with_capacity(cap), seen: 0 }
+    }
+
+    /// Compact cross-session summary (Ask 2): current low/high anchors + the
+    /// effective sample count. Mirrors `AutoRangeImpl.export_state`.
+    pub fn export_state(&self) -> TrackerState {
+        let (low, high) = if self.buf.is_empty() {
+            (0.0, 0.0)
+        } else {
+            (
+                percentile_linear(&self.buf, self.low_pct),
+                percentile_linear(&self.buf, self.high_pct),
+            )
+        };
+        TrackerState::AutoRange { low, high, n_eff: (self.seen).min(self.cap as u64) }
+    }
+
+    /// Pre-fill the window with a deterministic uniform ramp whose
+    /// `low_pct`/`high_pct` percentiles reproduce the seeded anchors — the
+    /// IDENTICAL math as `AutoRangeImpl.seed` (np.linspace(a, a+b_minus_a, n)),
+    /// so seed/export round-trips match Python to 1e-6.
+    pub fn seed(&mut self, low: f64, high: f64, n_eff: u64) {
+        let n = (n_eff.min(self.cap as u64)).max(1) as usize;
+        let span_pct = (self.high_pct - self.low_pct).max(1e-9);
+        let b_minus_a = (high - low) * 100.0 / span_pct;
+        let a = low - (self.low_pct / 100.0) * b_minus_a;
+        self.buf.clear();
+        for i in 0..n {
+            let t = if n == 1 { 0.0 } else { i as f64 / (n - 1) as f64 };
+            self.buf.push_back(a + t * b_minus_a);
+        }
+        self.seen = n as u64;
     }
 }
 
@@ -269,12 +369,23 @@ impl Stage for AutoRange {
                 self.buf.pop_front();
             }
             self.buf.push_back(v);
+            self.seen += 1;
             let low = percentile_linear(&self.buf, self.low_pct);
             let high = percentile_linear(&self.buf, self.high_pct);
             let span = (high - low).max(1e-9);
             out.push(((v - low) / span).clamp(0.0, 1.0));
         }
         Signal::Real(out)
+    }
+
+    fn tracker_export(&self) -> Option<TrackerState> {
+        Some(self.export_state())
+    }
+
+    fn tracker_seed(&mut self, state: &TrackerState) {
+        if let TrackerState::AutoRange { low, high, n_eff } = state {
+            self.seed(*low, *high, *n_eff);
+        }
     }
 }
 
@@ -350,6 +461,58 @@ impl Stage for Bandpower {
             self.buf.push_back(sq);
             let mean = self.buf.iter().sum::<f64>() / self.buf.len() as f64;
             out.push(mean);
+        }
+        Signal::Real(out)
+    }
+}
+
+/// `autocorr(lag, window)` — rolling lag-`k` Pearson autocorrelation over a
+/// sliding window of `window_samples`. Emits one value per input sample; 0.0
+/// until `lag + 2` samples accumulate (warm-up) and 0.0 for a constant window
+/// (zero variance, avoiding NaN). Output in [-1, 1]. Mirrors `AutocorrImpl`
+/// byte-for-byte (same buffer eviction, mean-centering, and summation order)
+/// — the critical-slowing-down early-warning indicator.
+pub struct Autocorr {
+    cap: usize,
+    lag: usize,
+    buf: VecDeque<f64>,
+}
+
+impl Autocorr {
+    pub fn new(window_samples: usize, lag_samples: usize) -> Self {
+        let cap = window_samples.max(1);
+        Autocorr { cap, lag: lag_samples.max(1), buf: VecDeque::with_capacity(cap) }
+    }
+
+    fn lag_autocorr(&self) -> f64 {
+        let n = self.buf.len();
+        if n < self.lag + 2 {
+            return 0.0;
+        }
+        let mean = self.buf.iter().sum::<f64>() / n as f64;
+        let d: Vec<f64> = self.buf.iter().map(|&v| v - mean).collect();
+        let den: f64 = d.iter().map(|&v| v * v).sum();
+        if den == 0.0 {
+            return 0.0;
+        }
+        let mut num = 0.0;
+        for i in self.lag..n {
+            num += d[i] * d[i - self.lag];
+        }
+        (num / den).clamp(-1.0, 1.0)
+    }
+}
+
+impl Stage for Autocorr {
+    fn process(&mut self, input: Signal) -> Signal {
+        let x = input.into_real();
+        let mut out = Vec::with_capacity(x.len());
+        for &v in &x {
+            if self.buf.len() == self.cap {
+                self.buf.pop_front();
+            }
+            self.buf.push_back(v);
+            out.push(self.lag_autocorr());
         }
         Signal::Real(out)
     }

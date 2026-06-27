@@ -266,6 +266,31 @@ void uniffi_refrain_core_fn_free_refraincore(void*_Nonnull ptr, RustCallStatus *
 void*_Nonnull uniffi_refrain_core_fn_constructor_refraincore_new(RustBuffer ir_json, double sample_rate_hz, RustBuffer channel_names, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_FN_METHOD_REFRAINCORE_ADVANCE_PHASE
+#define UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_FN_METHOD_REFRAINCORE_ADVANCE_PHASE
+int8_t uniffi_refrain_core_fn_method_refraincore_advance_phase(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_FN_METHOD_REFRAINCORE_CURRENT_PHASE
+#define UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_FN_METHOD_REFRAINCORE_CURRENT_PHASE
+RustBuffer uniffi_refrain_core_fn_method_refraincore_current_phase(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_FN_METHOD_REFRAINCORE_HOLD
+#define UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_FN_METHOD_REFRAINCORE_HOLD
+int8_t uniffi_refrain_core_fn_method_refraincore_hold(void*_Nonnull ptr, int8_t held, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_FN_METHOD_REFRAINCORE_LAST_TAPS
+#define UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_FN_METHOD_REFRAINCORE_LAST_TAPS
+RustBuffer uniffi_refrain_core_fn_method_refraincore_last_taps(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_FN_METHOD_REFRAINCORE_SET_CLOCK_FROZEN
+#define UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_FN_METHOD_REFRAINCORE_SET_CLOCK_FROZEN
+void uniffi_refrain_core_fn_method_refraincore_set_clock_frozen(void*_Nonnull ptr, int8_t frozen, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_FN_METHOD_REFRAINCORE_SET_CONTROL
 #define UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_FN_METHOD_REFRAINCORE_SET_CONTROL
 void uniffi_refrain_core_fn_method_refraincore_set_control(void*_Nonnull ptr, RustBuffer name, double value, RustCallStatus *_Nonnull out_status
@@ -564,6 +589,36 @@ void ffi_refrain_core_rust_future_free_void(uint64_t handle
 #ifndef UNIFFI_FFIDEF_FFI_REFRAIN_CORE_RUST_FUTURE_COMPLETE_VOID
 #define UNIFFI_FFIDEF_FFI_REFRAIN_CORE_RUST_FUTURE_COMPLETE_VOID
 void ffi_refrain_core_rust_future_complete_void(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_CHECKSUM_METHOD_REFRAINCORE_ADVANCE_PHASE
+#define UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_CHECKSUM_METHOD_REFRAINCORE_ADVANCE_PHASE
+uint16_t uniffi_refrain_core_checksum_method_refraincore_advance_phase(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_CHECKSUM_METHOD_REFRAINCORE_CURRENT_PHASE
+#define UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_CHECKSUM_METHOD_REFRAINCORE_CURRENT_PHASE
+uint16_t uniffi_refrain_core_checksum_method_refraincore_current_phase(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_CHECKSUM_METHOD_REFRAINCORE_HOLD
+#define UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_CHECKSUM_METHOD_REFRAINCORE_HOLD
+uint16_t uniffi_refrain_core_checksum_method_refraincore_hold(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_CHECKSUM_METHOD_REFRAINCORE_LAST_TAPS
+#define UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_CHECKSUM_METHOD_REFRAINCORE_LAST_TAPS
+uint16_t uniffi_refrain_core_checksum_method_refraincore_last_taps(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_CHECKSUM_METHOD_REFRAINCORE_SET_CLOCK_FROZEN
+#define UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_CHECKSUM_METHOD_REFRAINCORE_SET_CLOCK_FROZEN
+uint16_t uniffi_refrain_core_checksum_method_refraincore_set_clock_frozen(void
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_CHECKSUM_METHOD_REFRAINCORE_SET_CONTROL

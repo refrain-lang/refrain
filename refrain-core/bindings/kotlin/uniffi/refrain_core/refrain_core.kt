@@ -724,6 +724,16 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -739,7 +749,17 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 // when the library is loaded.
 internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
-    fun uniffi_refrain_core_checksum_method_refraincore_set_control(
+    fun uniffi_refrain_core_checksum_method_refraincore_advance_phase(
+): Short
+fun uniffi_refrain_core_checksum_method_refraincore_current_phase(
+): Short
+fun uniffi_refrain_core_checksum_method_refraincore_hold(
+): Short
+fun uniffi_refrain_core_checksum_method_refraincore_last_taps(
+): Short
+fun uniffi_refrain_core_checksum_method_refraincore_set_clock_frozen(
+): Short
+fun uniffi_refrain_core_checksum_method_refraincore_set_control(
 ): Short
 fun uniffi_refrain_core_checksum_method_refraincore_start(
 ): Short
@@ -804,6 +824,16 @@ fun uniffi_refrain_core_fn_free_refraincore(`ptr`: Pointer,uniffi_out_err: Uniff
 ): Unit
 fun uniffi_refrain_core_fn_constructor_refraincore_new(`irJson`: RustBuffer.ByValue,`sampleRateHz`: Double,`channelNames`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
+fun uniffi_refrain_core_fn_method_refraincore_advance_phase(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+fun uniffi_refrain_core_fn_method_refraincore_current_phase(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_refrain_core_fn_method_refraincore_hold(`ptr`: Pointer,`held`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+fun uniffi_refrain_core_fn_method_refraincore_last_taps(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_refrain_core_fn_method_refraincore_set_clock_frozen(`ptr`: Pointer,`frozen`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_refrain_core_fn_method_refraincore_set_control(`ptr`: Pointer,`name`: RustBuffer.ByValue,`value`: Double,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_refrain_core_fn_method_refraincore_start(`ptr`: Pointer,`skipWarmup`: Byte,uniffi_out_err: UniffiRustCallStatus, 
@@ -938,6 +968,21 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
+    if (lib.uniffi_refrain_core_checksum_method_refraincore_advance_phase() != 31310.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_refrain_core_checksum_method_refraincore_current_phase() != 36666.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_refrain_core_checksum_method_refraincore_hold() != 38295.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_refrain_core_checksum_method_refraincore_last_taps() != 62853.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_refrain_core_checksum_method_refraincore_set_clock_frozen() != 49829.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_refrain_core_checksum_method_refraincore_set_control() != 31390.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1116,6 +1161,29 @@ public object FfiConverterUInt: FfiConverter<UInt, Int> {
 
     override fun write(value: UInt, buf: ByteBuffer) {
         buf.putInt(value.toInt())
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterLong: FfiConverter<Long, Long> {
+    override fun lift(value: Long): Long {
+        return value
+    }
+
+    override fun read(buf: ByteBuffer): Long {
+        return buf.getLong()
+    }
+
+    override fun lower(value: Long): Long {
+        return value
+    }
+
+    override fun allocationSize(value: Long) = 8UL
+
+    override fun write(value: Long, buf: ByteBuffer) {
+        buf.putLong(value)
     }
 }
 
@@ -1330,6 +1398,40 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
 public interface RefrainCoreInterface {
     
     /**
+     * `eval::Evaluator::advance_phase`: end the current phase now, enter the
+     * next; past the last phase transitions to `stopped`. Returns false if
+     * already stopped. (Clinician "Next →".)
+     */
+    fun `advancePhase`(): kotlin.Boolean
+    
+    /**
+     * `eval::Evaluator::current_phase`: snapshot of the phase the most recent
+     * chunk ran under (aligned with the taps).
+     */
+    fun `currentPhase`(): PhaseInfo
+    
+    /**
+     * `eval::Evaluator::hold`: extend a `timed_with_floor` phase past its floor
+     * (`hold(false)` re-arms). Returns true if it took effect.
+     */
+    fun `hold`(`held`: kotlin.Boolean): kotlin.Boolean
+    
+    /**
+     * `eval::Evaluator::last_taps`: the most recent chunk's internal computed values —
+     * keys like `input/raw`, `derive/<name>`, `threshold/<name>`, `reward/continuous`,
+     * `output/<channel>` (booleans encoded as 0.0/1.0). For clinician observation /
+     * live tuning. Empty before the first chunk. (BTreeMap → HashMap so uniffi maps it
+     * to a Swift `[String: Double]` / Kotlin `Map`.)
+     */
+    fun `lastTaps`(): Map<kotlin.String, kotlin.Double>
+    
+    /**
+     * `eval::Evaluator::set_clock_frozen`: freeze/resume the phase clock on any
+     * phase type (transport pause); orthogonal to output muting.
+     */
+    fun `setClockFrozen`(`frozen`: kotlin.Boolean)
+    
+    /**
      * `eval::Evaluator::set_control`: live-retune a clinician control in place,
      * preserving streaming state. An unknown name yields
      * `RefrainError::UnknownControl` (the FFI analogue of Python's `KeyError`).
@@ -1458,6 +1560,89 @@ open class RefrainCore: Disposable, AutoCloseable, RefrainCoreInterface
             UniffiLib.INSTANCE.uniffi_refrain_core_fn_clone_refraincore(pointer!!, status)
         }
     }
+
+    
+    /**
+     * `eval::Evaluator::advance_phase`: end the current phase now, enter the
+     * next; past the last phase transitions to `stopped`. Returns false if
+     * already stopped. (Clinician "Next →".)
+     */override fun `advancePhase`(): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_refrain_core_fn_method_refraincore_advance_phase(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `eval::Evaluator::current_phase`: snapshot of the phase the most recent
+     * chunk ran under (aligned with the taps).
+     */override fun `currentPhase`(): PhaseInfo {
+            return FfiConverterTypePhaseInfo.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_refrain_core_fn_method_refraincore_current_phase(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `eval::Evaluator::hold`: extend a `timed_with_floor` phase past its floor
+     * (`hold(false)` re-arms). Returns true if it took effect.
+     */override fun `hold`(`held`: kotlin.Boolean): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_refrain_core_fn_method_refraincore_hold(
+        it, FfiConverterBoolean.lower(`held`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `eval::Evaluator::last_taps`: the most recent chunk's internal computed values —
+     * keys like `input/raw`, `derive/<name>`, `threshold/<name>`, `reward/continuous`,
+     * `output/<channel>` (booleans encoded as 0.0/1.0). For clinician observation /
+     * live tuning. Empty before the first chunk. (BTreeMap → HashMap so uniffi maps it
+     * to a Swift `[String: Double]` / Kotlin `Map`.)
+     */override fun `lastTaps`(): Map<kotlin.String, kotlin.Double> {
+            return FfiConverterMapStringDouble.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_refrain_core_fn_method_refraincore_last_taps(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `eval::Evaluator::set_clock_frozen`: freeze/resume the phase clock on any
+     * phase type (transport pause); orthogonal to output muting.
+     */override fun `setClockFrozen`(`frozen`: kotlin.Boolean)
+        = 
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_refrain_core_fn_method_refraincore_set_clock_frozen(
+        it, FfiConverterBoolean.lower(`frozen`),_status)
+}
+    }
+    
+    
 
     
     /**
@@ -1608,6 +1793,67 @@ public object FfiConverterTypeEvent: FfiConverterRustBuffer<Event> {
 
 
 
+/**
+ * Mirror of `eval::PhaseSnapshot` / `eval_.Evaluator.current_phase`: the phase
+ * the most recent chunk ran under (aligned with `last_taps`). `index == -1`
+ * once terminal / before any chunk.
+ */
+data class PhaseInfo (
+    var `index`: kotlin.Long, 
+    var `name`: kotlin.String?, 
+    var `mode`: kotlin.String?, 
+    var `outputMuted`: kotlin.Boolean, 
+    var `block`: kotlin.String?, 
+    var `remainingS`: kotlin.Double?, 
+    var `clockFrozen`: kotlin.Boolean, 
+    var `held`: kotlin.Boolean
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePhaseInfo: FfiConverterRustBuffer<PhaseInfo> {
+    override fun read(buf: ByteBuffer): PhaseInfo {
+        return PhaseInfo(
+            FfiConverterLong.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalDouble.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: PhaseInfo) = (
+            FfiConverterLong.allocationSize(value.`index`) +
+            FfiConverterOptionalString.allocationSize(value.`name`) +
+            FfiConverterOptionalString.allocationSize(value.`mode`) +
+            FfiConverterBoolean.allocationSize(value.`outputMuted`) +
+            FfiConverterOptionalString.allocationSize(value.`block`) +
+            FfiConverterOptionalDouble.allocationSize(value.`remainingS`) +
+            FfiConverterBoolean.allocationSize(value.`clockFrozen`) +
+            FfiConverterBoolean.allocationSize(value.`held`)
+    )
+
+    override fun write(value: PhaseInfo, buf: ByteBuffer) {
+            FfiConverterLong.write(value.`index`, buf)
+            FfiConverterOptionalString.write(value.`name`, buf)
+            FfiConverterOptionalString.write(value.`mode`, buf)
+            FfiConverterBoolean.write(value.`outputMuted`, buf)
+            FfiConverterOptionalString.write(value.`block`, buf)
+            FfiConverterOptionalDouble.write(value.`remainingS`, buf)
+            FfiConverterBoolean.write(value.`clockFrozen`, buf)
+            FfiConverterBoolean.write(value.`held`, buf)
+    }
+}
+
+
+
 
 
 /**
@@ -1736,6 +1982,38 @@ public object FfiConverterOptionalDouble: FfiConverterRustBuffer<kotlin.Double?>
 /**
  * @suppress
  */
+public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?> {
+    override fun read(buf: ByteBuffer): kotlin.String? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterString.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.String?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterString.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.String?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterString.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceDouble: FfiConverterRustBuffer<List<kotlin.Double>> {
     override fun read(buf: ByteBuffer): List<kotlin.Double> {
         val len = buf.getInt()
@@ -1810,6 +2088,45 @@ public object FfiConverterSequenceTypeEvent: FfiConverterRustBuffer<List<Event>>
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeEvent.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterMapStringDouble: FfiConverterRustBuffer<Map<kotlin.String, kotlin.Double>> {
+    override fun read(buf: ByteBuffer): Map<kotlin.String, kotlin.Double> {
+        val len = buf.getInt()
+        return buildMap<kotlin.String, kotlin.Double>(len) {
+            repeat(len) {
+                val k = FfiConverterString.read(buf)
+                val v = FfiConverterDouble.read(buf)
+                this[k] = v
+            }
+        }
+    }
+
+    override fun allocationSize(value: Map<kotlin.String, kotlin.Double>): ULong {
+        val spaceForMapSize = 4UL
+        val spaceForChildren = value.map { (k, v) ->
+            FfiConverterString.allocationSize(k) +
+            FfiConverterDouble.allocationSize(v)
+        }.sum()
+        return spaceForMapSize + spaceForChildren
+    }
+
+    override fun write(value: Map<kotlin.String, kotlin.Double>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        // The parens on `(k, v)` here ensure we're calling the right method,
+        // which is important for compatibility with older android devices.
+        // Ref https://blog.danlew.net/2017/03/16/kotlin-puzzler-whose-line-is-it-anyways/
+        value.forEach { (k, v) ->
+            FfiConverterString.write(k, buf)
+            FfiConverterDouble.write(v, buf)
         }
     }
 }

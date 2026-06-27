@@ -14,6 +14,7 @@ an introduction, and `docs/EMBEDDING.md` for host integration.
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 
 from . import ast
+from .editor import describe_protocol, load_catalog, render_protocol
 from .parser import ParseError, parse, parse_file
 from .unparser import unparse
 
@@ -32,4 +33,7 @@ __all__ = [
     "parse_file",
     "unparse",
     "ParseError",
+    "describe_protocol",
+    "render_protocol",
+    "load_catalog",
 ]

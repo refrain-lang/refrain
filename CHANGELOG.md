@@ -5,6 +5,176 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.11.0] — 2026-06-21
+
+Additive — a new mobile-binding method plus editor-catalog coverage that brings
+the bundled BrainBit set to full clonability. No existing protocol changes
+behavior; Python↔Rust parity (gated to 1e-6) and the IR-JSON schema are
+unchanged. The editor changes are front-end catalog/model additions that
+round-trip to identical IR; the mobile change mirrors an existing pyo3 binding.
+
+### Added
+- **`last_taps()` on the mobile (uniffi) binding.** Surfaces the evaluator's
+  most-recent-chunk internal taps (envelope / threshold / reward / output) across
+  the FFI as a Swift `[String: Double]` / Kotlin `Map`, mirroring the pyo3
+  binding — for on-device clinician observation and live tuning. Regenerated the
+  Swift and Kotlin bindings. Consumed by the Coherence Companion mobile
+  neurofeedback feature.
+
+### Editor catalog — full BrainBit clonability (20/20)
+Front-end (refrain-editor) catalog/model additions only; each shape round-trips
+to an identical IR. The bundled BrainBit set went from 3/20 → 20/20 protocols
+that clone with clean IR round-trips.
+- **Compound operant reward + EMG artifact inhibit + lossless `requires`**
+  (3 → 11): `reward.operant_compound` (`dwell(all_of([...]))` + sigmoid
+  continuous), an EMG-style `inhibit.artifact` (bandpower + percentile + mute),
+  `reward.component_ratio` (weighted composite over a ratio sigmoid), and full
+  preservation of `requires` (coupling/impedance/markers, not just
+  sample_rate/channels).
+- **Staged blocks + alpha-asymmetry derives** (→ 16): a `block "name" {...}` decl
+  + per-phase `block = "..."` activation (new `blocks` model section),
+  `derive.difference` (`"a" - "b"`) and `derive.rectify`, and `reward.operant_abs`
+  (single-condition sigmoid-over-ref continuous).
+- **Placement controls — site/montage editing** (→ 20): placement controls
+  (active/set/bipolar/pair) with a new `placements` model section, inlined
+  `groups`, `montage.bipolar` with `coh.a`/`coh.b` member-access slots, and a
+  handful of placement-specific shapes (positional `absolute(8 uV)`,
+  `combine = "all"` set reward, window-less `coherence(...)`, compound
+  bare-ref-sigmoid reward).
+- **Explicit-band envelope block (`derive.envelope_band`).** Recognizes the
+  clinical fixed-band form `bandpass(band: (lo Hz, hi Hz), order: N)` as a second
+  envelope shape alongside the center+ratio derive; band edges and order become
+  editable model slots.
+- **Golden-fixture generator (`tools/gen_editor_fixtures.py`).** Committed the
+  parity-corpus generator that refrain-editor's `scripts/sync-vendor.sh` already
+  referenced; recurses into `protocols/` subfolders so device-specific sets are
+  included.
+
+## [0.10.0] — 2026-06-12
+
+Additive — a new primitive, a new fan-out axis, and a worked example. Python↔Rust
+parity is preserved (gated to 1e-6); the IR-JSON schema gains an additive
+`lag_samples` coeff field (v0.1 + v0.2). No existing protocol changes behavior.
+
+### Added
+- **`autocorr(lag, window)` primitive** — rolling lag-k Pearson autocorrelation,
+  the critical-slowing-down early-warning indicator (Scheffer 2009; Maturana
+  2020). Full shared-core: Python reference impl + Rust `Autocorr` `Stage` at
+  machine-precision parity (`micro_10_autocorr` equivalence fixture) + baked
+  `window_samples`/`lag_samples` coeffs.
+- **`bands { }` block + band-axis fan-out** — declare named frequency bands and
+  author a band-parameterized subgraph once (`bandpass(band: bands)`); the
+  resolver replicates it per declared band (`<name>@<band>`). Composes with the
+  per-site `set` fan-out for the **band × channel cross product**
+  (`<name>@<band>@<site>`); inhibits now replicate on both axes. Front-end only;
+  IR-JSON/Rust core unchanged. See SPEC §4.9.3.
+- **`examples/critical_fluctuation_cue.refrain`** — a dynamical critical-fluctuation
+  cue protocol: an early-warning detector (variance + autocorrelation) per band per
+  site (e.g. 10 bands × 2 sites = 20 envelopes; any site(s), defaulting to one
+  midline electrode) against a self-calibrating percentile threshold, and a tonic
+  reward muted by per-envelope critical-fluctuation inhibits (the audio cue). Design
+  spec: `docs/superpowers/specs/2026-06-11-flutter-cue-protocol-design.md`;
+  gap RFC: `docs/proposals/2026-06-11-dynamical-neurofeedback-gaps.md`.
+
+## [0.9.0] — 2026-06-08
+
+Additive — no existing protocol changes behavior; Python↔Rust parity and the
+IR-JSON schema are unchanged (the new kind is front-end-only: it resolves to
+`DIMENSIONLESS`, and the Rust core does not read control `type_kind`).
+
+### Added
+- **`number` control kind** — a unitless scalar control. The honest kind for
+  relative weights and gains: same `DIMENSIONLESS` dims as `percent`, but a
+  host renders it with **no unit** (where `percent` shows a misleading "%").
+  Use it for weighted-composite weights and any dimensionless knob whose value
+  is not actually a percentage. The value is used raw (no `/100`).
+
+## [0.8.0] — 2026-06-04
+
+HRV biofeedback support for the Coherence Recorder (M1). All additive — no
+existing protocol changes behavior, the IR-JSON schema is unchanged, and
+Python↔Rust parity is preserved (gated to 1e-6). Consumers opt in by moving
+their pin.
+
+### Added
+- **`passthrough()` montage.** A first-class single-channel identity montage —
+  carries one raw channel through unchanged (e.g. a non-EEG HRV tachogram),
+  replacing the `referential(reference: "device")` workaround. Implemented in
+  both the Python evaluator (`PassthroughImpl`) and the Rust core
+  (`Montage::Passthrough`), with the `micro_passthrough_identity` parity
+  fixture. Requires a single-channel source.
+- **Cross-session adaptive-state seed/export.** `Evaluator.export_state()`
+  returns a compact, rate-independent summary of every `auto_range` /
+  `percentile` tracker (`{low, high, n_eff}` / `{value, target_pct, n_eff}`,
+  keyed `"<entity>.<callee>"`); `Evaluator.live(..., seed_state=...)` (and the
+  `RustEvaluator` constructor) re-primes a run from a prior session's export.
+  This is the longitudinal "user-adaptive ceiling that rises across sessions"
+  signal. **Runtime state, not IR** — the protocol IR-JSON is unchanged.
+  Available on both backends with parity; seeding pre-fills the rolling window
+  with a deterministic synthetic distribution.
+- **Low-Fs envelope guidance.** `rectify() + smooth(tau)` is documented and
+  validated as the sanctioned low-latency envelope for low-sample-rate signals
+  (e.g. a 4 Hz tachogram), where the FIR Hilbert's 8 s group delay is
+  prohibitive.
+
+### Changed
+- `hilbert(kind="iir_allpass")` now raises a clear, actionable error pointing to
+  `rectify()+smooth()` (low Fs) / the default FIR (mid-band). It remains
+  intentionally unimplemented: a low-latency IIR Hilbert is accurate only
+  mid-band and useless near DC, where all real NF/HRV bands sit (see
+  `docs/DESIGN-NOTES.md` §7a).
+
+### Notes
+- The Rust core's PyO3 (wheel) surface gained `export_state()` and an optional
+  `seed_state` constructor argument. The uniffi (Swift/Kotlin mobile) exposure
+  of seed/export is deferred as an additive follow-up; existing mobile call
+  sites are unaffected.
+
+## [0.7.0] — 2026-05-29
+
+### Added
+- **Staged / segmented protocols (R1–R4 + R6).** A `.refrain` protocol can now
+  describe a clinical session as N short training blocks with rests between
+  them, taken against one baseline up front, with blocks training different
+  things in one sitting (e.g. beta-up then alpha-up).
+  - **N-phase runtime + three phase types.** `session.phases` is now a real
+    runtime state machine (not metadata past the first phase). Each phase
+    carries a `mode`: `timed` (auto-advance after `duration`), `open` (no
+    clock; the host advances it), or `timed_with_floor` (auto-advance, but the
+    host may end it early or extend it). Mid-session `output_muted` rests now
+    actually mute (previously only the first phase did).
+  - **Host transport API** (Python `Evaluator` + Rust core, pyo3 + uniffi):
+    `advance_phase()` (clinician "Next →"), `hold(held=True)` (extend a
+    `timed_with_floor` block; `hold(False)` re-arms), `set_clock_frozen(bool)`
+    (pause/resume the phase clock on any phase type, orthogonal to output
+    muting), and `current_phase()` introspection (index/name/mode/block/
+    remaining_s/clock_frozen/held), aligned with `last_taps`. New numeric
+    `phase/index` + `phase/output_muted` taps. Generalises the offline-only
+    `skip_warmup` into a supported live control.
+  - **Named blocks + reward bundles.** `block "<name>" { threshold; reward;
+    output; inhibit }` selects which named threshold / reward bundle / output
+    channels / inhibits are live during a phase; reward bundles are declared as
+    `reward "<name>" { continuous?; event? }` (disambiguated from weighted
+    components by field shape). Derives and threshold impls stay global and
+    always-computed — a block gates *emission/selection*, never *computation*,
+    so signals stay warm across block boundaries.
+  - **Adaptive `percentile()` windows freeze across muted rests (R6):** the
+    warmup phase populates the window and active phases ingest, but later
+    `output_muted` rests do not, so rest-period artifact can't pollute a later
+    block's window.
+  - IR-JSON gains `phase.mode`/`phase.block`, top-level `blocks` and
+    `reward_bundles` (all additive; the v0.2 schema is extended, not bumped). A
+    protocol using blocks/bundles emits `refrain_ir_version: "0.2"`.
+  - New example `examples/staged_beta_alpha.refrain`; full Python↔Rust parity
+    suite for staged sessions (`tests/test_staged_parity.py`).
+
+### Notes
+- The one-shot baseline measure-then-freeze is recorder-side (control-backed
+  `absolute(value: <control>)` + `set_control` at the single warmup→run); the
+  engine's obligation is that derives/threshold impls stay global so a
+  `set_control` seeding an inactive block's threshold takes effect — guarded by
+  the parity suite.
+
 ## [0.6.3] — 2026-05-28
 
 ### Fixed

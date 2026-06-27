@@ -168,6 +168,18 @@ def estimate_cost(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> Cos
             calibrated=False,
         ))
 
+    # --- autocorr (uncalibrated) ---------------------------------------------
+    ac_calls = [c for e in _all_stream_exprs(ir) for c in _iter_calls(e)
+                if c.callee == "autocorr"]
+    if ac_calls:
+        win_samples = sum(_window_ms(c, 1000.0) / 1000.0 * sr for c in ac_calls)
+        drivers.append(CostDriver(
+            name=f"autocorr ({len(ac_calls)})",
+            detail=f"{win_samples:,.0f} window-samples (rolling lag-k Pearson)",
+            us_per_sample=K_COHERENCE_US_PER_WINDOW_SAMPLE * win_samples,
+            calibrated=False,
+        ))
+
     # --- bandpower (uncalibrated) --------------------------------------------
     bp_calls = [c for e in _all_stream_exprs(ir) for c in _iter_calls(e)
                 if c.callee == "bandpower"]
