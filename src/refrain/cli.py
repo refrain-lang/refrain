@@ -12,10 +12,12 @@ v0.0r1 subcommands:
                                                   against a recording or
                                                   synthetic source; emit
                                                   events to stdout / JSONL
-  - `refrain fuzz FILE [--max-scenarios N]`     — auto-synthesise scenarios
+  - `refrain fuzz PATH... [--max-scenarios N]`  — auto-synthesise scenarios
                                                   from the IR, predict expected
                                                   behaviour, run the evaluator,
-                                                  and report (see PROTOCOL-FUZZER)
+                                                  and report; dirs are walked
+                                                  recursively for *.refrain
+                                                  (see PROTOCOL-FUZZER)
 
 The entry point is `main()`, wired in `pyproject.toml` as
 `refrain = "refrain.cli:main"`.
@@ -284,7 +286,12 @@ def _build_argparser() -> argparse.ArgumentParser:
         help="Generate a directed scenario corpus, run the evaluator, and "
              "check it against an independent semantics-derived oracle.",
     )
-    fuzz_cmd.add_argument("file", help="Path to the .refrain protocol file.")
+    fuzz_cmd.add_argument(
+        "paths", nargs="+",
+        help="Protocol file(s) or directory(ies). A directory is walked "
+             "recursively for *.refrain; multiple inputs or a directory run "
+             "in batch mode with an aggregate report.",
+    )
     fuzz_cmd.add_argument(
         "--max-scenarios", type=int, default=0, metavar="N",
         help="Cap the corpus at the first N scenarios (0 = no cap).",
@@ -421,15 +428,41 @@ def _scheduled_bursts(duration_s: float, n_bursts: int):
 
 
 def _cmd_fuzz(args: argparse.Namespace) -> int:
-    """Generate the directed scenario corpus, run each scenario through the
-    evaluator, check it against the independent oracle, and render a report."""
-    return _fuzz_single(args.file, args)
+    """Dispatch to single-file or batch mode depending on the positionals."""
+    paths = args.paths
+    if len(paths) == 1 and not Path(paths[0]).is_dir():
+        return _fuzz_single(paths[0], args)
+    return _fuzz_batch(paths, args)
+
+
+def _fuzz_batch(paths: list[str], args: argparse.Namespace) -> int:
+    """Fuzz multiple protocol files/dirs and print an aggregate coverage report."""
+    from .fuzz.runner import (
+        batch_exit_code,
+        discover_protocols,
+        render_batch_report,
+        run_batch,
+    )
+
+    def resolve_fn(path: str):
+        ir = _parse_resolve_or_report(argparse.Namespace(**{**vars(args), "file": path}))
+        if isinstance(ir, int):
+            return f"parse/resolve error (exit {ir})"
+        return ir
+
+    total = len(discover_protocols(paths))
+    outcomes = run_batch(
+        paths, max_scenarios=args.max_scenarios, chunk_size=args.chunk_size,
+        resolve_fn=resolve_fn,
+    )
+    print(render_batch_report(outcomes, total))
+    return batch_exit_code(outcomes)
 
 
 def _fuzz_single(path: str, args: argparse.Namespace) -> int:
     """Fuzz a single protocol file and map the outcome to an exit code."""
     from .fuzz.check import VacuityError
-    from .fuzz.runner import FUZZED, SKIPPED, fuzz_protocol
+    from .fuzz.runner import SKIPPED, fuzz_protocol
 
     args = argparse.Namespace(**{**vars(args), "file": path})
     ir = _parse_resolve_or_report(args)

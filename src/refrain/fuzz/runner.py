@@ -9,6 +9,8 @@ engine violations and generator bugs surface, never silently skipped)."""
 from __future__ import annotations
 
 import dataclasses
+import os
+from collections import Counter
 from dataclasses import dataclass
 
 from ..eval_ import eval_protocol
@@ -17,6 +19,7 @@ from ..sources import SyntheticSource
 from ..synthetic import channels_for_synthetic, render_scenario
 from .check import (
     ActualEvent,
+    VacuityError,
     check_metamorphic_monotonic,
     check_scenario,
 )
@@ -169,6 +172,80 @@ def _run_one_scenario(scenario, *, ir, surface, channels, collar_samples, chunk_
     )
 
 
+def discover_protocols(paths: list[str]) -> list[str]:
+    """Return a sorted, de-duplicated list of *.refrain files.
+
+    Directories are walked recursively; plain file paths are taken as-is."""
+    found: list[str] = []
+    for p in paths:
+        if os.path.isdir(p):
+            for root, _dirs, files in os.walk(p):
+                for fn in files:
+                    if fn.endswith(".refrain"):
+                        found.append(os.path.join(root, fn))
+        else:
+            found.append(p)
+    return sorted(dict.fromkeys(found))
+
+
+def run_batch(paths, *, max_scenarios, chunk_size, resolve_fn) -> list[ProtocolOutcome]:
+    """`resolve_fn(path) -> ir | str`: returns the resolved IR, or an error
+    string (parse/resolve diagnostic) which becomes an ERRORED outcome."""
+    outcomes: list[ProtocolOutcome] = []
+    for path in discover_protocols(paths):
+        resolved = resolve_fn(path)
+        if isinstance(resolved, str):
+            outcomes.append(ProtocolOutcome(path=path, status=ERRORED, reason=resolved))
+            continue
+        try:
+            outcomes.append(fuzz_protocol(
+                resolved, path=path, max_scenarios=max_scenarios, chunk_size=chunk_size,
+            ))
+        except VacuityError as exc:
+            outcomes.append(ProtocolOutcome(
+                path=path, status=ERRORED, reason=f"generator-bug: {_short_reason(exc)}"))
+    return outcomes
+
+
+def batch_exit_code(outcomes) -> int:
+    """Return 1 if any outcome is ERRORED or a FUZZED outcome with passed=False."""
+    bad = sum(
+        1 for o in outcomes
+        if o.status == ERRORED or (o.status == FUZZED and o.passed is False)
+    )
+    return 1 if bad else 0
+
+
+def render_batch_report(outcomes, total) -> str:
+    """Render a human-readable summary of batch fuzzing outcomes."""
+    fuzzed = [o for o in outcomes if o.status == FUZZED]
+    skipped = [o for o in outcomes if o.status == SKIPPED]
+    errored = [o for o in outcomes if o.status == ERRORED]
+    n_pass = sum(1 for o in fuzzed if o.passed)
+    n_fail = len(fuzzed) - n_pass
+    pct = int(round(100 * len(fuzzed) / total)) if total else 0
+    lines = [
+        f"fuzzed {len(fuzzed)} (pass {n_pass} / fail {n_fail}) "
+        f"/ skipped {len(skipped)} / errored {len(errored)}",
+        f"coverage: fuzzed {len(fuzzed)} / total {total} ({pct}%)",
+    ]
+    if skipped:
+        lines.append("skips by reason:")
+        for reason, n in sorted(Counter(o.reason for o in skipped).items()):
+            lines.append(f"  {reason}: {n}")
+    if errored:
+        lines.append("errors:")
+        for o in errored:
+            lines.append(f"  {o.path}: {o.reason}")
+    if n_fail:
+        lines.append("violations:")
+        for o in fuzzed:
+            if o.passed is False:
+                lines.append(f"  [VIOLATION] {o.path}")
+    return "\n".join(lines)
+
+
 __all__ = [
     "ERRORED", "FUZZED", "SKIPPED", "ProtocolOutcome", "fuzz_protocol",
+    "discover_protocols", "run_batch", "render_batch_report", "batch_exit_code",
 ]
