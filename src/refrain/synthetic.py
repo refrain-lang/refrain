@@ -30,9 +30,11 @@ above the 70th-percentile threshold, triggering reward dwell events
 
 from __future__ import annotations
 
+import zlib
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.signal import butter, sosfilt
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +52,28 @@ class SMRBurst:
     center_hz: float
     amplitude_uv: float = 20.0
     channel: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BandSegmentBurst:
+    """A scheduled band-targeted injection. Generalises `SMRBurst`: instead of
+    just a tone, supports a tone OR band-limited noise at a target in-band RMS,
+    in any (low, high) band on any named channel. Used by the protocol fuzzer's
+    `render_scenario`. Exactly one of `tone_amplitude_uv` / `noise_rms_uv` is set.
+
+    `start_s` / `end_s`     — injection window in seconds
+    `band`                  — (low_hz, high_hz); tones use the band center
+    `channel`               — channel name to inject into
+    `tone_amplitude_uv`     — peak amplitude of a pure sinusoid, or None
+    `noise_rms_uv`          — target in-band RMS of band-limited noise, or None
+    """
+
+    start_s: float
+    end_s: float
+    band: tuple[float, float]
+    channel: str
+    tone_amplitude_uv: float | None = None
+    noise_rms_uv: float | None = None
 
 
 class SignalGenerator:
@@ -78,6 +102,7 @@ class SignalGenerator:
         bursts: tuple[SMRBurst, ...] = (),
         noise_uv_rms: float = 10.0,
         seed: int = 42,
+        band_segment_bursts: tuple[BandSegmentBurst, ...] = (),
     ):
         if sample_rate_hz <= 0:
             raise ValueError("sample_rate_hz must be positive")
@@ -86,9 +111,17 @@ class SignalGenerator:
         self.sample_rate_hz = sample_rate_hz
         self.channels = tuple(channels)
         self.bursts = tuple(bursts)
+        self.band_segment_bursts = tuple(band_segment_bursts)
         self.noise_uv_rms = float(noise_uv_rms)
+        # Keep the base seed so band-noise bursts can derive stable,
+        # reproducible per-burst RNG seeds (see next_chunk).
+        self.seed = seed
         self._rng = np.random.default_rng(seed)
         self._sample_index = 0
+        # Cache of pre-rendered, RMS-normalized band-noise per burst, keyed by
+        # the burst's identity. Rendered once over the full burst window so the
+        # in-band RMS normalization is global (no per-chunk filter transients).
+        self._band_noise_cache: dict[int, np.ndarray] = {}
         # Pre-compute a pink-noise IIR filter (Paul Kellet's three-pole
         # approximation — good enough for synthetic EEG, cheap, stateful).
         self._pink_state = np.zeros((len(self.channels), 3), dtype=np.float64)
@@ -139,8 +172,118 @@ class SignalGenerator:
                 ch_idx = self.channels.index(burst.channel)
                 out[mask, ch_idx] += sinusoid
 
+        # Add band-segment bursts (fuzzer path). Mirrors the SMRBurst tone
+        # block intentionally; band-noise additionally supports a target RMS.
+        if self.band_segment_bursts:
+            nyq = self.sample_rate_hz / 2.0
+            for i, bsb in enumerate(self.band_segment_bursts):
+                if bsb.end_s <= start_s or bsb.start_s >= end_s:
+                    continue
+                if bsb.channel not in self.channels:
+                    continue
+                t_axis = (
+                    np.arange(n_samples) + self._sample_index
+                ) / self.sample_rate_hz
+                mask = (t_axis >= bsb.start_s) & (t_axis < bsb.end_s)
+                if not mask.any():
+                    continue
+                ch_idx = self.channels.index(bsb.channel)
+                if bsb.tone_amplitude_uv is not None:
+                    center = 0.5 * (bsb.band[0] + bsb.band[1])
+                    sinusoid = bsb.tone_amplitude_uv * np.sin(
+                        2 * np.pi * center * t_axis[mask]
+                    )
+                    out[mask, ch_idx] += sinusoid
+                elif bsb.noise_rms_uv is not None:
+                    band_noise = self._band_noise_for(i, bsb, nyq)
+                    # Map global-window sample indices to this chunk's masked
+                    # samples. The window starts at the first sample whose
+                    # time >= start_s.
+                    start_idx = int(np.ceil(bsb.start_s * self.sample_rate_hz))
+                    abs_idx = (np.arange(n_samples) + self._sample_index)[mask]
+                    rel = abs_idx - start_idx
+                    valid = (rel >= 0) & (rel < band_noise.size)
+                    if valid.any():
+                        chunk_mask = np.where(mask)[0][valid]
+                        out[chunk_mask, ch_idx] += band_noise[rel[valid]]
+
         self._sample_index += n_samples
         return out
 
+    def _band_noise_for(
+        self, burst_index: int, bsb: BandSegmentBurst, nyq: float
+    ) -> np.ndarray:
+        """Render (and cache) band-limited noise for a burst's full window,
+        normalized to the target in-band RMS.
 
-__all__ = ["SignalGenerator", "SMRBurst"]
+        Determinism: the per-burst RNG seed is derived from `self.seed` plus a
+        stable CRC32 of the burst's fields (no Python `hash()`, so it is
+        independent of PYTHONHASHSEED). Two `SignalGenerator`s built from the
+        same Scenario therefore produce byte-identical band-noise.
+        """
+        cached = self._band_noise_cache.get(burst_index)
+        if cached is not None:
+            return cached
+        start_idx = int(np.ceil(bsb.start_s * self.sample_rate_hz))
+        end_idx = int(np.ceil(bsb.end_s * self.sample_rate_hz))
+        length = max(end_idx - start_idx, 1)
+        key = repr(
+            (bsb.start_s, bsb.end_s, bsb.band, bsb.channel, bsb.noise_rms_uv)
+        ).encode("utf-8")
+        burst_seed = (int(self.seed) * 2_654_435_761 + zlib.crc32(key)) % (2**32)
+        burst_rng = np.random.default_rng(burst_seed)
+        wn = burst_rng.standard_normal(length)
+        sos = butter(
+            4, [bsb.band[0] / nyq, bsb.band[1] / nyq], btype="band", output="sos"
+        )
+        band_lim = sosfilt(sos, wn)
+        current_rms = float(np.sqrt(np.mean(band_lim**2))) or 1.0
+        band_lim *= bsb.noise_rms_uv / current_rms
+        self._band_noise_cache[burst_index] = band_lim
+        return band_lim
+
+
+def render_scenario(scenario, *, channels: tuple[str, ...]) -> "SignalGenerator":
+    """Build a `SignalGenerator` that, when iterated, produces the scenario's EEG.
+
+    Each `BandSegment` becomes a `BandSegmentBurst` (tone OR band-noise). The
+    existing `SMRBurst` path is left empty; the fuzzer drives everything through
+    `band_segment_bursts`.
+    """
+    from .fuzz.scenario import BandNoise, Tone  # late import to avoid cycle
+
+    bursts: list[BandSegmentBurst] = []
+    for seg in scenario.segments:
+        if isinstance(seg.content, Tone):
+            bursts.append(
+                BandSegmentBurst(
+                    start_s=seg.start_s,
+                    end_s=seg.end_s,
+                    band=seg.band,
+                    channel=seg.channel,
+                    tone_amplitude_uv=seg.content.amplitude_uv,
+                )
+            )
+        elif isinstance(seg.content, BandNoise):
+            bursts.append(
+                BandSegmentBurst(
+                    start_s=seg.start_s,
+                    end_s=seg.end_s,
+                    band=seg.band,
+                    channel=seg.channel,
+                    noise_rms_uv=seg.content.rms_uv,
+                )
+            )
+        else:  # pragma: no cover
+            raise TypeError(f"unsupported BandSegment.content: {type(seg.content)}")
+
+    return SignalGenerator(
+        sample_rate_hz=scenario.sample_rate_hz,
+        channels=channels,
+        bursts=(),
+        seed=scenario.seed,
+        band_segment_bursts=tuple(bursts),
+    )
+
+
+__all__ = ["BandSegmentBurst", "SignalGenerator", "SMRBurst", "render_scenario"]
