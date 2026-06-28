@@ -44,6 +44,32 @@ jobs:
       - name: Lint (real errors only)
         run: ruff check src/refrain --select F,E9
 
+  # Fuzz gate: runs the protocol fuzzer over the full corpus and fails only on
+  # genuine violations or errored files.  Skips are reported (coverage line in
+  # the log) but do NOT fail the build.  One dedicated Python 3.12 job avoids
+  # repeating a slow batch across the four-version matrix in the `test` job.
+  # Wall-clock on the measured dev machine: ~178s (max-scenarios 4).
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package + eval extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[eval,dev]"
+
+      - name: Fuzz the protocol corpus (gate on violations only)
+        run: |
+          refrain fuzz bench/protocols examples \
+            --library examples --max-scenarios 4
+
   # NOTE: This job cannot be validated locally — it requires a real GitHub
   # Actions runner with network access to download the Rust toolchain and
   # Python packages.  The toolchain wiring must be confirmed on first CI push.

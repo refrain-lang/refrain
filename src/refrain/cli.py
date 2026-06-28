@@ -12,10 +12,12 @@ v0.0r1 subcommands:
                                                   against a recording or
                                                   synthetic source; emit
                                                   events to stdout / JSONL
-  - `refrain fuzz FILE [--max-scenarios N]`     — auto-synthesise scenarios
+  - `refrain fuzz PATH... [--max-scenarios N]`  — auto-synthesise scenarios
                                                   from the IR, predict expected
                                                   behaviour, run the evaluator,
-                                                  and report (see PROTOCOL-FUZZER)
+                                                  and report; dirs are walked
+                                                  recursively for *.refrain
+                                                  (see PROTOCOL-FUZZER)
 
 The entry point is `main()`, wired in `pyproject.toml` as
 `refrain = "refrain.cli:main"`.
@@ -24,7 +26,6 @@ The entry point is `main()`, wired in `pyproject.toml` as
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import json
 import sys
 from pathlib import Path
@@ -37,6 +38,7 @@ from .cost import estimate_cost
 from .ir_print import print_cred_nf, print_ir
 from .parser import ParseError, parse_file
 from .resolver import ResolveError, resolve
+from .synthetic import channels_for_synthetic
 
 if TYPE_CHECKING:
     from .ir import IRProtocol
@@ -284,7 +286,12 @@ def _build_argparser() -> argparse.ArgumentParser:
         help="Generate a directed scenario corpus, run the evaluator, and "
              "check it against an independent semantics-derived oracle.",
     )
-    fuzz_cmd.add_argument("file", help="Path to the .refrain protocol file.")
+    fuzz_cmd.add_argument(
+        "paths", nargs="+",
+        help="Protocol file(s) or directory(ies). A directory is walked "
+             "recursively for *.refrain; multiple inputs or a directory run "
+             "in batch mode with an aggregate report.",
+    )
     fuzz_cmd.add_argument(
         "--max-scenarios", type=int, default=0, metavar="N",
         help="Cap the corpus at the first N scenarios (0 = no cap).",
@@ -350,7 +357,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if args.synthetic:
         # Pick channels matching the protocol's requires + the reference
         # electrodes its montages need.
-        channels = _channels_for_synthetic(ir)
+        channels = channels_for_synthetic(ir)
         bursts = _scheduled_bursts(args.duration, args.smr_bursts)
         gen = SignalGenerator(
             sample_rate_hz=int(amp.sample_rates_hz[-1]) if amp else 256,
@@ -398,17 +405,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
-def _channels_for_synthetic(ir) -> tuple[str, ...]:
-    """Pick channels for synthetic sources. Include everything the
-    protocol's requires asks for plus the standard ear channels (so
-    `linked_ears` references resolve)."""
-    channels = list(ir.requires.channels) or ["Cz"]
-    for ear in ("A1", "A2"):
-        if ear not in channels:
-            channels.append(ear)
-    return tuple(channels)
-
-
 def _scheduled_bursts(duration_s: float, n_bursts: int):
     """Schedule N evenly-spaced 3-second SMR bursts within `duration_s`.
 
@@ -431,149 +427,59 @@ def _scheduled_bursts(duration_s: float, n_bursts: int):
     return tuple(out)
 
 
-def _apply_phase_override(ir, phase_override):
-    """Rebuild `ir.session.phases` from a fuzz `PhaseOverride` so the
-    evaluator's warmup window matches what the oracle assumed.
-
-    The override carries durations in seconds; `IRPhase.duration_ms` is in
-    milliseconds, so we convert. Returns `ir` unchanged when there is no
-    override. Zero-length phases are dropped; the evaluator tolerates an
-    empty phases tuple, so no special-casing is needed."""
-    from .ir import IRPhase
-
-    if phase_override is None:
-        return ir
-    po = phase_override
-    spec = [
-        ("warmup", po.warmup_s, True),
-        ("training", po.training_s, False),
-        ("cooldown", po.cooldown_s, True),
-    ]
-    phases = tuple(
-        IRPhase(name=name, duration_ms=dur_s * 1000.0, output_muted=muted)
-        for name, dur_s, muted in spec
-        if dur_s > 0
-    )
-    new_session = dataclasses.replace(ir.session, phases=phases)
-    return dataclasses.replace(ir, session=new_session)
-
-
-def _fuzz_corpus(surface):
-    """Build the full directed + characterization + sweep scenario corpus."""
-    from .fuzz.generate import (
-        generate_characterization_probe,
-        generate_directed_scenarios,
-        generate_hold_duration_sweep,
-        generate_rank_sweep,
-    )
-
-    return (
-        list(generate_directed_scenarios(surface))
-        + list(generate_characterization_probe(surface))
-        + list(generate_rank_sweep(surface))
-        + list(generate_hold_duration_sweep(surface))
-    )
-
-
-def _fuzz_collar_samples(surface, chunk_size: int) -> int:
-    """Widest derive settle-collar (mirrors oracle.predict), quantised to
-    samples at the surface's sample rate."""
-    from .fuzz.oracle import settle_time_s
-
-    fs = surface.sample_rate_hz
-    chunk_s = chunk_size / fs
-    candidates = [
-        settle_time_s(sos=d.sos, tau_s=(d.smooth_tau_ms or 0.0) / 1000.0,
-                      chunk_s=chunk_s, fs=fs)
-        for d in surface.derives if d.sos is not None
-    ]
-    collar_s = max(candidates) if candidates else 0.0
-    return int(round(collar_s * fs))
-
-
-def _fuzz_one_scenario(scenario, *, ir, surface, channels, collar_samples, chunk_size):
-    """Render + run + oracle-predict + check a single scenario. Returns a
-    PerScenarioResult; may raise VacuityError (a generator bug)."""
-    from .eval_ import eval_protocol
-    from .fuzz.check import ActualEvent, check_scenario
-    from .fuzz.oracle import predict
-    from .sources import SyntheticSource
-    from .synthetic import render_scenario
-
-    fs = surface.sample_rate_hz
-    scenario_ir = _apply_phase_override(ir, scenario.phase_override)
-    gen = render_scenario(scenario, channels=channels)
-    source = SyntheticSource(gen, duration_s=scenario.duration_s)
-
-    actual: list[ActualEvent] = []
-    for ev in eval_protocol(scenario_ir, source, chunk_size=chunk_size):
-        if ev.kind != "event":
-            continue
-        actual.append(ActualEvent(
-            sample=int(round(ev.timestamp_s * fs)), kind=ev.kind, channel=ev.channel,
-        ))
-
-    expected = predict(scenario, surface)
-    return check_scenario(
-        scenario_label=scenario.label,
-        expected=expected,
-        actual=actual,
-        fs=fs,
-        collar_samples=collar_samples,
-        coverage_tags=scenario.coverage_tags,
-        total_samples=int(round(scenario.duration_s * fs)),
-    )
-
-
 def _cmd_fuzz(args: argparse.Namespace) -> int:
-    """Generate the directed scenario corpus, run each scenario through the
-    evaluator, check it against the independent oracle, and render a report."""
-    from .fuzz.check import VacuityError, check_metamorphic_monotonic
-    from .fuzz.report import render_report
-    from .fuzz.scenario import Verdict
-    from .fuzz.surface import build_surface
+    """Dispatch to single-file or batch mode depending on the positionals."""
+    paths = args.paths
+    if len(paths) == 1 and not Path(paths[0]).is_dir():
+        return _fuzz_single(paths[0], args)
+    return _fuzz_batch(paths, args)
 
+
+def _fuzz_batch(paths: list[str], args: argparse.Namespace) -> int:
+    """Fuzz multiple protocol files/dirs and print an aggregate coverage report."""
+    from .fuzz.runner import (
+        batch_exit_code,
+        discover_protocols,
+        render_batch_report,
+        run_batch,
+    )
+
+    def resolve_fn(path: str):
+        ir = _parse_resolve_or_report(argparse.Namespace(**{**vars(args), "file": path}))
+        if isinstance(ir, int):
+            return f"parse/resolve error (exit {ir})"
+        return ir
+
+    total = len(discover_protocols(paths))
+    outcomes = run_batch(
+        paths, max_scenarios=args.max_scenarios, chunk_size=args.chunk_size,
+        resolve_fn=resolve_fn,
+    )
+    print(render_batch_report(outcomes, total))
+    return batch_exit_code(outcomes)
+
+
+def _fuzz_single(path: str, args: argparse.Namespace) -> int:
+    """Fuzz a single protocol file and map the outcome to an exit code."""
+    from .fuzz.check import VacuityError
+    from .fuzz.runner import SKIPPED, fuzz_protocol
+
+    args = argparse.Namespace(**{**vars(args), "file": path})
     ir = _parse_resolve_or_report(args)
     if isinstance(ir, int):
-        return ir   # error code from parse/resolve
-
-    surface = build_surface(ir)
-    corpus = _fuzz_corpus(surface)
-    if args.max_scenarios > 0:
-        corpus = corpus[: args.max_scenarios]
-
-    collar_samples = _fuzz_collar_samples(surface, args.chunk_size)
-    channels = _channels_for_synthetic(ir)
-
-    results = []
-    all_coverage_tags: set[str] = set()
-    for scenario in corpus:
-        all_coverage_tags |= set(scenario.coverage_tags)
-        try:
-            results.append(_fuzz_one_scenario(
-                scenario, ir=ir, surface=surface, channels=channels,
-                collar_samples=collar_samples, chunk_size=args.chunk_size,
-            ))
-        except VacuityError as exc:
-            print(f"GENERATOR BUG: {exc}", file=sys.stderr)
-            return 2
-
-    metamorphic_violations = (
-        check_metamorphic_monotonic(results, tag_prefix="metamorphic:rank_sweep:")
-        + check_metamorphic_monotonic(results, tag_prefix="metamorphic:hold_duration_sweep")
-    )
-
-    print(render_report(
-        protocol_name=surface.protocol_name,
-        results=results,
-        metamorphic_violations=metamorphic_violations,
-        all_coverage_tags=all_coverage_tags,
-    ), file=sys.stderr)
-
-    has_violation = any(
-        r.verdict in (Verdict.MISSED, Verdict.SPURIOUS) for r in results
-    )
-    return 1 if (has_violation or metamorphic_violations) else 0
+        return ir
+    try:
+        outcome = fuzz_protocol(
+            ir, path=path, max_scenarios=args.max_scenarios, chunk_size=args.chunk_size,
+        )
+    except VacuityError as exc:
+        print(f"GENERATOR BUG: {exc}", file=sys.stderr)
+        return 2
+    if outcome.status == SKIPPED:
+        print(f"SKIPPED (unsupported: {outcome.reason})")
+        return 0
+    print(outcome.report, file=sys.stderr)            # FUZZED
+    return 0 if outcome.passed else 1
 
 
 def _parse_resolve_or_report(args: argparse.Namespace) -> IRProtocol | int:
@@ -605,13 +511,13 @@ def _parse_resolve_or_report(args: argparse.Namespace) -> IRProtocol | int:
     except ParseError as exc:
         print(f"error: {path}: parse failed", file=sys.stderr)
         print(str(exc), file=sys.stderr)
-        return 1
+        return 2
     try:
         return resolve(file_ast, amp, parent_loader=loader)
     except ResolveError as exc:
         print(f"error: {path}: resolve failed", file=sys.stderr)
         print(str(exc), file=sys.stderr)
-        return 1
+        return 2
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -28,6 +28,7 @@ from ..ir import (
     IRThresholdRef,
 )
 from ..ir_json import ir_to_json_obj
+from .errors import UnsupportedProtocol
 
 # Default Hilbert FIR length used by the runtime impl when `taps` is not given
 # (the resolver/impl bakes 65 taps -> group delay (65 - 1) // 2 == 32).
@@ -170,12 +171,8 @@ def _band_from_call(call: IRCall) -> tuple[float, float]:
     """Read `band: (lo Hz, hi Hz)` from a bandpass call."""
     band = _arg(call, "band")
     if band is None:
-        # v1 supports only the edge-frequency form `bandpass(band=(lo, hi))`.
-        # The center/bandwidth form would land here; surface it clearly.
-        raise ValueError(
-            "surface: bandpass call has no `band` argument "
-            "(v1 supports only the band=(lo, hi) form)"
-        )
+        # The center:/bandwidth: declaration form lands here (Increment 2).
+        raise UnsupportedProtocol("center/bandwidth bandpass")
     lo, hi = band.elements  # IRTuple of two IRNumberLit (Hz)
     return (float(lo.value), float(hi.value))
 
@@ -361,9 +358,12 @@ def _reward_condition_from_ir(ir: IRProtocol) -> ConditionNode:
     event = ir.reward.event
     if isinstance(event, IRCall) and event.callee == "dwell":
         cond = _arg(event, "condition")
-        node = _condition_from_ir(cond)
+        node = _condition_from_ir(cond)  # unrecognized exprs -> ValueError (backstop)
         if isinstance(node, ConditionNode):
             return node
+        if isinstance(node, ConditionLeaf):
+            # A bare dwell(above/below(...)) reward (Increment 1).
+            raise UnsupportedProtocol("single-condition reward")
     raise ValueError("surface: reward.event has no all_of/any_of condition")
 
 
