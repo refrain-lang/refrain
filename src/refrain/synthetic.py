@@ -286,4 +286,21 @@ def render_scenario(scenario, *, channels: tuple[str, ...]) -> "SignalGenerator"
     )
 
 
-__all__ = ["BandSegmentBurst", "SignalGenerator", "SMRBurst", "render_scenario"]
+def channels_for_synthetic(ir) -> tuple[str, ...]:
+    """Channels for synthetic sources: everything the protocol's `requires`
+    asks for plus the standard ear channels (so `linked_ears` references
+    resolve). Falls back to `Cz` when no channels are required."""
+    channels = list(ir.requires.channels) or ["Cz"]
+    for ear in ("A1", "A2"):
+        if ear not in channels:
+            channels.append(ear)
+    return tuple(channels)
+
+
+__all__ = [
+    "BandSegmentBurst",
+    "SignalGenerator",
+    "SMRBurst",
+    "channels_for_synthetic",
+    "render_scenario",
+]

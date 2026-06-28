@@ -37,6 +37,7 @@ from .cost import estimate_cost
 from .ir_print import print_cred_nf, print_ir
 from .parser import ParseError, parse_file
 from .resolver import ResolveError, resolve
+from .synthetic import channels_for_synthetic
 
 if TYPE_CHECKING:
     from .ir import IRProtocol
@@ -350,7 +351,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if args.synthetic:
         # Pick channels matching the protocol's requires + the reference
         # electrodes its montages need.
-        channels = _channels_for_synthetic(ir)
+        channels = channels_for_synthetic(ir)
         bursts = _scheduled_bursts(args.duration, args.smr_bursts)
         gen = SignalGenerator(
             sample_rate_hz=int(amp.sample_rates_hz[-1]) if amp else 256,
@@ -396,17 +397,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
     for ch in sorted(by_channel):
         print(f"  {ch}: {by_channel[ch]}", file=sys.stderr)
     return 0
-
-
-def _channels_for_synthetic(ir) -> tuple[str, ...]:
-    """Pick channels for synthetic sources. Include everything the
-    protocol's requires asks for plus the standard ear channels (so
-    `linked_ears` references resolve)."""
-    channels = list(ir.requires.channels) or ["Cz"]
-    for ear in ("A1", "A2"):
-        if ear not in channels:
-            channels.append(ear)
-    return tuple(channels)
 
 
 def _scheduled_bursts(duration_s: float, n_bursts: int):
@@ -543,7 +533,7 @@ def _cmd_fuzz(args: argparse.Namespace) -> int:
         corpus = corpus[: args.max_scenarios]
 
     collar_samples = _fuzz_collar_samples(surface, args.chunk_size)
-    channels = _channels_for_synthetic(ir)
+    channels = channels_for_synthetic(ir)
 
     results = []
     all_coverage_tags: set[str] = set()
