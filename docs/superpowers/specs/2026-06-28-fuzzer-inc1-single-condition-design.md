@@ -107,51 +107,85 @@ derives/thresholds:
   is already referenced), so existing fuzzable protocols are unaffected — a
   regression guard asserts identical corpora for the 4 currently-fuzzed protocols.
 
-After scoping, the only remaining single-leaf scenarios are the reward-referenced
-ones, which the per-scenario probe already shows are crisp (the
-`percentile_warmup_then_spike` scenario establishes the percentile window). If any
-reward-referenced single-leaf scenario is still vacuous after scoping, the plan
-extends the percentile-warmup seeding to that generator (the oracle already does
-the rank reasoning; the generator must feed it a warmed window) — the
-fail-loud-on-vacuity invariant stays intact (no vacuity exemptions).
+### Generalize the hardcoded `smr_envelope` driver (above + below)
 
-## New fixture
+Three "drive the reward-positive state" generators currently hardcode a derive
+literally named `smr_envelope` and assume **above-semantics** (spike the band up →
+reward): `_dwell_scenarios` (`dwell_met`/`dwell_missed`), `_percentile_warmup_scenarios`
+(`percentile_warmup_then_spike`), and `generate_hold_duration_sweep`. A
+single-condition protocol with any other derive name `StopIteration`s there.
 
-Add `bench/protocols/micro_single_condition.refrain`: a minimal clean
-single-condition protocol — one band-envelope derive, one percentile threshold, a
-sole `above(derive, threshold)` dwell reward, no orphan derives/thresholds. (Model
-on `examples/smr_cz.refrain` with the `all_of([...])` replaced by a bare `above`,
-and the unused theta/high-beta derives + thresholds removed.) This is the TDD
-target and bumps refrain CI coverage to `fuzzed 5 / total 23`.
+Replace the hardcoded lookup with a **driven derive** derived from the reward
+condition:
+
+- **Driven derive + direction:** the single leaf's derive, driven to its TRUE side
+  using the leaf's op (reuse `_amplitude_for_truth(leaf.op, derive, thr, side="true")`):
+  an `above` leaf drives the band **up** (tone spike); a `below` leaf drives it
+  **down** (quiet / no segment, so the envelope stays under threshold). For an
+  `all_of`/`any_of` reward, the driven derive is the **first `above` leaf's derive**
+  with the existing fixed amplitude — which is `smr_envelope` at the current
+  amplitude for all 4 current protocols, making this a **provable no-op** (the
+  regression guard above covers it).
+- This is what makes the increment cover both a sole `above` **and** a sole `below`
+  leaf. The per-leaf *pivotal* scenarios are already op-aware; only these three
+  "all-true driver" generators need the op-aware driven-derive change.
+
+After scoping + the driven-derive change, the only remaining single-leaf scenarios
+are the reward-referenced ones, which the per-scenario probe shows are crisp for an
+above leaf (the `percentile_warmup_then_spike` pattern establishes the percentile
+window). The plan must reproduce the **below** case per-scenario and confirm the
+inverted driver is non-vacuous; if a reward-referenced single-leaf scenario is
+still vacuous, the plan extends the percentile-warmup seeding to that generator —
+the fail-loud-on-vacuity invariant stays intact (no vacuity exemptions).
+
+## New fixtures
+
+The refrain repo has no clean single-condition example, so add two (one per op) —
+both minimal: one band-envelope derive, one percentile threshold, a sole leaf dwell
+reward, no orphan derives/thresholds (model on `examples/smr_cz.refrain` with the
+`all_of([...])` replaced by a bare leaf and the unused derives/thresholds removed):
+
+- `bench/protocols/micro_single_above.refrain` — sole `above(envelope, threshold)`
+  (uptrain).
+- `bench/protocols/micro_single_below.refrain` — sole `below(envelope, threshold)`
+  (downtrain), exercising the inverted driver.
+
+Both are TDD targets and bump refrain CI coverage from `fuzzed 4 / total 22` to
+`fuzzed 6 / total 24`.
 
 ## Components touched
 
 - `src/refrain/fuzz/surface.py` — supportability detector + `reward_condition` type.
 - `src/refrain/fuzz/generate.py` — scope rank sweeps + characterization probes to
-  the reward condition's leaves; (if needed) percentile-warmup seeding for the
-  single-leaf case.
-- `bench/protocols/micro_single_condition.refrain` — new fixture.
+  the reward condition's leaves; generalize the `smr_envelope`-hardcoded
+  dwell/warmup/hold generators to the op-aware driven derive; (if needed)
+  percentile-warmup seeding for the single-leaf case.
+- `bench/protocols/micro_single_above.refrain`, `…/micro_single_below.refrain` —
+  new fixtures.
 - Tests under `tests/fuzz/` (see below). `oracle.py` should need **no change** (it
   already walks a leaf); if a single-leaf prediction gap appears, it is in scope.
 
 ## Testing (TDD)
 
-- **Detector** (`test_surface.py` / `test_unsupported.py`): the new fixture's sole
-  leaf builds a surface (no raise); `composite_smr_theta` →
+- **Detector** (`test_surface.py` / `test_unsupported.py`): both new fixtures' sole
+  leaves build a surface (no raise); `composite_smr_theta` →
   `UnsupportedProtocol("composite-signal reward condition")`; `dyadic_…` →
   `"non-bandpass (coherence) reward signal"`; `alpha_theta` → `"reward condition
   without a resolvable threshold"`; an `all_of` protocol still builds.
 - **End-to-end fuzz** (`test_runner.py` / `test_end_to_end.py`): `fuzz_protocol` on
-  the new fixture → `FUZZED`, `passed is True`, non-vacuous (no `VacuityError`).
-- **Generator scoping** (`test_generate.py`): for a single-leaf surface, the rank
-  sweep covers only the leaf's threshold and the characterization probe only the
-  leaf's derive; for an `all_of` surface (e.g. `realistic_smr`) the generated
-  corpus is **unchanged** (regression guard).
-- **Single-file CLI** (`test_cli_fuzz.py`): the new fixture → exit 0 with a report;
+  each new fixture (above **and** below) → `FUZZED`, `passed is True`, non-vacuous
+  (no `VacuityError`).
+- **Generator scoping + driven derive** (`test_generate.py`): for a single-leaf
+  surface, the rank sweep covers only the leaf's threshold and the characterization
+  probe only the leaf's derive; the dwell/warmup/hold generators target the leaf's
+  derive (not a hardcoded `smr_envelope`) with op-correct direction; for an `all_of`
+  surface (e.g. `realistic_smr`) the generated corpus is **byte-identical**
+  (regression guard comparing labels + coverage tags).
+- **Single-file CLI** (`test_cli_fuzz.py`): a new fixture → exit 0 with a report;
   `composite_smr_theta` → exit 0 with `SKIPPED (unsupported: composite-signal
   reward condition)`.
 - **Batch coverage** (`test_batch.py`): the real-corpus aggregate now shows
-  `fuzzed 5 / total 23` with the three entangled protocols under their new
+  `fuzzed 6 / total 24` with the three entangled protocols under their new
   reasons; exit 0.
 
 All via `.venv/bin/python -m pytest tests/fuzz/ -q`; `src/refrain/fuzz/` stays
