@@ -423,52 +423,30 @@ def _scheduled_bursts(duration_s: float, n_bursts: int):
 def _cmd_fuzz(args: argparse.Namespace) -> int:
     """Generate the directed scenario corpus, run each scenario through the
     evaluator, check it against the independent oracle, and render a report."""
-    from .fuzz.check import VacuityError, check_metamorphic_monotonic
-    from .fuzz.report import render_report
-    from .fuzz.scenario import Verdict
-    from .fuzz.surface import build_surface
+    return _fuzz_single(args.file, args)
 
+
+def _fuzz_single(path: str, args: argparse.Namespace) -> int:
+    """Fuzz a single protocol file and map the outcome to an exit code."""
+    from .fuzz.check import VacuityError
+    from .fuzz.runner import FUZZED, SKIPPED, fuzz_protocol
+
+    args = argparse.Namespace(**{**vars(args), "file": path})
     ir = _parse_resolve_or_report(args)
     if isinstance(ir, int):
-        return ir   # error code from parse/resolve
-
-    surface = build_surface(ir)
-    corpus = _fuzz_corpus(surface)
-    if args.max_scenarios > 0:
-        corpus = corpus[: args.max_scenarios]
-
-    collar_samples = _fuzz_collar_samples(surface, args.chunk_size)
-    channels = channels_for_synthetic(ir)
-
-    results = []
-    all_coverage_tags: set[str] = set()
-    for scenario in corpus:
-        all_coverage_tags |= set(scenario.coverage_tags)
-        try:
-            results.append(_fuzz_one_scenario(
-                scenario, ir=ir, surface=surface, channels=channels,
-                collar_samples=collar_samples, chunk_size=args.chunk_size,
-            ))
-        except VacuityError as exc:
-            print(f"GENERATOR BUG: {exc}", file=sys.stderr)
-            return 2
-
-    metamorphic_violations = (
-        check_metamorphic_monotonic(results, tag_prefix="metamorphic:rank_sweep:")
-        + check_metamorphic_monotonic(results, tag_prefix="metamorphic:hold_duration_sweep")
-    )
-
-    print(render_report(
-        protocol_name=surface.protocol_name,
-        results=results,
-        metamorphic_violations=metamorphic_violations,
-        all_coverage_tags=all_coverage_tags,
-    ), file=sys.stderr)
-
-    has_violation = any(
-        r.verdict in (Verdict.MISSED, Verdict.SPURIOUS) for r in results
-    )
-    return 1 if (has_violation or metamorphic_violations) else 0
+        return ir
+    try:
+        outcome = fuzz_protocol(
+            ir, path=path, max_scenarios=args.max_scenarios, chunk_size=args.chunk_size,
+        )
+    except VacuityError as exc:
+        print(f"GENERATOR BUG: {exc}", file=sys.stderr)
+        return 2
+    if outcome.status == SKIPPED:
+        print(f"SKIPPED (unsupported: {outcome.reason})")
+        return 0
+    print(outcome.report, file=sys.stderr)            # FUZZED
+    return 0 if outcome.passed else 1
 
 
 def _parse_resolve_or_report(args: argparse.Namespace) -> IRProtocol | int:
@@ -500,13 +478,13 @@ def _parse_resolve_or_report(args: argparse.Namespace) -> IRProtocol | int:
     except ParseError as exc:
         print(f"error: {path}: parse failed", file=sys.stderr)
         print(str(exc), file=sys.stderr)
-        return 1
+        return 2
     try:
         return resolve(file_ast, amp, parent_loader=loader)
     except ResolveError as exc:
         print(f"error: {path}: resolve failed", file=sys.stderr)
         print(str(exc), file=sys.stderr)
-        return 1
+        return 2
 
 
 def main(argv: list[str] | None = None) -> int:
