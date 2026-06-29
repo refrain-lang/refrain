@@ -14,7 +14,7 @@ without depending on the Python parser or SciPy.
 |---|---|
 | Version string | `"0.1"` |
 | Source constant | `IR_JSON_VERSION = "0.1"` in `src/refrain/ir_json.py` |
-| Schema | `refrain-core/schema/ir-json-v0.1.schema.json` |
+| Schema | `src/refrain/schema/ir-json-v0.1.schema.json` |
 
 ### Compatibility policy
 
@@ -283,7 +283,7 @@ threshold, reward, and conditional output expressions.
 
 ## 7. Validation pointers
 
-- **Structural validation** — `refrain-core/schema/ir-json-v0.1.schema.json`
+- **Structural validation** — `src/refrain/schema/ir-json-v0.1.schema.json`
   (JSON Schema Draft 2020-12). Validates node shapes, required fields, and
   the closed `Coeffs` field set.
 

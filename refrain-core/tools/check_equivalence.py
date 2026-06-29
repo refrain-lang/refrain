@@ -14,7 +14,7 @@ Exits 0 only when ALL FIVE steps succeed:
      REFRAIN_EVAL_BACKEND=rust — proving Python↔Rust behavioral parity.
   5. IR-JSON golden vectors (tests/fixtures/*.ir.json) validate against the
      published JSON Schema matching each vector's `refrain_ir_version`
-     (refrain-core/schema/ir-json-v0.1.schema.json or ir-json-v0.2.schema.json).
+     (src/refrain/schema/ir-json-v0.1.schema.json or ir-json-v0.2.schema.json).
 
 REUSE: calls the existing gen_fixtures.py as a subprocess; does not duplicate
        fixture-generation logic.  The Rust tests already exist in

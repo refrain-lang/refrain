@@ -87,7 +87,7 @@ equivalent check against its own protocols.)
 ## 4. Pin for reproducibility
 
 - Pin a specific Refrain commit/version and the **IR-JSON schema version**
-  (currently `0.1`, `refrain-core/schema/ir-json-v0.1.schema.json`) your
+  (currently `0.1`, `src/refrain/schema/ir-json-v0.1.schema.json`) your
   protocol assets target. See `docs/IR-JSON.md`.
 - When CR distributes wheels, pin exact `refrain-core` version **+ hash** and
   prefer an index-scoped install (avoid `--extra-index-url` dependency
