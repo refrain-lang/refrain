@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 from fastapi.testclient import TestClient
 
 import refrain
@@ -55,3 +58,19 @@ def test_version():
     body = client.get("/version").json()
     assert body["refrain_version"] == refrain.__version__
     assert body["ir_versions_supported"] == ["0.1", "0.2"]
+
+
+def test_compile_returns_canonical_text_matching_hash():
+    r = client.post("/compile", json={"refrain": SMOKE_SRC, "sample_rate_hz": 256.0})
+    body = r.json()
+    text = body["ir_json_text"]
+    # The canonical string parses back to the same object the editor sees.
+    assert json.loads(text) == body["ir_json"]
+    # Cross-language integrity: sha256(canonical bytes) == content_hash.
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    assert body["meta"]["content_hash"] == f"sha256:{digest}"
+
+
+def test_compile_error_has_null_ir_json_text():
+    r = client.post("/compile", json={"refrain": 'protocol "oops" {'})
+    assert r.json()["ir_json_text"] is None

@@ -126,8 +126,11 @@ def _cmd_compile_json(args: argparse.Namespace) -> int:
         print(f"error: {path}: schema: {result.schema_error}", file=sys.stderr)
         return 1
 
-    payload = result.meta if args.meta else result.ir_json
-    print(json.dumps(payload, indent=2))
+    if args.meta:
+        print(json.dumps(result.meta, indent=2))
+    else:
+        # Emit the verbatim canonical bytes content_hash covers (not a re-dump).
+        print(result.ir_json_text)
     return 0
 
 

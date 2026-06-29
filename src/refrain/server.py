@@ -47,6 +47,7 @@ def compile_endpoint(req: CompileRequest) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=result.schema_error)
     return {
         "ir_json": result.ir_json,
+        "ir_json_text": result.ir_json_text,
         "meta": result.meta,
         "errors": [asdict(d) for d in result.errors],
     }

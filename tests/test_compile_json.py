@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 import refrain
@@ -112,3 +113,17 @@ def test_validate_unknown_version_is_reported():
 
     err = _validate({"refrain_ir_version": "9.9"})
     assert err is not None
+
+
+def test_ir_json_text_is_canonical_and_matches_content_hash():
+    result = compile_to_ir_json(SMOKE_SRC, sample_rate_hz=256.0)
+    # ir_json_text is the exact canonical serialization content_hash covers.
+    assert result.ir_json_text == json.dumps(result.ir_json, indent=2)
+    # The integrity invariant: sha256(canonical bytes) == content_hash.
+    digest = hashlib.sha256(result.ir_json_text.encode("utf-8")).hexdigest()
+    assert result.meta["content_hash"] == f"sha256:{digest}"
+
+
+def test_ir_json_text_is_none_on_error():
+    result = compile_to_ir_json(BAD_PARSE_SRC)
+    assert result.ir_json_text is None
