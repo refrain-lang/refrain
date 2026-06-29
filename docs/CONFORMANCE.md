@@ -212,7 +212,7 @@ Verified against the actual fixture files in `refrain-core/tests/fixtures/`.
 
 ## 6. Structural validation
 
-The `refrain-core/schema/ir-json-v0.1.schema.json` (JSON Schema Draft 2020-12)
+The `src/refrain/schema/ir-json-v0.1.schema.json` (JSON Schema Draft 2020-12)
 validates the structural shape of any `.ir.json` file: required fields, node
 discriminator values, and the closed `Coeffs` field set.
 

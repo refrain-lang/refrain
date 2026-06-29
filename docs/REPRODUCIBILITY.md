@@ -73,7 +73,7 @@ CI as `rust-equivalence`.
 
 ### (c) The wire format is pinned by schema and documentation
 
-`refrain-core/schema/ir-json-v0.1.schema.json` (JSON Schema Draft 2020-12)
+`src/refrain/schema/ir-json-v0.1.schema.json` (JSON Schema Draft 2020-12)
 structurally validates every IR-JSON document. The schema is closed on
 `Coeffs` (the one object that must not drift) and open on everything else
 (consumers MUST ignore unknown fields).
