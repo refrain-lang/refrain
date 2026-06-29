@@ -40,12 +40,19 @@ class CompileResult:
 
     `schema_error` is set only when the emitted IR-JSON fails its own schema
     (a compiler bug); the HTTP layer maps it to 500. It is never a user error.
+
+    `ir_json_text` is the verbatim canonical serialization that `content_hash`
+    covers (`json.dumps(ir_json, indent=2)`). Non-Python consumers (the Go
+    portal, the browser editor) cannot reproduce Python's serialization
+    byte-for-byte, so they must forward *these* bytes unchanged for the
+    `sha256(bytes) == content_hash` integrity check to hold. None on error.
     """
 
     ir_json: dict[str, Any] | None
     meta: dict[str, Any]
     errors: list[Diagnostic]
     schema_error: str | None = None
+    ir_json_text: str | None = None
 
 
 def _content_hash(canonical: str) -> str:
@@ -131,4 +138,10 @@ def compile_to_ir_json(
         "content_hash": _content_hash(canonical),
     }
     schema_error = _validate(obj) if validate else None
-    return CompileResult(ir_json=obj, meta=meta, errors=[], schema_error=schema_error)
+    return CompileResult(
+        ir_json=obj,
+        meta=meta,
+        errors=[],
+        schema_error=schema_error,
+        ir_json_text=canonical,
+    )
