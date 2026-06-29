@@ -11,6 +11,8 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from functools import cache
+from importlib.resources import files
 from typing import Any
 
 from . import __version__
@@ -50,6 +52,47 @@ def _content_hash(canonical: str) -> str:
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+@cache
+def _load_schema(version: str) -> dict[str, Any]:
+    """Load the bundled IR-JSON schema for `version` (e.g. "0.1").
+
+    Raises FileNotFoundError if no schema ships for that version.
+    """
+    resource = files("refrain") / "schema" / f"ir-json-v{version}.schema.json"
+    schema: dict[str, Any] = json.loads(resource.read_text())
+    return schema
+
+
+def _validate(obj: dict[str, Any]) -> str | None:
+    """Validate emitted IR-JSON against its bundled schema.
+
+    Returns an error string when the compiler produced non-conformant IR
+    (a compiler bug), else None. Returns None (skips) when `jsonschema` is
+    not installed — the core install carries the schema files but not the
+    validator; the [server] extra adds it.
+    """
+    try:
+        import jsonschema  # type: ignore[import-untyped]  # noqa: PLC0415
+    except ModuleNotFoundError:
+        return None
+
+    version = obj.get("refrain_ir_version")
+    if not isinstance(version, str):
+        return "emitted IR-JSON has no refrain_ir_version"
+    try:
+        schema = _load_schema(version)
+    except FileNotFoundError:
+        return f"no bundled schema for ir version {version!r}"
+
+    errors = sorted(
+        jsonschema.Draft202012Validator(schema).iter_errors(obj),
+        key=lambda e: list(e.path),
+    )
+    if errors:
+        return f"emitted IR-JSON failed schema v{version}: {errors[0].message}"
+    return None
+
+
 def compile_to_ir_json(
     source: str, *, sample_rate_hz: float | None = None, validate: bool = True
 ) -> CompileResult:
@@ -87,4 +130,5 @@ def compile_to_ir_json(
         "sample_rate_hz": obj["sample_rate_hz"],
         "content_hash": _content_hash(canonical),
     }
-    return CompileResult(ir_json=obj, meta=meta, errors=[])
+    schema_error = _validate(obj) if validate else None
+    return CompileResult(ir_json=obj, meta=meta, errors=[], schema_error=schema_error)

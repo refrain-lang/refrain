@@ -84,3 +84,31 @@ def test_parse_error_returns_diagnostic_without_location():
     assert len(result.errors) == 1
     assert result.errors[0].stage == "parse"
     assert result.errors[0].message  # non-empty (Lark's message)
+
+
+def test_bundled_schema_loads_for_both_versions():
+    from refrain.compile_json import _load_schema
+
+    assert _load_schema("0.1")["$id"].endswith("ir-json-v0.1.schema.json")
+    assert _load_schema("0.2")["$id"].endswith("ir-json-v0.2.schema.json")
+
+
+def test_valid_compile_has_no_schema_error():
+    result = compile_to_ir_json(SMOKE_SRC, sample_rate_hz=256.0)
+    assert result.schema_error is None
+
+
+def test_validate_flags_nonconformant_ir():
+    from refrain.compile_json import _validate
+
+    # An object that claims v0.1 but is missing every required field.
+    err = _validate({"refrain_ir_version": "0.1"})
+    assert err is not None
+    assert "0.1" in err
+
+
+def test_validate_unknown_version_is_reported():
+    from refrain.compile_json import _validate
+
+    err = _validate({"refrain_ir_version": "9.9"})
+    assert err is not None
