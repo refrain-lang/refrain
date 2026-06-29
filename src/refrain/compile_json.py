@@ -15,8 +15,8 @@ from typing import Any
 
 from . import __version__
 from .ir_json import ir_to_json_obj
-from .parser import parse
-from .resolver import resolve
+from .parser import ParseError, parse
+from .resolver import ResolveError, resolve
 
 
 @dataclass(frozen=True)
@@ -53,7 +53,32 @@ def _content_hash(canonical: str) -> str:
 def compile_to_ir_json(
     source: str, *, sample_rate_hz: float | None = None, validate: bool = True
 ) -> CompileResult:
-    ir = resolve(parse(source))
+    base_meta: dict[str, Any] = {
+        "refrain_version": __version__,
+        "ir_version": None,
+        "sample_rate_hz": sample_rate_hz,
+        "content_hash": None,
+    }
+
+    try:
+        file_ast = parse(source)
+    except ParseError as exc:
+        return CompileResult(None, base_meta, [Diagnostic("parse", str(exc))])
+
+    try:
+        ir = resolve(file_ast)
+    except ResolveError as exc:
+        loc = exc.loc
+        diag = Diagnostic(
+            stage="resolve",
+            message=str(exc),
+            line=loc.line if loc is not None else None,
+            col=loc.col if loc is not None else None,
+            end_line=loc.end_line if loc is not None else None,
+            end_col=loc.end_col if loc is not None else None,
+        )
+        return CompileResult(None, base_meta, [diag])
+
     obj = ir_to_json_obj(ir, sample_rate_hz=sample_rate_hz)
     canonical = json.dumps(obj, indent=2)
     meta = {
