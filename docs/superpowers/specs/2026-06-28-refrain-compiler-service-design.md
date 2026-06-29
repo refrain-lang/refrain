@@ -120,6 +120,7 @@ convenience is explicitly out of scope (YAGNI) and noted as a possible later add
 ```json
 {
   "ir_json": { "refrain_ir_version": "0.1", "name": "...", "sample_rate_hz": 250, ... },
+  "ir_json_text": "{\n  \"refrain_ir_version\": \"0.1\",\n  ... }",
   "meta": {
     "refrain_version": "0.11.0",
     "ir_version": "0.1",
@@ -129,6 +130,10 @@ convenience is explicitly out of scope (YAGNI) and noted as a possible later add
   "errors": []
 }
 ```
+
+`ir_json_text` is the **verbatim canonical serialization** `content_hash` covers
+(`json.dumps(ir_json, indent=2)`). It is the authoritative artifact: consumers store/forward
+*these bytes* and use `ir_json` (the parsed object) only for display. See §4.2. `null` on error.
 
 **Response 200 — compile diagnostics (program has errors):**
 ```json
@@ -164,13 +169,15 @@ needs to store an artifact row and bind the program signature:
   insertion order preserved — deterministic for fixed input), UTF-8 encoded. `null` when
   compilation failed.
 
-  **Integrity caveat (cross-team):** the brief (§4.1) binds this hash into the program
-  signature so the phone verifies the exact IR it runs. That loop only closes if every hop
-  hashes the *same* bytes. Because the portal is Go and will not re-run Python
-  `ir_to_json`, the portal must **persist and serve the canonical bytes verbatim** (base64
-  of exactly the form the service hashed) rather than re-serialize the parsed object. The
-  response therefore treats this canonical serialization — not the convenience `ir_json`
-  object — as the authoritative artifact. Flagged for cross-team confirmation (§9.4).
+  **Integrity caveat (cross-team) — RESOLVED via `ir_json_text`:** the brief (§4.1) binds
+  this hash into the program signature so the phone verifies the exact IR it runs. That loop
+  only closes if every hop hashes the *same* bytes. Because the portal is Go and will not
+  re-run Python `ir_to_json`, `/compile` returns the canonical serialization as a verbatim
+  string field, **`ir_json_text`** (the exact bytes `content_hash` is computed over). The
+  portal must **persist and serve those `ir_json_text` bytes verbatim** rather than
+  re-serialize the parsed `ir_json` object. The CLI (`refrain compile-json`) prints these
+  same bytes. So the authoritative artifact is `ir_json_text`, not the convenience `ir_json`
+  object. (Originally flagged §9.4; closed by the field added at the portal team's request.)
 
 ### 4.3 Aux endpoints
 - `GET /healthz` → `200 {"status":"ok"}` — liveness for Compose/k8s.
