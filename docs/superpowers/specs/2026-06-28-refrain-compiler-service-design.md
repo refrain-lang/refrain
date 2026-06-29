@@ -189,11 +189,32 @@ Validate every emitted IR-JSON against the bundled JSON-schema before returning,
 non-conformant IR → treated as a server fault (500), never a user `Diagnostic`. This is a
 safety net that should never fire in normal operation.
 
-**Packaging requirement:** the schema files currently live at
-`refrain-core/schema/ir-json-v{0.1,0.2}.schema.json`, outside the importable package, so
-they are not available at runtime today. The implementation must ship them as package data
-(hatch `force-include`/`shared-data`, or copy into `src/refrain/schema/`) and load them via
-`importlib.resources`. `jsonschema` moves into the `[server]` extra (and stays in `dev`).
+**Schema packaging — relocate to a single in-package source of truth (Option B):** the
+schema files currently live at `refrain-core/schema/ir-json-v{0.1,0.2}.schema.json`,
+outside the importable package, so they are not reachable at runtime from an installed
+wheel/Docker image. **Move** them to `src/refrain/schema/ir-json-v{0.1,0.2}.schema.json`.
+Rationale: the schema describes the wire format *emitted by* `src/refrain/ir_json.py`, and
+the Rust core does not read it (no `include_str!`/`.rs` reference), so the Python package
+is its correct home — co-located with the code that must satisfy it. Moving it does not
+change its identity (`$id` is the URL `https://refrainlang.org/schema/…`). It then ships in
+the wheel automatically, the same mechanism as the existing `src/refrain/editor/*.schema.json`
+and `src/refrain/amp_profiles/*.json`.
+
+Load via `importlib.resources.files("refrain.schema") / f"ir-json-v{version}.schema.json"`,
+selected by the stamped `refrain_ir_version`, `lru_cache`d, failing loudly on an unknown
+version (forward-compat guard for a future v0.3).
+
+Repoint the **only two** path-loading consumers — `tests/test_ir_json_schema.py:26-29` and
+`tests/test_ir_json.py:356` — to the new location, and tidy the prose references (the
+`refrain-core/tools/check_equivalence.py` docstring, and `docs/*` mentions). No duplicate
+copy is kept. (Rejected Option A — duplicate-plus-byte-identical-drift-guard: a defensible
+"vendor-with-checksum" pattern, but it leaves two copies of a clinical-correctness artifact.
+Rejected Option C — hatch `force-include`: does not materialize in editable/dev installs, so
+the server-from-checkout path would silently lack the schema.) Verify the built wheel
+actually contains `refrain/schema/*.json` (one-line `importlib.resources` check against the
+wheel).
+
+`jsonschema` moves into the `[server]` extra (and stays in `dev`).
 
 ## 6. Packaging & deployment
 
