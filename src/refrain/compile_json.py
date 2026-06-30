@@ -10,14 +10,17 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cache
 from importlib.resources import files
+from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .ast import File
+from .compose import ComposeError, ParentLoader, compose, parse_ref
 from .ir_json import ir_to_json_obj
-from .parser import ParseError, parse
+from .parser import ParseError, parse, parse_file
 from .resolver import ResolveError, resolve
 
 
@@ -53,10 +56,69 @@ class CompileResult:
     errors: list[Diagnostic]
     schema_error: str | None = None
     ir_json_text: str | None = None
+    unresolved_parents: list[str] = field(default_factory=list)
 
 
 def _content_hash(canonical: str) -> str:
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+class _ParentNotFoundError(Exception):
+    """A parent ref resolved in neither the request map nor the library path.
+
+    Recoverable: the caller supplies the named parent and retries. Distinct
+    from ComposeError (a genuine composition failure).
+    """
+
+    def __init__(self, ref: str):
+        self.ref = ref
+        super().__init__(ref)
+
+
+def _build_loader(
+    parents: dict[str, str] | None, library_dirs: list[str] | None
+) -> ParentLoader:
+    """Composite ParentLoader: request-supplied map first, then filesystem.
+
+    Always returns a loader (never None): a child with `extends` and nothing
+    supplied then yields `_ParentNotFoundError` rather than the composer's
+    "no loader configured" error. Parent parse failures become ComposeError.
+    """
+    pmap = parents or {}
+    dirs = [Path(d) for d in (library_dirs or [])]
+
+    def loader(ref: str) -> File:
+        if ref in pmap:
+            try:
+                return parse(pmap[ref])
+            except ParseError as exc:
+                raise ComposeError(f"parent {ref!r}: parse failed: {exc}") from exc
+        path, _ = parse_ref(ref)
+        for d in dirs:
+            cand = d / f"{path}.refrain"
+            if cand.exists():
+                try:
+                    return parse_file(cand)
+                except ParseError as exc:
+                    raise ComposeError(
+                        f"parent {ref!r} at {cand}: parse failed: {exc}"
+                    ) from exc
+        raise _ParentNotFoundError(ref)
+
+    return loader
+
+
+def _located(stage: str, exc: ResolveError | ComposeError) -> Diagnostic:
+    """A Diagnostic carrying the exception's source span (if any)."""
+    loc = exc.loc
+    return Diagnostic(
+        stage=stage,
+        message=str(exc),
+        line=loc.line if loc is not None else None,
+        col=loc.col if loc is not None else None,
+        end_line=loc.end_line if loc is not None else None,
+        end_col=loc.end_col if loc is not None else None,
+    )
 
 
 @cache
@@ -101,13 +163,19 @@ def _validate(obj: dict[str, Any]) -> str | None:
 
 
 def compile_to_ir_json(
-    source: str, *, sample_rate_hz: float | None = None, validate: bool = True
+    source: str,
+    *,
+    sample_rate_hz: float | None = None,
+    validate: bool = True,
+    parents: dict[str, str] | None = None,
+    library_dirs: list[str] | None = None,
 ) -> CompileResult:
     base_meta: dict[str, Any] = {
         "refrain_version": __version__,
         "ir_version": None,
         "sample_rate_hz": sample_rate_hz,
         "content_hash": None,
+        "extends": None,
     }
 
     try:
@@ -115,19 +183,22 @@ def compile_to_ir_json(
     except ParseError as exc:
         return CompileResult(None, base_meta, [Diagnostic("parse", str(exc))])
 
+    base_meta["extends"] = file_ast.protocol.extends
+    loader = _build_loader(parents, library_dirs)
+
+    # Compose explicitly so a composition failure stays a `compose` diagnostic:
+    # `resolve()` re-raises ComposeError as ResolveError to unify error types.
     try:
-        ir = resolve(file_ast)
+        composed = compose(file_ast, loader)
+    except _ParentNotFoundError as exc:
+        return CompileResult(None, base_meta, [], unresolved_parents=[exc.ref])
+    except ComposeError as exc:
+        return CompileResult(None, base_meta, [_located("compose", exc)])
+
+    try:
+        ir = resolve(composed)
     except ResolveError as exc:
-        loc = exc.loc
-        diag = Diagnostic(
-            stage="resolve",
-            message=str(exc),
-            line=loc.line if loc is not None else None,
-            col=loc.col if loc is not None else None,
-            end_line=loc.end_line if loc is not None else None,
-            end_col=loc.end_col if loc is not None else None,
-        )
-        return CompileResult(None, base_meta, [diag])
+        return CompileResult(None, base_meta, [_located("resolve", exc)])
 
     obj = ir_to_json_obj(ir, sample_rate_hz=sample_rate_hz)
     canonical = json.dumps(obj, indent=2)
@@ -136,6 +207,7 @@ def compile_to_ir_json(
         "ir_version": obj["refrain_ir_version"],
         "sample_rate_hz": obj["sample_rate_hz"],
         "content_hash": _content_hash(canonical),
+        "extends": file_ast.protocol.extends,
     }
     schema_error = _validate(obj) if validate else None
     return CompileResult(

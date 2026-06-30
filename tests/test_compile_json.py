@@ -127,3 +127,82 @@ def test_ir_json_text_is_canonical_and_matches_content_hash():
 def test_ir_json_text_is_none_on_error():
     result = compile_to_ir_json(BAD_PARSE_SRC)
     assert result.ir_json_text is None
+
+
+PARENT_SRC = '''protocol "smr_base" {
+  meta {
+    version  = "1.0.0"
+    evidence = "demo"
+    description = "base"
+  }
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels    = ["Cz"]
+  }
+  input "raw" {
+    montage = referential(active: "Cz", reference: "linked_ears")
+  }
+  output {
+    audio_gain = 0
+  }
+}'''
+
+CHILD_SRC = '''protocol "smr_child" extends "smr_base" {
+  meta {
+    description = "child override"
+  }
+}'''
+
+
+def test_extends_request_supplied_parent_merges():
+    r = compile_to_ir_json(CHILD_SRC, sample_rate_hz=256.0, parents={"smr_base": PARENT_SRC})
+    assert r.errors == []
+    assert r.unresolved_parents == []
+    assert r.ir_json is not None
+    assert r.ir_json["name"] == "smr_child"      # child's identity
+    assert r.ir_json["channels"] == ["Cz"]        # parent's requires merged in
+    assert r.meta["extends"] == "smr_base"
+
+
+def test_missing_parent_reported_as_unresolved():
+    r = compile_to_ir_json(CHILD_SRC, sample_rate_hz=256.0)  # no parents supplied
+    assert r.ir_json is None
+    assert r.errors == []
+    assert r.unresolved_parents == ["smr_base"]
+    assert r.meta["extends"] == "smr_base"
+
+
+def test_standalone_protocol_has_null_extends():
+    r = compile_to_ir_json(SMOKE_SRC, sample_rate_hz=256.0)
+    assert r.meta["extends"] is None
+    assert r.unresolved_parents == []
+
+
+def test_composition_error_is_compose_diagnostic():
+    bad_child = '''protocol "bad" extends "smr_base" {
+  amend input "ghost" {
+    montage = referential(active: "Cz", reference: "linked_ears")
+  }
+}'''
+    r = compile_to_ir_json(bad_child, sample_rate_hz=256.0, parents={"smr_base": PARENT_SRC})
+    assert r.ir_json is None
+    assert r.unresolved_parents == []
+    assert len(r.errors) == 1
+    assert r.errors[0].stage == "compose"
+
+
+def test_malformed_supplied_parent_is_compose_diagnostic():
+    r = compile_to_ir_json(
+        CHILD_SRC, sample_rate_hz=256.0, parents={"smr_base": 'protocol "smr_base" {'}
+    )
+    assert r.ir_json is None
+    assert len(r.errors) == 1
+    assert r.errors[0].stage == "compose"
+
+
+def test_extends_filesystem_library_parent(tmp_path):
+    (tmp_path / "smr_base.refrain").write_text(PARENT_SRC)
+    r = compile_to_ir_json(CHILD_SRC, sample_rate_hz=256.0, library_dirs=[str(tmp_path)])
+    assert r.ir_json is not None
+    assert r.ir_json["name"] == "smr_child"
+    assert r.ir_json["channels"] == ["Cz"]
