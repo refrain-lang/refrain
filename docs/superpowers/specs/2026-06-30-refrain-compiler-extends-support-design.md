@@ -51,9 +51,9 @@ def _build_loader(parents, library_dirs) -> ParentLoader:
     pmap = parents or {}
     dirs = [Path(d) for d in (library_dirs or [])]
     def loader(ref: str) -> A.File:
-        path, _ = parse_ref(ref)                 # strip @version, like filesystem_loader
-        if path in pmap:
-            return parse(pmap[path])             # ParseError -> wrapped (see 3.3)
+        if ref in pmap:                          # exact-ref key (incl @version)
+            return parse(pmap[ref])              # ParseError -> wrapped (see 3.3)
+        path, _ = parse_ref(ref)                 # filesystem: strip @version, library convention
         for d in dirs:
             cand = d / f"{path}.refrain"
             if cand.exists():
@@ -61,9 +61,11 @@ def _build_loader(parents, library_dirs) -> ParentLoader:
         raise _ParentNotFound(ref)
     return loader
 ```
-In-memory takes precedence over filesystem. `parse_ref` (from `compose.py`) strips the
-`@version` so map keys/file names are version-agnostic (the portal keys `parents` by the ref
-*path*, not `name@ver`); the composer applies its own version check.
+In-memory takes precedence over filesystem. The portal keys `parents` by the **exact ref the
+child uses** (`"library/base@1"` or a bare `"my_custom_base"`) — supply exactly what the child
+asks for; `unresolved_parents` reports that same string. The filesystem fallback strips
+`@version` via `parse_ref` (from `compose.py`) per the existing library-path convention. Either
+way the composer applies its own version-compat check against the parent's `meta.version`.
 
 **Always return a loader — never `None`** (even when `parents` and `library_dirs` are both
 empty). A standalone protocol never invokes it (the composer early-returns when `extends` is
