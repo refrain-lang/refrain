@@ -115,12 +115,19 @@ def _cmd_compile_json(args: argparse.Namespace) -> int:
         print(f"error: {path}: no such file", file=sys.stderr)
         return 2
 
-    result = compile_to_ir_json(path.read_text(), sample_rate_hz=args.sample_rate)
+    library_dirs = [*args.library, *(str(d) for d in default_library_dirs())]
+    result = compile_to_ir_json(
+        path.read_text(), sample_rate_hz=args.sample_rate, library_dirs=library_dirs
+    )
 
     if result.errors:
         for d in result.errors:
             loc = f"{d.line}:{d.col}: " if d.line is not None else ""
             print(f"error: {path}: {d.stage}: {loc}{d.message}", file=sys.stderr)
+        return 1
+    if result.unresolved_parents:
+        for ref in result.unresolved_parents:
+            print(f"error: {path}: unresolved parent: {ref}", file=sys.stderr)
         return 1
     if result.schema_error is not None:
         print(f"error: {path}: schema: {result.schema_error}", file=sys.stderr)
@@ -256,6 +263,10 @@ def _build_argparser() -> argparse.ArgumentParser:
     compile_json_cmd.add_argument(
         "--meta", action="store_true",
         help="Print compile metadata (versions, content_hash) instead of the IR-JSON.",
+    )
+    compile_json_cmd.add_argument(
+        "--library", action="append", default=[], metavar="DIR",
+        help="Directory to search for `extends`-referenced parent protocols (repeatable).",
     )
     compile_json_cmd.set_defaults(func=_cmd_compile_json)
 
