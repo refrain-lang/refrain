@@ -24,6 +24,7 @@ app = FastAPI(title="refrain-compiler", version=__version__)
 class CompileRequest(BaseModel):
     refrain: str
     sample_rate_hz: float | None = None
+    parents: dict[str, str] | None = None
 
 
 @app.get("/healthz")
@@ -42,7 +43,9 @@ def version() -> dict[str, Any]:
 
 @app.post("/compile")
 def compile_endpoint(req: CompileRequest) -> dict[str, Any]:
-    result = compile_to_ir_json(req.refrain, sample_rate_hz=req.sample_rate_hz)
+    result = compile_to_ir_json(
+        req.refrain, sample_rate_hz=req.sample_rate_hz, parents=req.parents
+    )
     if result.schema_error is not None:
         raise HTTPException(status_code=500, detail=result.schema_error)
     return {
@@ -50,4 +53,5 @@ def compile_endpoint(req: CompileRequest) -> dict[str, Any]:
         "ir_json_text": result.ir_json_text,
         "meta": result.meta,
         "errors": [asdict(d) for d in result.errors],
+        "unresolved_parents": result.unresolved_parents,
     }
