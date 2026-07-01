@@ -9,6 +9,7 @@ scenario generator and the analytic oracle read.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from ..ir import (
@@ -167,14 +168,32 @@ def _iter_pipeline_calls(d: IRDerive):
         expr = inner
 
 
-def _band_from_call(call: IRCall) -> tuple[float, float]:
-    """Read `band: (lo Hz, hi Hz)` from a bandpass call."""
+def _band_from_call(call: IRCall, ir: IRProtocol) -> tuple[float, float]:
+    """Read `band: (lo Hz, hi Hz)`, or derive edges from the `center:`/`bandwidth:`
+    form. Formula mirrors primitive_impls._resolve_band (the resolver's source of
+    truth): band = (center / sqrt(ratio), center * sqrt(ratio))."""
     band = _arg(call, "band")
-    if band is None:
-        # The center:/bandwidth: declaration form lands here (Increment 2).
+    if band is not None:
+        lo, hi = band.elements
+        return (float(lo.value), float(hi.value))
+    center_expr = _arg(call, "center")
+    bw_expr = _arg(call, "bandwidth")
+    if center_expr is None or bw_expr is None:
         raise UnsupportedProtocol("center/bandwidth bandpass")
-    lo, hi = band.elements  # IRTuple of two IRNumberLit (Hz)
-    return (float(lo.value), float(hi.value))
+    if isinstance(center_expr, IRNumberLit):
+        center = float(center_expr.value)
+    elif isinstance(center_expr, IRControlRef):
+        center = _resolve_control_default(ir, center_expr)
+    else:
+        raise UnsupportedProtocol("center/bandwidth bandpass")
+    # bandwidth is `ratio(R)` — an IRCall wrapping one number.
+    if not (isinstance(bw_expr, IRCall) and bw_expr.callee == "ratio" and bw_expr.args):
+        raise UnsupportedProtocol("center/bandwidth bandpass")
+    ratio = float(bw_expr.args[0].value.value)
+    if center is None or center <= 0 or ratio <= 0:
+        raise UnsupportedProtocol("center/bandwidth bandpass")
+    sqrt_r = math.sqrt(ratio)
+    return (center / sqrt_r, center * sqrt_r)
 
 
 def _sos_for_derive_step(j: dict, derive_name: str, callee: str) -> list[list[float]] | None:
@@ -245,7 +264,7 @@ def _derive_surface(d: IRDerive, ir: IRProtocol, j: dict) -> DeriveSurface:
     hilbert_group_delay = 0
     for call in _iter_pipeline_calls(d):
         if call.callee == "bandpass":
-            band = _band_from_call(call)
+            band = _band_from_call(call, ir)
         elif call.callee == "smooth":
             tau = _arg(call, "tau")
             if isinstance(tau, IRNumberLit):

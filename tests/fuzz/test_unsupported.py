@@ -29,11 +29,14 @@ def test_single_condition_reward_raises_typed_skip():
     assert exc.value.reason == "single-condition reward"
 
 
-def test_center_bandwidth_bandpass_raises_typed_skip():
+def test_center_bandwidth_bandpass_no_longer_raises_typed_skip():
+    # Since center/bandwidth support was added, othmer_ilf_t3t4 now gets past
+    # bandpass parsing. It then fails at the reward stage (no dwell event) with
+    # a plain ValueError backstop — NOT an UnsupportedProtocol typed skip.
     ir = _ir("examples/othmer_ilf_t3t4.refrain")
-    with pytest.raises(UnsupportedProtocol) as exc:
+    with pytest.raises(ValueError) as exc:
         build_surface(ir)
-    assert exc.value.reason == "center/bandwidth bandpass"
+    assert not isinstance(exc.value, UnsupportedProtocol)
 
 
 def test_supported_protocol_still_builds():

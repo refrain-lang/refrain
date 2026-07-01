@@ -45,11 +45,11 @@ def test_batch_exit_zero_when_only_skips(tmp_path, capsys):
 
 def test_batch_aggregates_multiple_paths(tmp_path, capsys):
     # Correction 2: --library examples (not examples/library) for othmer_ilf_cz_pz resolution
-    # Correction 3: / total 22 (bench/protocols has 13, examples has 9 including library subdir)
+    # Correction 3: / total 23 (bench/protocols has 14, examples has 9 including library subdir)
     rc = main(["fuzz", "bench/protocols", "examples",
                "--library", "examples", "--max-scenarios", "2"])
     out = "".join(capsys.readouterr())
-    assert "coverage: fuzzed" in out and "/ total 22" in out
+    assert "coverage: fuzzed" in out and "/ total 23" in out
     assert rc == 0  # only skips/known-passes across the real corpus
 
 
