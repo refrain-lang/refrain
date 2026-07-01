@@ -1,5 +1,12 @@
 # Protocol fuzzer — Increment 1: single-condition reward — design
 
+> ⚠️ SUPERSEDED (2026-07-01) by
+> [[2026-07-01-fuzzer-inc1-singlecond-plus-centerbw-design]]. Corpus evidence showed
+> single-condition alone unlocks ~0 real protocols (every absolute single-leaf is
+> also blocked by `center/bandwidth bandpass`, 35/59), and percentile single-leaf
+> needs the deferred calibrated oracle. The increment was re-scoped to
+> single-condition **+ center/bandwidth**, absolute-only. Kept for history.
+
 > Status: approved design (brainstorm complete), ready for the TDD plan.
 > Parent: [[2026-06-28-fuzzer-parity-roadmap-design]] (Increment 1).
 > Builds on Increment 0 (`fuzz/runner.py`, `UnsupportedProtocol`, batch + CI),
