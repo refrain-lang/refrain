@@ -1,0 +1,15 @@
+protocol "micro_single_above" {
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "up_env" {
+    from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 250 ms) ]
+  }
+  threshold "up_t" { signal = "up_env"; type = absolute(8 uV) }
+  reward {
+    event = dwell(condition: above("up_env", "up_t"), duration: 250 ms)
+    continuous = sigmoid("up_env" / "up_t", midpoint: 1.0, steepness: 3)
+  }
+  output { audio_chime = reward.event }
+  session { phases = [ phase { name = "training"; duration = 30 min } ] }
+}

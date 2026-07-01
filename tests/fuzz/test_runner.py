@@ -33,10 +33,11 @@ def test_supported_protocol_is_fuzzed_and_passes():
 
 
 def test_single_condition_is_skipped_with_typed_reason():
-    # composite_smr_theta has a bare dwell(above(...)) reward -> single-condition
+    # composite_smr_theta has a bare dwell(above(reward.composite, ...)) reward;
+    # Inc 1: the leaf classifier gives the specific "composite-signal" reason.
     out = _run("bench/protocols/composite_smr_theta.refrain")
     assert out.status == SKIPPED
-    assert out.reason == "single-condition reward"
+    assert out.reason == "composite-signal reward condition"
 
 
 def test_unrecognized_condition_is_skipped_unclassified():

@@ -27,7 +27,7 @@ def test_unsupported_protocol_skips_with_exit_zero(capsys):
     rc = main(["fuzz", SINGLE_COND, "--max-scenarios", "3"])
     combined = "".join(capsys.readouterr())
     assert rc == 0
-    assert "SKIPPED (unsupported: single-condition reward)" in combined
+    assert "SKIPPED (unsupported: composite-signal reward condition)" in combined
 
 
 def test_resolve_error_returns_exit_two(capsys):

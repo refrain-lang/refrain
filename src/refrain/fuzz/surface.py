@@ -99,7 +99,7 @@ class LogicalSurface:
     required_channels: tuple[str, ...]
     derives: tuple[DeriveSurface, ...]
     thresholds: tuple[ThresholdSurface, ...]
-    reward_condition: ConditionNode
+    reward_condition: ConditionNode | ConditionLeaf
     dwell_ms: float
     phases: tuple[PhaseSurface, ...]
     outputs: tuple[OutputBindingSurface, ...]
@@ -373,16 +373,29 @@ def _dwell_ms_from_ir(ir: IRProtocol) -> float:
     raise ValueError("surface: reward.event is not a dwell(...) with a duration")
 
 
-def _reward_condition_from_ir(ir: IRProtocol) -> ConditionNode:
+def _classify_single_leaf(leaf, derives, thresholds):
+    derive = next((d for d in derives if d.name == leaf.signal), None)
+    thr = next((t for t in thresholds if t.name == leaf.threshold), None)
+    if derive is None:
+        raise UnsupportedProtocol("composite-signal reward condition")
+    if derive.sos is None:
+        raise UnsupportedProtocol("non-bandpass (coherence) reward signal")
+    if thr is None:
+        raise UnsupportedProtocol("reward condition without a resolvable threshold")
+    if thr.kind == "percentile":
+        raise UnsupportedProtocol("single percentile-leaf reward (needs calibrated oracle)")
+    return leaf
+
+
+def _reward_condition_from_ir(ir, derives, thresholds) -> ConditionNode | ConditionLeaf:
     event = ir.reward.event
     if isinstance(event, IRCall) and event.callee == "dwell":
         cond = _arg(event, "condition")
-        node = _condition_from_ir(cond)  # unrecognized exprs -> ValueError (backstop)
+        node = _condition_from_ir(cond)
         if isinstance(node, ConditionNode):
             return node
         if isinstance(node, ConditionLeaf):
-            # A bare dwell(above/below(...)) reward (Increment 1).
-            raise UnsupportedProtocol("single-condition reward")
+            return _classify_single_leaf(node, derives, thresholds)
     raise ValueError("surface: reward.event has no all_of/any_of condition")
 
 
@@ -424,7 +437,7 @@ def build_surface(ir: IRProtocol) -> LogicalSurface:
     j = ir_to_json_obj(ir)
     derives = tuple(_derive_surface(d, ir, j) for d in ir.derives.values())
     thresholds = tuple(_threshold_surface(t, ir) for t in ir.thresholds.values())
-    reward_condition = _reward_condition_from_ir(ir)
+    reward_condition = _reward_condition_from_ir(ir, derives, thresholds)
     dwell_ms = _dwell_ms_from_ir(ir)
     phases = tuple(
         PhaseSurface(

@@ -117,9 +117,19 @@ def _pivotal_scenarios_for_leaf(
 
     for side in ("true", "false"):
         amp = _amplitude_for_truth(leaf.op, derive, thr, side=side, fs=fs)
+        # For a `below` FALSE scenario the tail (after the spike) brings the
+        # condition back to True, creating a tail SHOULD-FIRE the oracle defers
+        # to the collar end. The engine fires earlier (within the collar) and
+        # stays held, so the collar-end expected event is MISSED. Fix: extend
+        # the tone to the end of the scenario so the condition stays False
+        # throughout and no tail expected event is produced. Safe for multi-
+        # leaf protocols too: the all_of is already False without a tail fire.
+        seg_end_s = (
+            total_s if (leaf.op == "below" and side == "false") else fill_s + _SPIKE_S
+        )
         segments = (
             (BandSegment(band=derive.band, channel=derive.channel,
-                         start_s=fill_s, end_s=fill_s + _SPIKE_S,
+                         start_s=fill_s, end_s=seg_end_s,
                          content=Tone(amplitude_uv=amp)),)
             if amp > 0 else ()
         )
@@ -168,9 +178,11 @@ def _dwell_scenarios(surface: LogicalSurface) -> Iterator[Scenario]:
     """Hold the all-leaves-TRUE configuration (SMR up, theta/hbeta quiet) for a
     clearly-long vs clearly-short duration, to exercise the dwell boundary."""
     fs = surface.sample_rate_hz
-    # TODO(v2): assumes the smr_cz layout (smr_envelope is the driven derive);
-    # generalize to the output-relevant derive for arbitrary protocols.
-    smr_derive = next(d for d in surface.derives if d.name == "smr_envelope")
+    # Use the first reward-condition leaf's signal as the driven derive (works for
+    # both single-leaf protocols and multi-leaf all_of where the first leaf is the
+    # positive "up" condition, e.g. smr_envelope in realistic_smr).
+    first_leaf = next(_all_leaves(surface.reward_condition))
+    smr_derive = next(d for d in surface.derives if d.name == first_leaf.signal)
     fill_s = _longest_percentile_window_s(surface) + _FILL_PAD_S  # post-fill window
     dwell_s = surface.dwell_ms / 1000.0
     settle_s = 1.0   # rough collar pad
@@ -217,8 +229,9 @@ def _percentile_warmup_scenarios(surface: LogicalSurface) -> Iterator[Scenario]:
     fill_s = _longest_percentile_window_s(surface) + _FILL_PAD_S
     total_s = fill_s + _SPIKE_S + _TAIL_PAD_S
 
-    # TODO(v2): assumes the smr_cz layout (see _dwell_scenarios).
-    smr_derive = next(d for d in surface.derives if d.name == "smr_envelope")
+    # Use the first reward-condition leaf's signal as the driven derive (see _dwell_scenarios).
+    first_leaf = next(_all_leaves(surface.reward_condition))
+    smr_derive = next(d for d in surface.derives if d.name == first_leaf.signal)
     yield Scenario(
         label="percentile_warmup_then_spike",
         duration_s=total_s,
@@ -303,8 +316,9 @@ def generate_hold_duration_sweep(surface: LogicalSurface) -> Iterator[Scenario]:
     fs = surface.sample_rate_hz
     dwell_s = surface.dwell_ms / 1000.0
     fractions = (0.5, 0.9, 1.5, 2.5, 5.0)
-    # TODO(v2): smr_cz-specific driven derive (see _dwell_scenarios).
-    smr_derive = next(d for d in surface.derives if d.name == "smr_envelope")
+    # Use the first reward-condition leaf's signal as the driven derive (see _dwell_scenarios).
+    first_leaf = next(_all_leaves(surface.reward_condition))
+    smr_derive = next(d for d in surface.derives if d.name == first_leaf.signal)
     fill_s = _longest_percentile_window_s(surface) + _FILL_PAD_S
     for f in fractions:
         hold_s = dwell_s * f

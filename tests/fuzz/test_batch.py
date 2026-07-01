@@ -28,7 +28,7 @@ def test_batch_reports_counts_coverage_and_breakdown(tmp_path, capsys):
     out = "".join(capsys.readouterr())
     assert "fuzzed 1" in out and "skipped 1" in out and "errored 1" in out
     assert "coverage: fuzzed 1 / total 3" in out
-    assert "single-condition reward" in out
+    assert "composite-signal reward condition" in out
     assert rc == 1  # the broken/errored file makes the batch fail
 
 
@@ -45,11 +45,11 @@ def test_batch_exit_zero_when_only_skips(tmp_path, capsys):
 
 def test_batch_aggregates_multiple_paths(tmp_path, capsys):
     # Correction 2: --library examples (not examples/library) for othmer_ilf_cz_pz resolution
-    # Correction 3: / total 23 (bench/protocols has 14, examples has 9 including library subdir)
+    # Correction 4: / total 26 (bench/protocols has 17 after Inc1+Inc2 fixtures, examples has 9)
     rc = main(["fuzz", "bench/protocols", "examples",
                "--library", "examples", "--max-scenarios", "2"])
     out = "".join(capsys.readouterr())
-    assert "coverage: fuzzed" in out and "/ total 23" in out
+    assert "coverage: fuzzed" in out and "/ total 26" in out
     assert rc == 0  # only skips/known-passes across the real corpus
 
 

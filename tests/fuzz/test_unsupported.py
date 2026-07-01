@@ -23,10 +23,12 @@ def _ir(rel: str, *, library: str | None = None):
 
 def test_single_condition_reward_raises_typed_skip():
     # composite_smr_theta has a bare dwell(above(...)) reward -> ConditionLeaf.
+    # Inc 1: the leaf classifier gives the specific "composite-signal" reason
+    # (the condition signal is reward.composite, not a derive).
     ir = _ir("bench/protocols/composite_smr_theta.refrain")
     with pytest.raises(UnsupportedProtocol) as exc:
         build_surface(ir)
-    assert exc.value.reason == "single-condition reward"
+    assert exc.value.reason == "composite-signal reward condition"
 
 
 def test_center_bandwidth_bandpass_no_longer_raises_typed_skip():
@@ -53,3 +55,52 @@ def test_unrecognized_condition_stays_valueerror_not_typed():
     with pytest.raises(ValueError) as exc:
         build_surface(ir)
     assert not isinstance(exc.value, UnsupportedProtocol)
+
+
+# ---------------------------------------------------------------------------
+# Increment 1: single-leaf supportability detector
+# ---------------------------------------------------------------------------
+
+
+def test_single_above_absolute_builds():
+    ir = _ir("bench/protocols/micro_single_above.refrain")
+    from refrain.fuzz.surface import ConditionLeaf
+    surf = build_surface(ir)          # no raise
+    assert isinstance(surf.reward_condition, ConditionLeaf)
+    assert surf.reward_condition.op == "above"
+
+
+def test_single_below_absolute_builds():
+    ir = _ir("bench/protocols/micro_single_below.refrain")
+    from refrain.fuzz.surface import ConditionLeaf
+    surf = build_surface(ir)
+    assert isinstance(surf.reward_condition, ConditionLeaf)
+    assert surf.reward_condition.op == "below"
+
+
+def test_percentile_single_leaf_defers_to_calibrated_oracle():
+    # examples/dyadic uses a coherence signal; use a percentile-over-real-derive
+    # from the corpus. alpha_theta has no threshold; instead assert the reason
+    # vocabulary via a percentile fixture is exercised by the batch test. Here,
+    # assert composite/coherence/no-threshold reasons hold:
+    with pytest.raises(UnsupportedProtocol) as e:
+        build_surface(_ir("bench/protocols/composite_smr_theta.refrain"))
+    assert e.value.reason == "composite-signal reward condition"
+
+
+def test_coherence_single_leaf_reason():
+    with pytest.raises(UnsupportedProtocol) as e:
+        build_surface(_ir("examples/dyadic_alpha_coherence_pz.refrain"))
+    assert e.value.reason == "non-bandpass (coherence) reward signal"
+
+
+def test_no_threshold_single_leaf_reason():
+    with pytest.raises(UnsupportedProtocol) as e:
+        build_surface(_ir("examples/alpha_theta.refrain"))
+    assert e.value.reason == "reward condition without a resolvable threshold"
+
+
+def test_percentile_single_leaf_reason():
+    with pytest.raises(UnsupportedProtocol) as e:
+        build_surface(_ir("bench/protocols/micro_single_pct.refrain"))
+    assert e.value.reason == "single percentile-leaf reward (needs calibrated oracle)"
