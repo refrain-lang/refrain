@@ -35,6 +35,7 @@ def main() -> None:
         # both renderers) round-trips. JS JSON.parse preserves textual key order.
         (out / f"{f.stem}.model.json").write_text(json.dumps(model, indent=2) + "\n")
         (out / f"{f.stem}.refrain").write_text(render_protocol(model))
+        (out / f"{f.stem}.src.refrain").write_text(f.read_text())  # verbatim hand-written original
         written += 1
     print(f"wrote {written} fixture pairs to {out}")
 
