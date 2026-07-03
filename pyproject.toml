@@ -30,6 +30,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Compiler-as-a-service. The HTTP wrapper (`refrain.server`) plus output-schema
+# validation. Core authoring (parse/resolve/IR-JSON) does not need these.
+server = [
+  "fastapi >= 0.110",
+  "uvicorn[standard] >= 0.29",
+  "jsonschema >= 4.0",
+]
 # Evaluator dependencies. The parser/resolver/IR work without these;
 # only `refrain run` (live or file replay) needs them.
 #   - mne provides FIF and EDF readers
@@ -46,6 +53,8 @@ dev = [
   "mne >= 1.4",
   "pyxdf >= 1.16",
   "jsonschema >= 4.0",
+  "fastapi >= 0.110",
+  "httpx >= 0.27",
 ]
 
 [project.scripts]

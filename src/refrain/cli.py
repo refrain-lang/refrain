@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 
 from . import __version__
 from .amp_profile import AmpProfileError, load_amp_profile
+from .compile_json import compile_to_ir_json
 from .compose import default_library_dirs, filesystem_loader
 from .cost import estimate_cost
 from .ir_print import print_cred_nf, print_ir
@@ -104,6 +105,39 @@ def _cmd_resolve(args: argparse.Namespace) -> int:
         sys.stdout.write(print_cred_nf(ir))
     else:
         sys.stdout.write(print_ir(ir))
+    return 0
+
+
+def _cmd_compile_json(args: argparse.Namespace) -> int:
+    """Parse + resolve + emit IR-JSON (the portal's phase-1 producer)."""
+    path = Path(args.file)
+    if not path.exists():
+        print(f"error: {path}: no such file", file=sys.stderr)
+        return 2
+
+    library_dirs = [*args.library, *(str(d) for d in default_library_dirs())]
+    result = compile_to_ir_json(
+        path.read_text(), sample_rate_hz=args.sample_rate, library_dirs=library_dirs
+    )
+
+    if result.errors:
+        for d in result.errors:
+            loc = f"{d.line}:{d.col}: " if d.line is not None else ""
+            print(f"error: {path}: {d.stage}: {loc}{d.message}", file=sys.stderr)
+        return 1
+    if result.unresolved_parents:
+        for ref in result.unresolved_parents:
+            print(f"error: {path}: unresolved parent: {ref}", file=sys.stderr)
+        return 1
+    if result.schema_error is not None:
+        print(f"error: {path}: schema: {result.schema_error}", file=sys.stderr)
+        return 1
+
+    if args.meta:
+        print(json.dumps(result.meta, indent=2))
+    else:
+        # Emit the verbatim canonical bytes content_hash covers (not a re-dump).
+        print(result.ir_json_text)
     return 0
 
 
@@ -216,6 +250,25 @@ def _build_argparser() -> argparse.ArgumentParser:
         ),
     )
     resolve_cmd.set_defaults(func=_cmd_resolve)
+
+    compile_json_cmd = sub.add_parser(
+        "compile-json",
+        help="Parse + resolve + emit IR-JSON for a target sample rate.",
+    )
+    compile_json_cmd.add_argument("file", help="Path to the .refrain protocol file.")
+    compile_json_cmd.add_argument(
+        "--sample-rate", type=float, default=None, metavar="HZ",
+        help="Sample rate to bake coefficients for (default: the protocol's chosen rate).",
+    )
+    compile_json_cmd.add_argument(
+        "--meta", action="store_true",
+        help="Print compile metadata (versions, content_hash) instead of the IR-JSON.",
+    )
+    compile_json_cmd.add_argument(
+        "--library", action="append", default=[], metavar="DIR",
+        help="Directory to search for `extends`-referenced parent protocols (repeatable).",
+    )
+    compile_json_cmd.set_defaults(func=_cmd_compile_json)
 
     # `refrain cost`
     cost_cmd = sub.add_parser(

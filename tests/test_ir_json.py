@@ -353,7 +353,7 @@ def test_v01_emission_byte_identical_for_examples():
     # be unchanged by the v0.2 work: version "0.1", reward has exactly
     # continuous/event keys, and the doc validates against the v0.1 schema.
     import jsonschema
-    schema_path = REPO / "refrain-core" / "schema" / "ir-json-v0.1.schema.json"
+    schema_path = REPO / "src" / "refrain" / "schema" / "ir-json-v0.1.schema.json"
     validator = jsonschema.Draft202012Validator(json.loads(schema_path.read_text()))
     for path in sorted(EXAMPLES.glob("*.refrain")):
         if path.name in {

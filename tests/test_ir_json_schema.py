@@ -23,7 +23,7 @@ from tests.conftest_staged import HET
 jsonschema = pytest.importorskip("jsonschema")
 
 REPO = Path(__file__).resolve().parent.parent
-SCHEMA_DIR = REPO / "refrain-core" / "schema"
+SCHEMA_DIR = REPO / "src" / "refrain" / "schema"
 SCHEMA_BY_VERSION = {
     "0.1": SCHEMA_DIR / "ir-json-v0.1.schema.json",
     "0.2": SCHEMA_DIR / "ir-json-v0.2.schema.json",
