@@ -52,3 +52,21 @@ def test_backstop_does_not_swallow_scenario_loop_errors(monkeypatch):
     monkeypatch.setattr(runner, "predict", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
     with pytest.raises(RuntimeError, match="boom"):
         _run("bench/protocols/realistic_smr.refrain")
+
+
+def test_single_above_absolute_fuzzes_clean_full_depth():
+    out = _run("bench/protocols/micro_single_above.refrain", max_scenarios=40)
+    assert out.status == FUZZED
+    assert out.passed is True
+
+
+def test_center_bandwidth_single_above_fuzzes_clean_full_depth():
+    out = _run("bench/protocols/micro_center_bandwidth.refrain", max_scenarios=40)
+    assert out.status == FUZZED
+    assert out.passed is True
+
+
+def test_single_below_absolute_still_fuzzes_clean_full_depth():
+    out = _run("bench/protocols/micro_single_below.refrain", max_scenarios=40)
+    assert out.status == FUZZED
+    assert out.passed is True

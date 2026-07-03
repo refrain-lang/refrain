@@ -181,6 +181,10 @@ def _dwell_scenarios(surface: LogicalSurface) -> Iterator[Scenario]:
     # Use the first reward-condition leaf's signal as the driven derive (works for
     # both single-leaf protocols and multi-leaf all_of where the first leaf is the
     # positive "up" condition, e.g. smr_envelope in realistic_smr).
+    # TODO(inc1-below): drive amplitude is a hardcoded 30 µV that assumes an `above`
+    # leaf. A sole `below` leaf whose absolute threshold is <= 30 µV would be driven
+    # FALSE here (dwell_met vacuous). The current below fixture uses 50 µV so this
+    # holds; Task 4 replaces this with an op-aware driven-positive driver.
     first_leaf = next(_all_leaves(surface.reward_condition))
     smr_derive = next(d for d in surface.derives if d.name == first_leaf.signal)
     fill_s = _longest_percentile_window_s(surface) + _FILL_PAD_S  # post-fill window
@@ -225,6 +229,8 @@ def _dwell_scenarios(surface: LogicalSurface) -> Iterator[Scenario]:
 def _percentile_warmup_scenarios(surface: LogicalSurface) -> Iterator[Scenario]:
     """Long quiet fill then a high-rank spike. Asserts that the warmup region
     is DON'T-CARE (oracle's pre-fill) and the post-fill spike fires."""
+    if _longest_percentile_window_s(surface) <= 0.0:
+        return  # no percentile threshold — warmup scenario is vacuous/wrong
     fs = surface.sample_rate_hz
     fill_s = _longest_percentile_window_s(surface) + _FILL_PAD_S
     total_s = fill_s + _SPIKE_S + _TAIL_PAD_S
@@ -252,6 +258,8 @@ def generate_characterization_probe(surface: LogicalSurface) -> Iterator[Scenari
     scenario injects a single tone; the checker asserts the corresponding
     derive's envelope is high and others low — verifying each band peaks where
     declared."""
+    if isinstance(surface.reward_condition, ConditionLeaf):
+        return  # single-leaf: pivotal scenarios already drive the reward band
     fs = surface.sample_rate_hz
     duration = 6.0
     for derive in surface.derives:
