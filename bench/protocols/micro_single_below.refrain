@@ -5,7 +5,7 @@ protocol "micro_single_below" {
     from = "raw"
     pipeline = [ bandpass(band: (4 Hz, 8 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 250 ms) ]
   }
-  threshold "down_t" { signal = "down_env"; type = absolute(50 uV) }
+  threshold "down_t" { signal = "down_env"; type = absolute(20 uV) }
   reward {
     event = dwell(condition: below("down_env", "down_t"), duration: 250 ms)
     continuous = sigmoid("down_t" / "down_env", midpoint: 1.0, steepness: 3)

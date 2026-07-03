@@ -174,19 +174,58 @@ def _amplitude_for_truth(
     return target_env / max(gain, 1e-3)
 
 
+def _driven_leaf(surface: LogicalSurface) -> ConditionLeaf:
+    """The leaf the reward-positive scenarios drive: the first `above` leaf, else
+    the first leaf (a sole `below`)."""
+    leaves = list(_all_leaves(surface.reward_condition))
+    for leaf in leaves:
+        if leaf.op == "above":
+            return leaf
+    return leaves[0]
+
+
+def _reward_positive_segments(
+    surface: LogicalSurface, *, start_s: float, hold_s: float
+) -> tuple:
+    """BandSegments that hold the reward's driven leaf TRUE for `hold_s` from
+    `start_s`. above: a 30 uV tone over [start, start+hold] (unchanged behavior).
+    below: a PRE-ROLL tone (clearly above threshold => below FALSE, resets dwell)
+    over [start-preroll, start], quiet over the hold window (below TRUE), then an
+    END-ROLL tone from [start+hold, start+hold+preroll]. The end-roll creates a
+    second condition transition so that the two settle collars overlap and cancel
+    the dwell prediction — mirroring how the `above` tone's start/end collars work
+    — so the actual engine event lands in a DON'T-CARE region and the check passes.
+    (preroll == _TAIL_PAD_S == 2.0 s, so the end-roll always terminates at total_s.)
+    """
+    leaf = _driven_leaf(surface)
+    d = next(dv for dv in surface.derives if dv.name == leaf.signal)
+    if leaf.op != "below":
+        return (BandSegment(band=d.band, channel=d.channel,
+                            start_s=start_s, end_s=start_s + hold_s,
+                            content=Tone(amplitude_uv=30.0)),)
+    thr = next(t for t in surface.thresholds if t.name == leaf.threshold)
+    # Gain-compensated amplitude that clearly drives `below` FALSE (band above thr).
+    false_amp = _amplitude_for_truth("below", d, thr, side="false", fs=surface.sample_rate_hz)
+    preroll = 2.0
+    segs: list = []
+    if false_amp > 0:
+        if start_s > 0.0:
+            segs.append(BandSegment(band=d.band, channel=d.channel,
+                                    start_s=max(0.0, start_s - preroll), end_s=start_s,
+                                    content=Tone(amplitude_uv=false_amp)))
+        # End-roll: restores below FALSE after the hold, creating a second transition
+        # whose settle collar overlaps the first and cancels the dwell prediction.
+        segs.append(BandSegment(band=d.band, channel=d.channel,
+                                start_s=start_s + hold_s,
+                                end_s=start_s + hold_s + preroll,
+                                content=Tone(amplitude_uv=false_amp)))
+    return tuple(segs)
+
+
 def _dwell_scenarios(surface: LogicalSurface) -> Iterator[Scenario]:
     """Hold the all-leaves-TRUE configuration (SMR up, theta/hbeta quiet) for a
     clearly-long vs clearly-short duration, to exercise the dwell boundary."""
     fs = surface.sample_rate_hz
-    # Use the first reward-condition leaf's signal as the driven derive (works for
-    # both single-leaf protocols and multi-leaf all_of where the first leaf is the
-    # positive "up" condition, e.g. smr_envelope in realistic_smr).
-    # TODO(inc1-below): drive amplitude is a hardcoded 30 µV that assumes an `above`
-    # leaf. A sole `below` leaf whose absolute threshold is <= 30 µV would be driven
-    # FALSE here (dwell_met vacuous). The current below fixture uses 50 µV so this
-    # holds; Task 4 replaces this with an op-aware driven-positive driver.
-    first_leaf = next(_all_leaves(surface.reward_condition))
-    smr_derive = next(d for d in surface.derives if d.name == first_leaf.signal)
     fill_s = _longest_percentile_window_s(surface) + _FILL_PAD_S  # post-fill window
     dwell_s = surface.dwell_ms / 1000.0
     settle_s = 1.0   # rough collar pad
@@ -198,11 +237,7 @@ def _dwell_scenarios(surface: LogicalSurface) -> Iterator[Scenario]:
         label="dwell_met",
         duration_s=total_met,
         sample_rate_hz=fs,
-        segments=(
-            BandSegment(band=smr_derive.band, channel=smr_derive.channel,
-                        start_s=fill_s, end_s=fill_s + hold_s_met,
-                        content=Tone(amplitude_uv=30.0)),
-        ),
+        segments=_reward_positive_segments(surface, start_s=fill_s, hold_s=hold_s_met),
         controls={},
         coverage_tags=frozenset({"dwell:met"}),
         phase_override=_training_phase(total_met),
@@ -215,11 +250,7 @@ def _dwell_scenarios(surface: LogicalSurface) -> Iterator[Scenario]:
         label="dwell_missed",
         duration_s=total_missed,
         sample_rate_hz=fs,
-        segments=(
-            BandSegment(band=smr_derive.band, channel=smr_derive.channel,
-                        start_s=fill_s, end_s=fill_s + hold_s_missed,
-                        content=Tone(amplitude_uv=30.0)),
-        ),
+        segments=_reward_positive_segments(surface, start_s=fill_s, hold_s=hold_s_missed),
         controls={},
         coverage_tags=frozenset({"dwell:missed"}),
         phase_override=_training_phase(total_missed),
@@ -324,9 +355,6 @@ def generate_hold_duration_sweep(surface: LogicalSurface) -> Iterator[Scenario]:
     fs = surface.sample_rate_hz
     dwell_s = surface.dwell_ms / 1000.0
     fractions = (0.5, 0.9, 1.5, 2.5, 5.0)
-    # Use the first reward-condition leaf's signal as the driven derive (see _dwell_scenarios).
-    first_leaf = next(_all_leaves(surface.reward_condition))
-    smr_derive = next(d for d in surface.derives if d.name == first_leaf.signal)
     fill_s = _longest_percentile_window_s(surface) + _FILL_PAD_S
     for f in fractions:
         hold_s = dwell_s * f
@@ -335,11 +363,7 @@ def generate_hold_duration_sweep(surface: LogicalSurface) -> Iterator[Scenario]:
             label=f"hold_sweep:{f:g}x_dwell",
             duration_s=total_s,
             sample_rate_hz=fs,
-            segments=(
-                BandSegment(band=smr_derive.band, channel=smr_derive.channel,
-                            start_s=fill_s, end_s=fill_s + hold_s,
-                            content=Tone(amplitude_uv=30.0)),
-            ),
+            segments=_reward_positive_segments(surface, start_s=fill_s, hold_s=hold_s),
             controls={},
             coverage_tags=frozenset({
                 "metamorphic:hold_duration_sweep",
