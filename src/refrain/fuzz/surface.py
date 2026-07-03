@@ -189,7 +189,10 @@ def _band_from_call(call: IRCall, ir: IRProtocol) -> tuple[float, float]:
     # bandwidth is `ratio(R)` — an IRCall wrapping one number.
     if not (isinstance(bw_expr, IRCall) and bw_expr.callee == "ratio" and bw_expr.args):
         raise UnsupportedProtocol("center/bandwidth bandpass")
-    ratio = float(bw_expr.args[0].value.value)
+    inner = bw_expr.args[0].value
+    if not isinstance(inner, IRNumberLit):
+        raise UnsupportedProtocol("center/bandwidth bandpass")
+    ratio = float(inner.value)
     if center is None or center <= 0 or ratio <= 0:
         raise UnsupportedProtocol("center/bandwidth bandpass")
     sqrt_r = math.sqrt(ratio)
@@ -373,7 +376,11 @@ def _dwell_ms_from_ir(ir: IRProtocol) -> float:
     raise ValueError("surface: reward.event is not a dwell(...) with a duration")
 
 
-def _classify_single_leaf(leaf, derives, thresholds):
+def _classify_single_leaf(
+    leaf: ConditionLeaf,
+    derives: tuple[DeriveSurface, ...],
+    thresholds: tuple[ThresholdSurface, ...],
+) -> ConditionLeaf:
     derive = next((d for d in derives if d.name == leaf.signal), None)
     thr = next((t for t in thresholds if t.name == leaf.threshold), None)
     if derive is None:
@@ -384,10 +391,16 @@ def _classify_single_leaf(leaf, derives, thresholds):
         raise UnsupportedProtocol("reward condition without a resolvable threshold")
     if thr.kind == "percentile":
         raise UnsupportedProtocol("single percentile-leaf reward (needs calibrated oracle)")
+    if thr.kind != "absolute":
+        raise UnsupportedProtocol(f"single {thr.kind}-threshold reward (unsupported)")
     return leaf
 
 
-def _reward_condition_from_ir(ir, derives, thresholds) -> ConditionNode | ConditionLeaf:
+def _reward_condition_from_ir(
+    ir: IRProtocol,
+    derives: tuple[DeriveSurface, ...],
+    thresholds: tuple[ThresholdSurface, ...],
+) -> ConditionNode | ConditionLeaf:
     event = ir.reward.event
     if isinstance(event, IRCall) and event.callee == "dwell":
         cond = _arg(event, "condition")

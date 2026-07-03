@@ -78,15 +78,6 @@ def test_single_below_absolute_builds():
     assert surf.reward_condition.op == "below"
 
 
-def test_percentile_single_leaf_defers_to_calibrated_oracle():
-    # examples/dyadic uses a coherence signal; use a percentile-over-real-derive
-    # from the corpus. alpha_theta has no threshold; instead assert the reason
-    # vocabulary via a percentile fixture is exercised by the batch test. Here,
-    # assert composite/coherence/no-threshold reasons hold:
-    with pytest.raises(UnsupportedProtocol) as e:
-        build_surface(_ir("bench/protocols/composite_smr_theta.refrain"))
-    assert e.value.reason == "composite-signal reward condition"
-
 
 def test_coherence_single_leaf_reason():
     with pytest.raises(UnsupportedProtocol) as e:
@@ -104,3 +95,26 @@ def test_percentile_single_leaf_reason():
     with pytest.raises(UnsupportedProtocol) as e:
         build_surface(_ir("bench/protocols/micro_single_pct.refrain"))
     assert e.value.reason == "single percentile-leaf reward (needs calibrated oracle)"
+
+
+def test_dynamic_threshold_single_leaf_raises():
+    """_classify_single_leaf must reject non-absolute, non-percentile thresholds."""
+    from refrain.fuzz.surface import (
+        ConditionLeaf,
+        DeriveSurface,
+        ThresholdSurface,
+        _classify_single_leaf,
+    )
+    thr = ThresholdSurface(name="t", signal="s", kind="dynamic")
+    derive = DeriveSurface(
+        name="s",
+        band=(4.0, 8.0),
+        sos=[[1, 0, 0, 1, 0, 0]],
+        smooth_tau_ms=None,
+        hilbert_group_delay_samples=0,
+        channel="Cz",
+    )
+    leaf = ConditionLeaf(op="above", signal="s", threshold="t")
+    with pytest.raises(UnsupportedProtocol) as e:
+        _classify_single_leaf(leaf, (derive,), (thr,))
+    assert e.value.reason == "single dynamic-threshold reward (unsupported)"

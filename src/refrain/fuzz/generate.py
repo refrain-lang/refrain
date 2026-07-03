@@ -206,7 +206,7 @@ def _reward_positive_segments(
     thr = next(t for t in surface.thresholds if t.name == leaf.threshold)
     # Gain-compensated amplitude that clearly drives `below` FALSE (band above thr).
     false_amp = _amplitude_for_truth("below", d, thr, side="false", fs=surface.sample_rate_hz)
-    preroll = 2.0
+    preroll = _TAIL_PAD_S
     segs: list = []
     if false_amp > 0:
         if start_s > 0.0:
@@ -266,8 +266,8 @@ def _percentile_warmup_scenarios(surface: LogicalSurface) -> Iterator[Scenario]:
     fill_s = _longest_percentile_window_s(surface) + _FILL_PAD_S
     total_s = fill_s + _SPIKE_S + _TAIL_PAD_S
 
-    # Use the first reward-condition leaf's signal as the driven derive (see _dwell_scenarios).
-    first_leaf = next(_all_leaves(surface.reward_condition))
+    # Use the driven leaf's signal as the driven derive (first `above` leaf, else first).
+    first_leaf = _driven_leaf(surface)
     smr_derive = next(d for d in surface.derives if d.name == first_leaf.signal)
     yield Scenario(
         label="percentile_warmup_then_spike",
