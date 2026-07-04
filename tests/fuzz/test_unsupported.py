@@ -23,17 +23,22 @@ def _ir(rel: str, *, library: str | None = None):
 
 def test_single_condition_reward_raises_typed_skip():
     # composite_smr_theta has a bare dwell(above(...)) reward -> ConditionLeaf.
+    # Inc 1: the leaf classifier gives the specific "composite-signal" reason
+    # (the condition signal is reward.composite, not a derive).
     ir = _ir("bench/protocols/composite_smr_theta.refrain")
     with pytest.raises(UnsupportedProtocol) as exc:
         build_surface(ir)
-    assert exc.value.reason == "single-condition reward"
+    assert exc.value.reason == "composite-signal reward condition"
 
 
-def test_center_bandwidth_bandpass_raises_typed_skip():
+def test_center_bandwidth_bandpass_no_longer_raises_typed_skip():
+    # Since center/bandwidth support was added, othmer_ilf_t3t4 now gets past
+    # bandpass parsing. It then fails at the reward stage (no dwell event) with
+    # a plain ValueError backstop — NOT an UnsupportedProtocol typed skip.
     ir = _ir("examples/othmer_ilf_t3t4.refrain")
-    with pytest.raises(UnsupportedProtocol) as exc:
+    with pytest.raises(ValueError) as exc:
         build_surface(ir)
-    assert exc.value.reason == "center/bandwidth bandpass"
+    assert not isinstance(exc.value, UnsupportedProtocol)
 
 
 def test_supported_protocol_still_builds():
@@ -50,3 +55,66 @@ def test_unrecognized_condition_stays_valueerror_not_typed():
     with pytest.raises(ValueError) as exc:
         build_surface(ir)
     assert not isinstance(exc.value, UnsupportedProtocol)
+
+
+# ---------------------------------------------------------------------------
+# Increment 1: single-leaf supportability detector
+# ---------------------------------------------------------------------------
+
+
+def test_single_above_absolute_builds():
+    ir = _ir("bench/protocols/micro_single_above.refrain")
+    from refrain.fuzz.surface import ConditionLeaf
+    surf = build_surface(ir)          # no raise
+    assert isinstance(surf.reward_condition, ConditionLeaf)
+    assert surf.reward_condition.op == "above"
+
+
+def test_single_below_absolute_builds():
+    ir = _ir("bench/protocols/micro_single_below.refrain")
+    from refrain.fuzz.surface import ConditionLeaf
+    surf = build_surface(ir)
+    assert isinstance(surf.reward_condition, ConditionLeaf)
+    assert surf.reward_condition.op == "below"
+
+
+
+def test_coherence_single_leaf_reason():
+    with pytest.raises(UnsupportedProtocol) as e:
+        build_surface(_ir("examples/dyadic_alpha_coherence_pz.refrain"))
+    assert e.value.reason == "non-bandpass (coherence) reward signal"
+
+
+def test_no_threshold_single_leaf_reason():
+    with pytest.raises(UnsupportedProtocol) as e:
+        build_surface(_ir("examples/alpha_theta.refrain"))
+    assert e.value.reason == "reward condition without a resolvable threshold"
+
+
+def test_percentile_single_leaf_reason():
+    with pytest.raises(UnsupportedProtocol) as e:
+        build_surface(_ir("bench/protocols/micro_single_pct.refrain"))
+    assert e.value.reason == "single percentile-leaf reward (needs calibrated oracle)"
+
+
+def test_dynamic_threshold_single_leaf_raises():
+    """_classify_single_leaf must reject non-absolute, non-percentile thresholds."""
+    from refrain.fuzz.surface import (
+        ConditionLeaf,
+        DeriveSurface,
+        ThresholdSurface,
+        _classify_single_leaf,
+    )
+    thr = ThresholdSurface(name="t", signal="s", kind="dynamic")
+    derive = DeriveSurface(
+        name="s",
+        band=(4.0, 8.0),
+        sos=[[1, 0, 0, 1, 0, 0]],
+        smooth_tau_ms=None,
+        hilbert_group_delay_samples=0,
+        channel="Cz",
+    )
+    leaf = ConditionLeaf(op="above", signal="s", threshold="t")
+    with pytest.raises(UnsupportedProtocol) as e:
+        _classify_single_leaf(leaf, (derive,), (thr,))
+    assert e.value.reason == "single dynamic-threshold reward (unsupported)"

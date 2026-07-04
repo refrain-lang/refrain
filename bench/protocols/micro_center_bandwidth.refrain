@@ -1,0 +1,15 @@
+protocol "micro_center_bandwidth" {
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "cb_env" {
+    from = "raw"
+    pipeline = [ bandpass(center: 13.5 Hz, bandwidth: ratio(1.234568), order: 4), hilbert(), magnitude(), smooth(tau: 250 ms) ]
+  }
+  threshold "cb_t" { signal = "cb_env"; type = absolute(8 uV) }
+  reward {
+    event = dwell(condition: above("cb_env", "cb_t"), duration: 250 ms)
+    continuous = sigmoid("cb_env" / "cb_t", midpoint: 1.0, steepness: 3)
+  }
+  output { audio_chime = reward.event }
+  session { phases = [ phase { name = "training"; duration = 30 min } ] }
+}

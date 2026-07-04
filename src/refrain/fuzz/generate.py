@@ -117,9 +117,19 @@ def _pivotal_scenarios_for_leaf(
 
     for side in ("true", "false"):
         amp = _amplitude_for_truth(leaf.op, derive, thr, side=side, fs=fs)
+        # For a `below` FALSE scenario the tail (after the spike) brings the
+        # condition back to True, creating a tail SHOULD-FIRE the oracle defers
+        # to the collar end. The engine fires earlier (within the collar) and
+        # stays held, so the collar-end expected event is MISSED. Fix: extend
+        # the tone to the end of the scenario so the condition stays False
+        # throughout and no tail expected event is produced. Safe for multi-
+        # leaf protocols too: the all_of is already False without a tail fire.
+        seg_end_s = (
+            total_s if (leaf.op == "below" and side == "false") else fill_s + _SPIKE_S
+        )
         segments = (
             (BandSegment(band=derive.band, channel=derive.channel,
-                         start_s=fill_s, end_s=fill_s + _SPIKE_S,
+                         start_s=fill_s, end_s=seg_end_s,
                          content=Tone(amplitude_uv=amp)),)
             if amp > 0 else ()
         )
@@ -164,13 +174,58 @@ def _amplitude_for_truth(
     return target_env / max(gain, 1e-3)
 
 
+def _driven_leaf(surface: LogicalSurface) -> ConditionLeaf:
+    """The leaf the reward-positive scenarios drive: the first `above` leaf, else
+    the first leaf (a sole `below`)."""
+    leaves = list(_all_leaves(surface.reward_condition))
+    for leaf in leaves:
+        if leaf.op == "above":
+            return leaf
+    return leaves[0]
+
+
+def _reward_positive_segments(
+    surface: LogicalSurface, *, start_s: float, hold_s: float
+) -> tuple:
+    """BandSegments that hold the reward's driven leaf TRUE for `hold_s` from
+    `start_s`. above: a 30 uV tone over [start, start+hold] (unchanged behavior).
+    below: a PRE-ROLL tone (clearly above threshold => below FALSE, resets dwell)
+    over [start-preroll, start], quiet over the hold window (below TRUE), then an
+    END-ROLL tone from [start+hold, start+hold+preroll]. The end-roll creates a
+    second condition transition so that the two settle collars overlap and cancel
+    the dwell prediction — mirroring how the `above` tone's start/end collars work
+    — so the actual engine event lands in a DON'T-CARE region and the check passes.
+    (preroll == _TAIL_PAD_S == 2.0 s, so the end-roll always terminates at total_s.)
+    """
+    leaf = _driven_leaf(surface)
+    d = next(dv for dv in surface.derives if dv.name == leaf.signal)
+    if leaf.op != "below":
+        return (BandSegment(band=d.band, channel=d.channel,
+                            start_s=start_s, end_s=start_s + hold_s,
+                            content=Tone(amplitude_uv=30.0)),)
+    thr = next(t for t in surface.thresholds if t.name == leaf.threshold)
+    # Gain-compensated amplitude that clearly drives `below` FALSE (band above thr).
+    false_amp = _amplitude_for_truth("below", d, thr, side="false", fs=surface.sample_rate_hz)
+    preroll = _TAIL_PAD_S
+    segs: list = []
+    if false_amp > 0:
+        if start_s > 0.0:
+            segs.append(BandSegment(band=d.band, channel=d.channel,
+                                    start_s=max(0.0, start_s - preroll), end_s=start_s,
+                                    content=Tone(amplitude_uv=false_amp)))
+        # End-roll: restores below FALSE after the hold, creating a second transition
+        # whose settle collar overlaps the first and cancels the dwell prediction.
+        segs.append(BandSegment(band=d.band, channel=d.channel,
+                                start_s=start_s + hold_s,
+                                end_s=start_s + hold_s + preroll,
+                                content=Tone(amplitude_uv=false_amp)))
+    return tuple(segs)
+
+
 def _dwell_scenarios(surface: LogicalSurface) -> Iterator[Scenario]:
     """Hold the all-leaves-TRUE configuration (SMR up, theta/hbeta quiet) for a
     clearly-long vs clearly-short duration, to exercise the dwell boundary."""
     fs = surface.sample_rate_hz
-    # TODO(v2): assumes the smr_cz layout (smr_envelope is the driven derive);
-    # generalize to the output-relevant derive for arbitrary protocols.
-    smr_derive = next(d for d in surface.derives if d.name == "smr_envelope")
     fill_s = _longest_percentile_window_s(surface) + _FILL_PAD_S  # post-fill window
     dwell_s = surface.dwell_ms / 1000.0
     settle_s = 1.0   # rough collar pad
@@ -182,11 +237,7 @@ def _dwell_scenarios(surface: LogicalSurface) -> Iterator[Scenario]:
         label="dwell_met",
         duration_s=total_met,
         sample_rate_hz=fs,
-        segments=(
-            BandSegment(band=smr_derive.band, channel=smr_derive.channel,
-                        start_s=fill_s, end_s=fill_s + hold_s_met,
-                        content=Tone(amplitude_uv=30.0)),
-        ),
+        segments=_reward_positive_segments(surface, start_s=fill_s, hold_s=hold_s_met),
         controls={},
         coverage_tags=frozenset({"dwell:met"}),
         phase_override=_training_phase(total_met),
@@ -199,11 +250,7 @@ def _dwell_scenarios(surface: LogicalSurface) -> Iterator[Scenario]:
         label="dwell_missed",
         duration_s=total_missed,
         sample_rate_hz=fs,
-        segments=(
-            BandSegment(band=smr_derive.band, channel=smr_derive.channel,
-                        start_s=fill_s, end_s=fill_s + hold_s_missed,
-                        content=Tone(amplitude_uv=30.0)),
-        ),
+        segments=_reward_positive_segments(surface, start_s=fill_s, hold_s=hold_s_missed),
         controls={},
         coverage_tags=frozenset({"dwell:missed"}),
         phase_override=_training_phase(total_missed),
@@ -213,12 +260,15 @@ def _dwell_scenarios(surface: LogicalSurface) -> Iterator[Scenario]:
 def _percentile_warmup_scenarios(surface: LogicalSurface) -> Iterator[Scenario]:
     """Long quiet fill then a high-rank spike. Asserts that the warmup region
     is DON'T-CARE (oracle's pre-fill) and the post-fill spike fires."""
+    if _longest_percentile_window_s(surface) <= 0.0:
+        return  # no percentile threshold — warmup scenario is vacuous/wrong
     fs = surface.sample_rate_hz
     fill_s = _longest_percentile_window_s(surface) + _FILL_PAD_S
     total_s = fill_s + _SPIKE_S + _TAIL_PAD_S
 
-    # TODO(v2): assumes the smr_cz layout (see _dwell_scenarios).
-    smr_derive = next(d for d in surface.derives if d.name == "smr_envelope")
+    # Use the driven leaf's signal as the driven derive (first `above` leaf, else first).
+    first_leaf = _driven_leaf(surface)
+    smr_derive = next(d for d in surface.derives if d.name == first_leaf.signal)
     yield Scenario(
         label="percentile_warmup_then_spike",
         duration_s=total_s,
@@ -239,6 +289,8 @@ def generate_characterization_probe(surface: LogicalSurface) -> Iterator[Scenari
     scenario injects a single tone; the checker asserts the corresponding
     derive's envelope is high and others low — verifying each band peaks where
     declared."""
+    if isinstance(surface.reward_condition, ConditionLeaf):
+        return  # single-leaf: pivotal scenarios already drive the reward band
     fs = surface.sample_rate_hz
     duration = 6.0
     for derive in surface.derives:
@@ -303,8 +355,6 @@ def generate_hold_duration_sweep(surface: LogicalSurface) -> Iterator[Scenario]:
     fs = surface.sample_rate_hz
     dwell_s = surface.dwell_ms / 1000.0
     fractions = (0.5, 0.9, 1.5, 2.5, 5.0)
-    # TODO(v2): smr_cz-specific driven derive (see _dwell_scenarios).
-    smr_derive = next(d for d in surface.derives if d.name == "smr_envelope")
     fill_s = _longest_percentile_window_s(surface) + _FILL_PAD_S
     for f in fractions:
         hold_s = dwell_s * f
@@ -313,11 +363,7 @@ def generate_hold_duration_sweep(surface: LogicalSurface) -> Iterator[Scenario]:
             label=f"hold_sweep:{f:g}x_dwell",
             duration_s=total_s,
             sample_rate_hz=fs,
-            segments=(
-                BandSegment(band=smr_derive.band, channel=smr_derive.channel,
-                            start_s=fill_s, end_s=fill_s + hold_s,
-                            content=Tone(amplitude_uv=30.0)),
-            ),
+            segments=_reward_positive_segments(surface, start_s=fill_s, hold_s=hold_s),
             controls={},
             coverage_tags=frozenset({
                 "metamorphic:hold_duration_sweep",

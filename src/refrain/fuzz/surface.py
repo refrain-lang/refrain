@@ -9,6 +9,7 @@ scenario generator and the analytic oracle read.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from ..ir import (
@@ -98,7 +99,7 @@ class LogicalSurface:
     required_channels: tuple[str, ...]
     derives: tuple[DeriveSurface, ...]
     thresholds: tuple[ThresholdSurface, ...]
-    reward_condition: ConditionNode
+    reward_condition: ConditionNode | ConditionLeaf
     dwell_ms: float
     phases: tuple[PhaseSurface, ...]
     outputs: tuple[OutputBindingSurface, ...]
@@ -167,14 +168,35 @@ def _iter_pipeline_calls(d: IRDerive):
         expr = inner
 
 
-def _band_from_call(call: IRCall) -> tuple[float, float]:
-    """Read `band: (lo Hz, hi Hz)` from a bandpass call."""
+def _band_from_call(call: IRCall, ir: IRProtocol) -> tuple[float, float]:
+    """Read `band: (lo Hz, hi Hz)`, or derive edges from the `center:`/`bandwidth:`
+    form. Formula mirrors primitive_impls._resolve_band (the resolver's source of
+    truth): band = (center / sqrt(ratio), center * sqrt(ratio))."""
     band = _arg(call, "band")
-    if band is None:
-        # The center:/bandwidth: declaration form lands here (Increment 2).
+    if band is not None:
+        lo, hi = band.elements
+        return (float(lo.value), float(hi.value))
+    center_expr = _arg(call, "center")
+    bw_expr = _arg(call, "bandwidth")
+    if center_expr is None or bw_expr is None:
         raise UnsupportedProtocol("center/bandwidth bandpass")
-    lo, hi = band.elements  # IRTuple of two IRNumberLit (Hz)
-    return (float(lo.value), float(hi.value))
+    if isinstance(center_expr, IRNumberLit):
+        center = float(center_expr.value)
+    elif isinstance(center_expr, IRControlRef):
+        center = _resolve_control_default(ir, center_expr)
+    else:
+        raise UnsupportedProtocol("center/bandwidth bandpass")
+    # bandwidth is `ratio(R)` — an IRCall wrapping one number.
+    if not (isinstance(bw_expr, IRCall) and bw_expr.callee == "ratio" and bw_expr.args):
+        raise UnsupportedProtocol("center/bandwidth bandpass")
+    inner = bw_expr.args[0].value
+    if not isinstance(inner, IRNumberLit):
+        raise UnsupportedProtocol("center/bandwidth bandpass")
+    ratio = float(inner.value)
+    if center is None or center <= 0 or ratio <= 0:
+        raise UnsupportedProtocol("center/bandwidth bandpass")
+    sqrt_r = math.sqrt(ratio)
+    return (center / sqrt_r, center * sqrt_r)
 
 
 def _sos_for_derive_step(j: dict, derive_name: str, callee: str) -> list[list[float]] | None:
@@ -245,7 +267,7 @@ def _derive_surface(d: IRDerive, ir: IRProtocol, j: dict) -> DeriveSurface:
     hilbert_group_delay = 0
     for call in _iter_pipeline_calls(d):
         if call.callee == "bandpass":
-            band = _band_from_call(call)
+            band = _band_from_call(call, ir)
         elif call.callee == "smooth":
             tau = _arg(call, "tau")
             if isinstance(tau, IRNumberLit):
@@ -354,16 +376,39 @@ def _dwell_ms_from_ir(ir: IRProtocol) -> float:
     raise ValueError("surface: reward.event is not a dwell(...) with a duration")
 
 
-def _reward_condition_from_ir(ir: IRProtocol) -> ConditionNode:
+def _classify_single_leaf(
+    leaf: ConditionLeaf,
+    derives: tuple[DeriveSurface, ...],
+    thresholds: tuple[ThresholdSurface, ...],
+) -> ConditionLeaf:
+    derive = next((d for d in derives if d.name == leaf.signal), None)
+    thr = next((t for t in thresholds if t.name == leaf.threshold), None)
+    if derive is None:
+        raise UnsupportedProtocol("composite-signal reward condition")
+    if derive.sos is None:
+        raise UnsupportedProtocol("non-bandpass (coherence) reward signal")
+    if thr is None:
+        raise UnsupportedProtocol("reward condition without a resolvable threshold")
+    if thr.kind == "percentile":
+        raise UnsupportedProtocol("single percentile-leaf reward (needs calibrated oracle)")
+    if thr.kind != "absolute":
+        raise UnsupportedProtocol(f"single {thr.kind}-threshold reward (unsupported)")
+    return leaf
+
+
+def _reward_condition_from_ir(
+    ir: IRProtocol,
+    derives: tuple[DeriveSurface, ...],
+    thresholds: tuple[ThresholdSurface, ...],
+) -> ConditionNode | ConditionLeaf:
     event = ir.reward.event
     if isinstance(event, IRCall) and event.callee == "dwell":
         cond = _arg(event, "condition")
-        node = _condition_from_ir(cond)  # unrecognized exprs -> ValueError (backstop)
+        node = _condition_from_ir(cond)
         if isinstance(node, ConditionNode):
             return node
         if isinstance(node, ConditionLeaf):
-            # A bare dwell(above/below(...)) reward (Increment 1).
-            raise UnsupportedProtocol("single-condition reward")
+            return _classify_single_leaf(node, derives, thresholds)
     raise ValueError("surface: reward.event has no all_of/any_of condition")
 
 
@@ -405,7 +450,7 @@ def build_surface(ir: IRProtocol) -> LogicalSurface:
     j = ir_to_json_obj(ir)
     derives = tuple(_derive_surface(d, ir, j) for d in ir.derives.values())
     thresholds = tuple(_threshold_surface(t, ir) for t in ir.thresholds.values())
-    reward_condition = _reward_condition_from_ir(ir)
+    reward_condition = _reward_condition_from_ir(ir, derives, thresholds)
     dwell_ms = _dwell_ms_from_ir(ir)
     phases = tuple(
         PhaseSurface(

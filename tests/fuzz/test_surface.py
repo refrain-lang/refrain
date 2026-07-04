@@ -1,10 +1,14 @@
 """Tests for the LogicalSurface extraction from a resolved Refrain IR."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from refrain.fuzz.surface import LogicalSurface, build_surface
 from tests.fuzz._smr import resolved_smr_ir
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture(scope="module")
@@ -72,3 +76,26 @@ def test_surface_sample_rate_resolved(smr_surface):
 
 def test_surface_lists_relevant_channels(smr_surface):
     assert "Cz" in smr_surface.required_channels
+
+
+def test_center_bandwidth_band_from_args():
+    from refrain.parser import parse_file
+    from refrain.resolver import resolve
+    from refrain.fuzz.surface import _band_from_call, _arg
+    from refrain.ir import IRCall
+    ir = resolve(parse_file(REPO_ROOT / "bench/protocols/micro_center_bandwidth.refrain"), None)
+    # find the bandpass call in the cb_env derive
+    call = None
+    def walk(o):
+        nonlocal call
+        if isinstance(o, IRCall) and o.callee == "bandpass":
+            call = o
+        for a in getattr(o, "args", []):
+            walk(a.value)
+        for attr in ("expression", "value"):
+            v = getattr(o, attr, None)
+            if v is not None and not isinstance(v, (str, int, float)):
+                walk(v)
+    walk(ir.derives["cb_env"])
+    lo, hi = _band_from_call(call, ir)
+    assert abs(lo - 12.15) < 0.1 and abs(hi - 15.0) < 0.1
