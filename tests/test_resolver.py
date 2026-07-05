@@ -837,6 +837,60 @@ def test_mode_live_tunable_rejected():
         resolve(parse(_mode_proto(extra="; live_tunable = true")), _AMP)
 
 
+# ---------------------------------------------------------------------------
+# Mode control folded into threshold type — Task 2: adaptive/baseline collapse
+# ---------------------------------------------------------------------------
+
+_MODE_THRESHOLD_PROTO = '''
+    protocol "styled" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls {
+        threshold_style = mode { choices = ["adaptive", "baseline"]; default = "adaptive" }
+        reward_pct = percent { default = 70 }
+        thr_uv = voltage { default = 2.0 uV }
+      }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "env" {
+        from = "raw"
+        pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude() ]
+      }
+      threshold "env_t" {
+        signal = "env"
+        type = threshold_style == "baseline"
+                 ? absolute(value: thr_uv)
+                 : percentile(target_pct: reward_pct, window: 2 min)
+      }
+      reward { continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+      output { audio_gain = reward.continuous }
+    }
+'''
+
+
+def test_mode_threshold_default_is_percentile():
+    ir = resolve(parse(_MODE_THRESHOLD_PROTO), _AMP)
+    assert ir.thresholds["env_t"].threshold_call.callee == "percentile"
+
+
+def test_mode_threshold_baseline_binding_is_absolute():
+    ir = resolve(parse(_MODE_THRESHOLD_PROTO), _AMP,
+                 bindings={"threshold_style": "baseline"})
+    assert ir.thresholds["env_t"].threshold_call.callee == "absolute"
+
+
+def test_mode_threshold_invalid_binding_fails():
+    with pytest.raises(ResolveError, match="not in choices|choices"):
+        resolve(parse(_MODE_THRESHOLD_PROTO), _AMP,
+                bindings={"threshold_style": "nonsense"})
+
+
+def test_mode_final_rejects_override():
+    proto = _MODE_THRESHOLD_PROTO.replace(
+        'default = "adaptive" }',
+        'default = "adaptive"; final = true }')
+    with pytest.raises(ResolveError, match="final"):
+        resolve(parse(proto), _AMP, bindings={"threshold_style": "baseline"})
+
+
 def test_final_placement_rejects_override():
     src = _SITE_PROTO.replace('allowed = ["Cz","C3","C4"]', 'allowed = ["Cz"]; final = true')
     with pytest.raises(ResolveError, match="final|locked|cannot override"):

@@ -560,6 +560,50 @@ class _Resolver:
             return call
         return A.Call(callee=call.callee, args=tuple(new_args), loc=call.loc)
 
+    def _fold_mode_conditionals(self, expr):
+        """Collapse resolve-time ternaries whose condition tests a `mode` control.
+
+        Returns the selected branch (recursively folded) when `expr` is a
+        `cond ? a : b` whose `cond` compares a mode control to a string literal.
+        Any other expression is returned unchanged, so runtime ternaries
+        (e.g. `reward.event.holds ? ... : 0`) pass through untouched.
+        """
+        if isinstance(expr, A.Conditional):
+            picked = self._eval_mode_condition(expr.cond)
+            if picked is not None:
+                chosen = expr.then_branch if picked else expr.else_branch
+                return self._fold_mode_conditionals(chosen)
+        return expr
+
+    def _eval_mode_condition(self, cond):
+        """Evaluate a `<mode> == "x"` / `<mode> != "x"` comparison at resolve time.
+
+        Returns True/False when `cond` is such a comparison (operands in either
+        order); None when it does not reference a mode control (leave to runtime).
+        """
+        if not isinstance(cond, A.BinaryOp) or cond.op not in ("==", "!="):
+            return None
+        pair = self._mode_ref_and_literal(cond.left, cond.right)
+        if pair is None:
+            return None
+        mode_name, literal = pair
+        bound = self._bound_mode_value(mode_name)
+        equal = bound == literal
+        return equal if cond.op == "==" else not equal
+
+    def _mode_ref_and_literal(self, a, b):
+        """If one operand is a NameRef to a mode control and the other a string
+        literal, return (mode_name, literal_value); otherwise None."""
+        for x, y in ((a, b), (b, a)):
+            if (
+                isinstance(x, A.NameRef)
+                and x.name in self.controls
+                and self.controls[x.name].type_kind == "mode"
+                and isinstance(y, A.StringLit)
+            ):
+                return x.name, y.value
+        return None
+
     def _resolve_derive(self, decl: A.NamedDecl) -> IRDerive:
         fields = self._assignments_dict(decl.body)
         has_from = "from" in fields
@@ -623,6 +667,8 @@ class _Resolver:
                 f"threshold \"{decl.name}\".signal {signal_expr.value!r} is not a stream",
                 loc=signal_expr.loc,
             )
+        if type_expr is not None:
+            type_expr = self._fold_mode_conditionals(type_expr)
         if not isinstance(type_expr, A.Call):
             raise ResolveError(
                 f"threshold \"{decl.name}\".type must be a constructor call "
@@ -1288,6 +1334,38 @@ class _Resolver:
                 f"placement {name!r}: {value!r} not in allowed {list(allowed)}",
                 loc=loc,
             )
+
+    def _bound_mode_value(self, name: str) -> str:
+        """Return the concrete bound choice for a mode control.
+
+        Uses `self.bindings[name]` when present (validated against `choices`,
+        forbidden when the control is `final`); otherwise the declared default.
+        """
+        ctrl = self.controls.get(name)
+        if ctrl is None or ctrl.type_kind != "mode":
+            raise ResolveError(
+                f"internal: _bound_mode_value called for non-mode {name!r}",
+            )
+        if name in self.bindings:
+            if ctrl.final:
+                raise ResolveError(
+                    f"mode {name!r} is final and cannot be overridden",
+                    loc=ctrl.loc,
+                )
+            value = self.bindings[name]
+            if not isinstance(value, str):
+                raise ResolveError(
+                    f"mode {name!r} binding must be a string, got "
+                    f"{type(value).__name__}",
+                    loc=ctrl.loc,
+                )
+            if value not in ctrl.choices:
+                raise ResolveError(
+                    f"mode {name!r}: {value!r} not in choices {list(ctrl.choices)}",
+                    loc=ctrl.loc,
+                )
+            return value
+        return ctrl.default_mode
 
     def _bound_placement_value(self, name: str):
         """Return the concrete bound value for a placement control.
