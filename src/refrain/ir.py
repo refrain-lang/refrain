@@ -281,6 +281,9 @@ class IRControl:
     default_placement: tuple = ()        # active: ("Cz",); bipolar/pair: ("T3","T4"); set: ("Cz",); () if none
     set_min: int | None = None           # set only: minimum number of sites (default 1)
     set_max: int | None = None           # set only: maximum number of sites (None = unlimited)
+    # Mode-control fields (empty/None for non-mode controls):
+    choices: tuple = ()                  # mode only: tuple of allowed string choices
+    default_mode: str | None = None      # mode only: the default choice
 
 
 @dataclass(frozen=True, slots=True)

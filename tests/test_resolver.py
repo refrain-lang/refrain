@@ -772,6 +772,71 @@ def test_placement_binding_non_string_rejected():
         resolve(parse(_SITE_PROTO), _AMP, bindings={"site": 42})
 
 
+# ---------------------------------------------------------------------------
+# Mode control type — Task 1: declare, resolve, and validate
+# ---------------------------------------------------------------------------
+
+_MODE_DECL_PROTO = '''
+    protocol "styled" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls {
+        threshold_style = mode { choices = ["adaptive", "baseline"]; default = "adaptive"; label = "Threshold style" }
+        reward_pct = percent { default = 70 }
+      }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "env" {
+        from = "raw"
+        pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude() ]
+      }
+      threshold "env_t" { signal = "env"; type = percentile(target_pct: reward_pct, window: 2 min) }
+      reward { continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+      output { audio_gain = reward.continuous }
+    }
+'''
+
+
+def test_mode_control_resolves():
+    ir = resolve(parse(_MODE_DECL_PROTO), _AMP)
+    ctl = ir.controls["threshold_style"]
+    assert ctl.type_kind == "mode"
+    assert ctl.choices == ("adaptive", "baseline")
+    assert ctl.default_mode == "adaptive"
+    assert ctl.label == "Threshold style"
+    assert ctl.live_tunable is False
+
+
+def _mode_proto(*, choices='["adaptive", "baseline"]', default='"adaptive"', extra=""):
+    return f'''
+        protocol "styled" {{
+          meta {{ version = "1.0"; evidence = "clinical"; description = "x" }}
+          controls {{ m = mode {{ choices = {choices}; default = {default}{extra} }} }}
+          input "raw" {{ montage = referential(active: "Cz", reference: "linked_ears") }}
+          reward {{ continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }}
+          output {{ audio_gain = reward.continuous }}
+        }}
+    '''
+
+
+def test_mode_default_not_in_choices_fails():
+    with pytest.raises(ResolveError, match="not in choices|choices"):
+        resolve(parse(_mode_proto(default='"other"')), _AMP)
+
+
+def test_mode_empty_choices_fails():
+    with pytest.raises(ResolveError, match="non-empty|choices"):
+        resolve(parse(_mode_proto(choices="[]")), _AMP)
+
+
+def test_mode_non_string_choice_fails():
+    with pytest.raises(ResolveError, match="string"):
+        resolve(parse(_mode_proto(choices='["adaptive", 3]')), _AMP)
+
+
+def test_mode_live_tunable_rejected():
+    with pytest.raises(ResolveError, match="live_tunable"):
+        resolve(parse(_mode_proto(extra="; live_tunable = true")), _AMP)
+
+
 def test_final_placement_rejects_override():
     src = _SITE_PROTO.replace('allowed = ["Cz","C3","C4"]', 'allowed = ["Cz"]; final = true')
     with pytest.raises(ResolveError, match="final|locked|cannot override"):

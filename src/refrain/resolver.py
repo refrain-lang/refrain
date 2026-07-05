@@ -939,6 +939,8 @@ class _Resolver:
 
         if kind == "placement":
             return self._resolve_placement_control(name, fields, block.loc)
+        if kind == "mode":
+            return self._resolve_mode_control(name, fields, block.loc)
 
         default = self._resolve_value_expr(fields["default"]) if "default" in fields else None
         range_low: IRExpr | None = None
@@ -1043,6 +1045,77 @@ class _Resolver:
             default_placement=default_placement,
             loc=loc,
         )
+
+    def _resolve_mode_control(self, name: str, fields: dict, loc) -> IRControl:
+        """Parse and validate a `mode { ... }` control block.
+
+        A mode control is a categorical, resolve-time-bound selector (like a
+        placement, but over abstract string choices instead of channels). It is
+        never live_tunable: the value is chosen before the run and folds away
+        during resolution.
+        """
+        if self._bool_field(fields, "live_tunable", default=False):
+            raise ResolveError(
+                f"mode control {name!r} cannot be live_tunable "
+                "(it is bound at resolve time, like a placement)",
+                loc=loc,
+            )
+        choices = self._parse_mode_choices(name, fields.get("choices"), loc)
+        default_expr = fields.get("default")
+        if not isinstance(default_expr, A.StringLit):
+            raise ResolveError(
+                f"mode control {name!r} requires a string `default`",
+                loc=loc,
+            )
+        default_mode = default_expr.value
+        if default_mode not in choices:
+            raise ResolveError(
+                f"mode control {name!r}: default {default_mode!r} not in "
+                f"choices {list(choices)}",
+                loc=loc,
+            )
+        final = self._bool_field(fields, "final", default=False)
+        label_expr = fields.get("label")
+        label = label_expr.value if isinstance(label_expr, A.StringLit) else None
+        return IRControl(
+            name=name,
+            canonical_name=f"control/{name}",
+            type_kind="mode",
+            dims=DIMENSIONLESS,
+            default=None,
+            range_low=None,
+            range_high=None,
+            log_scale=False,
+            label=label,
+            live_tunable=False,
+            tune_strategy=None,
+            loc=loc,
+            final=final,
+            choices=choices,
+            default_mode=default_mode,
+        )
+
+    def _parse_mode_choices(self, name: str, expr, loc) -> tuple:
+        """Parse `choices = ["a", "b", ...]` into a tuple of unique strings."""
+        if not isinstance(expr, A.Array) or not expr.elements:
+            raise ResolveError(
+                f"mode control {name!r} needs a non-empty `choices = [...]` of strings",
+                loc=loc,
+            )
+        out: list[str] = []
+        for elt in expr.elements:
+            if not isinstance(elt, A.StringLit):
+                raise ResolveError(
+                    f"mode control {name!r}: every choice must be a string literal",
+                    loc=loc,
+                )
+            out.append(elt.value)
+        if len(set(out)) != len(out):
+            raise ResolveError(
+                f"mode control {name!r}: choices must be unique, got {out}",
+                loc=loc,
+            )
+        return tuple(out)
 
     def _resolve_set_placement_control(
         self, name: str, fields: dict, label: str | None, final: bool, loc
@@ -2219,6 +2292,8 @@ def _control_kind_dims(kind: str, loc: Loc | None) -> Dimensions:
         return DIMENSIONLESS
     if kind == "placement":
         return DIMENSIONLESS   # categorical (channel identifiers); no unit arithmetic
+    if kind == "mode":
+        return DIMENSIONLESS   # categorical string choices; no unit arithmetic
     raise ResolveError(f"unknown control type {kind!r}", loc=loc)
 
 
