@@ -5,6 +5,28 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.12.0] — 2026-07-05
+
+Additive — a new `mode` control that lets one protocol select a threshold's
+`type` (percentile ↔ absolute, i.e. adaptive ↔ baseline) or an output binding
+(gated ↔ ungated) from a value bound at resolve time. Modeled on the existing
+`placement` control; the selection folds away during resolution, so the IR-JSON
+schema and the Rust runtime are unchanged. No existing protocol changes behavior.
+
+### Added
+- **`mode` control kind.** `x = mode { choices = ["a", "b"]; default = "a" }` —
+  a categorical, resolve-time-bound selector (never `live_tunable`), bound via
+  the same `bindings=` mechanism as `placement`, validated against `choices`,
+  honoring `final`.
+- **Resolve-time selection folding.** A ternary whose condition compares a mode
+  control to a string literal (`mode == "x" ? a : b`) is evaluated at resolve
+  time and replaced by the chosen branch — wired into threshold `type` and output
+  bindings. Non-mode ternaries are untouched and still resolve as runtime
+  conditionals.
+- **Host surfacing.** `describe_protocol` returns mode controls in a `modes`
+  list; mode controls are excluded from the emitted IR-JSON `controls` map (they
+  resolve away, like `placement`).
+
 ## [0.11.0] — 2026-06-21
 
 Additive — a new mobile-binding method plus editor-catalog coverage that brings
