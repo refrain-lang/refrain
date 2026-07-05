@@ -264,7 +264,7 @@ class IRReward:
 class IRControl:
     name: str
     canonical_name: str    # "control/<name>"
-    type_kind: str         # "frequency"|"duration"|"voltage"|"percent"|"boolean"|"enum"|"placement"
+    type_kind: str         # "frequency"|"duration"|"voltage"|"percent"|"boolean"|"enum"|"placement"|"mode"
     dims: Dimensions
     default: IRExpr | None
     range_low: IRExpr | None
@@ -281,6 +281,9 @@ class IRControl:
     default_placement: tuple = ()        # active: ("Cz",); bipolar/pair: ("T3","T4"); set: ("Cz",); () if none
     set_min: int | None = None           # set only: minimum number of sites (default 1)
     set_max: int | None = None           # set only: maximum number of sites (None = unlimited)
+    # Mode-control fields (empty/None for non-mode controls):
+    choices: tuple = ()                  # mode only: tuple of allowed string choices
+    default_mode: str | None = None      # mode only: the default choice
 
 
 @dataclass(frozen=True, slots=True)

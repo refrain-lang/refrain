@@ -414,7 +414,7 @@ def ir_to_json_obj(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> di
         "controls": {
             name: _emit_control(c, ctx)
             for name, c in ir.controls.items()
-            if c.type_kind != "placement"
+            if c.type_kind not in ("placement", "mode")
         },
         "session": _emit_session(ir.session),
         "blocks": {name: _emit_block(b) for name, b in ir.blocks.items()},

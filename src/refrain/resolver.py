@@ -560,6 +560,50 @@ class _Resolver:
             return call
         return A.Call(callee=call.callee, args=tuple(new_args), loc=call.loc)
 
+    def _fold_mode_conditionals(self, expr):
+        """Collapse resolve-time ternaries whose condition tests a `mode` control.
+
+        Returns the selected branch (recursively folded) when `expr` is a
+        `cond ? a : b` whose `cond` compares a mode control to a string literal.
+        Any other expression is returned unchanged, so runtime ternaries
+        (e.g. `reward.event.holds ? ... : 0`) pass through untouched.
+        """
+        if isinstance(expr, A.Conditional):
+            picked = self._eval_mode_condition(expr.cond)
+            if picked is not None:
+                chosen = expr.then_branch if picked else expr.else_branch
+                return self._fold_mode_conditionals(chosen)
+        return expr
+
+    def _eval_mode_condition(self, cond):
+        """Evaluate a `<mode> == "x"` / `<mode> != "x"` comparison at resolve time.
+
+        Returns True/False when `cond` is such a comparison (operands in either
+        order); None when it does not reference a mode control (leave to runtime).
+        """
+        if not isinstance(cond, A.BinaryOp) or cond.op not in ("==", "!="):
+            return None
+        pair = self._mode_ref_and_literal(cond.left, cond.right)
+        if pair is None:
+            return None
+        mode_name, literal = pair
+        bound = self._bound_mode_value(mode_name)
+        equal = bound == literal
+        return equal if cond.op == "==" else not equal
+
+    def _mode_ref_and_literal(self, a, b):
+        """If one operand is a NameRef to a mode control and the other a string
+        literal, return (mode_name, literal_value); otherwise None."""
+        for x, y in ((a, b), (b, a)):
+            if (
+                isinstance(x, A.NameRef)
+                and x.name in self.controls
+                and self.controls[x.name].type_kind == "mode"
+                and isinstance(y, A.StringLit)
+            ):
+                return x.name, y.value
+        return None
+
     def _resolve_derive(self, decl: A.NamedDecl) -> IRDerive:
         fields = self._assignments_dict(decl.body)
         has_from = "from" in fields
@@ -623,6 +667,8 @@ class _Resolver:
                 f"threshold \"{decl.name}\".signal {signal_expr.value!r} is not a stream",
                 loc=signal_expr.loc,
             )
+        if type_expr is not None:
+            type_expr = self._fold_mode_conditionals(type_expr)
         if not isinstance(type_expr, A.Call):
             raise ResolveError(
                 f"threshold \"{decl.name}\".type must be a constructor call "
@@ -939,6 +985,8 @@ class _Resolver:
 
         if kind == "placement":
             return self._resolve_placement_control(name, fields, block.loc)
+        if kind == "mode":
+            return self._resolve_mode_control(name, fields, block.loc)
 
         default = self._resolve_value_expr(fields["default"]) if "default" in fields else None
         range_low: IRExpr | None = None
@@ -1043,6 +1091,77 @@ class _Resolver:
             default_placement=default_placement,
             loc=loc,
         )
+
+    def _resolve_mode_control(self, name: str, fields: dict, loc) -> IRControl:
+        """Parse and validate a `mode { ... }` control block.
+
+        A mode control is a categorical, resolve-time-bound selector (like a
+        placement, but over abstract string choices instead of channels). It is
+        never live_tunable: the value is chosen before the run and folds away
+        during resolution.
+        """
+        if self._bool_field(fields, "live_tunable", default=False):
+            raise ResolveError(
+                f"mode control {name!r} cannot be live_tunable "
+                "(it is bound at resolve time, like a placement)",
+                loc=loc,
+            )
+        choices = self._parse_mode_choices(name, fields.get("choices"), loc)
+        default_expr = fields.get("default")
+        if not isinstance(default_expr, A.StringLit):
+            raise ResolveError(
+                f"mode control {name!r} requires a string `default`",
+                loc=loc,
+            )
+        default_mode = default_expr.value
+        if default_mode not in choices:
+            raise ResolveError(
+                f"mode control {name!r}: default {default_mode!r} not in "
+                f"choices {list(choices)}",
+                loc=loc,
+            )
+        final = self._bool_field(fields, "final", default=False)
+        label_expr = fields.get("label")
+        label = label_expr.value if isinstance(label_expr, A.StringLit) else None
+        return IRControl(
+            name=name,
+            canonical_name=f"control/{name}",
+            type_kind="mode",
+            dims=DIMENSIONLESS,
+            default=None,
+            range_low=None,
+            range_high=None,
+            log_scale=False,
+            label=label,
+            live_tunable=False,
+            tune_strategy=None,
+            loc=loc,
+            final=final,
+            choices=choices,
+            default_mode=default_mode,
+        )
+
+    def _parse_mode_choices(self, name: str, expr, loc) -> tuple:
+        """Parse `choices = ["a", "b", ...]` into a tuple of unique strings."""
+        if not isinstance(expr, A.Array) or not expr.elements:
+            raise ResolveError(
+                f"mode control {name!r} needs a non-empty `choices = [...]` of strings",
+                loc=loc,
+            )
+        out: list[str] = []
+        for elt in expr.elements:
+            if not isinstance(elt, A.StringLit):
+                raise ResolveError(
+                    f"mode control {name!r}: every choice must be a string literal",
+                    loc=loc,
+                )
+            out.append(elt.value)
+        if len(set(out)) != len(out):
+            raise ResolveError(
+                f"mode control {name!r}: choices must be unique, got {out}",
+                loc=loc,
+            )
+        return tuple(out)
 
     def _resolve_set_placement_control(
         self, name: str, fields: dict, label: str | None, final: bool, loc
@@ -1215,6 +1334,38 @@ class _Resolver:
                 f"placement {name!r}: {value!r} not in allowed {list(allowed)}",
                 loc=loc,
             )
+
+    def _bound_mode_value(self, name: str) -> str:
+        """Return the concrete bound choice for a mode control.
+
+        Uses `self.bindings[name]` when present (validated against `choices`,
+        forbidden when the control is `final`); otherwise the declared default.
+        """
+        ctrl = self.controls.get(name)
+        if ctrl is None or ctrl.type_kind != "mode":
+            raise ResolveError(
+                f"internal: _bound_mode_value called for non-mode {name!r}",
+            )
+        if name in self.bindings:
+            if ctrl.final:
+                raise ResolveError(
+                    f"mode {name!r} is final and cannot be overridden",
+                    loc=ctrl.loc,
+                )
+            value = self.bindings[name]
+            if not isinstance(value, str):
+                raise ResolveError(
+                    f"mode {name!r} binding must be a string, got "
+                    f"{type(value).__name__}",
+                    loc=ctrl.loc,
+                )
+            if value not in ctrl.choices:
+                raise ResolveError(
+                    f"mode {name!r}: {value!r} not in choices {list(ctrl.choices)}",
+                    loc=ctrl.loc,
+                )
+            return value
+        return ctrl.default_mode
 
     def _bound_placement_value(self, name: str):
         """Return the concrete bound value for a placement control.
@@ -1643,6 +1794,7 @@ class _Resolver:
         otherwise they're string values (which is fine in some sub-
         positions but produces a type error if a stream was expected).
         """
+        expr = self._fold_mode_conditionals(expr)
         if isinstance(expr, A.NumberLit):
             return IRNumberLit(value=expr.value, dims=unit_dims(expr.unit), unit=expr.unit, loc=expr.loc)
         if isinstance(expr, A.BoolLit):
@@ -2219,6 +2371,8 @@ def _control_kind_dims(kind: str, loc: Loc | None) -> Dimensions:
         return DIMENSIONLESS
     if kind == "placement":
         return DIMENSIONLESS   # categorical (channel identifiers); no unit arithmetic
+    if kind == "mode":
+        return DIMENSIONLESS   # categorical string choices; no unit arithmetic
     raise ResolveError(f"unknown control type {kind!r}", loc=loc)
 
 

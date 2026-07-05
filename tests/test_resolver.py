@@ -772,6 +772,175 @@ def test_placement_binding_non_string_rejected():
         resolve(parse(_SITE_PROTO), _AMP, bindings={"site": 42})
 
 
+# ---------------------------------------------------------------------------
+# Mode control type — Task 1: declare, resolve, and validate
+# ---------------------------------------------------------------------------
+
+_MODE_DECL_PROTO = '''
+    protocol "styled" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls {
+        threshold_style = mode { choices = ["adaptive", "baseline"]; default = "adaptive"; label = "Threshold style" }
+        reward_pct = percent { default = 70 }
+      }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "env" {
+        from = "raw"
+        pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude() ]
+      }
+      threshold "env_t" { signal = "env"; type = percentile(target_pct: reward_pct, window: 2 min) }
+      reward { continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+      output { audio_gain = reward.continuous }
+    }
+'''
+
+
+def test_mode_control_resolves():
+    ir = resolve(parse(_MODE_DECL_PROTO), _AMP)
+    ctl = ir.controls["threshold_style"]
+    assert ctl.type_kind == "mode"
+    assert ctl.choices == ("adaptive", "baseline")
+    assert ctl.default_mode == "adaptive"
+    assert ctl.label == "Threshold style"
+    assert ctl.live_tunable is False
+
+
+def _mode_proto(*, choices='["adaptive", "baseline"]', default='"adaptive"', extra=""):
+    return f'''
+        protocol "styled" {{
+          meta {{ version = "1.0"; evidence = "clinical"; description = "x" }}
+          controls {{ m = mode {{ choices = {choices}; default = {default}{extra} }} }}
+          input "raw" {{ montage = referential(active: "Cz", reference: "linked_ears") }}
+          reward {{ continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }}
+          output {{ audio_gain = reward.continuous }}
+        }}
+    '''
+
+
+def test_mode_default_not_in_choices_fails():
+    with pytest.raises(ResolveError, match="not in choices|choices"):
+        resolve(parse(_mode_proto(default='"other"')), _AMP)
+
+
+def test_mode_empty_choices_fails():
+    with pytest.raises(ResolveError, match="non-empty|choices"):
+        resolve(parse(_mode_proto(choices="[]")), _AMP)
+
+
+def test_mode_non_string_choice_fails():
+    with pytest.raises(ResolveError, match="string"):
+        resolve(parse(_mode_proto(choices='["adaptive", 3]')), _AMP)
+
+
+def test_mode_live_tunable_rejected():
+    with pytest.raises(ResolveError, match="live_tunable"):
+        resolve(parse(_mode_proto(extra="; live_tunable = true")), _AMP)
+
+
+# ---------------------------------------------------------------------------
+# Mode control folded into threshold type — Task 2: adaptive/baseline collapse
+# ---------------------------------------------------------------------------
+
+_MODE_THRESHOLD_PROTO = '''
+    protocol "styled" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls {
+        threshold_style = mode { choices = ["adaptive", "baseline"]; default = "adaptive" }
+        reward_pct = percent { default = 70 }
+        thr_uv = voltage { default = 2.0 uV }
+      }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "env" {
+        from = "raw"
+        pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude() ]
+      }
+      threshold "env_t" {
+        signal = "env"
+        type = threshold_style == "baseline"
+                 ? absolute(value: thr_uv)
+                 : percentile(target_pct: reward_pct, window: 2 min)
+      }
+      reward { continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+      output { audio_gain = reward.continuous }
+    }
+'''
+
+
+def test_mode_threshold_default_is_percentile():
+    ir = resolve(parse(_MODE_THRESHOLD_PROTO), _AMP)
+    assert ir.thresholds["env_t"].threshold_call.callee == "percentile"
+
+
+def test_mode_threshold_baseline_binding_is_absolute():
+    ir = resolve(parse(_MODE_THRESHOLD_PROTO), _AMP,
+                 bindings={"threshold_style": "baseline"})
+    assert ir.thresholds["env_t"].threshold_call.callee == "absolute"
+
+
+def test_mode_threshold_invalid_binding_fails():
+    with pytest.raises(ResolveError, match="not in choices|choices"):
+        resolve(parse(_MODE_THRESHOLD_PROTO), _AMP,
+                bindings={"threshold_style": "nonsense"})
+
+
+def test_mode_final_rejects_override():
+    proto = _MODE_THRESHOLD_PROTO.replace(
+        'default = "adaptive" }',
+        'default = "adaptive"; final = true }')
+    with pytest.raises(ResolveError, match="final"):
+        resolve(parse(proto), _AMP, bindings={"threshold_style": "baseline"})
+
+
+# ---------------------------------------------------------------------------
+# Mode control folded into output bindings — Task 3: discrete/modulating
+# ---------------------------------------------------------------------------
+
+_MODE_OUTPUT_PROTO = '''
+    protocol "styled" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls {
+        feedback_mode = mode { choices = ["discrete", "modulating"]; default = "discrete" }
+        reward_pct = percent { default = 70 }
+      }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "env" {
+        from = "raw"
+        pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude() ]
+      }
+      threshold "env_t" { signal = "env"; type = percentile(target_pct: reward_pct, window: 2 min) }
+      reward {
+        event = dwell(condition: above("env", "env_t"), duration: 250 ms)
+        continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3)
+      }
+      output {
+        audio_chime = reward.event
+        audio_gain  = feedback_mode == "modulating"
+                        ? reward.continuous
+                        : (reward.event.holds ? reward.continuous : 0)
+      }
+    }
+'''
+
+
+def test_feedback_mode_default_is_gated_conditional():
+    ir = resolve(parse(_MODE_OUTPUT_PROTO), _AMP)
+    gain = ir.output["audio_gain"]
+    assert isinstance(gain, IRConditional)
+    # Discriminates the resolve-time mode fold: once the outer
+    # `feedback_mode == "modulating"` ternary is folded away (default binds
+    # to "discrete"), the surviving conditional is the inner runtime ternary
+    # gated on `reward.event.holds`. Without the fold wire-in, `.cond` would
+    # instead be the unfolded mode comparison, an IRBinaryOp.
+    assert isinstance(gain.cond, IRRewardField) and gain.cond.field_path == "event.holds"
+    assert not isinstance(gain.cond, IRBinaryOp)
+
+
+def test_feedback_mode_modulating_is_ungated():
+    ir = resolve(parse(_MODE_OUTPUT_PROTO), _AMP,
+                 bindings={"feedback_mode": "modulating"})
+    assert not isinstance(ir.output["audio_gain"], IRConditional)
+
+
 def test_final_placement_rejects_override():
     src = _SITE_PROTO.replace('allowed = ["Cz","C3","C4"]', 'allowed = ["Cz"]; final = true')
     with pytest.raises(ResolveError, match="final|locked|cannot override"):
