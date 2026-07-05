@@ -37,6 +37,17 @@ def _placement_view(name: str, ctl: Any) -> dict:
     return view
 
 
+def _mode_view(name: str, ctl: Any) -> dict:
+    return {
+        "name": name,
+        "kind": "mode",
+        "choices": list(ctl.choices),
+        "default": ctl.default_mode,
+        "label": ctl.label or name,
+        "final": bool(ctl.final),
+    }
+
+
 def _diag(exc: Exception) -> dict:
     loc = getattr(exc, "loc", None)
     return {"severity": "error", "message": str(exc),
@@ -416,10 +427,14 @@ def describe_protocol(source: str, *, amp: Any = None) -> dict:
         return {"ok": False, "diagnostics": [_diag(e)], "meta": _meta_from_ast(ast),
                 "in_subset": False, "controls": [], "placements": [], "model": None}
 
-    controls, placements = [], []
+    controls, placements, modes = [], [], []
     for name, ctl in ir.controls.items():
-        (placements if ctl.type_kind == "placement" else controls).append(
-            _placement_view(name, ctl) if ctl.type_kind == "placement" else _control_view(name, ctl))
+        if ctl.type_kind == "placement":
+            placements.append(_placement_view(name, ctl))
+        elif ctl.type_kind == "mode":
+            modes.append(_mode_view(name, ctl))
+        else:
+            controls.append(_control_view(name, ctl))
 
     try:
         model = _build_model(ast, controls, placements)
@@ -429,5 +444,5 @@ def describe_protocol(source: str, *, amp: Any = None) -> dict:
         # either way degrade gracefully — never crash on a resolvable protocol.
         model, in_subset = None, False
     return {"ok": True, "diagnostics": [], "meta": _meta_from_ast(ast),
-            "in_subset": in_subset, "controls": controls, "placements": placements,
-            "model": model}
+            "in_subset": in_subset, "controls": controls,
+            "placements": placements, "modes": modes, "model": model}

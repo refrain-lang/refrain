@@ -45,3 +45,30 @@ def test_extra_pipeline_stage_is_out_of_subset_but_tunable():
     assert d["in_subset"] is False
     assert d["model"] is None
     assert any(c["name"] == "env_center" for c in d["controls"])  # still tunable
+
+
+_STYLED = '''
+    protocol "styled" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls {
+        threshold_style = mode { choices = ["adaptive", "baseline"]; default = "adaptive"; label = "Threshold style" }
+        reward_pct = percent { default = 70 }
+      }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "env" { from = "raw"; pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude() ] }
+      threshold "env_t" { signal = "env"; type = percentile(target_pct: reward_pct, window: 2 min) }
+      reward { continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+      output { audio_gain = reward.continuous }
+    }
+'''
+
+
+def test_describe_lists_mode_control():
+    desc = describe_protocol(_STYLED)
+    assert desc["ok"] is True
+    modes = {m["name"]: m for m in desc["modes"]}
+    assert modes["threshold_style"]["choices"] == ["adaptive", "baseline"]
+    assert modes["threshold_style"]["default"] == "adaptive"
+    assert modes["threshold_style"]["label"] == "Threshold style"
+    # A mode control must not leak into the numeric controls list.
+    assert "threshold_style" not in {c["name"] for c in desc["controls"]}

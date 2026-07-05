@@ -405,3 +405,29 @@ def test_autocorr_bakes_window_and_lag_samples():
     ac = _find_call(obj["derives"]["ac1"]["expression"], "autocorr")
     assert ac["coeffs"]["window_samples"] == 256   # 1 s * 256 Hz
     assert ac["coeffs"]["lag_samples"] == 32        # 125 ms * 256 Hz
+
+
+# ---------------------------------------------------------------------------
+# Task 4: mode controls resolve away, they are not emitted in numeric controls
+# ---------------------------------------------------------------------------
+
+
+def test_ir_json_excludes_mode_controls():
+    src = '''
+        protocol "styled" {
+          meta { version = "1.0"; evidence = "clinical"; description = "x" }
+          controls {
+            threshold_style = mode { choices = ["adaptive", "baseline"]; default = "adaptive" }
+            reward_pct = percent { default = 70 }
+          }
+          input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+          derive "env" { from = "raw"; pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude() ] }
+          threshold "env_t" { signal = "env"; type = percentile(target_pct: reward_pct, window: 2 min) }
+          reward { continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+          output { audio_gain = reward.continuous }
+        }
+    '''
+    ir = resolve(parse(src))
+    obj = ir_to_json_obj(ir, sample_rate_hz=250)
+    assert "threshold_style" not in obj["controls"]
+    assert "reward_pct" in obj["controls"]
