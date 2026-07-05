@@ -464,7 +464,7 @@ def build_surface(ir: IRProtocol) -> LogicalSurface:
     controls = tuple(
         _control_surface(c)
         for c in ir.controls.values()
-        if c.type_kind != "placement"
+        if c.type_kind not in ("placement", "mode")
     )
     return LogicalSurface(
         protocol_name=ir.name,

@@ -5,7 +5,9 @@ from pathlib import Path
 
 import pytest
 
+import refrain
 from refrain.fuzz.surface import LogicalSurface, build_surface
+from refrain.resolver import resolve
 from tests.fuzz._smr import resolved_smr_ir
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -99,3 +101,37 @@ def test_center_bandwidth_band_from_args():
     walk(ir.derives["cb_env"])
     lo, hi = _band_from_call(call, ir)
     assert abs(lo - 12.15) < 0.1 and abs(hi - 15.0) < 0.1
+
+
+_MODE_CONTROL_PROTOCOL = '''
+protocol "mode_test" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["sensorimotor_sleep"] }
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "env" { from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 250 ms) ] }
+  threshold "env_t" { signal = "env"; type = percentile(target_pct: reward_pct, window: 2 min) }
+  reward { event = dwell(condition: all_of([above("env", "env_t")]), duration: 250 ms)
+           continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+  output { audio_chime = reward.event; audio_gain = reward.event.holds ? reward.continuous : 0 }
+  controls {
+    reward_pct = percent { default = 70; range = (50, 90); label = "Target reward %" }
+    threshold_style = mode { choices = ["adaptive", "baseline"]; default = "adaptive"; label = "Threshold style" }
+  }
+  session {
+    phases = [ phase { name = "training"; duration = 30 min } ]
+  }
+}
+'''
+
+
+def test_surface_excludes_mode_control_from_numeric_controls():
+    # A `mode` control (an enum-like choice, not a tunable number) must not
+    # leak into the numeric ControlSurface list — it has no meaningful
+    # default/min/max and would otherwise surface as a bogus 0.0-valued
+    # control. Only the plain numeric control should appear.
+    ir = resolve(refrain.parse(_MODE_CONTROL_PROTOCOL), amp=None)
+    surface = build_surface(ir)
+    names = {c.name for c in surface.controls}
+    assert names == {"reward_pct"}
+    assert "threshold_style" not in names

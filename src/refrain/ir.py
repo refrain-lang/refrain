@@ -264,7 +264,7 @@ class IRReward:
 class IRControl:
     name: str
     canonical_name: str    # "control/<name>"
-    type_kind: str         # "frequency"|"duration"|"voltage"|"percent"|"boolean"|"enum"|"placement"
+    type_kind: str         # "frequency"|"duration"|"voltage"|"percent"|"boolean"|"enum"|"placement"|"mode"
     dims: Dimensions
     default: IRExpr | None
     range_low: IRExpr | None

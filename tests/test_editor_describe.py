@@ -38,6 +38,27 @@ def test_describe_reports_parse_error():
     assert d["model"] is None
 
 
+def test_describe_parse_error_still_has_modes_key():
+    # A host that reads desc["modes"] unconditionally must not KeyError just
+    # because the source failed to parse. Before the fix, the ok: False
+    # early-return omitted "modes" entirely and this raised KeyError.
+    d = describe_protocol("not a valid protocol")
+    assert d["ok"] is False
+    assert d["modes"] == []
+
+
+def test_describe_resolve_error_still_has_modes_key():
+    # Same guarantee on the other ok: False path: a source that parses but
+    # fails to resolve (e.g. a derive referencing an unknown stream) must
+    # still return "modes": [] rather than omitting the key.
+    src = ('protocol "x" { input "raw" { montage = referential('
+           'active: "C4", reference: "linked_ears") } '
+           'derive "d" { from = "missing"; pipeline = [rectify()] } }')
+    d = describe_protocol(src)
+    assert d["ok"] is False
+    assert d["modes"] == []
+
+
 def test_extra_pipeline_stage_is_out_of_subset_but_tunable():
     src = SMR.replace("smooth(tau: 250 ms) ]", "smooth(tau: 250 ms), differentiate() ]")
     d = describe_protocol(src)

@@ -420,12 +420,12 @@ def describe_protocol(source: str, *, amp: Any = None) -> dict:
         ast = refrain.parse(source)
     except Exception as e:
         return {"ok": False, "diagnostics": [_diag(e)], "meta": {},
-                "in_subset": False, "controls": [], "placements": [], "model": None}
+                "in_subset": False, "controls": [], "placements": [], "modes": [], "model": None}
     try:
         ir = resolve(ast, amp)
     except Exception as e:
         return {"ok": False, "diagnostics": [_diag(e)], "meta": _meta_from_ast(ast),
-                "in_subset": False, "controls": [], "placements": [], "model": None}
+                "in_subset": False, "controls": [], "placements": [], "modes": [], "model": None}
 
     controls, placements, modes = [], [], []
     for name, ctl in ir.controls.items():
