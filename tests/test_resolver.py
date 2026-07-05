@@ -924,7 +924,15 @@ _MODE_OUTPUT_PROTO = '''
 
 def test_feedback_mode_default_is_gated_conditional():
     ir = resolve(parse(_MODE_OUTPUT_PROTO), _AMP)
-    assert isinstance(ir.output["audio_gain"], IRConditional)
+    gain = ir.output["audio_gain"]
+    assert isinstance(gain, IRConditional)
+    # Discriminates the resolve-time mode fold: once the outer
+    # `feedback_mode == "modulating"` ternary is folded away (default binds
+    # to "discrete"), the surviving conditional is the inner runtime ternary
+    # gated on `reward.event.holds`. Without the fold wire-in, `.cond` would
+    # instead be the unfolded mode comparison, an IRBinaryOp.
+    assert isinstance(gain.cond, IRRewardField) and gain.cond.field_path == "event.holds"
+    assert not isinstance(gain.cond, IRBinaryOp)
 
 
 def test_feedback_mode_modulating_is_ungated():
