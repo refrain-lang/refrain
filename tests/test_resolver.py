@@ -891,6 +891,48 @@ def test_mode_final_rejects_override():
         resolve(parse(proto), _AMP, bindings={"threshold_style": "baseline"})
 
 
+# ---------------------------------------------------------------------------
+# Mode control folded into output bindings — Task 3: discrete/modulating
+# ---------------------------------------------------------------------------
+
+_MODE_OUTPUT_PROTO = '''
+    protocol "styled" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls {
+        feedback_mode = mode { choices = ["discrete", "modulating"]; default = "discrete" }
+        reward_pct = percent { default = 70 }
+      }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "env" {
+        from = "raw"
+        pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude() ]
+      }
+      threshold "env_t" { signal = "env"; type = percentile(target_pct: reward_pct, window: 2 min) }
+      reward {
+        event = dwell(condition: above("env", "env_t"), duration: 250 ms)
+        continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3)
+      }
+      output {
+        audio_chime = reward.event
+        audio_gain  = feedback_mode == "modulating"
+                        ? reward.continuous
+                        : (reward.event.holds ? reward.continuous : 0)
+      }
+    }
+'''
+
+
+def test_feedback_mode_default_is_gated_conditional():
+    ir = resolve(parse(_MODE_OUTPUT_PROTO), _AMP)
+    assert isinstance(ir.output["audio_gain"], IRConditional)
+
+
+def test_feedback_mode_modulating_is_ungated():
+    ir = resolve(parse(_MODE_OUTPUT_PROTO), _AMP,
+                 bindings={"feedback_mode": "modulating"})
+    assert not isinstance(ir.output["audio_gain"], IRConditional)
+
+
 def test_final_placement_rejects_override():
     src = _SITE_PROTO.replace('allowed = ["Cz","C3","C4"]', 'allowed = ["Cz"]; final = true')
     with pytest.raises(ResolveError, match="final|locked|cannot override"):

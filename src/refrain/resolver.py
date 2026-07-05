@@ -1794,6 +1794,7 @@ class _Resolver:
         otherwise they're string values (which is fine in some sub-
         positions but produces a type error if a stream was expected).
         """
+        expr = self._fold_mode_conditionals(expr)
         if isinstance(expr, A.NumberLit):
             return IRNumberLit(value=expr.value, dims=unit_dims(expr.unit), unit=expr.unit, loc=expr.loc)
         if isinstance(expr, A.BoolLit):
