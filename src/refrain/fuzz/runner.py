@@ -204,6 +204,12 @@ def run_batch(paths, *, max_scenarios, chunk_size, resolve_fn) -> list[ProtocolO
         except VacuityError as exc:
             outcomes.append(ProtocolOutcome(
                 path=path, status=ERRORED, reason=f"generator-bug: {_short_reason(exc)}"))
+        except Exception as exc:  # noqa: BLE001 — batch must never abort on one protocol
+            # An evaluator-setup error on one protocol (e.g. a montage needing a
+            # channel the synthetic source lacks) must not crash the whole batch.
+            # Classify it as ERRORED so the batch completes and still exits 1.
+            outcomes.append(ProtocolOutcome(
+                path=path, status=ERRORED, reason=f"eval-error: {_short_reason(exc)}"))
     return outcomes
 
 

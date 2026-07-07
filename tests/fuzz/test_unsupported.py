@@ -118,3 +118,27 @@ def test_dynamic_threshold_single_leaf_raises():
     with pytest.raises(UnsupportedProtocol) as e:
         _classify_single_leaf(leaf, (derive,), (thr,))
     assert e.value.reason == "single dynamic-threshold reward (unsupported)"
+
+
+def test_absolute_threshold_unresolved_value_skips_cleanly():
+    """An `absolute(value: <control>)` threshold leaves absolute_uv=None; skip it
+    cleanly rather than crash downstream in scenario generation."""
+    from refrain.fuzz.surface import (
+        ConditionLeaf,
+        DeriveSurface,
+        ThresholdSurface,
+        _classify_single_leaf,
+    )
+    thr = ThresholdSurface(name="t", signal="s", kind="absolute", absolute_uv=None)
+    derive = DeriveSurface(
+        name="s",
+        band=(4.0, 8.0),
+        sos=[[1, 0, 0, 1, 0, 0]],
+        smooth_tau_ms=None,
+        hilbert_group_delay_samples=0,
+        channel="Cz",
+    )
+    leaf = ConditionLeaf(op="above", signal="s", threshold="t")
+    with pytest.raises(UnsupportedProtocol) as e:
+        _classify_single_leaf(leaf, (derive,), (thr,))
+    assert e.value.reason == "absolute threshold value did not resolve to a literal"
