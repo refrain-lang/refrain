@@ -1,5 +1,18 @@
 # Protocol fuzzer — calibrated (differential) oracle — design
 
+> ⚠️ SUPERSEDED (2026-07-07) by the Task-0 gate finding — see
+> `docs/superpowers/ci/calibrated-oracle-gate-finding.md`. The planned
+> "swap the envelope, layers 2–4 unchanged" architecture was invalidated by the
+> gating validation: feeding the real per-sample envelope not only failed to
+> clean the target protocols (0/14) but *regressed the clear-margin ones*,
+> because the idealized flat envelope was manufacturing DON'T-CARE that silently
+> absorbed the engine's real noise-firing. Near-floor behavior is noise-dominated;
+> sample-exact assertions don't survive it. The next design should be
+> **metamorphic-first** (assert noise-robust firing-rate trends for noisy
+> protocols; sample-exact only where a genuine crisp margin exists). Kept for
+> history and for the differential-oracle mechanism it validated (`record_streams`
+> gives a bit-exact per-sample envelope). Approach A is NOT the way in.
+
 > Status: approved approach (Approach A chosen), ready for the TDD plan after a
 > gating validation task.
 > Parent: [[2026-06-28-fuzzer-parity-roadmap-design]] (the deferred "calibrated
