@@ -25,6 +25,12 @@ class CompileRequest(BaseModel):
     refrain: str
     sample_rate_hz: float | None = None
     parents: dict[str, str] | None = None
+    # Resolve-time control bindings (mode/placement), passed verbatim to the
+    # compiler and echoed back in `meta.bindings`. The echo is a capability
+    # gate for callers: pydantic drops unknown fields, so a caller talking to
+    # an older image would otherwise get default-variant IR with no signal
+    # that its bindings were ignored.
+    bindings: dict[str, Any] | None = None
 
 
 @app.get("/healthz")
@@ -44,7 +50,10 @@ def version() -> dict[str, Any]:
 @app.post("/compile")
 def compile_endpoint(req: CompileRequest) -> dict[str, Any]:
     result = compile_to_ir_json(
-        req.refrain, sample_rate_hz=req.sample_rate_hz, parents=req.parents
+        req.refrain,
+        sample_rate_hz=req.sample_rate_hz,
+        parents=req.parents,
+        bindings=req.bindings,
     )
     if result.schema_error is not None:
         raise HTTPException(status_code=500, detail=result.schema_error)

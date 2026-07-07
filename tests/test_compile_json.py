@@ -206,3 +206,97 @@ def test_extends_filesystem_library_parent(tmp_path):
     assert r.ir_json is not None
     assert r.ir_json["name"] == "smr_child"
     assert r.ir_json["channels"] == ["Cz"]
+
+
+# ---------------------------------------------------------------------------
+# Resolve-time bindings (mode variants) — passthrough + meta echo
+# ---------------------------------------------------------------------------
+
+MODE_SRC = '''protocol "styled" {
+  meta { version = "1.0"; evidence = "clinical"; description = "x" }
+  requires {
+    sample_rate = ">= 250 Hz"
+    channels    = ["Cz"]
+  }
+  controls {
+    threshold_style = mode { choices = ["adaptive", "baseline"]; default = "adaptive" }
+    reward_pct = percent { default = 70; range = (50, 90) }
+    thr_uv = voltage { default = 2.0 uV; range = (0.5 uV, 10 uV) }
+  }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "env" {
+    from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude() ]
+  }
+  threshold "env_t" {
+    signal = "env"
+    type = threshold_style == "baseline"
+             ? absolute(value: thr_uv)
+             : percentile(target_pct: reward_pct, window: 2 min)
+  }
+  reward { continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+  output { audio_gain = reward.continuous }
+}'''
+
+# content_hash of MODE_SRC at 250 Hz with no bindings, captured on refrain
+# 0.12.0 BEFORE the bindings passthrough existed. The portal's compile-once
+# cache keys on this hash; the no-bindings path must never move it.
+_MODE_SRC_GOLDEN_HASH = (
+    "sha256:4478bd0b6718f5660bf122ce53a6213e0de0426b7dd3f8cd711e8842f91d411c"
+)
+
+
+def _threshold_callee(ir_json):
+    return ir_json["thresholds"]["env_t"]["threshold_call"]["callee"]
+
+
+def test_bindings_select_baseline_branch():
+    r = compile_to_ir_json(
+        MODE_SRC, sample_rate_hz=250.0, bindings={"threshold_style": "baseline"}
+    )
+    assert r.errors == []
+    assert _threshold_callee(r.ir_json) == "absolute"
+    assert r.meta["bindings"] == {"threshold_style": "baseline"}
+
+
+def test_no_bindings_is_default_branch_with_pinned_hash():
+    r = compile_to_ir_json(MODE_SRC, sample_rate_hz=250.0)
+    assert r.errors == []
+    assert _threshold_callee(r.ir_json) == "percentile"
+    assert r.meta["bindings"] == {}
+    assert r.meta["content_hash"] == _MODE_SRC_GOLDEN_HASH
+
+
+def test_bindings_none_and_empty_are_byte_identical():
+    r_omitted = compile_to_ir_json(MODE_SRC, sample_rate_hz=250.0)
+    r_none = compile_to_ir_json(MODE_SRC, sample_rate_hz=250.0, bindings=None)
+    r_empty = compile_to_ir_json(MODE_SRC, sample_rate_hz=250.0, bindings={})
+    assert r_omitted.ir_json_text == r_none.ir_json_text == r_empty.ir_json_text
+    assert (
+        r_omitted.meta["content_hash"]
+        == r_none.meta["content_hash"]
+        == r_empty.meta["content_hash"]
+    )
+    assert r_none.meta["bindings"] == {} and r_empty.meta["bindings"] == {}
+
+
+def test_invalid_binding_choice_is_resolve_diagnostic():
+    r = compile_to_ir_json(
+        MODE_SRC, sample_rate_hz=250.0, bindings={"threshold_style": "nonsense"}
+    )
+    assert r.ir_json is None
+    assert len(r.errors) == 1
+    assert r.errors[0].stage == "resolve"
+    assert "threshold_style" in r.errors[0].message
+    assert "choices" in r.errors[0].message
+    assert r.meta["bindings"] == {"threshold_style": "nonsense"}
+
+
+def test_unknown_binding_name_is_resolve_diagnostic():
+    r = compile_to_ir_json(
+        MODE_SRC, sample_rate_hz=250.0, bindings={"no_such_control": "x"}
+    )
+    assert r.ir_json is None
+    assert len(r.errors) == 1
+    assert r.errors[0].stage == "resolve"
+    assert "no_such_control" in r.errors[0].message

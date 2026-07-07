@@ -5,6 +5,30 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.12.1] — 2026-07-07
+
+Service plumbing for mode-variant baking (portal "resolve-time mode control"):
+`POST /compile` now accepts `bindings` and echoes what it applied. No IR-JSON
+schema changes; the no-bindings path emits byte-identical canonical IR (pinned
+by test), so existing `content_hash` values do not move.
+
+### Added
+- **`bindings` on `POST /compile` and `compile_to_ir_json()`.** Passed verbatim
+  to `resolve(composed, bindings=...)`, covering mode and placement controls.
+  Invalid bindings surface as ordinary `stage="resolve"` diagnostics (HTTP 200).
+- **`meta.bindings` echo.** The response `meta` reports exactly the applied
+  bindings (`{}` when omitted). This is a capability gate for callers: pydantic
+  ignores unknown request fields, so an older service image would silently
+  return default-variant IR — callers baking variants must fail closed unless
+  the echo matches what they sent.
+
+### Changed
+- **Unknown binding names are now rejected.** `resolve(..., bindings=...)`
+  raises `ResolveError` when a key does not name a declared `mode` or
+  `placement` control (previously it was silently ignored — a caller could
+  mistake default IR for the requested variant). Bindings for other control
+  kinds (session-time numeric controls) are rejected the same way.
+
 ## [0.12.0] — 2026-07-05
 
 Additive — a new `mode` control that lets one protocol select a threshold's

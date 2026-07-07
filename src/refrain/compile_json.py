@@ -169,13 +169,20 @@ def compile_to_ir_json(
     validate: bool = True,
     parents: dict[str, str] | None = None,
     library_dirs: list[str] | None = None,
+    bindings: dict[str, object] | None = None,
 ) -> CompileResult:
+    # `meta["bindings"]` echoes the applied bindings verbatim ({} when
+    # omitted). Consumers use it as a capability gate: an older service that
+    # ignored `bindings` would return default-variant IR, and only a positive
+    # echo proves the requested variant is the one that was baked.
+    applied_bindings = dict(bindings or {})
     base_meta: dict[str, Any] = {
         "refrain_version": __version__,
         "ir_version": None,
         "sample_rate_hz": sample_rate_hz,
         "content_hash": None,
         "extends": None,
+        "bindings": applied_bindings,
     }
 
     try:
@@ -196,7 +203,7 @@ def compile_to_ir_json(
         return CompileResult(None, base_meta, [_located("compose", exc)])
 
     try:
-        ir = resolve(composed)
+        ir = resolve(composed, bindings=bindings)
     except ResolveError as exc:
         return CompileResult(None, base_meta, [_located("resolve", exc)])
 
@@ -208,6 +215,7 @@ def compile_to_ir_json(
         "sample_rate_hz": obj["sample_rate_hz"],
         "content_hash": _content_hash(canonical),
         "extends": file_ast.protocol.extends,
+        "bindings": applied_bindings,
     }
     schema_error = _validate(obj) if validate else None
     return CompileResult(

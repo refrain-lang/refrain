@@ -207,6 +207,7 @@ class _Resolver:
         self._resolve_groups()
         self._resolve_bands()
         self._resolve_controls()
+        self._validate_bindings()
         requires_ir = self._resolve_requires()
         self._resolve_named_decls(proto)
         self._resolve_reward()
@@ -977,6 +978,31 @@ class _Resolver:
         for ctrl_name, ctrl in self.controls.items():
             if ctrl.type_kind == "placement" and ctrl.kind == "set":
                 self._bound_placement_value(ctrl_name)
+
+    def _validate_bindings(self) -> None:
+        """Every resolve-time binding must name a declared mode or placement
+        control (the only kinds `bindings` can act on). Anything else is
+        rejected up front: a silently ignored binding lets a caller believe a
+        variant was applied when the default IR was produced instead.
+        """
+        bindable = ("mode", "placement")
+        for name in self.bindings:
+            ctrl = self.controls.get(name)
+            if ctrl is None:
+                declared = sorted(
+                    n for n, c in self.controls.items() if c.type_kind in bindable
+                )
+                raise ResolveError(
+                    f"binding {name!r} does not name a declared control; "
+                    f"bindable controls: {declared}",
+                )
+            if ctrl.type_kind not in bindable:
+                raise ResolveError(
+                    f"binding {name!r}: {ctrl.type_kind} controls are session "
+                    "controls; only mode and placement controls can be bound "
+                    "at resolve time",
+                    loc=ctrl.loc,
+                )
 
     def _resolve_control(self, name: str, block: A.BlockExpr) -> IRControl:
         kind = block.name or ""
@@ -2422,15 +2448,19 @@ def resolve(
     Pass an `AmpProfile` to validate hardware requirements (§6.3) and
     to compute the chosen sample rate. Pass `None` to skip those checks.
 
-    Pass ``bindings`` to override placement control values at resolve time.
-    Keys are control names; the value's shape matches the control's ``kind``:
-    a channel string for ``active``; a 2-tuple of channel strings for
-    ``bipolar`` and ``pair``; a list of channel strings for ``set`` (binding a
-    ``set`` into an input montage drives Mode 2a per-site replication). Omitted
-    names fall back to the control's declared ``default``. Each bound site is
-    validated against the control's ``allowed`` set and the amp's channels, and
-    a ``final`` control rejects any override. See ``docs/EMBEDDING.md`` for the
-    host deploy-binding recipe.
+    Pass ``bindings`` to override mode and placement control values at
+    resolve time. Keys must name declared mode or placement controls —
+    anything else raises ``ResolveError`` (a silently ignored binding would
+    let the caller mistake the default IR for the requested variant). For a
+    mode control the value is one of its ``choices`` strings. For a placement
+    control the value's shape matches the control's ``kind``: a channel string
+    for ``active``; a 2-tuple of channel strings for ``bipolar`` and ``pair``;
+    a list of channel strings for ``set`` (binding a ``set`` into an input
+    montage drives Mode 2a per-site replication). Omitted names fall back to
+    the control's declared ``default``. Each bound site is validated against
+    the control's ``allowed`` set and the amp's channels, and a ``final``
+    control rejects any override. See ``docs/EMBEDDING.md`` for the host
+    deploy-binding recipe.
 
     Pass a `parent_loader` (typically built via
     `refrain.compose.filesystem_loader([...])`) if the protocol uses
