@@ -118,3 +118,108 @@ def test_compile_missing_parent_is_200_unresolved():
     assert body["ir_json"] is None
     assert body["unresolved_parents"] == ["smr_base"]
     assert body["errors"] == []
+
+
+# ---------------------------------------------------------------------------
+# Resolve-time bindings (mode variants) — the portal's variant-baking path.
+# meta.bindings is the portal's capability gate: an old image silently drops
+# the request field and returns default IR, so the portal fails closed unless
+# the echo matches what it sent.
+# ---------------------------------------------------------------------------
+
+MODE_SRC = '''protocol "styled" {
+  meta { version = "1.0"; evidence = "clinical"; description = "x" }
+  requires {
+    sample_rate = ">= 250 Hz"
+    channels    = ["Cz"]
+  }
+  controls {
+    threshold_style = mode { choices = ["adaptive", "baseline"]; default = "adaptive" }
+    reward_pct = percent { default = 70; range = (50, 90) }
+    thr_uv = voltage { default = 2.0 uV; range = (0.5 uV, 10 uV) }
+  }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "env" {
+    from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude() ]
+  }
+  threshold "env_t" {
+    signal = "env"
+    type = threshold_style == "baseline"
+             ? absolute(value: thr_uv)
+             : percentile(target_pct: reward_pct, window: 2 min)
+  }
+  reward { continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+  output { audio_gain = reward.continuous }
+}'''
+
+# Captured on refrain 0.12.0 before the bindings passthrough existed
+# (MODE_SRC at 250 Hz, no bindings). Existing cache keys must not move.
+_MODE_SRC_GOLDEN_HASH = (
+    "sha256:4478bd0b6718f5660bf122ce53a6213e0de0426b7dd3f8cd711e8842f91d411c"
+)
+
+
+def _threshold_callee(body):
+    return body["ir_json"]["thresholds"]["env_t"]["threshold_call"]["callee"]
+
+
+def test_compile_bindings_baseline_selects_absolute_and_echoes():
+    r = client.post("/compile", json={
+        "refrain": MODE_SRC, "sample_rate_hz": 250.0,
+        "bindings": {"threshold_style": "baseline"}})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["errors"] == []
+    assert _threshold_callee(body) == "absolute"
+    assert body["meta"]["bindings"] == {"threshold_style": "baseline"}
+    # Mode controls resolve away: still excluded from the IR controls map.
+    assert "threshold_style" not in body["ir_json"]["controls"]
+
+
+def test_compile_without_bindings_is_adaptive_with_empty_echo():
+    r = client.post("/compile", json={"refrain": MODE_SRC, "sample_rate_hz": 250.0})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["errors"] == []
+    assert _threshold_callee(body) == "percentile"
+    assert body["meta"]["bindings"] == {}
+    assert body["meta"]["content_hash"] == _MODE_SRC_GOLDEN_HASH
+
+
+def test_compile_invalid_binding_choice_is_resolve_diagnostic():
+    r = client.post("/compile", json={
+        "refrain": MODE_SRC, "sample_rate_hz": 250.0,
+        "bindings": {"threshold_style": "nonsense"}})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ir_json"] is None
+    assert body["errors"][0]["stage"] == "resolve"
+    # The diagnostic names the control and its valid choices.
+    msg = body["errors"][0]["message"]
+    assert "threshold_style" in msg
+    assert "adaptive" in msg and "baseline" in msg
+
+
+def test_compile_unknown_binding_name_is_resolve_diagnostic():
+    r = client.post("/compile", json={
+        "refrain": MODE_SRC, "sample_rate_hz": 250.0,
+        "bindings": {"no_such_control": "x"}})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ir_json"] is None
+    assert body["errors"][0]["stage"] == "resolve"
+    assert "no_such_control" in body["errors"][0]["message"]
+
+
+def test_compile_bindings_without_mode_controls_is_resolve_diagnostic():
+    # SMOKE_SRC declares no controls at all: any binding must fail loudly
+    # rather than silently baking the default variant.
+    r = client.post("/compile", json={
+        "refrain": SMOKE_SRC, "sample_rate_hz": 256.0,
+        "bindings": {"threshold_style": "baseline"}})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ir_json"] is None
+    assert body["errors"][0]["stage"] == "resolve"
+    assert "threshold_style" in body["errors"][0]["message"]

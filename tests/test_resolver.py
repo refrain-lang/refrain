@@ -891,6 +891,50 @@ def test_mode_final_rejects_override():
         resolve(parse(proto), _AMP, bindings={"threshold_style": "baseline"})
 
 
+def test_binding_unknown_control_name_rejected():
+    # A silently ignored binding is a wrong-variant delivery path for service
+    # consumers (they'd cache the default IR under the variant's name).
+    with pytest.raises(ResolveError, match="no_such_control"):
+        resolve(parse(_MODE_THRESHOLD_PROTO), _AMP,
+                bindings={"no_such_control": "x"})
+
+
+def test_binding_non_bindable_control_rejected():
+    # Numeric controls are session-time knobs; bindings only cover mode and
+    # placement controls. Anything else must fail loudly, not no-op.
+    with pytest.raises(ResolveError, match="reward_pct"):
+        resolve(parse(_MODE_THRESHOLD_PROTO), _AMP,
+                bindings={"reward_pct": 50})
+
+
+_NO_MODE_PROTO = '''
+    protocol "plain" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      controls {
+        reward_pct = percent { default = 70 }
+      }
+      input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+      derive "env" {
+        from = "raw"
+        pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude() ]
+      }
+      threshold "env_t" {
+        signal = "env"
+        type = percentile(target_pct: reward_pct, window: 2 min)
+      }
+      reward { continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+      output { audio_gain = reward.continuous }
+    }
+'''
+
+
+def test_binding_on_protocol_without_mode_controls_rejected():
+    # Sanity: the protocol itself resolves fine without bindings.
+    resolve(parse(_NO_MODE_PROTO), _AMP)
+    with pytest.raises(ResolveError, match="threshold_style"):
+        resolve(parse(_NO_MODE_PROTO), _AMP, bindings={"threshold_style": "baseline"})
+
+
 # ---------------------------------------------------------------------------
 # Mode control folded into output bindings — Task 3: discrete/modulating
 # ---------------------------------------------------------------------------

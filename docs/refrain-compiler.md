@@ -24,8 +24,19 @@ Or build the image:
 - `GET /healthz` — liveness.
 - `GET /version` — compiler + supported IR/schema versions.
 
-`meta` carries `refrain_version`, `ir_version`, `sample_rate_hz`, and
-`content_hash` (`sha256:` over the canonical IR bytes).
+`meta` carries `refrain_version`, `ir_version`, `sample_rate_hz`,
+`content_hash` (`sha256:` over the canonical IR bytes), and `bindings`.
+
+**Variant baking / `bindings`.** The request may carry
+`"bindings": { "<control>": <value>, ... }` — resolve-time overrides for `mode`
+and `placement` controls (e.g. `{"threshold_style": "baseline"}` to bake the
+baseline variant of a mode-bearing protocol). Omitted / `null` / `{}` is
+byte-identical to today's output — existing `content_hash` values do not move.
+A binding that does not name a declared mode/placement control, or names an
+invalid choice, is a normal `stage: "resolve"` diagnostic (**200**). `meta.bindings`
+echoes exactly what was applied (`{}` when none): callers baking variants must
+treat a missing or mismatched echo as failure — an older service image ignores
+unknown request fields and would silently return the default variant.
 
 **Integrity / `ir_json_text`.** `content_hash` covers `json.dumps(ir_json, indent=2)` —
 the exact bytes in **`ir_json_text`**, *not* a re-serialization of the `ir_json` object.
