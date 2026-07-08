@@ -393,6 +393,11 @@ def _classify_single_leaf(
         raise UnsupportedProtocol("single percentile-leaf reward (needs calibrated oracle)")
     if thr.kind != "absolute":
         raise UnsupportedProtocol(f"single {thr.kind}-threshold reward (unsupported)")
+    if thr.absolute_uv is None:
+        # e.g. `absolute(value: <control>)` — the surface only extracts numeric
+        # literals, so the value is unresolved. Skip cleanly rather than crash
+        # downstream in scenario generation (`thr.absolute_uv * ...` on None).
+        raise UnsupportedProtocol("absolute threshold value did not resolve to a literal")
     return leaf
 
 
