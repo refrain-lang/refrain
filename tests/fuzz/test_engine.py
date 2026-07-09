@@ -1,6 +1,6 @@
 # Copyright 2026 Refrain Language Authors.
 # Licensed under the Apache License, Version 2.0 (see LICENSE).
-"""engine.py — scenario execution, per-sample streams, noise-floor probe.
+"""engine.py — scenario execution, per-sample streams, quiet-envelope probe.
 
 The load-bearing test here is `test_noise_is_bit_identical_across_amplitudes`:
 the entire metamorphic tier rests on the sweep being a controlled A/B on ONE
@@ -17,7 +17,7 @@ import pytest
 from refrain.eval_ import Evaluator
 from refrain.fuzz.engine import (
     REWARD_HOLDS,
-    measure_noise_floor,
+    measure_quiet_envelopes,
     run_scenario,
     time_in_reward,
 )
@@ -118,19 +118,22 @@ def test_time_in_reward_rejects_a_negative_start():
         time_in_reward(streams, window_s=(-1.0, 1.0), fs=8)
 
 
-def test_measure_noise_floor_is_positive_and_seed_stable():
+def test_measure_quiet_envelopes_returns_nonempty_positive_arrays_seed_stable():
     ir = _ir("bench/protocols/realistic_smr.refrain")
     surface = build_surface(ir)
     channels = channels_for_synthetic(ir)
-    a = measure_noise_floor(ir=ir, surface=surface, channels=channels,
-                            chunk_size=64, fill_s=20.0, seed=42)
-    b = measure_noise_floor(ir=ir, surface=surface, channels=channels,
-                            chunk_size=64, fill_s=20.0, seed=43)
+    a = measure_quiet_envelopes(ir=ir, surface=surface, channels=channels,
+                                chunk_size=64, fill_s=20.0, seed=42)
+    b = measure_quiet_envelopes(ir=ir, surface=surface, channels=channels,
+                                chunk_size=64, fill_s=20.0, seed=43)
     assert set(a) == {d.name for d in surface.derives}
-    for name, floor in a.items():
-        assert floor > 0.0
+    for name, arr in a.items():
+        assert arr.size > 0
+        assert np.all(arr > 0.0)
+        med = float(np.median(arr))
+        other_med = float(np.median(b[name]))
         # A median over ~16 s of quiet noise is stable across realizations.
-        assert abs(floor - b[name]) / floor < 0.25, (name, floor, b[name])
+        assert abs(med - other_med) / med < 0.25, (name, med, other_med)
 
 
 def test_run_scenario_raises_when_stream_keys_vary_across_chunks(monkeypatch):

@@ -412,10 +412,12 @@ def _dwell_ms_from_ir(ir: IRProtocol) -> float:
     raise ValueError("surface: reward.event is not a dwell(...) with a duration")
 
 
-def _classify_single_leaf(
+def _classify_leaf(
     leaf: ConditionLeaf,
     derives: tuple[DeriveSurface, ...],
     thresholds: tuple[ThresholdSurface, ...],
+    *,
+    single_leaf: bool,
 ) -> ConditionLeaf:
     derive = next((d for d in derives if d.name == leaf.signal), None)
     thr = next((t for t in thresholds if t.name == leaf.threshold), None)
@@ -426,13 +428,28 @@ def _classify_single_leaf(
     if thr is None:
         raise UnsupportedProtocol("reward condition without a resolvable threshold")
     if thr.kind not in ("absolute", "percentile"):
-        raise UnsupportedProtocol(f"single {thr.kind}-threshold reward (unsupported)")
+        if single_leaf:
+            raise UnsupportedProtocol(f"single {thr.kind}-threshold reward (unsupported)")
+        raise UnsupportedProtocol(f"{thr.kind}-threshold reward leaf (unsupported)")
     if thr.kind == "absolute" and thr.absolute_uv is None:
         # e.g. `absolute(value: <control>)` — the surface only extracts numeric
         # literals, so the value is unresolved. Skip cleanly rather than crash
         # downstream in scenario generation (`thr.absolute_uv * ...` on None).
         raise UnsupportedProtocol("absolute threshold value did not resolve to a literal")
+    if thr.kind == "percentile" and thr.percentile_target is None:
+        # e.g. `percentile(target_pct: <control>)` where the control has no
+        # literal default — the surface cannot compute a decision level, so
+        # every sweep anchor downstream would be unresolvable.
+        raise UnsupportedProtocol("percentile target did not resolve to a literal")
     return leaf
+
+
+def _classify_single_leaf(
+    leaf: ConditionLeaf,
+    derives: tuple[DeriveSurface, ...],
+    thresholds: tuple[ThresholdSurface, ...],
+) -> ConditionLeaf:
+    return _classify_leaf(leaf, derives, thresholds, single_leaf=True)
 
 
 def _reward_condition_from_ir(
@@ -445,6 +462,14 @@ def _reward_condition_from_ir(
         cond = _arg(event, "condition")
         node = _condition_from_ir(cond)
         if isinstance(node, ConditionNode):
+            # A multi-leaf condition never passed through `_classify_single_leaf`
+            # (only the single-leaf path called it), so an unsupported leaf shape
+            # here — e.g. an `absolute(value: <control>)` threshold — used to
+            # reach the sweeps unvalidated: no anchor, background can't hold the
+            # leaf TRUE, every sweep reads 0.000, and false NO_CONTRAST
+            # violations follow. Validate every leaf, not just single ones.
+            for leaf in reward_leaves(node):
+                _classify_leaf(leaf, derives, thresholds, single_leaf=False)
             return node
         if isinstance(node, ConditionLeaf):
             return _classify_single_leaf(node, derives, thresholds)

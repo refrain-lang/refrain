@@ -40,19 +40,25 @@ def test_unmutated_engine_passes_the_metamorphic_gate():
     assert out.passed is True
 
 
-def test_inverted_above_is_caught_by_monotonicity(monkeypatch):
+def test_inverted_above_is_caught_by_degenerate_baseline_contrast(monkeypatch):
     """Flip `signal > threshold` to `signal < threshold`. The swept leaf's
-    truth is now the complement of what the sweep's ascending drive assumes,
-    so the ladder drives time-in-reward DOWN instead of up: a monotonicity
-    violation, on the exact measured series (baseline 1.000, seed 42)."""
+    truth is now the complement of what the sweep's ascending drive assumes.
+    The ladder's rungs (1x, 2x, 4x, 8x the decision level -- see Cause B/`sweep._LADDER`)
+    start AT the decision level, so the inverted leaf is already false at
+    every rung (time-in-reward 0.000 at rung 0 onward) while the un-driven
+    baseline sits above the (now-inverted) threshold almost throughout
+    (baseline 1.000, seed 42). A flat 0-series is trivially non-decreasing,
+    so monotonicity alone would wave this through -- it is the degenerate-
+    baseline contrast guard that catches it, exactly like the latched-dwell
+    mutant below."""
     def inverted_step(self, signal, threshold):
         return signal < threshold
 
     monkeypatch.setattr(AboveImpl, "step", inverted_step)
     out = _run()
     assert out.passed is False
-    assert "VIOLATION:MONOTONICITY" in out.report
-    assert "baseline 1.000 | 0.723 -> 0.139 -> 0.000 -> 0.000" in out.report
+    assert "VIOLATION:NO_CONTRAST" in out.report
+    assert "baseline 1.000 | 0.000 -> 0.000 -> 0.000 -> 0.000" in out.report
 
 
 def test_dwell_latched_true_is_caught_by_degenerate_baseline_contrast(monkeypatch):

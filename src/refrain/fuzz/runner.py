@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from ..synthetic import channels_for_synthetic
 from .check import VacuityError, check_scenario
-from .engine import measure_noise_floor, run_scenario, time_in_reward
+from .engine import measure_quiet_envelopes, run_scenario, time_in_reward
 from .errors import UnsupportedProtocol
 from .generate import generate_characterization_probe, generate_directed_scenarios
 from .metamorphic import check_metamorphic
@@ -74,16 +74,18 @@ def fuzz_protocol(ir, *, path: str, max_scenarios: int, chunk_size: int,
             collar_samples=collar_samples, chunk_size=chunk_size,
         ))
 
-    # The noise floor is the decision level for percentile leaves; measuring it
-    # needs one quiet engine run. Absolute-only protocols need no probe.
+    # The quiet-envelope distribution is where percentile leaves' decision
+    # levels are read; measuring it needs one quiet engine run. Absolute-only
+    # protocols read their anchors from `absolute_uv` and never index this
+    # dict, so they need no probe.
     geom = sweep_geometry(surface, collar_s=collar_s)
-    noise_floor = (
-        measure_noise_floor(ir=ir, surface=surface, channels=channels,
-                            chunk_size=chunk_size, fill_s=geom.fill_s, seed=seed)
+    quiet_envelopes = (
+        measure_quiet_envelopes(ir=ir, surface=surface, channels=channels,
+                                chunk_size=chunk_size, fill_s=geom.fill_s, seed=seed)
         if geom.fill_s > 0.0 else
-        {d.name: 0.0 for d in surface.derives}
+        {}
     )
-    groups = plan_sweeps(surface, noise_floor=noise_floor, collar_s=collar_s, seed=seed)
+    groups = plan_sweeps(surface, quiet_envelopes=quiet_envelopes, collar_s=collar_s, seed=seed)
     metrics = _run_sweeps(groups, ir=ir, surface=surface, channels=channels,
                           chunk_size=chunk_size)
     for g in groups:

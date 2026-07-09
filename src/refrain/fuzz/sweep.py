@@ -8,15 +8,19 @@ tests/fuzz/test_engine.py::test_noise_is_bit_identical_across_amplitudes). A
 sweep is therefore a controlled A/B on one realization, and "more in-band drive
 pushes the leaf harder" is a real, assertable ordering.
 
-Pure module: a function of the surface + a measured noise floor. No engine.
+Pure module: a function of the surface + measured quiet-envelope arrays. No
+engine.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+
 from .oracle import bandpass_gain_at
 from .scenario import BandSegment, PhaseOverride, Scenario, Tone
 from .surface import (
+    METAMORPHIC,
     ConditionLeaf,
     DeriveSurface,
     LogicalSurface,
@@ -30,7 +34,16 @@ DOWN = "down"
 NONE = "none"
 
 # Ladder rungs, in anchor units (the anchor is the leaf's decision level).
-_LADDER = (0.5, 1.0, 2.0, 4.0)
+# Starts AT the decision level, never below it. A coherent tone added to
+# band-limited noise turns its Rayleigh-distributed envelope Rician, which
+# THINS the upper tail; a percentile threshold sits in that tail, so
+# exceedance can FALL as drive rises even while the mean envelope rises and
+# the threshold stays put. That is deterministic and per-realization, so no
+# number of seeds cures it -- it is a real boundary on where "more drive
+# pushes the leaf harder" is an assertable ordering, not a property that
+# holds everywhere. See Cause B in
+# docs/superpowers/ci/metamorphic-tier-gate-result.md.
+_LADDER = (1.0, 2.0, 4.0, 8.0)
 # Drive applied to non-swept leaves to hold them favourable, in anchor units.
 _HI = 4.0
 # Hold-sweep rungs, in dwell units.
@@ -93,17 +106,24 @@ def sweep_direction(surface: LogicalSurface, derive_name: str) -> tuple[str, str
 
 
 def leaf_anchor_uv(leaf: ConditionLeaf, surface: LogicalSurface,
-                   noise_floor: dict[str, float]) -> float | None:
+                   quiet_envelopes: dict[str, np.ndarray]) -> float | None:
     """The leaf's decision level in envelope microvolts — where its truth flips.
 
-    absolute: the threshold itself. percentile: the measured noise floor, because
-    a percentile over a mostly-quiet rolling window sits at the noise level.
-    A ladder anchored anywhere else does not straddle the boundary."""
+    absolute: the threshold itself. percentile: the leaf's target percentile OF
+    the measured quiet-envelope distribution, because that is literally what
+    `PercentileImpl` computes over a mostly-quiet rolling window. The median of
+    that distribution is NOT the decision level (Cause C in
+    docs/superpowers/ci/metamorphic-tier-gate-result.md): for above+p70 it
+    undershoots, for below+p30 it overshoots, and either way the ladder no
+    longer straddles the boundary."""
     thr = threshold_for(surface, leaf.threshold)
     if thr.kind == "absolute":
         return thr.absolute_uv
     if thr.kind == "percentile":
-        return noise_floor.get(leaf.signal)
+        arr = quiet_envelopes.get(leaf.signal)
+        if arr is None or arr.size == 0:
+            return None
+        return float(np.percentile(arr, thr.percentile_target))
     return None
 
 
@@ -197,7 +217,7 @@ def _seg(derive: DeriveSurface, env_uv: float, start_s: float, end_s: float,
                        content=Tone(amplitude_uv=_tone_amplitude_uv(derive, env_uv, fs)))
 
 
-def _prime_segments(surface, noise_floor, *, geom, exclude: str | None) -> list[BandSegment]:
+def _prime_segments(surface, quiet_envelopes, *, geom, exclude: str | None) -> list[BandSegment]:
     """Drive every percentile-`below` leaf HIGH across the fill.
 
     Quiet is not favourable for `below(x, percentile(x))`: the threshold tracks
@@ -214,7 +234,7 @@ def _prime_segments(surface, noise_floor, *, geom, exclude: str | None) -> list[
             continue
         if threshold_for(surface, leaf.threshold).kind != "percentile":
             continue
-        anchor = leaf_anchor_uv(leaf, surface, noise_floor)
+        anchor = leaf_anchor_uv(leaf, surface, quiet_envelopes)
         if not anchor:
             continue
         seg = _seg(derive_for(surface, leaf.signal), _HI * anchor, 0.0, geom.fill_s,
@@ -224,7 +244,7 @@ def _prime_segments(surface, noise_floor, *, geom, exclude: str | None) -> list[
     return out
 
 
-def _favourable_segments(surface, noise_floor, *, exclude: str | None,
+def _favourable_segments(surface, quiet_envelopes, *, exclude: str | None,
                          window: tuple[float, float]) -> list[BandSegment]:
     """Hold every non-swept reward leaf TRUE over `window`.
 
@@ -234,7 +254,7 @@ def _favourable_segments(surface, noise_floor, *, exclude: str | None,
     for leaf in reward_leaves(surface):
         if leaf.signal == exclude or leaf.op != "above":
             continue
-        anchor = leaf_anchor_uv(leaf, surface, noise_floor)
+        anchor = leaf_anchor_uv(leaf, surface, quiet_envelopes)
         if not anchor:
             continue
         seg = _seg(derive_for(surface, leaf.signal), _HI * anchor, window[0], window[1],
@@ -244,7 +264,7 @@ def _favourable_segments(surface, noise_floor, *, exclude: str | None,
     return out
 
 
-def _unfavourable_segments(surface, noise_floor, *,
+def _unfavourable_segments(surface, quiet_envelopes, *,
                            window: tuple[float, float]) -> list[BandSegment]:
     """Force every reward leaf FALSE over `window` (used after a hold ends).
 
@@ -254,7 +274,7 @@ def _unfavourable_segments(surface, noise_floor, *,
     for leaf in reward_leaves(surface):
         if leaf.op != "below":
             continue
-        anchor = leaf_anchor_uv(leaf, surface, noise_floor)
+        anchor = leaf_anchor_uv(leaf, surface, quiet_envelopes)
         if not anchor:
             continue
         seg = _seg(derive_for(surface, leaf.signal), _HI * anchor, window[0], window[1],
@@ -275,20 +295,20 @@ def _scenario(label, segments, *, total_s, fs, tag, seed) -> Scenario:
                     phase_override=_phase(total_s), seed=seed)
 
 
-def _rank_group(surface, noise_floor, *, geom, derive_name, seed) -> SweepGroup:
+def _rank_group(surface, quiet_envelopes, *, geom, derive_name, seed) -> SweepGroup:
     fs = surface.sample_rate_hz
     tag = f"rank_sweep:{derive_name}"
     direction, reason = sweep_direction(surface, derive_name)
     leaves = [x for x in reward_leaves(surface) if x.signal == derive_name]
-    anchor = leaf_anchor_uv(leaves[0], surface, noise_floor) if leaves else None
+    anchor = leaf_anchor_uv(leaves[0], surface, quiet_envelopes) if leaves else None
     if direction != NONE and not anchor:
         direction, reason = NONE, "no resolvable decision level for the swept leaf"
     if not geom.usable:
         direction, reason = NONE, geom.reason
 
     spike = (geom.fill_s, geom.fill_s + geom.spike_s)
-    background = (_prime_segments(surface, noise_floor, geom=geom, exclude=derive_name)
-                  + _favourable_segments(surface, noise_floor, exclude=derive_name,
+    background = (_prime_segments(surface, quiet_envelopes, geom=geom, exclude=derive_name)
+                  + _favourable_segments(surface, quiet_envelopes, exclude=derive_name,
                                          window=spike))
     derive = derive_for(surface, derive_name)
     members = [SweepMember(
@@ -307,7 +327,7 @@ def _rank_group(surface, noise_floor, *, geom, derive_name, seed) -> SweepGroup:
                       members=tuple(members), metric_window_s=geom.metric_window_s)
 
 
-def _hold_group(surface, noise_floor, *, geom, collar_s, seed) -> SweepGroup:
+def _hold_group(surface, quiet_envelopes, *, geom, collar_s, seed) -> SweepGroup:
     """Sweep the hold duration with every leaf favourable, then unfavourable.
 
     Longer hold past dwell => more time in reward, on the same realization.
@@ -316,7 +336,17 @@ def _hold_group(surface, noise_floor, *, geom, collar_s, seed) -> SweepGroup:
     metric window opens after it. Without that offset the collar eats the whole
     reward: at f=5 and dwell=250 ms the tone runs 1.25 s, a ~1 s filter collar
     leaves ~0 s of reward, every rung measures 0.0, and the flat sweep fails
-    `no_contrast` on a perfectly good engine."""
+    `no_contrast` on a perfectly good engine.
+
+    On the METAMORPHIC tier this sweep is still built and run (its series is
+    always recorded/reported) but never asserted: a noise-dominated protocol's
+    quiet state already holds reward ~40-50% of the time, and the metric window
+    is only `5 x dwell`, so the tone-driven contribution does not dominate the
+    noise-driven firing and the series wiggles rather than climbing cleanly.
+    See Cause D in docs/superpowers/ci/metamorphic-tier-gate-result.md. This is
+    not load-bearing for dwell regressions: test_engine_regression.py shows a
+    latched or dead dwell is caught by the rank sweep's contrast check
+    instead."""
     fs = surface.sample_rate_hz
     tag = "hold_duration_sweep"
     dwell_s = surface.dwell_ms / 1000.0
@@ -339,18 +369,24 @@ def _hold_group(surface, noise_floor, *, geom, collar_s, seed) -> SweepGroup:
     direction, reason = UP, None
     if not geom.usable:
         direction, reason = NONE, geom.reason
-    if metric[1] - metric[0] < _MIN_METRIC_WINDOW_S or max_reward_s <= dwell_s:
+    elif metric[1] - metric[0] < _MIN_METRIC_WINDOW_S or max_reward_s <= dwell_s:
         direction, reason = NONE, "hold window shorter than the settle+dwell collar"
+    elif surface.tier == METAMORPHIC:
+        direction, reason = NONE, (
+            "hold duration is not assertable on a noise-dominated protocol: its "
+            "quiet state already holds reward, so the metric is dominated by "
+            "noise firing rather than hold length"
+        )
 
     hold_geom = SweepGeometry(fill_s=start_s, spike_s=max_hold_s, total_s=total_s,
                               metric_window_s=metric)
 
     def member(hold_s: float, index: int, label: str) -> SweepMember:
-        segs = _prime_segments(surface, noise_floor, geom=hold_geom, exclude=None)
+        segs = _prime_segments(surface, quiet_envelopes, geom=hold_geom, exclude=None)
         if hold_s > 0.0:
-            segs += _favourable_segments(surface, noise_floor, exclude=None,
+            segs += _favourable_segments(surface, quiet_envelopes, exclude=None,
                                          window=(start_s, start_s + hold_s))
-        segs += _unfavourable_segments(surface, noise_floor,
+        segs += _unfavourable_segments(surface, quiet_envelopes,
                                        window=(start_s + hold_s, total_s))
         return SweepMember(
             scenario=_scenario(label, segs, total_s=total_s, fs=fs, tag=tag, seed=seed),
@@ -364,7 +400,7 @@ def _hold_group(surface, noise_floor, *, geom, collar_s, seed) -> SweepGroup:
                       members=tuple(members), metric_window_s=metric)
 
 
-def plan_sweeps(surface: LogicalSurface, *, noise_floor: dict[str, float],
+def plan_sweeps(surface: LogicalSurface, *, quiet_envelopes: dict[str, np.ndarray],
                 collar_s: float, seed: int) -> tuple[SweepGroup, ...]:
     """One rank-sweep group per reward-feeding derive, plus one hold sweep."""
     geom = sweep_geometry(surface, collar_s=collar_s)
@@ -372,9 +408,9 @@ def plan_sweeps(surface: LogicalSurface, *, noise_floor: dict[str, float],
     for leaf in reward_leaves(surface):
         if leaf.signal not in seen:
             seen.append(leaf.signal)
-    groups = [_rank_group(surface, noise_floor, geom=geom, derive_name=name, seed=seed)
+    groups = [_rank_group(surface, quiet_envelopes, geom=geom, derive_name=name, seed=seed)
               for name in seen]
-    groups.append(_hold_group(surface, noise_floor, geom=geom, collar_s=collar_s, seed=seed))
+    groups.append(_hold_group(surface, quiet_envelopes, geom=geom, collar_s=collar_s, seed=seed))
     return tuple(groups)
 
 

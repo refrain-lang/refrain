@@ -132,33 +132,37 @@ def time_in_reward(streams: dict[str, np.ndarray], *,
     return float(seg.astype(bool).mean())
 
 
-def measure_noise_floor(*, ir, surface, channels, chunk_size: int,
-                        fill_s: float, seed: int) -> dict[str, float]:
-    """Median in-band envelope of every derive during a quiet run.
+def measure_quiet_envelopes(*, ir, surface, channels, chunk_size: int,
+                            fill_s: float, seed: int) -> dict[str, np.ndarray]:
+    """Post-settle in-band envelope samples of every derive during a quiet run.
 
-    This is the DECISION LEVEL for percentile leaves: a percentile threshold over
-    a mostly-quiet rolling window sits at the noise level, so the ladder must
-    straddle the noise floor. (Absolute leaves anchor on their own threshold
-    instead — see `sweep.leaf_anchor_uv`.)"""
+    These samples ARE the empirical quiet distribution from which each leaf's
+    decision level is read: a percentile leaf's threshold is a percentile of
+    exactly this distribution (that is literally what `PercentileImpl`
+    computes over a mostly-quiet rolling window), so callers must take the
+    same percentile of it rather than a summary statistic like the median —
+    see `sweep.leaf_anchor_uv` and Cause C in
+    docs/superpowers/ci/metamorphic-tier-gate-result.md. (Absolute leaves
+    anchor on their own threshold instead.)"""
     total_s = max(fill_s, _SETTLE_SKIP_S + 4.0) + 2.0
     probe = Scenario(
-        label="noise_floor_probe", duration_s=total_s,
+        label="quiet_envelope_probe", duration_s=total_s,
         sample_rate_hz=surface.sample_rate_hz, segments=(), controls={},
-        coverage_tags=frozenset({"probe:noise_floor"}),
+        coverage_tags=frozenset({"probe:quiet_envelope"}),
         phase_override=PhaseOverride(1.0, total_s - 1.5, 0.5), seed=seed,
     )
     res = run_scenario(probe, ir=ir, channels=channels, chunk_size=chunk_size)
     skip = int(round(_SETTLE_SKIP_S * surface.sample_rate_hz))
-    floors: dict[str, float] = {}
+    envelopes: dict[str, np.ndarray] = {}
     for d in surface.derives:
         arr = res.streams.get(d.name)
         if arr is None or arr[skip:].size == 0:
             continue
-        floors[d.name] = float(np.median(arr[skip:]))
-    return floors
+        envelopes[d.name] = arr[skip:].copy()
+    return envelopes
 
 
 __all__ = [
-    "REWARD_HOLDS", "RunResult", "apply_phase_override", "measure_noise_floor",
+    "REWARD_HOLDS", "RunResult", "apply_phase_override", "measure_quiet_envelopes",
     "run_scenario", "time_in_reward",
 ]

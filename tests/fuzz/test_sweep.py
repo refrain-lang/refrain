@@ -8,11 +8,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from refrain.fuzz.scenario import Tone
 from refrain.fuzz.surface import (
     METAMORPHIC,
+    SAMPLE_EXACT,
     ConditionLeaf,
     DeriveSurface,
     LogicalSurface,
@@ -35,8 +37,14 @@ from refrain.resolver import resolve
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# Measured quiet-run medians (tests/fuzz/test_engine.py asserts these are stable).
-SMR_FLOORS = {"smr_envelope": 1.1, "theta_envelope": 2.8, "high_beta_envelope": 1.0}
+# Quiet-run envelope samples (tests/fuzz/test_engine.py asserts real ones are
+# stable across seeds). A constant array makes every percentile equal that
+# constant, so the expected anchors below stay readable.
+SMR_QUIET_ENVELOPES = {
+    "smr_envelope": np.full(4096, 1.125),
+    "theta_envelope": np.full(4096, 2.8),
+    "high_beta_envelope": np.full(4096, 1.0),
+}
 
 
 def _surface(rel: str):
@@ -67,13 +75,17 @@ def test_anchor_is_the_absolute_threshold_for_an_absolute_leaf():
     s = _surface("bench/protocols/realistic_smr.refrain")
     leaf = next(x for x in reward_leaves(s) if x.signal == "high_beta_envelope")
     assert threshold_for(s, leaf.threshold).kind == "absolute"
-    assert leaf_anchor_uv(leaf, s, SMR_FLOORS) == 8.0
+    assert leaf_anchor_uv(leaf, s, SMR_QUIET_ENVELOPES) == 8.0
 
 
-def test_anchor_is_the_measured_noise_floor_for_a_percentile_leaf():
+def test_anchor_is_the_target_percentile_of_the_quiet_envelope_for_a_percentile_leaf():
+    """Cause C: the decision level is the p-th percentile of the quiet
+    envelope (literally what PercentileImpl computes), NOT its median. On a
+    constant array every percentile equals the constant, so this also proves
+    the anchor reads `thr.percentile_target`, not some fixed statistic."""
     s = _surface("bench/protocols/realistic_smr.refrain")
     leaf = next(x for x in reward_leaves(s) if x.signal == "smr_envelope")
-    assert leaf_anchor_uv(leaf, s, SMR_FLOORS) == pytest.approx(1.1)
+    assert leaf_anchor_uv(leaf, s, SMR_QUIET_ENVELOPES) == pytest.approx(1.125)
 
 
 def test_geometry_keeps_the_spike_a_small_fraction_of_the_percentile_buffer():
@@ -129,7 +141,7 @@ def test_short_declared_window_yields_an_unusable_but_ordered_metric_window():
 
 def test_short_declared_window_groups_are_all_unassertable():
     s = _short_window_surface()
-    groups = plan_sweeps(s, noise_floor={"e": 1.0}, collar_s=1.0, seed=42)
+    groups = plan_sweeps(s, quiet_envelopes={"e": np.full(4096, 1.0)}, collar_s=1.0, seed=42)
     assert groups  # both the rank sweep and the hold sweep are planned
     for g in groups:
         assert g.direction == NONE, g.tag
@@ -143,7 +155,7 @@ def test_geometry_needs_no_fill_without_percentile_thresholds():
 
 def test_plan_sweeps_emits_a_baseline_plus_an_ascending_ladder_per_derive():
     s = _surface("bench/protocols/realistic_smr.refrain")
-    groups = plan_sweeps(s, noise_floor=SMR_FLOORS, collar_s=1.0, seed=42)
+    groups = plan_sweeps(s, quiet_envelopes=SMR_QUIET_ENVELOPES, collar_s=1.0, seed=42)
     rank = {g.tag: g for g in groups if g.tag.startswith("rank_sweep:")}
     assert set(rank) == {
         "rank_sweep:smr_envelope",
@@ -164,8 +176,8 @@ def test_plan_sweeps_emits_a_baseline_plus_an_ascending_ladder_per_derive():
 
 def test_ladder_amplitudes_ascend_and_are_gain_compensated():
     s = _surface("bench/protocols/micro_single_above.refrain")
-    floors = {d.name: 2.0 for d in s.derives}
-    g = next(g for g in plan_sweeps(s, noise_floor=floors, collar_s=1.0, seed=42)
+    quiet_envelopes = {d.name: np.full(4096, 2.0) for d in s.derives}
+    g = next(g for g in plan_sweeps(s, quiet_envelopes=quiet_envelopes, collar_s=1.0, seed=42)
              if g.tag.startswith("rank_sweep:"))
     amps = []
     for m in g.members[1:]:
@@ -173,7 +185,7 @@ def test_ladder_amplitudes_ascend_and_are_gain_compensated():
                     if isinstance(seg.content, Tone))
         amps.append(tone.amplitude_uv)
     assert amps == sorted(amps)
-    assert amps[-1] / amps[0] == pytest.approx(8.0, rel=1e-6)  # 4.0x / 0.5x
+    assert amps[-1] / amps[0] == pytest.approx(8.0, rel=1e-6)  # 8.0x / 1.0x
 
 
 def test_percentile_below_leaves_are_primed_high_during_the_fill():
@@ -182,7 +194,7 @@ def test_percentile_below_leaves_are_primed_high_during_the_fill():
     high during the fill raises its rolling percentile so the quiet spike sits
     clearly below it."""
     s = _surface("bench/protocols/realistic_smr.refrain")
-    groups = plan_sweeps(s, noise_floor=SMR_FLOORS, collar_s=1.0, seed=42)
+    groups = plan_sweeps(s, quiet_envelopes=SMR_QUIET_ENVELOPES, collar_s=1.0, seed=42)
     g = next(g for g in groups if g.tag == "rank_sweep:smr_envelope")
     geom = sweep_geometry(s, collar_s=1.0)
     theta = next(d for d in s.derives if d.name == "theta_envelope")
@@ -196,7 +208,7 @@ def test_percentile_below_leaves_are_primed_high_during_the_fill():
 def test_the_swept_derive_is_never_primed():
     """Priming the swept derive would raise its own percentile and flatten the sweep."""
     s = _surface("bench/protocols/realistic_smr.refrain")
-    groups = plan_sweeps(s, noise_floor=SMR_FLOORS, collar_s=1.0, seed=42)
+    groups = plan_sweeps(s, quiet_envelopes=SMR_QUIET_ENVELOPES, collar_s=1.0, seed=42)
     g = next(g for g in groups if g.tag == "rank_sweep:theta_envelope")
     theta = next(d for d in s.derives if d.name == "theta_envelope")
     for m in g.members:
@@ -206,17 +218,34 @@ def test_the_swept_derive_is_never_primed():
 
 def test_absolute_below_leaves_are_left_quiet():
     s = _surface("bench/protocols/realistic_smr.refrain")
-    groups = plan_sweeps(s, noise_floor=SMR_FLOORS, collar_s=1.0, seed=42)
+    groups = plan_sweeps(s, quiet_envelopes=SMR_QUIET_ENVELOPES, collar_s=1.0, seed=42)
     g = next(g for g in groups if g.tag == "rank_sweep:smr_envelope")
     hbeta = next(d for d in s.derives if d.name == "high_beta_envelope")
     for m in g.members:
         assert not [seg for seg in m.scenario.segments if seg.band == hbeta.band]
 
 
-def test_hold_sweep_group_is_planned_with_ascending_holds():
+def test_hold_sweep_group_is_planned_but_unassertable_on_the_metamorphic_tier():
+    """Cause D: on a noise-dominated (METAMORPHIC) protocol the quiet state
+    already holds reward a good fraction of the time, so the hold sweep's
+    series is still built and run (recorded, never silenced) but not
+    asserted."""
     s = _surface("bench/protocols/realistic_smr.refrain")
-    groups = plan_sweeps(s, noise_floor=SMR_FLOORS, collar_s=1.0, seed=42)
+    assert s.tier == METAMORPHIC
+    groups = plan_sweeps(s, quiet_envelopes=SMR_QUIET_ENVELOPES, collar_s=1.0, seed=42)
     g = next(g for g in groups if g.tag == "hold_duration_sweep")
-    assert g.direction == UP
+    assert g.direction == NONE
+    assert g.reason is not None
     assert [m.index for m in g.members] == [-1, 0, 1, 2, 3, 4]
     assert len({m.scenario.duration_s for m in g.members}) == 1
+
+
+def test_hold_sweep_group_still_asserts_up_on_the_sample_exact_tier():
+    s = _surface("bench/protocols/micro_single_above.refrain")
+    assert s.tier == SAMPLE_EXACT
+    quiet_envelopes = {d.name: np.full(4096, 2.0) for d in s.derives}
+    groups = plan_sweeps(s, quiet_envelopes=quiet_envelopes, collar_s=1.0, seed=42)
+    g = next(g for g in groups if g.tag == "hold_duration_sweep")
+    assert g.direction == UP
+    assert g.reason is None
+    assert [m.index for m in g.members] == [-1, 0, 1, 2, 3, 4]
