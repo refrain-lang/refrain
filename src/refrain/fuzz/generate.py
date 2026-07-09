@@ -9,7 +9,13 @@ from collections.abc import Iterator
 
 from .oracle import bandpass_gain_at
 from .scenario import BandSegment, PhaseOverride, Scenario, Tone
-from .surface import ConditionLeaf, DeriveSurface, LogicalSurface, ThresholdSurface
+from .surface import (
+    ConditionLeaf,
+    DeriveSurface,
+    LogicalSurface,
+    ThresholdSurface,
+    reward_leaves,
+)
 
 # Default phase override for v1 — tractable runs without changing semantics.
 # Percentile-warmup scenarios override this further.
@@ -66,7 +72,7 @@ def generate_directed_scenarios(surface: LogicalSurface) -> Iterator[Scenario]:
 
     # Per-leaf pivotal: drive one leaf TRUE / FALSE with the others favourable.
     # For percentile leaves, "favourable" means a tractable post-fill window.
-    for leaf in _all_leaves(surface.reward_condition):
+    for leaf in reward_leaves(surface):
         yield from _pivotal_scenarios_for_leaf(leaf, surface)
 
     # Dwell met + missed (uses an all-leaves-true configuration).
@@ -74,14 +80,6 @@ def generate_directed_scenarios(surface: LogicalSurface) -> Iterator[Scenario]:
 
     # Percentile warm-up scenario for the longest percentile window.
     yield from _percentile_warmup_scenarios(surface)
-
-
-def _all_leaves(node) -> Iterator[ConditionLeaf]:
-    if isinstance(node, ConditionLeaf):
-        yield node
-        return
-    for c in node.children:
-        yield from _all_leaves(c)
 
 
 def _pivotal_scenarios_for_leaf(
@@ -177,7 +175,7 @@ def _amplitude_for_truth(
 def _driven_leaf(surface: LogicalSurface) -> ConditionLeaf:
     """The leaf the reward-positive scenarios drive: the first `above` leaf, else
     the first leaf (a sole `below`)."""
-    leaves = list(_all_leaves(surface.reward_condition))
+    leaves = list(reward_leaves(surface))
     for leaf in leaves:
         if leaf.op == "above":
             return leaf

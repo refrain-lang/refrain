@@ -35,6 +35,13 @@ from .errors import UnsupportedProtocol
 # (the resolver/impl bakes 65 taps -> group delay (65 - 1) // 2 == 32).
 _DEFAULT_HILBERT_TAPS = 65
 
+# Semantic tiers (see docs/superpowers/specs/2026-07-07-fuzzer-target-tiered-gate-design.md).
+# A protocol is metamorphic-tier iff any reward leaf uses a percentile threshold:
+# such a threshold tracks its own signal, so firing is decided by the noise
+# realization and sample-exact prediction is impossible.
+SAMPLE_EXACT = "sample_exact"
+METAMORPHIC = "metamorphic"
+
 
 @dataclass(frozen=True, slots=True)
 class DeriveSurface:
@@ -104,6 +111,35 @@ class LogicalSurface:
     phases: tuple[PhaseSurface, ...]
     outputs: tuple[OutputBindingSurface, ...]
     controls: tuple[ControlSurface, ...]
+    tier: str
+
+
+def reward_leaves(surface_or_node) -> tuple[ConditionLeaf, ...]:
+    """Flatten a reward condition tree to its leaves, left to right."""
+    node = getattr(surface_or_node, "reward_condition", surface_or_node)
+
+    def walk(n):
+        if isinstance(n, ConditionLeaf):
+            yield n
+            return
+        for child in n.children:
+            yield from walk(child)
+
+    return tuple(walk(node))
+
+
+def derive_for(surface: LogicalSurface, name: str) -> DeriveSurface:
+    for d in surface.derives:
+        if d.name == name:
+            return d
+    raise KeyError(f"surface: no derive named {name!r}")
+
+
+def threshold_for(surface: LogicalSurface, name: str) -> ThresholdSurface:
+    for t in surface.thresholds:
+        if t.name == name:
+            return t
+    raise KeyError(f"surface: no threshold named {name!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -456,6 +492,14 @@ def build_surface(ir: IRProtocol) -> LogicalSurface:
     derives = tuple(_derive_surface(d, ir, j) for d in ir.derives.values())
     thresholds = tuple(_threshold_surface(t, ir) for t in ir.thresholds.values())
     reward_condition = _reward_condition_from_ir(ir, derives, thresholds)
+    leaves = reward_leaves(reward_condition)
+    by_name = {t.name: t for t in thresholds}
+    tier = (
+        METAMORPHIC
+        if any(by_name[leaf.threshold].kind == "percentile"
+               for leaf in leaves if leaf.threshold in by_name)
+        else SAMPLE_EXACT
+    )
     dwell_ms = _dwell_ms_from_ir(ir)
     phases = tuple(
         PhaseSurface(
@@ -482,6 +526,7 @@ def build_surface(ir: IRProtocol) -> LogicalSurface:
         phases=phases,
         outputs=outputs,
         controls=controls,
+        tier=tier,
     )
 
 
@@ -491,8 +536,13 @@ __all__ = [
     "ControlSurface",
     "DeriveSurface",
     "LogicalSurface",
+    "METAMORPHIC",
     "OutputBindingSurface",
     "PhaseSurface",
+    "SAMPLE_EXACT",
     "ThresholdSurface",
     "build_surface",
+    "derive_for",
+    "reward_leaves",
+    "threshold_for",
 ]
