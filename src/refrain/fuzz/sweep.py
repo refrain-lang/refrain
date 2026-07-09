@@ -54,6 +54,8 @@ class SweepGeometry:
     spike_s: float
     total_s: float
     metric_window_s: tuple[float, float]
+    usable: bool = True
+    reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,9 +160,24 @@ def sweep_geometry(surface: LogicalSurface, *, collar_s: float) -> SweepGeometry
     # The metric window opens only after the settle collar and the dwell latency,
     # so the filter transient and the dwell ramp cannot bias time-in-reward.
     metric = (fill_s + collar_s + dwell_s, fill_s + spike_s)
+    usable = True
+    reason = None
+    if metric[1] - metric[0] < _MIN_METRIC_WINDOW_S:
+        # The fraction cap above can shrink spike_s AFTER metric_start was
+        # already fixed by the settle+dwell collar, so metric_end can fall at
+        # or below metric_start (even inverted) on a short declared window.
+        # `time_in_reward` raises on an inverted/empty window, and
+        # `_run_sweeps` measures every group's window regardless of
+        # assertability -- so an inverted window here would ERROR the whole
+        # protocol out instead of reporting a clean "unassertable" sweep.
+        # Fall back to a window spanning the whole spike: spike_s > 0 always
+        # (see above), so this is never inverted or empty.
+        usable = False
+        reason = "metric window shorter than the settle+dwell collar"
+        metric = (fill_s, fill_s + spike_s)
     return SweepGeometry(fill_s=fill_s, spike_s=spike_s,
                          total_s=fill_s + spike_s + _TAIL_PAD_S,
-                         metric_window_s=metric)
+                         metric_window_s=metric, usable=usable, reason=reason)
 
 
 def _tone_amplitude_uv(derive: DeriveSurface, env_uv: float, fs: int) -> float:
@@ -266,9 +283,8 @@ def _rank_group(surface, noise_floor, *, geom, derive_name, seed) -> SweepGroup:
     anchor = leaf_anchor_uv(leaves[0], surface, noise_floor) if leaves else None
     if direction != NONE and not anchor:
         direction, reason = NONE, "no resolvable decision level for the swept leaf"
-    lo, hi = geom.metric_window_s
-    if hi - lo < _MIN_METRIC_WINDOW_S:
-        direction, reason = NONE, "metric window shorter than the settle+dwell collar"
+    if not geom.usable:
+        direction, reason = NONE, geom.reason
 
     spike = (geom.fill_s, geom.fill_s + geom.spike_s)
     background = (_prime_segments(surface, noise_floor, geom=geom, exclude=derive_name)
@@ -321,6 +337,8 @@ def _hold_group(surface, noise_floor, *, geom, collar_s, seed) -> SweepGroup:
     metric = (start_s + collar_s, start_s + collar_s + max_reward_s)
 
     direction, reason = UP, None
+    if not geom.usable:
+        direction, reason = NONE, geom.reason
     if metric[1] - metric[0] < _MIN_METRIC_WINDOW_S or max_reward_s <= dwell_s:
         direction, reason = NONE, "hold window shorter than the settle+dwell collar"
 

@@ -11,7 +11,16 @@ from pathlib import Path
 import pytest
 
 from refrain.fuzz.scenario import Tone
-from refrain.fuzz.surface import build_surface, reward_leaves, threshold_for
+from refrain.fuzz.surface import (
+    METAMORPHIC,
+    ConditionLeaf,
+    DeriveSurface,
+    LogicalSurface,
+    ThresholdSurface,
+    build_surface,
+    reward_leaves,
+    threshold_for,
+)
 from refrain.fuzz.sweep import (
     DOWN,
     NONE,
@@ -73,12 +82,58 @@ def test_geometry_keeps_the_spike_a_small_fraction_of_the_percentile_buffer():
     where p = min(target_pct, 100-target_pct)/100 (= 0.30 for p70/p30)."""
     s = _surface("bench/protocols/realistic_smr.refrain")
     geom = sweep_geometry(s, collar_s=1.0)
+    assert geom.usable is True
+    assert geom.fill_s == pytest.approx(29.333333, abs=1e-3)
+    assert geom.spike_s == pytest.approx(4.0, abs=1e-9)
     assert geom.spike_s / (geom.fill_s + geom.spike_s) <= 0.30 / 2.5 + 1e-9
     # And the fill never waits out the declared 2-minute window.
     assert geom.fill_s < 60.0
     # A usable metric window survives the settle + dwell collar.
     lo, hi = geom.metric_window_s
     assert hi - lo >= 0.5
+
+
+def _short_window_surface() -> LogicalSurface:
+    """A synthetic percentile surface whose declared window (5 s) is short
+    enough that the fraction cap shrinks `spike_s` AFTER `metric_start` was
+    already fixed by the settle+dwell collar -- the exact geometry that used
+    to hand `time_in_reward` an inverted window (metric_end < metric_start).
+    No corpus protocol hits this today (shortest declared window is 30 s);
+    this reproduces it directly rather than shipping a fixture file."""
+    d = DeriveSurface(name="e", band=(12.0, 15.0), sos=[[1, 0, 0, 1, 0, 0]],
+                      smooth_tau_ms=250.0, hilbert_group_delay_samples=32, channel="Cz")
+    t = ThresholdSurface(name="t", signal="e", kind="percentile",
+                        percentile_target=70.0, percentile_window_ms=5000.0)
+    return LogicalSurface(
+        protocol_name="p", sample_rate_hz=256, required_channels=("Cz",),
+        derives=(d,), thresholds=(t,),
+        reward_condition=ConditionLeaf(op="above", signal="e", threshold="t"),
+        dwell_ms=250.0, phases=(), outputs=(), controls=(), tier=METAMORPHIC,
+    )
+
+
+def test_short_declared_window_yields_an_unusable_but_ordered_metric_window():
+    """The reproduction: percentile target 70, declared window 5 s, collar 1 s,
+    dwell 250 ms used to yield metric_window_s=(8.25, 7.954...) -- length
+    -0.295 s, an inverted window that made `time_in_reward` raise ValueError
+    for every group (assertable or not, since unassertable groups are still
+    run so their series can be reported)."""
+    s = _short_window_surface()
+    geom = sweep_geometry(s, collar_s=1.0)
+    assert geom.usable is False
+    assert geom.reason == "metric window shorter than the settle+dwell collar"
+    lo, hi = geom.metric_window_s
+    assert hi > lo  # ordered, non-empty -- never inverted
+    assert hi - lo > 0.0
+
+
+def test_short_declared_window_groups_are_all_unassertable():
+    s = _short_window_surface()
+    groups = plan_sweeps(s, noise_floor={"e": 1.0}, collar_s=1.0, seed=42)
+    assert groups  # both the rank sweep and the hold sweep are planned
+    for g in groups:
+        assert g.direction == NONE, g.tag
+        assert g.reason is not None, g.tag
 
 
 def test_geometry_needs_no_fill_without_percentile_thresholds():

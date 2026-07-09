@@ -75,9 +75,6 @@ def test_single_below_absolute_still_fuzzes_clean_full_depth():
     assert out.passed is True
 
 
-from refrain.fuzz.runner import ERRORED
-
-
 def test_percentile_single_leaf_now_fuzzes_clean_under_the_metamorphic_tier():
     out = _run("bench/protocols/micro_single_pct.refrain", max_scenarios=0)
     assert out.status == FUZZED
