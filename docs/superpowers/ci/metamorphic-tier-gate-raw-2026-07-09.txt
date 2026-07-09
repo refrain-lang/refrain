@@ -1,0 +1,57 @@
+
+=== seed 41  (361.0s) ===
+  fuzzed 25 / skipped 14 / errored 3
+  VIOLATIONS:     3
+  generator-bugs: 0   (hollow passes — must be 0)
+  other errors:   3  (pre-existing corpus gaps, not a gate failure)
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/brainbit/smr_up_c4_baseline_brainbit.refrain
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/smr_theta_cz.refrain
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/smr_up_c4.refrain
+
+=== seed 42  (374.5s) ===
+  fuzzed 25 / skipped 14 / errored 3
+  VIOLATIONS:     2
+  generator-bugs: 0   (hollow passes — must be 0)
+  other errors:   3  (pre-existing corpus gaps, not a gate failure)
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/brainbit/smr_up_c4_baseline_brainbit.refrain
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/brainbit/smr_up_c4_brainbit.refrain
+
+=== seed 43  (402.3s) ===
+  fuzzed 25 / skipped 14 / errored 3
+  VIOLATIONS:     1
+  generator-bugs: 0   (hollow passes — must be 0)
+  other errors:   3  (pre-existing corpus gaps, not a gate failure)
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/brainbit/smr_up_c4_baseline_brainbit.refrain
+
+=== seed 44  (331.8s) ===
+  fuzzed 25 / skipped 14 / errored 3
+  VIOLATIONS:     11
+  generator-bugs: 0   (hollow passes — must be 0)
+  other errors:   3  (pre-existing corpus gaps, not a gate failure)
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/alpha_down_pz.refrain
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/alpha_up_pz.refrain
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/brainbit/alpha_up_pz_brainbit.refrain
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/brainbit/smr_cz_brainbit_modulating.refrain
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/brainbit/smr_up_c4_baseline_brainbit.refrain
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/hibeta_down_cz.refrain
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/peak_alpha_up_pz.refrain
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/smr_theta_cz.refrain
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/smr_up_c4.refrain
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/theta_down_cz.refrain
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/theta_down_fz.refrain
+
+=== seed 45  (331.3s) ===
+  fuzzed 25 / skipped 14 / errored 3
+  VIOLATIONS:     5
+  generator-bugs: 0   (hollow passes — must be 0)
+  other errors:   3  (pre-existing corpus gaps, not a gate failure)
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/brainbit/alpha_up_pz_brainbit.refrain
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/brainbit/smr_classic_cz_brainbit.refrain
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/brainbit/smr_up_c4_baseline_brainbit.refrain
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/smr_theta_cz.refrain
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/smr_up_c4.refrain
+
+=== GATE ===
+  violations across 5 seeds: 22
+  hollow passes: 0
+  RESULT: FAIL
