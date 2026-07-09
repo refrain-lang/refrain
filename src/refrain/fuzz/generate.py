@@ -91,6 +91,15 @@ def _pivotal_scenarios_for_leaf(
     leaves at a favourable baseline (no specific suppression — quiet); FALSE-
     pivotal drives `leaf` to its FALSE side.
 
+    "Quiet" only holds the other leaves favourable for an absolute threshold.
+    It would be FALSE for a percentile-`below` leaf: that threshold tracks its
+    own signal, so it holds only ~p% of the time no matter how quiet the
+    signal is. This case is unreachable today — the sample-exact tier (where
+    this generator runs) is absolute-only; any percentile leaf routes the
+    whole protocol to the metamorphic tier instead — but is called out here so
+    a future absolute+percentile mix in this tier does not silently reintroduce
+    the flaw.
+
     Every pivotal scenario fills the longest percentile window across the
     surface before the spike (see the comment below) so the oracle's pre-fill
     DON'T-CARE region cannot swallow the whole scenario — this holds even when
@@ -148,21 +157,20 @@ def _amplitude_for_truth(
 ) -> float:
     """Pick a tone amplitude that drives the leaf clearly TRUE or FALSE.
 
-    For absolute thresholds we use a 2× margin on each side; for percentile
-    thresholds we choose amplitudes that produce a clearly high or clearly
-    low rank within the window (the warmup-fill region is quiet, so any
-    spike has high rank → TRUE for above; FALSE side uses zero amplitude
-    so the rank stays low).
+    Sample-exact scenarios use a 2x margin on each side of an absolute
+    threshold. The sample-exact tier is absolute-only now (any percentile
+    leaf routes the whole protocol to the metamorphic tier instead), so a
+    non-absolute threshold reaching here is a generator bug, not a shape to
+    handle.
     """
-    if thr.kind == "absolute":
-        if leaf_op == "above":
-            target_env = (thr.absolute_uv * 2.0) if side == "true" else (thr.absolute_uv * 0.25)
-        else:  # below
-            target_env = (thr.absolute_uv * 0.25) if side == "true" else (thr.absolute_uv * 2.0)
-    else:  # percentile — pick amplitudes by rank intent
-        # A spike → high rank → "above" TRUE / "below" FALSE; no spike → low rank.
-        wants_high_rank = (side == "true") == (leaf_op == "above")
-        target_env = 30.0 if wants_high_rank else 0.0
+    if thr.kind != "absolute":
+        raise ValueError(
+            f"generate: sample-exact scenarios need an absolute threshold, got {thr.kind!r}"
+        )
+    if leaf_op == "above":
+        target_env = (thr.absolute_uv * 2.0) if side == "true" else (thr.absolute_uv * 0.25)
+    else:  # below
+        target_env = (thr.absolute_uv * 0.25) if side == "true" else (thr.absolute_uv * 2.0)
     if target_env <= 0 or derive.sos is None:
         return 0.0
     # Convert target envelope to required tone amplitude via the bandpass gain
@@ -314,66 +322,7 @@ def generate_characterization_probe(surface: LogicalSurface) -> Iterator[Scenari
         )
 
 
-def generate_rank_sweep(surface: LogicalSurface) -> Iterator[Scenario]:
-    """For each percentile threshold, emit a series of scenarios with
-    monotonically increasing tone amplitudes (→ increasing rank within the
-    post-fill window). The checker asserts firing rate is non-decreasing."""
-    fs = surface.sample_rate_hz
-    amplitudes = (5.0, 15.0, 25.0, 40.0)
-    for thr in surface.thresholds:
-        if thr.kind != "percentile":
-            continue
-        derive = next(d for d in surface.derives if d.name == thr.signal)
-        fill_s = thr.percentile_window_ms / 1000.0 + _FILL_PAD_S
-        total_s = fill_s + _SPIKE_S + _TAIL_PAD_S
-        for amp in amplitudes:
-            segments = (
-                (BandSegment(band=derive.band, channel=derive.channel,
-                             start_s=fill_s, end_s=fill_s + _SPIKE_S,
-                             content=Tone(amplitude_uv=amp)),)
-                if amp > 0 else ()
-            )
-            yield Scenario(
-                label=f"rank_sweep:{thr.name}:amp_{amp:g}",
-                duration_s=total_s,
-                sample_rate_hz=fs,
-                segments=segments,
-                controls={},
-                coverage_tags=frozenset({
-                    f"metamorphic:rank_sweep:{thr.name}",
-                    f"rank_sweep:amp_{amp:g}",
-                }),
-                phase_override=_training_phase(total_s),
-            )
-
-
-def generate_hold_duration_sweep(surface: LogicalSurface) -> Iterator[Scenario]:
-    """Sweep the hold duration for the all-leaves-TRUE configuration. Firing
-    rate must be non-decreasing as hold lengthens past dwell."""
-    fs = surface.sample_rate_hz
-    dwell_s = surface.dwell_ms / 1000.0
-    fractions = (0.5, 0.9, 1.5, 2.5, 5.0)
-    fill_s = _longest_percentile_window_s(surface) + _FILL_PAD_S
-    for f in fractions:
-        hold_s = dwell_s * f
-        total_s = fill_s + hold_s + _TAIL_PAD_S
-        yield Scenario(
-            label=f"hold_sweep:{f:g}x_dwell",
-            duration_s=total_s,
-            sample_rate_hz=fs,
-            segments=_reward_positive_segments(surface, start_s=fill_s, hold_s=hold_s),
-            controls={},
-            coverage_tags=frozenset({
-                "metamorphic:hold_duration_sweep",
-                f"hold_sweep:{f:g}x_dwell",
-            }),
-            phase_override=_training_phase(total_s),
-        )
-
-
 __all__ = [
     "generate_directed_scenarios",
     "generate_characterization_probe",
-    "generate_rank_sweep",
-    "generate_hold_duration_sweep",
 ]

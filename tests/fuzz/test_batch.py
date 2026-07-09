@@ -46,14 +46,16 @@ def test_batch_exit_zero_when_only_skips(tmp_path, capsys):
 def test_batch_aggregates_multiple_paths(tmp_path, capsys):
     # --library examples (not examples/library) for othmer_ilf_cz_pz resolution.
     # total 26 = bench/protocols 17 (13 Inc0 + 4 Inc1 fixtures) + examples 9.
-    # fuzzed 7 = Inc0's 4 + Inc1's micro_single_above/below/center_bandwidth.
+    # fuzzed 8 = Inc0's 4 + Inc1's micro_single_above/below/center_bandwidth +
+    # Task 6's micro_single_pct (percentile single-leaf no longer skips — it
+    # now fuzzes under the metamorphic tier instead of the old calibrated-
+    # oracle skip).
     rc = main(["fuzz", "bench/protocols", "examples",
                "--library", "examples", "--max-scenarios", "2"])
     out = "".join(capsys.readouterr())
-    assert "coverage: fuzzed 7 / total 26" in out
+    assert "coverage: fuzzed 8 / total 26" in out
     # Inc1 splits the old generic "single-condition reward" skip into specific,
     # feature-mapped reasons (so the breakdown maps to later increments).
-    assert "single percentile-leaf reward (needs calibrated oracle)" in out
     assert "composite-signal reward condition" in out
     assert rc == 0  # only skips/known-passes across the real corpus
 

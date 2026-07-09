@@ -8,28 +8,22 @@ the evaluate -> oracle -> check loop OUTSIDE that backstop (so genuine
 engine violations and generator bugs surface, never silently skipped)."""
 from __future__ import annotations
 
+import dataclasses
 import os
 from collections import Counter
 from dataclasses import dataclass
 
 from ..synthetic import channels_for_synthetic
-from .check import (
-    VacuityError,
-    check_metamorphic_monotonic,
-    check_scenario,
-)
-from .engine import run_scenario
+from .check import VacuityError, check_scenario
+from .engine import measure_noise_floor, run_scenario, time_in_reward
 from .errors import UnsupportedProtocol
-from .generate import (
-    generate_characterization_probe,
-    generate_directed_scenarios,
-    generate_hold_duration_sweep,
-    generate_rank_sweep,
-)
+from .generate import generate_characterization_probe, generate_directed_scenarios
+from .metamorphic import check_metamorphic
 from .oracle import predict, settle_time_s
 from .report import render_report
 from .scenario import Verdict
-from .surface import build_surface
+from .surface import METAMORPHIC, build_surface
+from .sweep import plan_sweeps, sweep_geometry
 
 FUZZED = "fuzzed"
 SKIPPED = "skipped"
@@ -54,15 +48,15 @@ def _short_reason(exc: Exception) -> str:
     return msg.removeprefix("surface: ")[:60]
 
 
-def fuzz_protocol(ir, *, path: str, max_scenarios: int, chunk_size: int) -> ProtocolOutcome:
+def fuzz_protocol(ir, *, path: str, max_scenarios: int, chunk_size: int,
+                  seed: int = 42) -> ProtocolOutcome:
     """Fuzz one resolved protocol. Raises VacuityError on a generator bug."""
     try:
         surface = build_surface(ir)
-        corpus = _build_corpus(surface)
-        if max_scenarios > 0:
-            corpus = corpus[:max_scenarios]
         collar_samples = _collar_samples(surface, chunk_size)
+        collar_s = collar_samples / surface.sample_rate_hz
         channels = channels_for_synthetic(ir)
+        oracle_scenarios = _oracle_corpus(surface, max_scenarios, seed)
     except UnsupportedProtocol as exc:
         return ProtocolOutcome(path=path, status=SKIPPED, reason=exc.reason)
     except _BACKSTOP_ERRORS as exc:
@@ -73,21 +67,45 @@ def fuzz_protocol(ir, *, path: str, max_scenarios: int, chunk_size: int) -> Prot
     # --- evaluate -> oracle -> check: OUTSIDE the backstop ---
     results = []
     all_tags: set[str] = set()
-    for scenario in corpus:
+    for scenario in oracle_scenarios:
         all_tags |= set(scenario.coverage_tags)
         results.append(_run_one_scenario(
             scenario, ir=ir, surface=surface, channels=channels,
             collar_samples=collar_samples, chunk_size=chunk_size,
         ))
-    metamorphic = (
-        check_metamorphic_monotonic(results, tag_prefix="metamorphic:rank_sweep:")
-        + check_metamorphic_monotonic(results, tag_prefix="metamorphic:hold_duration_sweep")
+
+    # The noise floor is the decision level for percentile leaves; measuring it
+    # needs one quiet engine run. Absolute-only protocols need no probe.
+    geom = sweep_geometry(surface, collar_s=collar_s)
+    noise_floor = (
+        measure_noise_floor(ir=ir, surface=surface, channels=channels,
+                            chunk_size=chunk_size, fill_s=geom.fill_s, seed=seed)
+        if geom.fill_s > 0.0 else
+        {d.name: 0.0 for d in surface.derives}
     )
+    groups = plan_sweeps(surface, noise_floor=noise_floor, collar_s=collar_s, seed=seed)
+    metrics = _run_sweeps(groups, ir=ir, surface=surface, channels=channels,
+                          chunk_size=chunk_size)
+    for g in groups:
+        all_tags |= {f"metamorphic:{g.tag}"}
+    violations, outcomes = check_metamorphic(list(groups), metrics)
+
+    n_assertions = sum(r.n_crisp_assertions for r in results) + sum(
+        1 for o in outcomes if o.assertable
+    )
+    if n_assertions == 0:
+        raise VacuityError(
+            f"protocol {surface.protocol_name!r}: zero crisp assertions anywhere "
+            f"(no sample-exact assertion and no assertable sweep). This is a "
+            f"generator bug, not a pass."
+        )
+
     report = render_report(
-        protocol_name=surface.protocol_name, results=results,
-        metamorphic_violations=metamorphic, all_coverage_tags=all_tags,
+        protocol_name=surface.protocol_name, tier=surface.tier, results=results,
+        sweep_outcomes=outcomes, metamorphic_violations=violations,
+        all_coverage_tags=all_tags,
     )
-    has_violation = bool(metamorphic) or any(
+    has_violation = bool(violations) or any(
         r.verdict in (Verdict.MISSED, Verdict.SPURIOUS) for r in results
     )
     return ProtocolOutcome(
@@ -95,16 +113,32 @@ def fuzz_protocol(ir, *, path: str, max_scenarios: int, chunk_size: int) -> Prot
     )
 
 
-# --- moved verbatim from cli.py (fuzz-only pipeline helpers) ---
+def _oracle_corpus(surface, max_scenarios: int, seed: int):
+    """Sample-exact scenarios. Empty for the metamorphic tier: where a percentile
+    threshold decides firing, the oracle can only emit DON'T-CARE, and a
+    DON'T-CARE that absorbs real noise-firing is a hollow pass, not coverage."""
+    if surface.tier == METAMORPHIC:
+        return []
+    corpus = (list(generate_directed_scenarios(surface))
+              + list(generate_characterization_probe(surface)))
+    if max_scenarios > 0:
+        corpus = corpus[:max_scenarios]
+    return [dataclasses.replace(s, seed=seed) for s in corpus]
 
-def _build_corpus(surface):
-    """Build the full directed + characterization + sweep scenario corpus."""
-    return (
-        list(generate_directed_scenarios(surface))
-        + list(generate_characterization_probe(surface))
-        + list(generate_rank_sweep(surface))
-        + list(generate_hold_duration_sweep(surface))
-    )
+
+def _run_sweeps(groups, *, ir, surface, channels, chunk_size) -> dict[str, float]:
+    """Measure time-in-reward for every member of every sweep group.
+
+    Unassertable groups are still RUN (their series is reported), so a reader can
+    see why nothing was asserted rather than seeing silence."""
+    fs = surface.sample_rate_hz
+    metrics: dict[str, float] = {}
+    for g in groups:
+        for m in g.members:
+            res = run_scenario(m.scenario, ir=ir, channels=channels, chunk_size=chunk_size)
+            metrics[m.scenario.label] = time_in_reward(
+                res.streams, window_s=g.metric_window_s, fs=fs)
+    return metrics
 
 
 def _collar_samples(surface, chunk_size: int) -> int:
@@ -150,7 +184,8 @@ def discover_protocols(paths: list[str]) -> list[str]:
     return sorted(dict.fromkeys(found))
 
 
-def run_batch(paths, *, max_scenarios, chunk_size, resolve_fn) -> list[ProtocolOutcome]:
+def run_batch(paths, *, max_scenarios, chunk_size, resolve_fn,
+              seed: int = 42) -> list[ProtocolOutcome]:
     """`resolve_fn(path) -> ir | str`: returns the resolved IR, or an error
     string (parse/resolve diagnostic) which becomes an ERRORED outcome."""
     outcomes: list[ProtocolOutcome] = []
@@ -162,6 +197,7 @@ def run_batch(paths, *, max_scenarios, chunk_size, resolve_fn) -> list[ProtocolO
         try:
             outcomes.append(fuzz_protocol(
                 resolved, path=path, max_scenarios=max_scenarios, chunk_size=chunk_size,
+                seed=seed,
             ))
         except VacuityError as exc:
             outcomes.append(ProtocolOutcome(

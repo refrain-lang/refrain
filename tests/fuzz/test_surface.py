@@ -178,3 +178,9 @@ def test_derive_for_and_threshold_for_look_up_by_name():
     assert threshold_for(surface, "hbeta_t").absolute_uv == 8.0
     with pytest.raises(KeyError):
         derive_for(surface, "nope")
+
+
+def test_single_percentile_leaf_is_no_longer_skipped():
+    surface = build_surface(_ir("bench/protocols/micro_single_pct.refrain"))
+    assert surface.tier == METAMORPHIC
+    assert [leaf.op for leaf in reward_leaves(surface)] == ["above"]

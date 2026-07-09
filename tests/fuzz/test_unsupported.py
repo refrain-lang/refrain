@@ -91,12 +91,6 @@ def test_no_threshold_single_leaf_reason():
     assert e.value.reason == "reward condition without a resolvable threshold"
 
 
-def test_percentile_single_leaf_reason():
-    with pytest.raises(UnsupportedProtocol) as e:
-        build_surface(_ir("bench/protocols/micro_single_pct.refrain"))
-    assert e.value.reason == "single percentile-leaf reward (needs calibrated oracle)"
-
-
 def test_dynamic_threshold_single_leaf_raises():
     """_classify_single_leaf must reject non-absolute, non-percentile thresholds."""
     from refrain.fuzz.surface import (

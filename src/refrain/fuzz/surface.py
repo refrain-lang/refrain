@@ -425,11 +425,9 @@ def _classify_single_leaf(
         raise UnsupportedProtocol("non-bandpass (coherence) reward signal")
     if thr is None:
         raise UnsupportedProtocol("reward condition without a resolvable threshold")
-    if thr.kind == "percentile":
-        raise UnsupportedProtocol("single percentile-leaf reward (needs calibrated oracle)")
-    if thr.kind != "absolute":
+    if thr.kind not in ("absolute", "percentile"):
         raise UnsupportedProtocol(f"single {thr.kind}-threshold reward (unsupported)")
-    if thr.absolute_uv is None:
+    if thr.kind == "absolute" and thr.absolute_uv is None:
         # e.g. `absolute(value: <control>)` — the surface only extracts numeric
         # literals, so the value is unresolved. Skip cleanly rather than crash
         # downstream in scenario generation (`thr.absolute_uv * ...` on None).

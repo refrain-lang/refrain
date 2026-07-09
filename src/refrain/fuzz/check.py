@@ -1,10 +1,9 @@
 # Copyright 2026 Refrain Language Authors.
 # Licensed under the Apache License, Version 2.0 (see LICENSE).
 """Checker: align actual events to oracle timeline; aggregate coverage;
-fail loud on vacuity; evaluate metamorphic monotonicity over sweep groups."""
+fail loud on vacuity."""
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
 from .oracle import DontCareInterval, ExpectedTimeline
@@ -139,67 +138,9 @@ def _max_verdict(a: Verdict, b: Verdict) -> Verdict:
     return a if order[a] >= order[b] else b
 
 
-def _series_sort_key(label: str) -> tuple[float, str]:
-    """Order a sweep series by its intended numeric magnitude.
-
-    The reference implementation sorted members lexically, but the sweep
-    labels carry their magnitude as the last number in the label, which may
-    be an integer (``amp_5``, ``amp_15``, ``amp_25``) OR a decimal followed by
-    a unit suffix (``0.5x_dwell``, ``0.9x_dwell``, ``1.5x_dwell``, ``5x_dwell``).
-    A lexical sort puts ``amp_15`` before ``amp_5``; an integer-only parse
-    would read ``0.5x_dwell`` as ``5`` — both scramble the sweep's intended
-    order and would falsely flag (or hide) a monotonicity violation.
-
-    We extract the final numeric magnitude (int or decimal) immediately before
-    any trailing non-digit suffix and sort by it as a float, falling back to
-    lexical order when there is no number so the ordering stays total and
-    deterministic.
-    """
-    m = re.search(r"(\d+(?:\.\d+)?)\D*$", label)
-    if m is None:
-        return (0.0, label)
-    return (float(m.group(1)), label)
-
-
-@dataclass(frozen=True, slots=True)
-class MetamorphicViolation:
-    tag_group: str
-    series: tuple[tuple[str, int], ...]   # (label, n_events) in series order
-
-
-def check_metamorphic_monotonic(
-    results: list[PerScenarioResult], *, tag_prefix: str,
-) -> list[MetamorphicViolation]:
-    """For each metamorphic group (tag starting with `tag_prefix`), assert that
-    `n_events` is non-decreasing in the sweep's intended numeric order of the
-    series members. Returns a list of violations (empty = all monotonic).
-
-    Members are ordered by the trailing integer of their label (see
-    ``_series_sort_key``) so that, e.g., ``amp_5`` precedes ``amp_15``
-    precedes ``amp_25`` — the magnitude order the sweep intended — rather
-    than the misleading lexical order.
-    """
-    groups: dict[str, list[PerScenarioResult]] = {}
-    for r in results:
-        for tag in r.coverage_tags:
-            if tag.startswith(tag_prefix):
-                groups.setdefault(tag, []).append(r)
-    violations: list[MetamorphicViolation] = []
-    for tag, members in groups.items():
-        ordered = sorted(members, key=lambda r: _series_sort_key(r.label))
-        series = tuple((m.label, m.n_events) for m in ordered)
-        for i in range(1, len(series)):
-            if series[i][1] < series[i - 1][1]:
-                violations.append(MetamorphicViolation(tag_group=tag, series=series))
-                break
-    return violations
-
-
 __all__ = [
     "ActualEvent",
-    "MetamorphicViolation",
     "PerScenarioResult",
     "VacuityError",
-    "check_metamorphic_monotonic",
     "check_scenario",
 ]
