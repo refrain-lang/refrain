@@ -8,7 +8,6 @@ the evaluate -> oracle -> check loop OUTSIDE that backstop (so genuine
 engine violations and generator bugs surface, never silently skipped)."""
 from __future__ import annotations
 
-import dataclasses  # noqa: F401 — Task 6 reintroduces dataclasses.replace() here to thread the seed
 import os
 from collections import Counter
 from dataclasses import dataclass
