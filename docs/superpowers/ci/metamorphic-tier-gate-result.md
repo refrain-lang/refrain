@@ -167,6 +167,85 @@ shows a latched or dead dwell is caught by the **rank** sweep's contrast check
 
 ---
 
+---
+
+# Iteration 2 — corrected probe (A–D applied): still RED, 5 violations / 5 seeds
+
+Causes A–D were fixed (leaf validation; anchor = quiet p-th percentile; ladder starts at
+the decision level; hold sweep recorded-not-asserted on this tier). The gate improved
+sharply but is **not clean**:
+
+```
+seed 41 (319.5s)  fuzzed 24 / skipped 16 / errored 2   VIOLATIONS: 0   hollow: 0
+seed 42 (310.1s)  fuzzed 24 / skipped 16 / errored 2   VIOLATIONS: 0   hollow: 0
+seed 43 (317.1s)  fuzzed 24 / skipped 16 / errored 2   VIOLATIONS: 0   hollow: 0
+seed 44 (320.6s)  fuzzed 24 / skipped 16 / errored 2   VIOLATIONS: 5   hollow: 0
+seed 45 (325.1s)  fuzzed 24 / skipped 16 / errored 2   VIOLATIONS: 0   hollow: 0
+
+violations across 5 seeds: 5      (was 22)
+hollow passes: 0
+RESULT: FAIL
+```
+
+Cause A is confirmed fixed (`smr_up_c4_baseline_brainbit` now SKIPs:
+`absolute threshold value did not resolve to a literal`), and differential power is
+retained (all three injected engine mutants still caught, now via `NO_CONTRAST`).
+
+**All 5 residual violations are on one realization (seed 44), and every one is a
+percentile leaf.** Two shapes:
+
+```
+theta_down_cz     below/p30   seed 44:  baseline 0.000 | 0.000 -> 0.000 -> 0.000 -> 0.000
+                                        [VIOLATION:NO_CONTRAST] baseline already silent
+                              seed 45:  baseline 0.248 | 0.000 -> ...            (clean)
+
+peak_alpha_up_pz  above/p70   seed 44:  baseline 0.872 | 0.647 -> 0.322 -> 1.000 -> 1.000
+                                        [VIOLATION:MONOTONICITY]
+                              seed 43:  baseline 0.249 | 0.734 -> 1.000 -> ...   (clean)
+```
+
+## The structural finding
+
+**For a percentile threshold, the decision level IS the noise level** — it is by
+construction a percentile *of the quiet envelope*. Measured:
+
+| threshold | decision level | quiet noise median | ratio |
+|---|---|---|---|
+| `percentile(p70)` (`micro_single_pct`) | 1.399 µV | 1.128 µV | **1.24×** |
+| `absolute(20 µV)` (`micro_single_below`) | 20.0 µV | 2.777 µV | **7.20×** |
+| `absolute(8 µV)` (`micro_single_above`) | 8.0 µV | 1.102 µV | **7.26×** |
+
+R6 established that per-realization monotonicity fails while the injected tone is
+comparable to the noise (Rician tail-thinning). Combine the two facts:
+
+> There is **no drive amplitude that is both near a percentile boundary and dominant
+> over the noise.** The ambiguous band always contains the boundary. Therefore
+> per-realization monotonicity of time-in-reward *across a percentile decision boundary*
+> is unattainable — not by more seeds, not by a longer window, not by a better ladder.
+
+`peak_alpha_up_pz` seed 44 is exactly this: a realization whose quiet baseline is already
+0.872, so rungs at 1× and 2× the anchor sit inside the Rician band and *reduce* the metric
+(0.647, 0.322) before the far field carries it to 1.0. Absolute leaves never show this
+because their boundary sits ~7× above the noise, in the far field.
+
+Second, smaller finding: for a **`below` + percentile** leaf the no-drive baseline is a
+*dwell lottery*. The leaf is true ~30 % of samples by construction, in short bursts;
+whether any burst sustains the 250 ms dwell is realization-luck (measured baselines across
+seeds: 0.000, 0.014, 0.248). A baseline of 0.000 makes the sweep vacuous, and the
+degenerate-baseline guard correctly reports `NO_CONTRAST`. The reward-on state for such a
+leaf does not exist without **priming the swept derive's fill** — which `_prime_segments`
+deliberately never does (priming the swept derive would flatten its own sweep).
+
+## What survives
+
+- **Contrast is robust.** On seed 44, `peak_alpha_up_pz` passes the contrast test
+  (`1.000 − 0.872 = 0.128 ≥ 0.5 × (1 − 0.872) = 0.064`); only monotonicity fails.
+- **Contrast alone retains all differential power.** All three injected engine
+  regressions (inverted `above()`, latched dwell, dead dwell) are caught by
+  `NO_CONTRAST`, per `tests/fuzz/test_engine_regression.py`.
+- **Monotonicity is sound for absolute leaves** (far-field boundary): every
+  absolute-threshold protocol in the corpus is clean on all 5 seeds.
+
 ## Verdict
 
 The tier's *machinery* is sound — fail-loud works, no hollow passes, real engine

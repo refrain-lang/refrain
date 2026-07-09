@@ -226,6 +226,75 @@ semantics are touched — we simply stop waiting for a window we never needed fu
 This is analogous to the existing `phase_override`, and it is what makes the Task-0
 gate runnable.
 
+### R6. The core claim is FALSE below the leaf's decision level (found by the gate)
+
+The spec above states: *"On a fixed realization, 'more in-band signal drives the leaf
+harder' is a real, assertable ordering."* The Task-0 gate falsified this. It is true
+only where the injected drive is **at or above the leaf's decision level**.
+
+Measured on one fixed noise realization (`micro_single_pct`, seed 41), sweeping tone
+amplitude finely; `frac` is the fraction of spike samples with `envelope > threshold`:
+
+| k × floor | mean env | mean thr | frac > thr |
+|---|---|---|---|
+| 0.00 | 0.980 | 1.486 | **0.170** |
+| 0.25 | 0.977 | 1.485 | **0.134** |
+| 0.50 | 1.038 | 1.484 | **0.119** |
+| 0.75 | 1.148 | 1.483 | **0.107** |
+| 1.00 | 1.301 | 1.516 | 0.172 |
+| 2.00 | 2.112 | 1.602 | 0.869 |
+| 4.00 | 4.201 | 1.620 | 1.000 |
+
+The mean envelope **rises** while exceedance **falls**, and the threshold barely moves —
+so this is not the percentile adapting to its own signal.
+
+**Mechanism.** Band-limited noise has a Rayleigh-distributed envelope with a heavy upper
+tail. Adding a *coherent* tone of comparable amplitude makes the envelope Rician, which
+narrows its relative spread and **thins that upper tail**. A p70 threshold computed over
+a quiet window sits in the tail, so exceedance is a tail event: thinning the tail lowers
+it even as the mean rises. Only once the tone dominates the noise does the mean shift
+carry the distribution across the threshold.
+
+This is deterministic and per-realization. More seeds, a longer window, or a
+median-over-seeds escalation cannot fix it. The remedy is to place no *asserted* rung
+below the decision level: `_LADDER = (1, 2, 4, 8) × anchor`, with the no-drive baseline
+still supplying the contrast reference (so the sweep still straddles the boundary —
+baseline below it, rung 1 on it). Verified monotone 5/5 seeds on `smr_up_c4`.
+
+### R7. The percentile anchor is the quiet p-th percentile, not the median
+
+R1 said "measured per-derive noise median" for a percentile leaf. That is the wrong
+statistic: the engine's decision level is the **p-th percentile** of the quiet envelope,
+which is literally what `PercentileImpl` computes. The median *undershoots* for `above`+p70
+(parking an asserted rung inside R6's ambiguous band) and *overshoots* for `below`+p30
+(`theta_down_cz` measured `0.000` at every rung, on every seed — the sweep could not
+resolve the boundary at all). The quiet probe now returns the envelope **samples** per
+derive, and each leaf reads its own `numpy.percentile(quiet_env, target_pct)`.
+
+### R8. The hold-duration sweep is not assertable on this tier
+
+A noise-dominated protocol's *quiet* state already holds reward ~40–50 % of the time, and
+the hold-sweep metric window is only `5 × dwell`, so the tone-driven contribution does not
+dominate the noise-driven firing and the series wiggles. On `METAMORPHIC`-tier protocols
+the hold sweep is therefore **recorded and reported, but asserts nothing** (never a silent
+pass). It keeps asserting on `SAMPLE_EXACT` protocols. This costs no dwell coverage:
+`tests/fuzz/test_engine_regression.py` proves a latched or dead dwell is caught by the
+**rank** sweep's contrast check.
+
+### R9. Multi-leaf reward conditions must validate every leaf
+
+Pre-existing gap: `_classify_single_leaf` ran only for single-leaf rewards, so a
+control-valued `absolute(value: <control>)` threshold in a multi-leaf condition reached the
+sweeps with no resolvable anchor. The favourable background then could not hold that leaf
+TRUE, the `all_of` never fired, and every sweep read `0.000` → false `NO_CONTRAST`. Every
+leaf of a multi-leaf condition is now classified; such protocols SKIP with a feature-mapped
+reason.
+
+> R6–R9 were found by the Task-0 gate going **red on a known-good engine** (22 false
+> positives / 5 seeds, 0 hollow passes), and are recorded in
+> `docs/superpowers/ci/metamorphic-tier-gate-result.md`. The gate did its job: it refused a
+> design that asserted a property outside its domain of validity. No slack was added.
+
 ### Consequence for tier routing
 A protocol is **metamorphic-tier iff any reward leaf uses a percentile
 threshold**; its sample-exact scenarios (directed pivotal, dwell, probe) are
