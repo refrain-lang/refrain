@@ -84,7 +84,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from refrain.amp import load_amp_profile  # noqa: E402
 from refrain.fuzz.runner import (  # noqa: E402
     ERRORED,
     FUZZED,
@@ -93,7 +92,7 @@ from refrain.fuzz.runner import (  # noqa: E402
 )
 from refrain.parser import ParseError, parse_file  # noqa: E402
 from refrain.resolver import ResolveError, resolve  # noqa: E402
-from refrain.resolver_loader import default_library_dirs, filesystem_loader  # noqa: E402
+from refrain.compose import default_library_dirs, filesystem_loader  # noqa: E402
 
 
 def _resolver(library_dirs):
@@ -163,15 +162,15 @@ if __name__ == "__main__":
 
 The import paths above are asserted, not verified. Confirm each exists and fix the harness if not:
 
-Run: `.venv/bin/python -c "from refrain.resolver_loader import default_library_dirs, filesystem_loader; from refrain.amp import load_amp_profile; print('ok')"`
+Run: `.venv/bin/python -c "from refrain.compose import default_library_dirs, filesystem_loader; print('ok')"`
 
-If any import fails, find the real module with `grep -rn "def default_library_dirs\|def filesystem_loader\|def load_amp_profile" src/refrain/` and correct the harness. Drop the `load_amp_profile` import if unused.
+Verified: both live in `refrain.compose` (not `refrain.resolver_loader`). `load_amp_profile` is unused — do not import it.
 
 - [ ] **Step 3: Run the RED baseline (current code)**
 
 The harness is written against the *target* API (`run_batch(..., seed=)`), which does not exist yet — running it now raises `TypeError`. That is expected; it starts working at Task 6. To capture today's red, drive the existing CLI:
 
-Run: `.venv/bin/python -m refrain fuzz /Users/jcroall/git/refrain-protocols/protocols --library /Users/jcroall/git/refrain-protocols/lib 2>&1 | tail -25`
+Run: `.venv/bin/python -m refrain.cli fuzz /Users/jcroall/git/refrain-protocols/protocols --library /Users/jcroall/git/refrain-protocols/lib 2>&1 | tail -25`
 
 Expected: a nonzero `fail` count, driven by metamorphic monotonicity violations on the `below`/percentile protocols (e.g. `smr_classic_cz_brainbit`).
 
@@ -535,11 +534,16 @@ git commit -m "fuzz: add engine.py — per-sample streams, time-in-reward, noise
 
 ## Task 3: `surface.py` — tier routing and leaf helpers
 
+> **Additive only.** This task must NOT change which protocols skip. Unskipping
+> percentile single-leaf happens in Task 6, together with the tier routing and
+> the sweeps that gate it — so behaviour flips exactly once, when the machinery
+> to handle it exists. Unskipping here would push `micro_single_pct` through the
+> *old* direction-blind event-count check and red the batch for three tasks.
+
 **Files:**
 - Modify: `src/refrain/fuzz/surface.py`
 - Modify: `src/refrain/fuzz/generate.py` (reuse `reward_leaves`)
 - Modify: `tests/fuzz/test_surface.py`
-- Modify: `tests/fuzz/test_unsupported.py`
 
 **Interfaces:**
 - Consumes: nothing new.
@@ -576,12 +580,6 @@ def test_any_percentile_leaf_routes_to_the_metamorphic_tier():
     assert surface.tier == METAMORPHIC
 
 
-def test_single_percentile_leaf_is_no_longer_skipped():
-    surface = build_surface(_ir("bench/protocols/micro_single_pct.refrain"))
-    assert surface.tier == METAMORPHIC
-    assert [leaf.op for leaf in reward_leaves(surface)] == ["above"]
-
-
 def test_reward_leaves_flattens_the_condition_tree_in_order():
     surface = build_surface(_ir("bench/protocols/realistic_smr.refrain"))
     assert [(leaf.op, leaf.signal) for leaf in reward_leaves(surface)] == [
@@ -601,9 +599,7 @@ def test_derive_for_and_threshold_for_look_up_by_name():
 
 Add `import pytest` and a `_ir` helper to that file if not present (mirror `tests/fuzz/test_runner.py:19-20`).
 
-In `tests/fuzz/test_unsupported.py`, find the test asserting `micro_single_pct` (or any percentile single-leaf) skips with `"single percentile-leaf reward (needs calibrated oracle)"` and **delete it** — that skip is what this increment removes. Verify with:
-
-Run: `grep -rn "percentile-leaf" tests/`
+Do **not** touch `tests/fuzz/test_unsupported.py` or `tests/fuzz/test_batch.py` in this task — the percentile skip is still in force until Task 6.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -658,25 +654,7 @@ def threshold_for(surface: LogicalSurface, name: str) -> ThresholdSurface:
     raise KeyError(f"surface: no threshold named {name!r}")
 ```
 
-(d) In `_classify_single_leaf`, **delete** the percentile rejection:
-
-```python
-    if thr.kind == "percentile":
-        raise UnsupportedProtocol("single percentile-leaf reward (needs calibrated oracle)")
-```
-
-and change the following guard so percentile passes through while `dynamic` still skips:
-
-```python
-    if thr.kind not in ("absolute", "percentile"):
-        raise UnsupportedProtocol(f"single {thr.kind}-threshold reward (unsupported)")
-    if thr.kind == "absolute" and thr.absolute_uv is None:
-        # e.g. `absolute(value: <control>)` — the surface only extracts numeric
-        # literals, so the value is unresolved. Skip cleanly rather than crash
-        # downstream in scenario generation (`thr.absolute_uv * ...` on None).
-        raise UnsupportedProtocol("absolute threshold value did not resolve to a literal")
-    return leaf
-```
+(d) Leave `_classify_single_leaf` **unchanged**. The percentile rejection stays until Task 6.
 
 (e) In `build_surface`, compute the tier after `reward_condition` and pass it:
 
@@ -705,14 +683,14 @@ Replace every `_all_leaves(surface.reward_condition)` call with `reward_leaves(s
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `.venv/bin/python -m pytest tests/fuzz/test_surface.py tests/fuzz/test_unsupported.py tests/fuzz/test_generate.py -q`
-Expected: all pass.
+Run: `.venv/bin/python -m pytest tests/fuzz/ -q`
+Expected: all pass. The whole fuzz suite must stay green — this task is additive, so `test_unsupported.py` and `test_batch.py` must be untouched **and still passing**. If either fails, you changed skip behaviour; revert that part.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/refrain/fuzz/surface.py src/refrain/fuzz/generate.py tests/fuzz/
-git commit -m "fuzz(surface): add tier routing + leaf helpers; unskip percentile single-leaf"
+git add src/refrain/fuzz/surface.py src/refrain/fuzz/generate.py tests/fuzz/test_surface.py
+git commit -m "fuzz(surface): add tier classification + leaf helpers (additive)"
 ```
 
 ---
@@ -1674,7 +1652,45 @@ In `tests/fuzz/test_generate.py`, delete tests of `generate_rank_sweep` / `gener
 Run: `.venv/bin/python -m pytest tests/fuzz/test_runner.py -q`
 Expected: FAIL — `TypeError: fuzz_protocol() got an unexpected keyword argument 'seed'` (and the percentile protocol still SKIPs).
 
-- [ ] **Step 3: Delete the superseded code**
+- [ ] **Step 3: Unskip percentile single-leaf (relocated from Task 3)**
+
+This is the single point where skip behaviour flips — the sweeps now exist to gate it.
+
+In `src/refrain/fuzz/surface.py`, in `_classify_single_leaf`, **delete** the percentile rejection:
+
+```python
+    if thr.kind == "percentile":
+        raise UnsupportedProtocol("single percentile-leaf reward (needs calibrated oracle)")
+```
+
+and change the following guard so percentile passes through while `dynamic` still skips:
+
+```python
+    if thr.kind not in ("absolute", "percentile"):
+        raise UnsupportedProtocol(f"single {thr.kind}-threshold reward (unsupported)")
+    if thr.kind == "absolute" and thr.absolute_uv is None:
+        # e.g. `absolute(value: <control>)` — the surface only extracts numeric
+        # literals, so the value is unresolved. Skip cleanly rather than crash
+        # downstream in scenario generation (`thr.absolute_uv * ...` on None).
+        raise UnsupportedProtocol("absolute threshold value did not resolve to a literal")
+    return leaf
+```
+
+Two existing tests assert that skip. Update **both** (`grep -rn "percentile-leaf" tests/ src/` to confirm you found them all):
+
+- `tests/fuzz/test_unsupported.py:97` — asserts `e.value.reason == "single percentile-leaf reward (needs calibrated oracle)"`. Delete that test.
+- `tests/fuzz/test_batch.py:56` — asserts that reason appears in the batch by-reason breakdown, and also pins `"coverage: fuzzed 7 / total 26"` and `rc == 0`. Percentile single-leaf no longer skips, so: drop the percentile-leaf assertion, and **re-derive** the coverage line by running the batch (`.venv/bin/python -m pytest tests/fuzz/test_batch.py -q` will show the mismatch; then run the CLI on the same paths to read the real number). Keep `assert "composite-signal reward condition" in out` and keep `assert rc == 0` — if `rc != 0`, a protocol is genuinely violating and you must report that, not relax the assertion.
+
+Add to `tests/fuzz/test_surface.py`:
+
+```python
+def test_single_percentile_leaf_is_no_longer_skipped():
+    surface = build_surface(_ir("bench/protocols/micro_single_pct.refrain"))
+    assert surface.tier == METAMORPHIC
+    assert [leaf.op for leaf in reward_leaves(surface)] == ["above"]
+```
+
+- [ ] **Step 4: Delete the superseded code**
 
 In `src/refrain/fuzz/check.py`, delete `_series_sort_key`, `MetamorphicViolation`, and `check_metamorphic_monotonic`; remove `import re`; trim `__all__` to `["ActualEvent", "PerScenarioResult", "VacuityError", "check_scenario"]`.
 
@@ -1689,7 +1705,7 @@ In `src/refrain/fuzz/generate.py`, delete `generate_rank_sweep` and `generate_ho
 
 (and delete the `else: # percentile — pick amplitudes by rank intent` block).
 
-- [ ] **Step 4: Rewrite `runner.py`'s pipeline**
+- [ ] **Step 5: Rewrite `runner.py`'s pipeline**
 
 Replace `fuzz_protocol` and `_build_corpus`, and add `_run_sweeps`:
 
@@ -1812,7 +1828,7 @@ def run_batch(paths, *, max_scenarios, chunk_size, resolve_fn, seed: int = 42) -
 
 and pass `seed=seed` into the `fuzz_protocol(...)` call inside it.
 
-- [ ] **Step 5: Add the metamorphic section to `report.py`**
+- [ ] **Step 6: Add the metamorphic section to `report.py`**
 
 Change `render_report`'s signature to accept `tier: str` and `sweep_outcomes`, import `MetamorphicViolation`/`SweepOutcome` from `.metamorphic` instead of `.check`, print the tier under the header:
 
@@ -1851,12 +1867,12 @@ Update `overall` to account for sweeps:
 
 Update `tests/fuzz/test_report.py` call sites to pass `tier="sample_exact"` and `sweep_outcomes=[]`.
 
-- [ ] **Step 6: Run the full fuzz suite**
+- [ ] **Step 7: Run the full fuzz suite**
 
 Run: `.venv/bin/python -m pytest tests/fuzz/ -q && .venv/bin/ruff check src/refrain/fuzz/ && .venv/bin/ruff check src/refrain --select F,E9`
 Expected: all pass, no lint findings.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add src/refrain/fuzz/ tests/fuzz/
@@ -1974,7 +1990,7 @@ Budget ~30–75 min (measured: ~0.9 s per `realistic_smr`-class engine run, ~20 
 
 - [ ] **Step 3: Re-probe coverage and record the unlock**
 
-Run: `.venv/bin/python -m refrain fuzz /Users/jcroall/git/refrain-protocols/protocols --library /Users/jcroall/git/refrain-protocols/lib 2>&1 | tail -20`
+Run: `.venv/bin/python -m refrain.cli fuzz /Users/jcroall/git/refrain-protocols/protocols --library /Users/jcroall/git/refrain-protocols/lib 2>&1 | tail -20`
 
 Capture the `coverage: fuzzed N / total M` line and the by-reason skip breakdown.
 
@@ -2125,7 +2141,7 @@ In `ci.yml`, bump the pin `refrain @ git+https://github.com/refrain-lang/refrain
 
 - [ ] **Step 2: Verify the job command locally before pushing**
 
-Run: `cd /Users/jcroall/git/refrain-protocols && /Users/jcroall/git/refrain/refrain/.venv/bin/python -m refrain fuzz protocols/ --library lib --seed 42; echo "exit=$?"`
+Run: `cd /Users/jcroall/git/refrain-protocols && /Users/jcroall/git/refrain/refrain/.venv/bin/python -m refrain.cli fuzz protocols/ --library lib --seed 42; echo "exit=$?"`
 Expected: `exit=0`. If nonzero, read the batch report — a nonzero exit here means a real violation or an ERRORED protocol, and CI would be red on merge. Pre-existing ERRORED protocols (coherence/bandpower/montage) make the batch exit 1: if so, the fuzz job must scope to the protocols the fuzzer supports until those gaps close. Record the decision in the PR body rather than silencing the exit code.
 
 - [ ] **Step 3: Open the PR**
