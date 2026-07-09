@@ -8,21 +8,18 @@ the evaluate -> oracle -> check loop OUTSIDE that backstop (so genuine
 engine violations and generator bugs surface, never silently skipped)."""
 from __future__ import annotations
 
-import dataclasses
+import dataclasses  # noqa: F401 — Task 6 reintroduces dataclasses.replace() here to thread the seed
 import os
 from collections import Counter
 from dataclasses import dataclass
 
-from ..eval_ import eval_protocol
-from ..ir import IRPhase
-from ..sources import SyntheticSource
-from ..synthetic import channels_for_synthetic, render_scenario
+from ..synthetic import channels_for_synthetic
 from .check import (
-    ActualEvent,
     VacuityError,
     check_metamorphic_monotonic,
     check_scenario,
 )
+from .engine import run_scenario
 from .errors import UnsupportedProtocol
 from .generate import (
     generate_characterization_probe,
@@ -125,48 +122,14 @@ def _collar_samples(surface, chunk_size: int) -> int:
     return int(round(collar_s * fs))
 
 
-def _apply_phase_override(ir, phase_override):
-    """Rebuild `ir.session.phases` from a fuzz `PhaseOverride` so the
-    evaluator's warmup window matches what the oracle assumed.
-
-    The override carries durations in seconds; `IRPhase.duration_ms` is in
-    milliseconds, so we convert. Returns `ir` unchanged when there is no
-    override. Zero-length phases are dropped; the evaluator tolerates an
-    empty phases tuple, so no special-casing is needed."""
-    if phase_override is None:
-        return ir
-    po = phase_override
-    spec = [
-        ("warmup", po.warmup_s, True),
-        ("training", po.training_s, False),
-        ("cooldown", po.cooldown_s, True),
-    ]
-    phases = tuple(
-        IRPhase(name=name, duration_ms=dur_s * 1000.0, output_muted=muted)
-        for name, dur_s, muted in spec
-        if dur_s > 0
-    )
-    new_session = dataclasses.replace(ir.session, phases=phases)
-    return dataclasses.replace(ir, session=new_session)
-
-
 def _run_one_scenario(scenario, *, ir, surface, channels, collar_samples, chunk_size):
-    """Render + run + oracle-predict + check a single scenario. Returns a
+    """Run + oracle-predict + check a single scenario. Returns a
     PerScenarioResult; may raise VacuityError (a generator bug)."""
     fs = surface.sample_rate_hz
-    scenario_ir = _apply_phase_override(ir, scenario.phase_override)
-    gen = render_scenario(scenario, channels=channels)
-    source = SyntheticSource(gen, duration_s=scenario.duration_s)
-    actual: list[ActualEvent] = []
-    for ev in eval_protocol(scenario_ir, source, chunk_size=chunk_size):
-        if ev.kind != "event":
-            continue
-        actual.append(ActualEvent(
-            sample=int(round(ev.timestamp_s * fs)), kind=ev.kind, channel=ev.channel,
-        ))
+    res = run_scenario(scenario, ir=ir, channels=channels, chunk_size=chunk_size)
     expected = predict(scenario, surface)
     return check_scenario(
-        scenario_label=scenario.label, expected=expected, actual=actual, fs=fs,
+        scenario_label=scenario.label, expected=expected, actual=list(res.events), fs=fs,
         collar_samples=collar_samples, coverage_tags=scenario.coverage_tags,
         total_samples=int(round(scenario.duration_s * fs)),
     )
