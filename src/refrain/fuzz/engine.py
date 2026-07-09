@@ -74,12 +74,31 @@ def run_scenario(scenario: Scenario, *, ir, channels, chunk_size: int) -> RunRes
     fs = scenario.sample_rate_hz
     events: list[ActualEvent] = []
     parts: dict[str, list[np.ndarray]] = {}
+    expected_keys: frozenset[str] | None = None
     for chunk in source.iter_chunks(chunk_size):
         for e in ev.step_chunk(chunk):
             if e.kind == "event":
                 events.append(ActualEvent(sample=int(round(e.timestamp_s * fs)),
                                           kind=e.kind, channel=e.channel))
-        for key, arr in ev.last_streams().items():
+        chunk_streams = ev.last_streams()
+        # `last_streams()` captures `reward.event*` keys only `if <var> is not
+        # None` (eval_.py), so its key set could in principle vary per chunk.
+        # A dropped key would make np.concatenate silently produce a SHORTER,
+        # misaligned array than its siblings — corrupting every index-aligned
+        # comparison downstream with no error. Make the invariant explicit
+        # instead of relying on it holding by accident.
+        keys = frozenset(chunk_streams)
+        if expected_keys is None:
+            expected_keys = keys
+        elif keys != expected_keys:
+            missing = sorted(expected_keys - keys)
+            added = sorted(keys - expected_keys)
+            raise RuntimeError(
+                "run_scenario: last_streams() key set changed mid-run "
+                f"(first chunk had {sorted(expected_keys)}); "
+                f"missing={missing} added={added}"
+            )
+        for key, arr in chunk_streams.items():
             parts.setdefault(key, []).append(np.asarray(arr).copy())
     streams = {k: np.concatenate(v) for k, v in parts.items()}
     return RunResult(events=tuple(events), streams=streams)
@@ -98,11 +117,18 @@ def time_in_reward(streams: dict[str, np.ndarray], *,
         raise KeyError(
             f"{REWARD_HOLDS!r} missing from streams; the protocol has no dwell reward"
         )
+    arr = np.asarray(holds)
+    n = arr.shape[0]
     start = int(round(window_s[0] * fs))
     end = int(round(window_s[1] * fs))
-    seg = np.asarray(holds)[start:end]
-    if seg.size == 0:
-        raise ValueError(f"time_in_reward: empty window {window_s} at fs={fs}")
+    if start < 0 or end > n or end <= start:
+        reason = "empty" if end <= start else "out of range"
+        raise ValueError(
+            f"time_in_reward: window {window_s} at fs={fs} is {reason}: "
+            f"requested samples [{start}:{end}] ({end - start} samples) "
+            f"but only {n} available"
+        )
+    seg = arr[start:end]
     return float(seg.astype(bool).mean())
 
 

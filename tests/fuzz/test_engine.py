@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from refrain.eval_ import Evaluator
 from refrain.fuzz.engine import (
     REWARD_HOLDS,
     measure_noise_floor,
@@ -97,6 +98,26 @@ def test_time_in_reward_rejects_an_empty_window():
         time_in_reward(streams, window_s=(0.5, 0.5), fs=8)
 
 
+def test_time_in_reward_rejects_a_window_that_overruns_the_array():
+    """A window partially past the end of the array must never be silently
+    truncated: that would report on far fewer samples than requested and
+    make a partial slice look like a complete measurement."""
+    holds = np.zeros(2560, dtype=bool)  # 10 s @ 256 Hz
+    holds[2432:] = True                 # held for the trailing 0.5 s only
+    streams = {REWARD_HOLDS: holds}
+    with pytest.raises(ValueError, match="2560"):
+        # Requests window_s=(9.5, 12.0) -> samples [2432:3072), but the
+        # array only has 2560 samples; must raise, not silently return 1.0
+        # off the 128 in-range samples.
+        time_in_reward(streams, window_s=(9.5, 12.0), fs=256)
+
+
+def test_time_in_reward_rejects_a_negative_start():
+    streams = {REWARD_HOLDS: np.zeros(8, dtype=bool)}
+    with pytest.raises(ValueError, match="8"):
+        time_in_reward(streams, window_s=(-1.0, 1.0), fs=8)
+
+
 def test_measure_noise_floor_is_positive_and_seed_stable():
     ir = _ir("bench/protocols/realistic_smr.refrain")
     surface = build_surface(ir)
@@ -110,3 +131,32 @@ def test_measure_noise_floor_is_positive_and_seed_stable():
         assert floor > 0.0
         # A median over ~16 s of quiet noise is stable across realizations.
         assert abs(floor - b[name]) / floor < 0.25, (name, floor, b[name])
+
+
+def test_run_scenario_raises_when_stream_keys_vary_across_chunks(monkeypatch):
+    """`run_scenario` concatenates each stream across chunks with
+    `np.concatenate`. If `last_streams()` ever drops a key partway through a
+    run (it captures `reward.event*` only `if <var> is not None` — see
+    eval_.py), that key's array silently ends up SHORTER than its siblings,
+    and every later index-aligned comparison (e.g. time_in_reward against the
+    derive envelope) is quietly measuring misaligned samples. The invariant
+    must be enforced loudly, not papered over."""
+    ir = _ir("bench/protocols/micro_single_pct.refrain")
+    channels = channels_for_synthetic(ir)
+    scenario = _scenario(20.0, total_s=1.0)  # several chunks at chunk_size=64
+
+    original_last_streams = Evaluator.last_streams
+    calls = {"n": 0}
+
+    def flaky_last_streams(self):
+        streams = original_last_streams(self)
+        calls["n"] += 1
+        if calls["n"] > 1:
+            streams = dict(streams)
+            streams.pop(REWARD_HOLDS, None)
+        return streams
+
+    monkeypatch.setattr(Evaluator, "last_streams", flaky_last_streams)
+
+    with pytest.raises(RuntimeError, match=REWARD_HOLDS):
+        run_scenario(scenario, ir=ir, channels=channels, chunk_size=64)
