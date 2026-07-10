@@ -76,6 +76,15 @@ class MetamorphicViolation:
 
 
 def _is_monotone(direction: str, values: list[float]) -> bool:
+    """Direction-aware monotonicity, with float dust absorbed but no slack.
+
+    `_EPS` here is NOT the forbidden tolerance knob. Every member of a group
+    measures the SAME window, so each metric is `k/n` for one fixed `n`, and the
+    smallest real difference between two rungs is `1/n` — on the order of 1e-4
+    for the windows this generator builds. `_EPS` is 1e-12, eight orders of
+    magnitude below that, so it can absorb float representation dust and nothing
+    else. A `k` large enough to hide a real regression would have to approach
+    `1/n`; see the module docstring for why that is forbidden."""
     if direction == UP:
         return all(values[i] >= values[i - 1] - _EPS for i in range(1, len(values)))
     return all(values[i] <= values[i - 1] + _EPS for i in range(1, len(values)))

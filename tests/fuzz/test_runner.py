@@ -102,10 +102,29 @@ def test_absolute_only_protocols_keep_the_sample_exact_tier():
 
 def test_max_scenarios_never_truncates_a_sweep_group():
     """Truncating a sweep silently drops rungs and breaks the monotonicity
-    comparison. The cap applies to oracle scenarios only."""
-    out = _run("bench/protocols/micro_single_pct.refrain", max_scenarios=1)
-    assert out.status == FUZZED
-    assert out.passed is True
+    comparison. The cap applies to oracle scenarios only.
+
+    Uses a SAMPLE_EXACT protocol on purpose: a metamorphic-tier protocol has an
+    empty oracle corpus, so `max_scenarios` would be a no-op there and the test
+    would pass even if the cap were (wrongly) applied to sweep groups too.
+    Here the cap really does bite the oracle corpus, and the sweeps must survive
+    it intact — every rung of every group still reported.
+    """
+    capped = _run("bench/protocols/micro_single_above.refrain", max_scenarios=1)
+    full = _run("bench/protocols/micro_single_above.refrain", max_scenarios=0)
+    assert capped.status == FUZZED
+    assert capped.passed is True
+
+    def sweep_lines(report: str) -> list[str]:
+        return [ln.strip() for ln in report.splitlines()
+                if ln.strip().startswith(("[UP", "[DOWN", "[NO ASSERTION]"))]
+
+    # The cap dropped oracle scenarios (fewer of them ran)...
+    assert "scenarios:  1" in capped.report
+    assert "scenarios:  1" not in full.report
+    # ...but every sweep group survived, with the same series in each.
+    assert sweep_lines(capped.report) == sweep_lines(full.report)
+    assert sweep_lines(capped.report), "expected at least one sweep group"
 
 
 def test_seed_is_threaded_into_every_scenario():
