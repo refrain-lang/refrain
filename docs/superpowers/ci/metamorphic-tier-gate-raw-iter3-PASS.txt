@@ -1,0 +1,35 @@
+
+=== seed 41  (347.3s) ===
+  fuzzed 24 / skipped 16 / errored 2
+  VIOLATIONS:     0
+  generator-bugs: 0   (hollow passes — must be 0)
+  other errors:   2  (pre-existing corpus gaps, not a gate failure)
+
+=== seed 42  (322.5s) ===
+  fuzzed 24 / skipped 16 / errored 2
+  VIOLATIONS:     0
+  generator-bugs: 0   (hollow passes — must be 0)
+  other errors:   2  (pre-existing corpus gaps, not a gate failure)
+
+=== seed 43  (305.7s) ===
+  fuzzed 24 / skipped 16 / errored 2
+  VIOLATIONS:     0
+  generator-bugs: 0   (hollow passes — must be 0)
+  other errors:   2  (pre-existing corpus gaps, not a gate failure)
+
+=== seed 44  (304.8s) ===
+  fuzzed 24 / skipped 16 / errored 2
+  VIOLATIONS:     0
+  generator-bugs: 0   (hollow passes — must be 0)
+  other errors:   2  (pre-existing corpus gaps, not a gate failure)
+
+=== seed 45  (324.0s) ===
+  fuzzed 24 / skipped 16 / errored 2
+  VIOLATIONS:     0
+  generator-bugs: 0   (hollow passes — must be 0)
+  other errors:   2  (pre-existing corpus gaps, not a gate failure)
+
+=== GATE ===
+  violations across 5 seeds: 0
+  hollow passes: 0
+  RESULT: PASS

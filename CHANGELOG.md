@@ -10,14 +10,18 @@ bumps are additive; major bumps may break compatibility.
 ### Added
 - **Fuzzer metamorphic tier (Tier 2).** Protocols whose reward uses a percentile
   threshold are noise-dominated: firing is decided by the noise realization, so
-  sample-exact prediction is impossible. They are now gated on **direction-aware,
-  same-noise-realization sweeps of time-in-reward**. The fuzzer fixes the noise
-  seed and varies only tone amplitude, so noise is byte-identical across a sweep —
-  a controlled A/B on one realization. Each reward-feeding derive gets a sweep
-  anchored at its own decision level, with the other leaves held favourable, and
-  the sweep must be monotone in the direction its leaf implies plus show a
-  required contrast. A flat sweep FAILS as vacuous rather than passing.
-  Percentile single-leaf protocols are no longer skipped.
+  sample-exact prediction is impossible. They are now gated on **same-noise-realization
+  sweeps of time-in-reward**. The fuzzer fixes the noise seed and varies only tone
+  amplitude, so noise is byte-identical across a sweep — a controlled A/B on one
+  realization. Each reward-feeding derive gets a sweep anchored at its own decision
+  level, with the other leaves held favourable, and must show a required **contrast**
+  between the undriven baseline and a far-field drive. A flat sweep FAILS as vacuous
+  rather than passing. Percentile single-leaf protocols are no longer skipped.
+- **Direction-aware monotonicity, asserted where it is valid.** `above` leaves must be
+  non-decreasing in drive and `below` leaves non-increasing — but only where the
+  decision boundary sits *far above* the noise, i.e. on absolute thresholds. On a
+  percentile boundary the fuzzer asserts presence-of-response, not ordering (see the
+  honest limit below); the report states this explicitly rather than omitting it.
 - **`refrain fuzz --seed N`** selects the noise realization. Every scenario in a
   sweep shares it; vary it to re-check a violation against another realization.
 - **`tools/fuzz_corpus_gate.py`** — runs the whole protocol corpus across several
@@ -53,6 +57,22 @@ bumps are additive; major bumps may break compatibility.
   could only emit DON'T-CARE, and a DON'T-CARE that absorbs real noise-firing is a
   hollow pass rather than coverage. (`realistic_smr` fires 7 events on the quiet
   negative control; its former sample-exact "pass" was partly vacuous.)
+- Multi-leaf reward conditions now validate **every** leaf. Previously only single-leaf
+  rewards were classified, so a control-valued `absolute(value: <control>)` threshold
+  reached the scenario generator with no resolvable decision level. Such protocols now
+  skip cleanly with a feature-mapped reason.
+
+### Known limits
+- **Percentile boundaries: presence-of-response, not ordering.** A percentile threshold's
+  decision level is a percentile of the trainee's own quiet envelope, so it sits *inside*
+  the noise — measured at 1.24× the noise median, against ~7.2× for the absolute
+  thresholds in the corpus. Adding coherent in-band drive at that level narrows the
+  envelope distribution (Rayleigh → Rician) and can *reduce* threshold exceedance even as
+  the mean envelope rises. There is therefore no drive amplitude that is both near a
+  percentile boundary and dominant over the noise, and per-realization monotonicity across
+  such a boundary is unattainable. On percentile leaves the fuzzer asserts contrast only.
+  This is a property of the signal model, not of the implementation. See
+  `docs/superpowers/ci/metamorphic-tier-gate-result.md`.
 
 ## [0.12.1] — 2026-07-07
 

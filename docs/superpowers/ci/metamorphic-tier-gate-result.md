@@ -1,4 +1,13 @@
-# Metamorphic-tier gate — Task-0 result: **RED** (2026-07-09)
+# Metamorphic-tier gate — Task-0 result: **GREEN on the third design** (2026-07-09)
+
+> **Final outcome (iteration 3): `RESULT: PASS` — 0 violations across 5 seeds, 0 hollow
+> passes.** See "Iteration 3" at the bottom. The two red iterations below are kept in
+> full: they are the substance of what this gate bought. The gate rejected two designs
+> that would have shipped a fuzzer asserting a property it cannot assert.
+
+---
+
+## Iteration 1 — the design as specified: **RED** (2026-07-09)
 
 The gating validation ran the whole refrain-protocols corpus under the new
 metamorphic tier, across 5 fixed seeds, on the current known-good engine. The
@@ -246,7 +255,7 @@ deliberately never does (priming the swept derive would flatten its own sweep).
 - **Monotonicity is sound for absolute leaves** (far-field boundary): every
   absolute-threshold protocol in the corpus is clean on all 5 seeds.
 
-## Verdict
+## Verdict (as of iteration 2)
 
 The tier's *machinery* is sound — fail-loud works, no hollow passes, real engine
 regressions are caught, and the wall-clock is tractable. But the design as specified
@@ -259,3 +268,71 @@ change the spec's stated approach (ladder placement and anchor definition), so t
 a design decision, not an implementation detail. Do not add slack to force the gate
 green — that is precisely how the calibrated oracle would have died quietly instead of
 loudly.
+
+---
+
+# Iteration 3 — contrast-only on percentile boundaries: **GREEN**
+
+The structural finding above says monotonicity is unattainable *across a percentile
+boundary*, and that contrast is robust there. Applied, per leaf:
+
+- **Monotonicity is asserted only where the boundary sits in the far field** — i.e. on
+  `absolute` leaves (~7.2× the noise median). Percentile leaves assert **contrast only**,
+  and the report says so explicitly: `monotonicity not asserted (percentile boundary
+  lies inside the noise) — contrast only`. Never a silent omission.
+- **Every `below` + percentile leaf is primed over the fill**, including the swept one, so
+  its reward-on baseline exists instead of being a dwell lottery. `theta_down_cz` seed 44:
+  baseline `0.000` → `0.783`.
+
+```
+seed 41 (347.3s)  fuzzed 24 / skipped 16 / errored 2   VIOLATIONS: 0   hollow: 0
+seed 42 (322.5s)  fuzzed 24 / skipped 16 / errored 2   VIOLATIONS: 0   hollow: 0
+seed 43 (305.7s)  fuzzed 24 / skipped 16 / errored 2   VIOLATIONS: 0   hollow: 0
+seed 44 (304.8s)  fuzzed 24 / skipped 16 / errored 2   VIOLATIONS: 0   hollow: 0
+seed 45 (324.0s)  fuzzed 24 / skipped 16 / errored 2   VIOLATIONS: 0   hollow: 0
+
+violations across 5 seeds: 0
+hollow passes: 0
+RESULT: PASS
+```
+
+The two protocols that failed iteration 2 now pass **for the right reasons**, not by
+being un-asserted:
+
+```
+theta_down_cz    seed 44  baseline 0.783 | 0.696 -> 0.645 -> 0.000 -> 0.000   contrast 0.783 >= 0.392
+peak_alpha_up_pz seed 44  baseline 0.872 | 0.647 -> 0.322 -> 1.000 -> 1.000   contrast 0.128 >= 0.064
+```
+
+## Differential power, verified after every change
+
+`tests/fuzz/test_engine_regression.py` injects real engine regressions and requires the
+gate to go red. All are caught, on both leaf kinds:
+
+| injected regression | percentile leaf | absolute leaf |
+|---|---|---|
+| control (correct engine) | passes | passes |
+| `above()` inverted to `below()` | `NO_CONTRAST` | `MONOTONICITY` |
+| dwell latches (always holding) | `NO_CONTRAST` (baseline 1.000) | — |
+| dwell never holds | `NO_CONTRAST` (baseline 0.000) | — |
+| notch (absolute-leaf non-monotonicity) | — | `MONOTONICITY` |
+
+The dwell-latch case is caught *only* by the degenerate-baseline guard: with
+`baseline == 1.0` the contrast inequality `last − base ≥ 0.5·(1 − base)` reduces to
+`0 ≥ 0` and would otherwise pass — a reward firing on pure noise. That is the exact
+hollow-pass shape the calibrated oracle died of.
+
+## What the gate bought
+
+Three designs were submitted; the gate rejected two, on a **known-good engine**:
+
+1. The spec's design — 22 false positives / 5 seeds. Found: the ladder never straddled
+   the boundary on an inhibit leaf, event-count was already superseded, and multi-leaf
+   conditions never validated their leaves.
+2. The corrected probe — 5 false positives / 5 seeds, all on one realization. Found: the
+   structural obstruction (a percentile boundary lies inside the noise).
+3. Contrast-only on percentile boundaries — clean, with differential power intact.
+
+Had the gate been skipped, or had slack been added at step 1 to force it green, the
+fuzzer would have shipped asserting an ordering that cannot hold, and its violations
+would have been noise. No slack was added at any step.
