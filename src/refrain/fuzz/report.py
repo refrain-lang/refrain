@@ -85,6 +85,16 @@ def render_report(
                 continue
             out.append(f"  [{o.direction.upper():4}] {o.tag}: "
                        f"baseline {o.baseline:.3f} | {series}\n")
+            if not o.monotonic_asserted:
+                # Never silent: a percentile boundary sits inside the noise
+                # (measured 1.24x the noise median vs ~7.2x for absolute
+                # thresholds), so ordering is not assertable there -- only
+                # contrast is checked. See metamorphic.py's HONEST LIMIT and
+                # docs/superpowers/ci/metamorphic-tier-gate-result.md.
+                out.append(
+                    "       monotonicity not asserted (percentile boundary lies "
+                    "inside the noise) — contrast only\n"
+                )
     if metamorphic_violations:
         out.append("\n  METAMORPHIC violations:\n")
         for v in metamorphic_violations:

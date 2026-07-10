@@ -6,7 +6,24 @@ The fuzzer fixes the noise seed and varies only tone amplitude, so every member
 of a sweep sees a BYTE-IDENTICAL noise realization (guarded by
 tests/fuzz/test_engine.py::test_noise_is_bit_identical_across_amplitudes). A
 sweep is therefore a controlled A/B on one realization, and "more in-band drive
-pushes the leaf harder" is a real, assertable ordering.
+pushes the leaf harder" is a real, assertable ordering -- ABOVE a leaf's
+decision level.
+
+HONEST LIMIT (percentile boundaries). For an absolute threshold the decision
+level sits ~7.2x the quiet-noise median (measured on `micro_single_above` /
+`micro_single_below`); the boundary is in the far field and ordering holds.
+For a percentile threshold the decision level IS a percentile of the same
+quiet envelope, so it sits INSIDE the noise (measured 1.24x the noise median
+on `micro_single_pct`). A coherent tone added there turns the envelope's
+Rayleigh distribution Rician, which thins the upper tail the percentile sits
+in, so exceedance can FALL even as the tone grows -- there is no drive
+amplitude that is both near a percentile boundary and dominant over the
+noise. This is not a tuning gap: no ladder placement, seed count, or window
+length fixes it (see "Iteration 2" / "The structural finding" in
+docs/superpowers/ci/metamorphic-tier-gate-result.md). `SweepGroup.assert_monotonic`
+is therefore False for a percentile-anchored leaf; only contrast is asserted
+there. Do not "restore" monotonicity for percentile leaves -- it is provably
+invalid on that boundary, not an oversight.
 
 Pure module: a function of the surface + measured quiet-envelope arrays. No
 engine.
@@ -84,6 +101,11 @@ class SweepGroup:
     reason: str | None                   # why NONE
     members: tuple[SweepMember, ...]
     metric_window_s: tuple[float, float]
+    # False when the swept leaf's decision level is a percentile of the quiet
+    # envelope (inside the noise -- see the module docstring's HONEST LIMIT).
+    # `metamorphic.check_metamorphic` skips the monotonicity check, and only
+    # it, when this is False; contrast is always checked.
+    assert_monotonic: bool
 
 
 def sweep_direction(surface: LogicalSurface, derive_name: str) -> tuple[str, str | None]:
@@ -217,20 +239,35 @@ def _seg(derive: DeriveSurface, env_uv: float, start_s: float, end_s: float,
                        content=Tone(amplitude_uv=_tone_amplitude_uv(derive, env_uv, fs)))
 
 
-def _prime_segments(surface, quiet_envelopes, *, geom, exclude: str | None) -> list[BandSegment]:
-    """Drive every percentile-`below` leaf HIGH across the fill.
+def _prime_segments(surface, quiet_envelopes, *, geom) -> list[BandSegment]:
+    """Drive every percentile-`below` leaf HIGH across the fill, INCLUDING the
+    swept one.
 
     Quiet is not favourable for `below(x, percentile(x))`: the threshold tracks
     its own signal, so the leaf holds only ~p% of the time no matter how quiet x
     is — capping the whole condition and flattening any sweep of a DIFFERENT
     leaf. Raising x during the fill lifts its rolling percentile, so the quiet
-    spike then sits clearly below it. The swept derive is never primed (that
-    would flatten its own sweep)."""
+    spike then sits clearly below it.
+
+    An earlier version excluded the swept derive here, on the theory that
+    priming it would flatten its own sweep. That rationale applied when
+    monotonicity was asserted across the swept leaf's own boundary; it no
+    longer holds now that a `below`+percentile leaf is contrast-only
+    (`SweepGroup.assert_monotonic=False`, see the module docstring). Without
+    priming, such a leaf's no-drive baseline is a dwell lottery -- true only
+    in short percentile-driven bursts, so whether any burst sustains the dwell
+    is realization luck (measured baselines across seeds: 0.000, 0.014,
+    0.248) -- and a 0.000 baseline makes the sweep vacuous (NO_CONTRAST) on a
+    correct engine. Priming the fill at `P = _HI x anchor` puts the leaf's
+    boundary at ~P; the top rung (`8 x anchor = 2P`) clears it and drives the
+    leaf FALSE, while the primed-but-undriven baseline sits below P and holds
+    reward -- exactly the contrast this tier now asserts. See "Second, smaller
+    finding" in docs/superpowers/ci/metamorphic-tier-gate-result.md."""
     if geom.fill_s <= 0.0:
         return []
     out = []
     for leaf in reward_leaves(surface):
-        if leaf.signal == exclude or leaf.op != "below":
+        if leaf.op != "below":
             continue
         if threshold_for(surface, leaf.threshold).kind != "percentile":
             continue
@@ -301,13 +338,19 @@ def _rank_group(surface, quiet_envelopes, *, geom, derive_name, seed) -> SweepGr
     direction, reason = sweep_direction(surface, derive_name)
     leaves = [x for x in reward_leaves(surface) if x.signal == derive_name]
     anchor = leaf_anchor_uv(leaves[0], surface, quiet_envelopes) if leaves else None
+    # Monotonicity is assertable only where the boundary is in the far field
+    # (absolute threshold) -- see the module docstring's HONEST LIMIT. A
+    # percentile-anchored leaf gets contrast only.
+    assert_monotonic = (
+        bool(leaves) and threshold_for(surface, leaves[0].threshold).kind == "absolute"
+    )
     if direction != NONE and not anchor:
         direction, reason = NONE, "no resolvable decision level for the swept leaf"
     if not geom.usable:
         direction, reason = NONE, geom.reason
 
     spike = (geom.fill_s, geom.fill_s + geom.spike_s)
-    background = (_prime_segments(surface, quiet_envelopes, geom=geom, exclude=derive_name)
+    background = (_prime_segments(surface, quiet_envelopes, geom=geom)
                   + _favourable_segments(surface, quiet_envelopes, exclude=derive_name,
                                          window=spike))
     derive = derive_for(surface, derive_name)
@@ -324,7 +367,8 @@ def _rank_group(surface, quiet_envelopes, *, geom, derive_name, seed) -> SweepGr
             index=i,
         ))
     return SweepGroup(tag=tag, direction=direction, reason=reason,
-                      members=tuple(members), metric_window_s=geom.metric_window_s)
+                      members=tuple(members), metric_window_s=geom.metric_window_s,
+                      assert_monotonic=assert_monotonic)
 
 
 def _hold_group(surface, quiet_envelopes, *, geom, collar_s, seed) -> SweepGroup:
@@ -382,7 +426,7 @@ def _hold_group(surface, quiet_envelopes, *, geom, collar_s, seed) -> SweepGroup
                               metric_window_s=metric)
 
     def member(hold_s: float, index: int, label: str) -> SweepMember:
-        segs = _prime_segments(surface, quiet_envelopes, geom=hold_geom, exclude=None)
+        segs = _prime_segments(surface, quiet_envelopes, geom=hold_geom)
         if hold_s > 0.0:
             segs += _favourable_segments(surface, quiet_envelopes, exclude=None,
                                          window=(start_s, start_s + hold_s))
@@ -396,8 +440,12 @@ def _hold_group(surface, quiet_envelopes, *, geom, collar_s, seed) -> SweepGroup
     members = [member(0.0, -1, f"{tag}:baseline")]
     for i, f in enumerate(_HOLD_FRACTIONS):
         members.append(member(collar_s + f * dwell_s, i, f"{tag}:rung_{i}"))
+    # Always True: the hold sweep only ASSERTS (direction != NONE) on
+    # SAMPLE_EXACT protocols, which by the tier rule have no percentile
+    # reward leaf -- so there is no percentile boundary here to be honest about.
     return SweepGroup(tag=tag, direction=direction, reason=reason,
-                      members=tuple(members), metric_window_s=metric)
+                      members=tuple(members), metric_window_s=metric,
+                      assert_monotonic=True)
 
 
 def plan_sweeps(surface: LogicalSurface, *, quiet_envelopes: dict[str, np.ndarray],

@@ -8,7 +8,7 @@ from refrain.fuzz.scenario import PhaseOverride, Scenario
 from refrain.fuzz.sweep import DOWN, NONE, UP, SweepGroup, SweepMember
 
 
-def _group(tag, direction, n_rungs=4, reason=None) -> SweepGroup:
+def _group(tag, direction, n_rungs=4, reason=None, assert_monotonic=True) -> SweepGroup:
     def sc(label):
         return Scenario(label=label, duration_s=10.0, sample_rate_hz=256, segments=(),
                         controls={}, coverage_tags=frozenset(),
@@ -18,7 +18,8 @@ def _group(tag, direction, n_rungs=4, reason=None) -> SweepGroup:
     members += [SweepMember(scenario=sc(f"{tag}:rung_{i}"), index=i)
                 for i in range(n_rungs)]
     return SweepGroup(tag=tag, direction=direction, reason=reason,
-                      members=tuple(members), metric_window_s=(2.0, 8.0))
+                      members=tuple(members), metric_window_s=(2.0, 8.0),
+                      assert_monotonic=assert_monotonic)
 
 
 def _metrics(tag, baseline, series) -> dict[str, float]:
@@ -101,6 +102,42 @@ def test_a_mixed_sweep_asserts_nothing_and_is_reported_not_passed():
     assert v == []
     assert out[0].assertable is False
     assert "both above()" in out[0].reason
+
+
+def test_percentile_boundary_non_monotone_series_passes_on_contrast_alone():
+    """Task 8c / Change 1: real seed-44 series from peak_alpha_up_pz
+    (above/percentile(70)) -- baseline 0.872, rungs dip to 0.322 before
+    saturating. This is genuinely non-monotone (0.647 -> 0.322 is a fall) but
+    the leaf's decision level is a percentile of the noise (HONEST LIMIT), so
+    assert_monotonic=False and only contrast is checked. Contrast passes:
+    1.000 - 0.872 = 0.128 >= 0.5*(1-0.872) = 0.064."""
+    g = _group("rank_sweep:peak_alpha_up_pz", UP, assert_monotonic=False)
+    v, out = check_metamorphic([g], _metrics("rank_sweep:peak_alpha_up_pz", 0.872,
+                                             [0.647, 0.322, 1.000, 1.000]))
+    assert v == []
+    assert out[0].assertable is True
+    assert out[0].monotonic_asserted is False
+
+
+def test_absolute_boundary_non_monotone_series_still_violates_monotonicity():
+    """The mirror case: the identical non-monotone series on an absolute-leaf
+    group (assert_monotonic=True, e.g. high_beta_envelope / hbeta_t) must
+    still be caught -- the far-field boundary keeps the ordering assertion."""
+    g = _group("rank_sweep:high_beta_envelope", UP, assert_monotonic=True)
+    v, out = check_metamorphic([g], _metrics("rank_sweep:high_beta_envelope", 0.872,
+                                             [0.647, 0.322, 1.000, 1.000]))
+    assert [x.kind for x in v] == ["monotonicity"]
+    assert out[0].assertable is True
+    assert out[0].monotonic_asserted is True
+
+
+def test_percentile_boundary_still_fails_no_contrast_when_flat():
+    """assert_monotonic=False does not mean "nothing is asserted" -- contrast
+    still runs and still fails loud on a degenerate baseline."""
+    g = _group("rank_sweep:up_env", UP, assert_monotonic=False)
+    v, _ = check_metamorphic([g], _metrics("rank_sweep:up_env", 1.0,
+                                           [1.0, 1.0, 1.0, 1.0]))
+    assert [x.kind for x in v] == ["no_contrast"]
 
 
 def test_a_missing_metric_is_an_error_not_a_silent_skip():

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from refrain.fuzz.check import PerScenarioResult
-from refrain.fuzz.metamorphic import MetamorphicViolation
+from refrain.fuzz.metamorphic import MetamorphicViolation, SweepOutcome
 from refrain.fuzz.report import render_report
 from refrain.fuzz.scenario import Verdict
 
@@ -95,3 +95,38 @@ def test_report_lists_metamorphic_violations():
     )
     assert "metamorphic" in text.lower()
     assert "smr_t" in text
+
+
+def test_report_states_when_monotonicity_was_not_asserted():
+    """Task 8c / Change 3: a percentile-boundary group must never silently
+    drop the monotonicity assertion -- the report has to say why."""
+    results = [_r("amp_5", Verdict.PASS, {"metamorphic:rank_sweep:smr_t"})]
+    outcomes = [SweepOutcome(
+        tag="rank_sweep:smr_t", direction="up", baseline=0.872,
+        series=(("amp_5", 0.647), ("amp_15", 1.0)),
+        assertable=True, reason=None, monotonic_asserted=False,
+    )]
+    text = render_report(
+        protocol_name="smr_cz", tier="metamorphic", results=results,
+        sweep_outcomes=outcomes,
+        metamorphic_violations=[],
+        all_coverage_tags={"metamorphic:rank_sweep:smr_t"},
+    )
+    assert "monotonicity not asserted" in text.lower()
+    assert "percentile" in text.lower()
+
+
+def test_report_stays_silent_on_the_monotonicity_note_when_it_was_asserted():
+    results = [_r("amp_5", Verdict.PASS, {"metamorphic:rank_sweep:hbeta_t"})]
+    outcomes = [SweepOutcome(
+        tag="rank_sweep:hbeta_t", direction="down", baseline=1.0,
+        series=(("amp_5", 0.1), ("amp_15", 0.0)),
+        assertable=True, reason=None, monotonic_asserted=True,
+    )]
+    text = render_report(
+        protocol_name="smr_cz", tier="metamorphic", results=results,
+        sweep_outcomes=outcomes,
+        metamorphic_violations=[],
+        all_coverage_tags={"metamorphic:rank_sweep:hbeta_t"},
+    )
+    assert "monotonicity not asserted" not in text.lower()

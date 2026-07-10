@@ -2,17 +2,35 @@
 # Licensed under the Apache License, Version 2.0 (see LICENSE).
 """Check the metamorphic properties of a measured sweep.
 
-Two assertions per assertable group, and NO tolerance knob:
+Up to two assertions per assertable group, and NO tolerance knob:
 
-1. MONOTONICITY, direction-aware. `above` leaves push the reward up, `below`
-   leaves push it down. The merged implementation asserted non-decreasing firing
-   for every swept threshold, which is sign-wrong for inhibit leaves and
-   false-failed every near-floor `below` protocol.
+1. MONOTONICITY, direction-aware, and ONLY where `group.assert_monotonic`.
+   `above` leaves push the reward up, `below` leaves push it down. The merged
+   implementation asserted non-decreasing firing for every swept threshold,
+   which is sign-wrong for inhibit leaves and false-failed every near-floor
+   `below` protocol.
 
-2. CONTRAST. The top rung must close at least half the gap from the measured
-   baseline to saturation. A flat sweep proves nothing and FAILS LOUD rather
-   than passing vacuously — the calibrated-oracle gate finding was exactly a
-   family of hollow passes.
+   HONEST LIMIT: `assert_monotonic` is False when the swept leaf's decision
+   level is a percentile of the quiet envelope rather than an absolute value.
+   Measured: a percentile(p70) decision level sits 1.24x the quiet-noise
+   median; an absolute threshold sits ~7.2x it (`micro_single_above` /
+   `micro_single_below`). A percentile boundary is therefore INSIDE the noise,
+   and a coherent tone added there turns the envelope Rician, which thins the
+   upper tail the percentile sits in -- exceedance can fall even as the tone
+   grows. No drive amplitude is both near a percentile boundary and dominant
+   over the noise, so per-realization monotonicity across that boundary is not
+   a real property, not merely a hard-to-satisfy one. See "Iteration 2" / "The
+   structural finding" in docs/superpowers/ci/metamorphic-tier-gate-result.md.
+   Do not restore this assertion for percentile leaves thinking its absence is
+   an oversight.
+
+2. CONTRAST, always, for every assertable group (percentile leaves included).
+   The top rung must close at least half the gap from the measured baseline to
+   saturation. A flat sweep proves nothing and FAILS LOUD rather than passing
+   vacuously — the calibrated-oracle gate finding was exactly a family of
+   hollow passes. Contrast retains full differential power on its own: every
+   engine mutant in tests/fuzz/test_engine_regression.py is caught via
+   NO_CONTRAST, independent of whether monotonicity is asserted.
 
 A slack term (`m[i] >= m[i-1] - k`) is deliberately absent: any k large enough to
 absorb an inhibit inversion also hides a real regression. Robustness comes from
@@ -41,6 +59,10 @@ class SweepOutcome:
     series: tuple[tuple[str, float], ...]
     assertable: bool
     reason: str | None
+    # Mirrors SweepGroup.assert_monotonic. False on an assertable group means
+    # only contrast was checked -- report.py must say so explicitly, never omit
+    # it silently (see the module docstring's HONEST LIMIT).
+    monotonic_asserted: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,13 +122,13 @@ def check_metamorphic(
         if g.direction == NONE or baseline is None or len(series) < _MIN_ASSERTABLE_MEMBERS:
             outcomes.append(SweepOutcome(
                 tag=g.tag, direction=g.direction, baseline=baseline, series=series,
-                assertable=False,
+                assertable=False, monotonic_asserted=False,
                 reason=g.reason or "sweep has no baseline or too few rungs",
             ))
             continue
 
         values = [v for _, v in series]
-        if not _is_monotone(g.direction, values):
+        if g.assert_monotonic and not _is_monotone(g.direction, values):
             expected = "non-decreasing" if g.direction == UP else "non-increasing"
             violations.append(MetamorphicViolation(
                 tag=g.tag, kind="monotonicity", direction=g.direction,
@@ -121,7 +143,7 @@ def check_metamorphic(
             ))
         outcomes.append(SweepOutcome(
             tag=g.tag, direction=g.direction, baseline=baseline, series=series,
-            assertable=True, reason=None,
+            assertable=True, reason=None, monotonic_asserted=g.assert_monotonic,
         ))
     return violations, outcomes
 

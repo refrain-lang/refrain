@@ -174,6 +174,18 @@ def test_plan_sweeps_emits_a_baseline_plus_an_ascending_ladder_per_derive():
                    for seg in base.segments)
 
 
+def test_assert_monotonic_is_false_for_a_percentile_leaf_true_for_an_absolute_leaf():
+    """realistic_smr exercises both paths in one protocol: smr_envelope's
+    threshold is percentile (decision level inside the noise -- contrast
+    only), high_beta_envelope's is absolute 8 uV (far-field boundary --
+    ordering still holds). See sweep.py's HONEST LIMIT."""
+    s = _surface("bench/protocols/realistic_smr.refrain")
+    groups = plan_sweeps(s, quiet_envelopes=SMR_QUIET_ENVELOPES, collar_s=1.0, seed=42)
+    by_tag = {g.tag: g for g in groups}
+    assert by_tag["rank_sweep:smr_envelope"].assert_monotonic is False
+    assert by_tag["rank_sweep:high_beta_envelope"].assert_monotonic is True
+
+
 def test_ladder_amplitudes_ascend_and_are_gain_compensated():
     s = _surface("bench/protocols/micro_single_above.refrain")
     quiet_envelopes = {d.name: np.full(4096, 2.0) for d in s.derives}
@@ -205,15 +217,25 @@ def test_percentile_below_leaves_are_primed_high_during_the_fill():
         assert primes[0].end_s == pytest.approx(geom.fill_s)
 
 
-def test_the_swept_derive_is_never_primed():
-    """Priming the swept derive would raise its own percentile and flatten the sweep."""
+def test_the_swept_below_percentile_derive_is_now_also_primed():
+    """Change 2 (task 8c): an earlier version excluded the swept derive from
+    priming, on the theory that priming it would flatten its own sweep. That
+    rationale applied only while monotonicity was asserted across the swept
+    leaf's own boundary. Now that a below+percentile leaf is contrast-only
+    (assert_monotonic=False), the swept derive is primed like every other
+    below+percentile leaf -- without it the no-drive baseline is a dwell
+    lottery (measured 0.000/0.014/0.248 across seeds) and the sweep is
+    vacuous."""
     s = _surface("bench/protocols/realistic_smr.refrain")
     groups = plan_sweeps(s, quiet_envelopes=SMR_QUIET_ENVELOPES, collar_s=1.0, seed=42)
     g = next(g for g in groups if g.tag == "rank_sweep:theta_envelope")
+    geom = sweep_geometry(s, collar_s=1.0)
     theta = next(d for d in s.derives if d.name == "theta_envelope")
     for m in g.members:
-        assert not [seg for seg in m.scenario.segments
-                    if seg.band == theta.band and seg.start_s == 0.0]
+        primes = [seg for seg in m.scenario.segments
+                  if seg.band == theta.band and seg.start_s == 0.0]
+        assert len(primes) == 1, "the swept below+percentile leaf must be primed too"
+        assert primes[0].end_s == pytest.approx(geom.fill_s)
 
 
 def test_absolute_below_leaves_are_left_quiet():
@@ -238,6 +260,11 @@ def test_hold_sweep_group_is_planned_but_unassertable_on_the_metamorphic_tier():
     assert g.reason is not None
     assert [m.index for m in g.members] == [-1, 0, 1, 2, 3, 4]
     assert len({m.scenario.duration_s for m in g.members}) == 1
+    # assert_monotonic is unconditionally True on the hold group -- direction
+    # NONE means nothing is asserted here regardless, but the field itself
+    # does not encode "this tier suppresses it," only "the boundary is not a
+    # percentile of the noise" (see sweep.py's HONEST LIMIT).
+    assert g.assert_monotonic is True
 
 
 def test_hold_sweep_group_still_asserts_up_on_the_sample_exact_tier():
@@ -249,3 +276,4 @@ def test_hold_sweep_group_still_asserts_up_on_the_sample_exact_tier():
     assert g.direction == UP
     assert g.reason is None
     assert [m.index for m in g.members] == [-1, 0, 1, 2, 3, 4]
+    assert g.assert_monotonic is True

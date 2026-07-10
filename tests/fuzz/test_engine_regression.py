@@ -15,6 +15,14 @@ even if the test fails or the engine raises. Every `fuzz_protocol` call on
 this protocol runs every sweep member through the real engine and takes
 roughly 6-8 s, so this file is kept to the control plus the three cheapest
 mutants that demonstrate both assertions (monotonicity and contrast).
+
+A fourth mutant runs against `micro_single_above.refrain` instead: its one
+reward leaf is `above` + `absolute(8 uV)`, so (task 8c) its rank sweep keeps
+`assert_monotonic=True` -- the far-field boundary where ordering is still a
+real property (see sweep.py's HONEST LIMIT). `micro_single_pct`'s leaf is
+percentile, so its rank sweep is contrast-only and cannot exercise the
+monotonicity check at all; without this fixture the surviving monotonicity
+assertion would have no regression test of its own.
 """
 from __future__ import annotations
 
@@ -27,11 +35,12 @@ from refrain.resolver import resolve
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROTOCOL = "bench/protocols/micro_single_pct.refrain"
+ABSOLUTE_PROTOCOL = "bench/protocols/micro_single_above.refrain"
 
 
-def _run():
-    ir = resolve(parse_file(REPO_ROOT / PROTOCOL), None)
-    return fuzz_protocol(ir, path=PROTOCOL, max_scenarios=0, chunk_size=64, seed=42)
+def _run(protocol: str = PROTOCOL):
+    ir = resolve(parse_file(REPO_ROOT / protocol), None)
+    return fuzz_protocol(ir, path=protocol, max_scenarios=0, chunk_size=64, seed=42)
 
 
 def test_unmutated_engine_passes_the_metamorphic_gate():
@@ -100,3 +109,29 @@ def test_dwell_latched_false_is_caught_by_degenerate_baseline_contrast(monkeypat
     assert out.passed is False
     assert "VIOLATION:NO_CONTRAST" in out.report
     assert "baseline 0.000" in out.report
+
+
+def test_narrow_comparator_notch_on_an_absolute_leaf_is_caught_by_monotonicity(monkeypatch):
+    """A narrow, spurious False notch in `above()`'s comparison around one
+    specific envelope value -- the kind of off-by-range bug a bad hysteresis
+    or clamp fix could introduce. `micro_single_above`'s decision level is
+    absolute 8 uV, and the rank ladder's rung 1 drives the envelope to
+    approximately 2x anchor = 16 uV. Notching out [13, 19) uV falsifies
+    exactly that rung while leaving the baseline (~0 uV, near-silent) and
+    rungs 0/2/3 (~8/32/64 uV) untouched, so the series dips and recovers:
+    measured `baseline 0.000 | 0.694 -> 0.000 -> 1.000 -> 1.000`. That is
+    non-monotone (0.694 -> 0.000 is a fall) but the top rung still clears
+    contrast (1.000 - 0.000 = 1.0 >= 0.5), so ONLY the monotonicity check
+    catches it -- this is the surviving assertion's own regression test, the
+    mirror of the NO_CONTRAST mutants above."""
+    def notched_step(self, signal, threshold):
+        result = signal > threshold
+        notch = (signal > 13.0) & (signal < 19.0)
+        return result & ~notch
+
+    monkeypatch.setattr(AboveImpl, "step", notched_step)
+    out = _run(ABSOLUTE_PROTOCOL)
+    assert out.passed is False
+    assert "VIOLATION:MONOTONICITY" in out.report
+    assert "VIOLATION:NO_CONTRAST" not in out.report
+    assert "baseline 0.000 | 0.694 -> 0.000 -> 1.000 -> 1.000" in out.report
