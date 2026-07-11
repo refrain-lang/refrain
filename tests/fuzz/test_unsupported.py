@@ -144,24 +144,21 @@ def test_absolute_threshold_unresolved_value_skips_cleanly():
 
 
 def test_multi_leaf_condition_with_unresolvable_absolute_leaf_skips_cleanly():
-    """Real corpus regression (metamorphic-tier gate result, Cause A):
-    smr_up_c4_baseline_brainbit's reward is `all_of([above(smr, smr_t),
-    below(hbeta, hbeta_t)])` where smr_t is `absolute(value: smr_threshold_uv)`
-    — a control-valued threshold whose `absolute_uv` never resolves to a
-    literal. `_classify_single_leaf` was never reached for this leaf because
-    it is only called on single-leaf conditions; the unsupported leaf shape
-    reached the sweeps unvalidated, could hold no anchor, and produced false
-    NO_CONTRAST violations on every sweep, on all 5 fuzz-gate seeds. It must
-    now skip cleanly with the same reason a single-leaf absolute control
-    threshold gets."""
-    from refrain.compose import default_library_dirs, filesystem_loader
+    """Regression for the metamorphic-tier gate result, Cause A. A multi-leaf
+    `all_of([above(smr, smr_t), below(hbeta, hbeta_t)])` reward whose first leaf
+    uses `absolute(value: <control>)` — a control-valued threshold whose
+    `absolute_uv` never resolves to a literal. `_classify_single_leaf` was never
+    reached for such a leaf because it only ran on single-leaf conditions; the
+    unsupported leaf shape reached the sweeps unvalidated, could hold no anchor,
+    and produced false NO_CONTRAST violations on every sweep, on all 5 fuzz-gate
+    seeds. It must now skip cleanly with the same reason a single-leaf absolute
+    control threshold gets.
 
-    protocols_repo = Path("/Users/jcroall/git/refrain-protocols")
-    path = protocols_repo / "protocols/brainbit/smr_up_c4_baseline_brainbit.refrain"
-    ir = resolve(
-        parse_file(path), None,
-        parent_loader=filesystem_loader([protocols_repo / "lib"] + default_library_dirs()),
-    )
+    The fixture `bench/protocols/micro_multi_leaf_control_absolute.refrain`
+    reproduces the shape repo-locally (the original was
+    refrain-protocols/.../smr_up_c4_baseline_brainbit.refrain, which is not
+    available in this repo's CI)."""
+    ir = _ir("bench/protocols/micro_multi_leaf_control_absolute.refrain")
     with pytest.raises(UnsupportedProtocol) as e:
         build_surface(ir)
     assert e.value.reason == "absolute threshold value did not resolve to a literal"

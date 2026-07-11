@@ -1,0 +1,44 @@
+// Fuzz fixture: a MULTI-leaf reward whose first leaf uses a control-valued
+// absolute threshold `absolute(value: <control>)`. The surface only extracts
+// numeric-literal absolute values, so this threshold resolves to
+// absolute_uv=None. It reproduces (repo-locally, without depending on the
+// refrain-protocols sibling repo) the shape of
+// brainbit/smr_up_c4_baseline_brainbit.refrain, whose baseline-fixed threshold
+// is seeded at warmup via set_control. The fuzzer must SKIP such a protocol
+// cleanly with "absolute threshold value did not resolve to a literal" — before
+// this fixture's regression, multi-leaf conditions never validated their leaves
+// and it reached the scenario generator with no resolvable decision level.
+protocol "micro_multi_leaf_control_absolute" {
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "smr_env" {
+    from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 250 ms) ]
+  }
+  derive "hbeta_env" {
+    from = "raw"
+    pipeline = [ bandpass(band: (20 Hz, 30 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 250 ms) ]
+  }
+  threshold "smr_t"   { signal = "smr_env";   type = absolute(value: smr_threshold_uv) }
+  threshold "hbeta_t" { signal = "hbeta_env"; type = absolute(8 uV) }
+  reward {
+    event = dwell(
+      condition: all_of([
+        above("smr_env",   "smr_t"),
+        below("hbeta_env", "hbeta_t"),
+      ]),
+      duration: 250 ms
+    )
+    continuous = sigmoid("smr_env" / "smr_t", midpoint: 1.0, steepness: 3)
+  }
+  output { audio_chime = reward.event }
+  controls {
+    smr_threshold_uv = voltage {
+      default      = 2.0 uV
+      range        = (0.5 uV, 10.0 uV)
+      label        = "SMR threshold"
+      live_tunable = true
+    }
+  }
+  session { phases = [ phase { name = "training"; duration = 30 min } ] }
+}
