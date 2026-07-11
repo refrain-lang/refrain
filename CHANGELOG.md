@@ -5,7 +5,7 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
-## [Unreleased]
+## [0.13.0] — 2026-07-11
 
 ### Added
 - **Fuzzer metamorphic tier (Tier 2).** Protocols whose reward uses a percentile
