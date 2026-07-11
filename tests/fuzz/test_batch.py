@@ -71,15 +71,21 @@ def test_single_file_path_unchanged(capsys):
 
 
 def test_batch_eval_error_becomes_errored_not_crash(tmp_path, capsys):
-    """An evaluator-setup error on one protocol (a montage needing a channel the
-    synthetic source lacks) must be classified ERRORED, not abort the batch."""
+    """An evaluator-setup error on one protocol must be classified ERRORED, not
+    abort the batch.
+
+    The trigger here is `passthrough()`, which demands a single-channel source
+    while the synthetic source always carries the ear channels — a real, still
+    open gap (fuzzing the HRV/passthrough protocols needs its own increment).
+    A montage naming a channel outside `requires.channels` no longer errors:
+    `channels_for_synthetic` synthesizes the montage's electrodes."""
     d = tmp_path / "c"
     d.mkdir()
     shutil.copy(SUPPORTED, d / "ok.refrain")
-    (d / "needs_c3.refrain").write_text(
-        'protocol "needs_c3" {\n'
+    (d / "passthrough_multichannel.refrain").write_text(
+        'protocol "passthrough_multichannel" {\n'
         '  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }\n'
-        '  input "raw" { montage = referential(active: "C3", reference: "linked_ears") }\n'
+        '  input "raw" { montage = passthrough() }\n'
         '  derive "env" { from = "raw"\n'
         "    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), "
         "magnitude(), smooth(tau: 250 ms) ] }\n"
@@ -94,3 +100,29 @@ def test_batch_eval_error_becomes_errored_not_crash(tmp_path, capsys):
     assert "errored 1" in out   # the batch completed and reported it
     assert "fuzzed 1" in out    # the good protocol still fuzzed
     assert rc == 1              # errors keep the build red
+
+
+def test_montage_channels_outside_requires_fuzz_not_error(tmp_path, capsys):
+    """A montage naming an electrode absent from `requires.channels` — what the
+    BrainBit `placement_*` protocols do, since a placement control substitutes
+    its channels into the montage at resolve time — must FUZZ, not ERROR."""
+    d = tmp_path / "c"
+    d.mkdir()
+    (d / "bipolar_c3_c4.refrain").write_text(
+        'protocol "bipolar_c3_c4" {\n'
+        '  requires { sample_rate = ">= 256 Hz" }\n'
+        '  input "raw" { montage = bipolar(plus: "C3", minus: "C4") }\n'
+        '  derive "env" { from = "raw"\n'
+        "    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), "
+        "magnitude(), smooth(tau: 250 ms) ] }\n"
+        '  threshold "t" { signal = "env"; type = absolute(8 uV) }\n'
+        '  reward { event = dwell(condition: above("env", "t"), duration: 250 ms) }\n'
+        "  output { audio_chime = reward.event }\n"
+        '  session { phases = [ phase { name = "training"; duration = 30 min } ] }\n'
+        "}\n"
+    )
+    rc = main(["fuzz", str(d), "--max-scenarios", "2"])
+    out = "".join(capsys.readouterr())
+    assert "errored 0" in out
+    assert "fuzzed 1" in out
+    assert rc == 0
