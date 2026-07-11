@@ -69,6 +69,14 @@ class BipolarImpl(PrimitiveImpl):
         return raw_chunk[:, self.plus_idx] - raw_chunk[:, self.minus_idx]
 
 
+# The `reference` slot is overloaded: besides an electrode name it accepts
+# these re-referencing schemes, which are resolved against whatever channels
+# the source carries (see ReferentialImpl._resolve_reference). They are not
+# electrodes, so a source must never be asked to produce a channel named after
+# one — `refrain.synthetic.channels_for_synthetic` filters on this set.
+REFERENCE_KEYWORDS = frozenset({"linked_ears", "common_average", "device"})
+
+
 class ReferentialImpl(PrimitiveImpl):
     """`referential(active, reference)` — single-active-electrode referencing.
 

@@ -36,6 +36,9 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.signal import butter, sosfilt
 
+from .ir import IRArray, IRCall, IRStringLit
+from .primitive_impls import REFERENCE_KEYWORDS
+
 
 @dataclass(frozen=True, slots=True)
 class SMRBurst:
@@ -286,14 +289,76 @@ def render_scenario(scenario, *, channels: tuple[str, ...]) -> "SignalGenerator"
     )
 
 
+# Param kinds that name a physical electrode. The primitive registry already
+# tags them (bipolar's plus/minus, referential's active/reference/channels), so
+# read them from there rather than restating the list — a new montage primitive
+# then needs no edit here.
+_CHANNEL_PARAM_KINDS = frozenset({"channel_name", "array_of_strings"})
+
+
+def _channel_param_names(call: IRCall) -> frozenset[str]:
+    """Args of this montage call that name electrodes, per the primitive spec."""
+    if call.primitive is None:
+        return frozenset()
+    return frozenset(
+        param.name
+        for signature in call.primitive.signatures
+        for param in signature.params
+        if param.kind in _CHANNEL_PARAM_KINDS
+    )
+
+
+def _montage_channels(ir) -> list[str]:
+    """Physical electrodes named by the protocol's input montages.
+
+    A `placement` control substitutes its bound channels into the montage at
+    resolve time without necessarily appearing in `requires.channels` (the
+    BrainBit `placement_*` protocols declare no channels at all), so the
+    montage is the only place those electrodes are named."""
+    found: list[str] = []
+    for inp in ir.inputs.values():
+        montage = inp.montage
+        channel_params = _channel_param_names(montage)
+        for arg in montage.args:
+            if arg.name not in channel_params:
+                continue
+            # An array is referential's vector form, naming several electrodes;
+            # anything non-literal is unresolved and has nothing to synthesize.
+            values = (
+                arg.value.elements if isinstance(arg.value, IRArray) else (arg.value,)
+            )
+            for value in values:
+                if not isinstance(value, IRStringLit):
+                    continue
+                # `reference` also accepts a re-referencing scheme rather than
+                # an electrode; those are not channels a source can produce.
+                if value.value in REFERENCE_KEYWORDS or value.value in found:
+                    continue
+                found.append(value.value)
+    return found
+
+
 def channels_for_synthetic(ir) -> tuple[str, ...]:
     """Channels for synthetic sources: everything the protocol's `requires`
-    asks for plus the standard ear channels (so `linked_ears` references
-    resolve). Falls back to `Cz` when no channels are required."""
-    channels = list(ir.requires.channels) or ["Cz"]
+    asks for, plus the standard ear channels (so `linked_ears` references
+    resolve), plus every electrode its input montages name that isn't already
+    covered. Falls back to `Cz` when the protocol names no channels anywhere.
+
+    Montage electrodes come LAST so that adding them cannot renumber the
+    channels a protocol already had: `SignalGenerator` draws its noise as one
+    (n_samples, n_channels) block, so a channel's samples depend on its index.
+    Appending keeps every pre-existing protocol's synthetic signal bit-for-bit
+    what it was."""
+    channels = list(ir.requires.channels)
+    montage_channels = _montage_channels(ir)
+    if not channels and not montage_channels:
+        channels = ["Cz"]
     for ear in ("A1", "A2"):
         if ear not in channels:
             channels.append(ear)
+    for chan in montage_channels:
+        if chan not in channels:
+            channels.append(chan)
     return tuple(channels)
 
 
