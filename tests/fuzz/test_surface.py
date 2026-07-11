@@ -7,10 +7,15 @@ import pytest
 
 import refrain
 from refrain.fuzz.surface import LogicalSurface, build_surface
+from refrain.parser import parse_file
 from refrain.resolver import resolve
 from tests.fuzz._smr import resolved_smr_ir
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _ir(rel: str):
+    return resolve(parse_file(REPO_ROOT / rel), None)
 
 
 @pytest.fixture(scope="module")
@@ -135,3 +140,47 @@ def test_surface_excludes_mode_control_from_numeric_controls():
     names = {c.name for c in surface.controls}
     assert names == {"reward_pct"}
     assert "threshold_style" not in names
+
+
+from refrain.fuzz.surface import (
+    METAMORPHIC,
+    SAMPLE_EXACT,
+    derive_for,
+    reward_leaves,
+    threshold_for,
+)
+
+
+def test_absolute_only_reward_is_sample_exact_tier():
+    surface = build_surface(_ir("bench/protocols/micro_single_above.refrain"))
+    assert surface.tier == SAMPLE_EXACT
+
+
+def test_any_percentile_leaf_routes_to_the_metamorphic_tier():
+    # A percentile threshold makes the reward noise-dominated: the oracle can
+    # only mark those regions DON'T-CARE, which is exactly the hollow pass.
+    surface = build_surface(_ir("bench/protocols/realistic_smr.refrain"))
+    assert surface.tier == METAMORPHIC
+
+
+def test_reward_leaves_flattens_the_condition_tree_in_order():
+    surface = build_surface(_ir("bench/protocols/realistic_smr.refrain"))
+    assert [(leaf.op, leaf.signal) for leaf in reward_leaves(surface)] == [
+        ("above", "smr_envelope"),
+        ("below", "theta_envelope"),
+        ("below", "high_beta_envelope"),
+    ]
+
+
+def test_derive_for_and_threshold_for_look_up_by_name():
+    surface = build_surface(_ir("bench/protocols/realistic_smr.refrain"))
+    assert derive_for(surface, "smr_envelope").band == (12.0, 15.0)
+    assert threshold_for(surface, "hbeta_t").absolute_uv == 8.0
+    with pytest.raises(KeyError):
+        derive_for(surface, "nope")
+
+
+def test_single_percentile_leaf_is_no_longer_skipped():
+    surface = build_surface(_ir("bench/protocols/micro_single_pct.refrain"))
+    assert surface.tier == METAMORPHIC
+    assert [leaf.op for leaf in reward_leaves(surface)] == ["above"]

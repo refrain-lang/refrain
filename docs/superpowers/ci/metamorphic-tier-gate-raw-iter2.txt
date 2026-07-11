@@ -1,0 +1,40 @@
+
+=== seed 41  (319.5s) ===
+  fuzzed 24 / skipped 16 / errored 2
+  VIOLATIONS:     0
+  generator-bugs: 0   (hollow passes — must be 0)
+  other errors:   2  (pre-existing corpus gaps, not a gate failure)
+
+=== seed 42  (310.1s) ===
+  fuzzed 24 / skipped 16 / errored 2
+  VIOLATIONS:     0
+  generator-bugs: 0   (hollow passes — must be 0)
+  other errors:   2  (pre-existing corpus gaps, not a gate failure)
+
+=== seed 43  (317.1s) ===
+  fuzzed 24 / skipped 16 / errored 2
+  VIOLATIONS:     0
+  generator-bugs: 0   (hollow passes — must be 0)
+  other errors:   2  (pre-existing corpus gaps, not a gate failure)
+
+=== seed 44  (320.6s) ===
+  fuzzed 24 / skipped 16 / errored 2
+  VIOLATIONS:     5
+  generator-bugs: 0   (hollow passes — must be 0)
+  other errors:   2  (pre-existing corpus gaps, not a gate failure)
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/alpha_down_pz.refrain
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/hibeta_down_cz.refrain
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/peak_alpha_up_pz.refrain
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/theta_down_cz.refrain
+    [VIOLATION] /Users/jcroall/git/refrain-protocols/protocols/theta_down_fz.refrain
+
+=== seed 45  (325.1s) ===
+  fuzzed 24 / skipped 16 / errored 2
+  VIOLATIONS:     0
+  generator-bugs: 0   (hollow passes — must be 0)
+  other errors:   2  (pre-existing corpus gaps, not a gate failure)
+
+=== GATE ===
+  violations across 5 seeds: 5
+  hollow passes: 0
+  RESULT: FAIL

@@ -37,8 +37,10 @@ def test_mutation_flipped_smr_above_to_below_changes_behavior(tmp_path, capsys):
     # crash can't satisfy the behavioural assertion below.
     assert "What your protocol does" in text
     assert "GENERATOR BUG" not in text
-    # The mutant inverts the SMR leaf: the report's behavioural summary should
-    # show the flipped leaf, or the engine check should FAIL outright (rc == 1).
-    assert ("leaf:above:smr_envelope:smr_t:false" in text
-            or "leaf:below:smr_envelope:smr_t:true" in text
-            or rc == 1)
+    # realistic_smr is metamorphic-tier (percentile thresholds), so the tier
+    # routing (Task 6) means NO sample-exact leaf scenarios ever run for it —
+    # the mutation's effect shows up in the metamorphic rank-sweep direction
+    # instead: driving smr_envelope up now suppresses the (flipped) reward
+    # leaf, so its sweep direction flips from UP to DOWN. Or the engine
+    # disagrees outright (rc == 1).
+    assert "[DOWN] rank_sweep:smr_envelope" in text or rc == 1

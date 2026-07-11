@@ -12,7 +12,8 @@ v0.0r1 subcommands:
                                                   against a recording or
                                                   synthetic source; emit
                                                   events to stdout / JSONL
-  - `refrain fuzz PATH... [--max-scenarios N]`  — auto-synthesise scenarios
+  - `refrain fuzz PATH... [--max-scenarios N] [--seed N]`
+                                                — auto-synthesise scenarios
                                                   from the IR, predict expected
                                                   behaviour, run the evaluator,
                                                   and report; dirs are walked
@@ -354,6 +355,12 @@ def _build_argparser() -> argparse.ArgumentParser:
         help="Samples per evaluator step (default: 64).",
     )
     fuzz_cmd.add_argument(
+        "--seed", type=int, default=42, metavar="N",
+        help="Noise-realization seed (default: 42). Every scenario in a sweep "
+             "shares it, so the sweep is a controlled A/B on one realization. "
+             "Vary it to re-check a violation against another realization.",
+    )
+    fuzz_cmd.add_argument(
         "--amp", help="Path to amp-profile JSON.", default=None,
     )
     fuzz_cmd.add_argument(
@@ -506,7 +513,7 @@ def _fuzz_batch(paths: list[str], args: argparse.Namespace) -> int:
     total = len(discover_protocols(paths))
     outcomes = run_batch(
         paths, max_scenarios=args.max_scenarios, chunk_size=args.chunk_size,
-        resolve_fn=resolve_fn,
+        resolve_fn=resolve_fn, seed=args.seed,
     )
     print(render_batch_report(outcomes, total))
     return batch_exit_code(outcomes)
@@ -524,6 +531,7 @@ def _fuzz_single(path: str, args: argparse.Namespace) -> int:
     try:
         outcome = fuzz_protocol(
             ir, path=path, max_scenarios=args.max_scenarios, chunk_size=args.chunk_size,
+            seed=args.seed,
         )
     except VacuityError as exc:
         print(f"GENERATOR BUG: {exc}", file=sys.stderr)

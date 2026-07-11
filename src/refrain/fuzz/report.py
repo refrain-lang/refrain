@@ -12,7 +12,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from .check import MetamorphicViolation, PerScenarioResult
+from .check import PerScenarioResult
+from .metamorphic import MetamorphicViolation, SweepOutcome
 from .scenario import Verdict
 
 _BAR = "━" * 60
@@ -29,13 +30,15 @@ def _leaf_tags(r: PerScenarioResult) -> set[str]:
 def render_report(
     *,
     protocol_name: str,
+    tier: str,
     results: Iterable[PerScenarioResult],
+    sweep_outcomes: list[SweepOutcome],
     metamorphic_violations: list[MetamorphicViolation],
     all_coverage_tags: set[str],
 ) -> str:
     rs = list(results)
     out: list[str] = []
-    out.append(f"\n{_BAR}\nrefrain fuzz: {protocol_name}\n{_BAR}\n")
+    out.append(f"\n{_BAR}\nrefrain fuzz: {protocol_name}\n  tier: {tier}\n{_BAR}\n")
 
     # --- Section A: What your protocol does ---
     out.append("\n## What your protocol does\n")
@@ -71,12 +74,36 @@ def render_report(
         out.append("\n  SPURIOUS (engine fired when oracle predicted SHOULD-NOT-FIRE):\n")
         for r in spurious:
             out.append(f"    [VIOLATION:SPURIOUS] {r.label} ({r.n_events} extra events)\n")
-    if metamorphic_violations:
-        out.append("\n  METAMORPHIC monotonicity violations:\n")
-        for v in metamorphic_violations:
-            series_str = " < ".join(f"{lab}={n}" for lab, n in v.series)
-            out.append(f"    [VIOLATION:METAMORPHIC] {v.tag_group}: {series_str}\n")
 
+    if sweep_outcomes:
+        out.append("\n## Metamorphic sweeps\n")
+        for o in sweep_outcomes:
+            series = " -> ".join(f"{v:.3f}" for _, v in o.series)
+            if not o.assertable:
+                out.append(f"  [NO ASSERTION] {o.tag}: {o.reason}\n")
+                out.append(f"       series (recorded, not asserted): {series}\n")
+                continue
+            out.append(f"  [{o.direction.upper():4}] {o.tag}: "
+                       f"baseline {o.baseline:.3f} | {series}\n")
+            if not o.monotonic_asserted:
+                # Never silent: a percentile boundary sits inside the noise
+                # (measured 1.24x the noise median vs ~7.2x for absolute
+                # thresholds), so ordering is not assertable there -- only
+                # contrast is checked. See metamorphic.py's HONEST LIMIT and
+                # docs/superpowers/ci/metamorphic-tier-gate-result.md.
+                out.append(
+                    "       monotonicity not asserted (percentile boundary lies "
+                    "inside the noise) — contrast only\n"
+                )
+    if metamorphic_violations:
+        out.append("\n  METAMORPHIC violations:\n")
+        for v in metamorphic_violations:
+            series = " -> ".join(f"{val:.3f}" for _, val in v.series)
+            out.append(f"    [VIOLATION:{v.kind.upper()}] {v.tag} ({v.direction}): "
+                       f"baseline {v.baseline:.3f} | {series}\n      {v.detail}\n")
+
+    n_asserted = sum(1 for o in sweep_outcomes if o.assertable)
+    out.append(f"  sweeps asserted: {n_asserted} / {len(sweep_outcomes)}\n")
     overall = "PASS" if (pass_count == len(rs) and not metamorphic_violations) else "FAIL"
     out.append(f"\n  overall: {overall}\n")
     out.append(_BAR + "\n")

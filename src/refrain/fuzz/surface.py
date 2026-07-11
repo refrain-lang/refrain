@@ -35,6 +35,13 @@ from .errors import UnsupportedProtocol
 # (the resolver/impl bakes 65 taps -> group delay (65 - 1) // 2 == 32).
 _DEFAULT_HILBERT_TAPS = 65
 
+# Semantic tiers (see docs/superpowers/specs/2026-07-07-fuzzer-target-tiered-gate-design.md).
+# A protocol is metamorphic-tier iff any reward leaf uses a percentile threshold:
+# such a threshold tracks its own signal, so firing is decided by the noise
+# realization and sample-exact prediction is impossible.
+SAMPLE_EXACT = "sample_exact"
+METAMORPHIC = "metamorphic"
+
 
 @dataclass(frozen=True, slots=True)
 class DeriveSurface:
@@ -104,6 +111,35 @@ class LogicalSurface:
     phases: tuple[PhaseSurface, ...]
     outputs: tuple[OutputBindingSurface, ...]
     controls: tuple[ControlSurface, ...]
+    tier: str
+
+
+def reward_leaves(surface_or_node) -> tuple[ConditionLeaf, ...]:
+    """Flatten a reward condition tree to its leaves, left to right."""
+    node = getattr(surface_or_node, "reward_condition", surface_or_node)
+
+    def walk(n):
+        if isinstance(n, ConditionLeaf):
+            yield n
+            return
+        for child in n.children:
+            yield from walk(child)
+
+    return tuple(walk(node))
+
+
+def derive_for(surface: LogicalSurface, name: str) -> DeriveSurface:
+    for d in surface.derives:
+        if d.name == name:
+            return d
+    raise KeyError(f"surface: no derive named {name!r}")
+
+
+def threshold_for(surface: LogicalSurface, name: str) -> ThresholdSurface:
+    for t in surface.thresholds:
+        if t.name == name:
+            return t
+    raise KeyError(f"surface: no threshold named {name!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -376,10 +412,12 @@ def _dwell_ms_from_ir(ir: IRProtocol) -> float:
     raise ValueError("surface: reward.event is not a dwell(...) with a duration")
 
 
-def _classify_single_leaf(
+def _classify_leaf(
     leaf: ConditionLeaf,
     derives: tuple[DeriveSurface, ...],
     thresholds: tuple[ThresholdSurface, ...],
+    *,
+    single_leaf: bool,
 ) -> ConditionLeaf:
     derive = next((d for d in derives if d.name == leaf.signal), None)
     thr = next((t for t in thresholds if t.name == leaf.threshold), None)
@@ -389,16 +427,29 @@ def _classify_single_leaf(
         raise UnsupportedProtocol("non-bandpass (coherence) reward signal")
     if thr is None:
         raise UnsupportedProtocol("reward condition without a resolvable threshold")
-    if thr.kind == "percentile":
-        raise UnsupportedProtocol("single percentile-leaf reward (needs calibrated oracle)")
-    if thr.kind != "absolute":
-        raise UnsupportedProtocol(f"single {thr.kind}-threshold reward (unsupported)")
-    if thr.absolute_uv is None:
+    if thr.kind not in ("absolute", "percentile"):
+        if single_leaf:
+            raise UnsupportedProtocol(f"single {thr.kind}-threshold reward (unsupported)")
+        raise UnsupportedProtocol(f"{thr.kind}-threshold reward leaf (unsupported)")
+    if thr.kind == "absolute" and thr.absolute_uv is None:
         # e.g. `absolute(value: <control>)` — the surface only extracts numeric
         # literals, so the value is unresolved. Skip cleanly rather than crash
         # downstream in scenario generation (`thr.absolute_uv * ...` on None).
         raise UnsupportedProtocol("absolute threshold value did not resolve to a literal")
+    if thr.kind == "percentile" and thr.percentile_target is None:
+        # e.g. `percentile(target_pct: <control>)` where the control has no
+        # literal default — the surface cannot compute a decision level, so
+        # every sweep anchor downstream would be unresolvable.
+        raise UnsupportedProtocol("percentile target did not resolve to a literal")
     return leaf
+
+
+def _classify_single_leaf(
+    leaf: ConditionLeaf,
+    derives: tuple[DeriveSurface, ...],
+    thresholds: tuple[ThresholdSurface, ...],
+) -> ConditionLeaf:
+    return _classify_leaf(leaf, derives, thresholds, single_leaf=True)
 
 
 def _reward_condition_from_ir(
@@ -411,6 +462,14 @@ def _reward_condition_from_ir(
         cond = _arg(event, "condition")
         node = _condition_from_ir(cond)
         if isinstance(node, ConditionNode):
+            # A multi-leaf condition never passed through `_classify_single_leaf`
+            # (only the single-leaf path called it), so an unsupported leaf shape
+            # here — e.g. an `absolute(value: <control>)` threshold — used to
+            # reach the sweeps unvalidated: no anchor, background can't hold the
+            # leaf TRUE, every sweep reads 0.000, and false NO_CONTRAST
+            # violations follow. Validate every leaf, not just single ones.
+            for leaf in reward_leaves(node):
+                _classify_leaf(leaf, derives, thresholds, single_leaf=False)
             return node
         if isinstance(node, ConditionLeaf):
             return _classify_single_leaf(node, derives, thresholds)
@@ -456,6 +515,14 @@ def build_surface(ir: IRProtocol) -> LogicalSurface:
     derives = tuple(_derive_surface(d, ir, j) for d in ir.derives.values())
     thresholds = tuple(_threshold_surface(t, ir) for t in ir.thresholds.values())
     reward_condition = _reward_condition_from_ir(ir, derives, thresholds)
+    leaves = reward_leaves(reward_condition)
+    by_name = {t.name: t for t in thresholds}
+    tier = (
+        METAMORPHIC
+        if any(by_name[leaf.threshold].kind == "percentile"
+               for leaf in leaves if leaf.threshold in by_name)
+        else SAMPLE_EXACT
+    )
     dwell_ms = _dwell_ms_from_ir(ir)
     phases = tuple(
         PhaseSurface(
@@ -482,6 +549,7 @@ def build_surface(ir: IRProtocol) -> LogicalSurface:
         phases=phases,
         outputs=outputs,
         controls=controls,
+        tier=tier,
     )
 
 
@@ -491,8 +559,13 @@ __all__ = [
     "ControlSurface",
     "DeriveSurface",
     "LogicalSurface",
+    "METAMORPHIC",
     "OutputBindingSurface",
     "PhaseSurface",
+    "SAMPLE_EXACT",
     "ThresholdSurface",
     "build_surface",
+    "derive_for",
+    "reward_leaves",
+    "threshold_for",
 ]

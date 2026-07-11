@@ -70,6 +70,15 @@ comparison), and suppresses sample-exact assertions where the margin is below no
 - **Honest limit:** where behaviour is genuinely noise-arbitrary, the fuzzer asserts
   *trends and implementation-consistency*, not that a specific event is "correct."
   That is the correct assertion for that regime, and it is stated, not hidden.
+- **Honest limit (percentile boundaries).** A percentile threshold's decision level is
+  a percentile of the trainee's own quiet envelope, i.e. it sits *inside* the noise
+  (measured 1.24× the noise median, vs ~7.2× for absolute thresholds). Adding coherent
+  in-band drive at that level narrows the envelope distribution (Rayleigh → Rician) and
+  can *reduce* threshold exceedance. So on a percentile boundary the fuzzer asserts
+  **presence-of-response** (contrast between the undriven baseline and a far-field
+  drive), not **ordering** (monotonicity). Ordering is asserted only where the boundary
+  sits far above the noise — i.e. absolute thresholds. This is a property of the signal
+  model, not a limitation of the implementation.
 - **Reference-drift discipline:** the oracle's independent semantic implementations
   must stay separately authored from the engine's eval code, or the differential
   power silently erodes.

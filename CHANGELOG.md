@@ -5,6 +5,75 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [Unreleased]
+
+### Added
+- **Fuzzer metamorphic tier (Tier 2).** Protocols whose reward uses a percentile
+  threshold are noise-dominated: firing is decided by the noise realization, so
+  sample-exact prediction is impossible. They are now gated on **same-noise-realization
+  sweeps of time-in-reward**. The fuzzer fixes the noise seed and varies only tone
+  amplitude, so noise is byte-identical across a sweep — a controlled A/B on one
+  realization. Each reward-feeding derive gets a sweep anchored at its own decision
+  level, with the other leaves held favourable, and must show a required **contrast**
+  between the undriven baseline and a far-field drive. A flat sweep FAILS as vacuous
+  rather than passing. Percentile single-leaf protocols are no longer skipped.
+- **Direction-aware monotonicity, asserted where it is valid.** `above` leaves must be
+  non-decreasing in drive and `below` leaves non-increasing — but only where the
+  decision boundary sits *far above* the noise, i.e. on absolute thresholds. On a
+  percentile boundary the fuzzer asserts presence-of-response, not ordering (see the
+  honest limit below); the report states this explicitly rather than omitting it.
+- **`refrain fuzz --seed N`** selects the noise realization. Every scenario in a
+  sweep shares it; vary it to re-check a violation against another realization.
+- **`tools/fuzz_corpus_gate.py`** — runs the whole protocol corpus across several
+  fixed seeds and requires zero metamorphic violations and zero hollow passes.
+
+### Fixed
+- **`check_metamorphic_monotonic` was direction-blind.** It asserted non-*decreasing*
+  firing for *every* swept threshold, which is sign-wrong for `below`/inhibit
+  leaves. The check is now direction-aware (`above` → non-decreasing, `below` →
+  non-increasing, mixed → asserts nothing and is reported, never silently passed).
+- **The metamorphic metric was event count**, i.e. dwell re-triggers — a noise
+  artifact that runs *backwards* in drive (measured on `micro_single_pct`:
+  `[12, 16, 9, 9]`, non-monotone on 5/5 seeds; on `realistic_smr`'s `smr_t` sweep
+  it produced a spurious violation from `10, 10, 9, 9`). It is now time-in-reward,
+  read from the engine's `reward.event.holds` stream, monotone on 5/5 seeds.
+- **The sweep amplitude ladder never straddled the decision boundary.** The fixed
+  5/15/25/40 µV rungs sat entirely above the ~2.7 µV noise floor of an inhibit
+  derive, so its sweep was dead flat (`7, 7, 7, 7`) — a hollow pass. Rungs are now
+  anchored on each leaf's own decision level (its absolute threshold, or the
+  measured per-derive noise floor for a percentile leaf).
+- **`--max-scenarios` truncated sweep groups**, silently dropping rungs and
+  corrupting the monotonicity comparison. Because the tests defaulted to
+  `--max-scenarios 2`, the merged suite never executed a rank sweep at all. The
+  cap now applies to oracle scenarios only.
+- **Multi-leaf sweeps had no contrast.** Holding a percentile-`below` leaf "quiet"
+  does not make it favourable — a percentile threshold tracks its own signal, so
+  the leaf holds only ~p% of the time however quiet the signal is, capping the
+  whole condition. Such leaves are now driven high during the fill.
+
+### Changed
+- Metamorphic-tier protocols no longer run the sample-exact oracle scenarios or the
+  characterization probe. Where a percentile threshold decides firing, the oracle
+  could only emit DON'T-CARE, and a DON'T-CARE that absorbs real noise-firing is a
+  hollow pass rather than coverage. (`realistic_smr` fires 7 events on the quiet
+  negative control; its former sample-exact "pass" was partly vacuous.)
+- Multi-leaf reward conditions now validate **every** leaf. Previously only single-leaf
+  rewards were classified, so a control-valued `absolute(value: <control>)` threshold
+  reached the scenario generator with no resolvable decision level. Such protocols now
+  skip cleanly with a feature-mapped reason.
+
+### Known limits
+- **Percentile boundaries: presence-of-response, not ordering.** A percentile threshold's
+  decision level is a percentile of the trainee's own quiet envelope, so it sits *inside*
+  the noise — measured at 1.24× the noise median, against ~7.2× for the absolute
+  thresholds in the corpus. Adding coherent in-band drive at that level narrows the
+  envelope distribution (Rayleigh → Rician) and can *reduce* threshold exceedance even as
+  the mean envelope rises. There is therefore no drive amplitude that is both near a
+  percentile boundary and dominant over the noise, and per-realization monotonicity across
+  such a boundary is unattainable. On percentile leaves the fuzzer asserts contrast only.
+  This is a property of the signal model, not of the implementation. See
+  `docs/superpowers/ci/metamorphic-tier-gate-result.md`.
+
 ## [0.12.1] — 2026-07-07
 
 Service plumbing for mode-variant baking (portal "resolve-time mode control"):

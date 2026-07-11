@@ -134,3 +134,171 @@ Re-probe and record the unlock.
   arbitrary knob — else it becomes the percentile trap again.
 - **Multi-leaf mixed sweeps that assert nothing** must not leave a protocol with *no*
   crisp assertion anywhere (fully vacuous) — such protocols are reported, not passed.
+
+---
+
+## Addendum (2026-07-09): refinements validated before planning
+
+Each open question above was settled empirically on the current engine *before*
+writing the implementation plan. The core design (same-noise differential,
+direction-aware, time-in-reward, no tolerance knob) survived unchanged. Five
+refinements were forced by the measurements; they are part of the design now.
+
+**Measured evidence.** The same-noise-realization property is exact: rendering a
+scenario at two tone amplitudes leaves the noise bit-identical outside the tone
+segment, and their difference inside it is a pure sinusoid. On that foundation:
+
+| protocol | leaf shape | time-in-reward | event count |
+|---|---|---|---|
+| `micro_single_pct` | `above` + percentile | monotone up, 5/5 seeds | non-monotone **5/5 seeds** |
+| `micro_single_below` | `below` + absolute | monotone down, 5/5 seeds | non-monotone **5/5 seeds** |
+| `realistic_smr` | 3 leaves, mixed | monotone + contrast, all 3 | non-monotone |
+
+FM1 and FM2 are *systematic*, not stochastic: event count is non-monotone on
+10/10 single-leaf seeds, and on `micro_single_pct` it runs **backwards**
+(`[12, 16, 9, 9]` — the weakest drive fires the most events, because every noise
+dip that recovers re-triggers dwell). `realistic_smr` fires **7 events on the
+quiet negative control**, confirming the gate finding's hollow-pass diagnosis
+directly.
+
+### R1. The ladder anchor is the decision level, not always the noise floor
+`{0.5, 1, 2, 4} × noise_median` only straddles the boundary when the boundary
+*is* the noise floor. For an `absolute` leaf the boundary is `absolute_uv`. So:
+anchor = `absolute_uv` for absolute leaves, measured per-derive noise median for
+percentile leaves. Verified: `micro_single_below` (absolute 20 µV, floor 2 µV)
+straddles cleanly at anchor=20 (`1.0, 1.0, 0.28, 0.0`) and would sit entirely in
+the flat `below`-TRUE region at anchor=floor.
+
+### R2. The baseline is a dedicated no-drive scenario, not the bottom rung
+"Bottom rung near-silent" is **unachievable** for a percentile-`above` leaf:
+`above(x, p70(x))` is true ~30 % of the time on quiet noise *by construction*.
+Each sweep group therefore runs an explicit **baseline member** (favourable
+background, swept derive silent) and contrast is measured against it. Measured
+baselines: 0.10–0.27 (`micro_single_pct`, 5 seeds), 1.0 (`micro_single_below`).
+
+### R3. Contrast rule: close half the gap from baseline to saturation
+Direction-aware, scale-free, no knob:
+- up: `last − base ≥ 0.5 × (1 − base)`
+- down: `base − last ≥ 0.5 × base`
+
+with a **degenerate-baseline guard**: `base ≥ 1.0` (up) or `base ≤ 0.0` (down) is
+`no_contrast`, never a pass — otherwise a reward that already saturates on pure
+noise would satisfy `0 ≥ 0` vacuously. A flat sweep fails loud.
+
+### R4. Quiet is NOT favourable for a percentile-`below` leaf
+The one mechanism the spec's four bullets omitted, and multi-leaf sweeps do not
+work without it. A percentile threshold adapts to its own signal, so
+`below(theta, p30(theta))` holds ~30 % of the time *however quiet theta is* —
+capping the whole `all_of`, and with it any sweep of a *different* leaf. Measured
+on `realistic_smr`: the smr sweep saturated at 0.257 and failed contrast. Holding
+a percentile-`below` leaf favourable means **driving it high during the fill**
+(raising its rolling percentile), then quiet during the spike. With that, the smr
+sweep goes `0.0 → 0.24 → 1.0 → 1.0`: monotone, with contrast. So the background
+is threshold-kind aware:
+
+| leaf | favourable background |
+|---|---|
+| `above` (any kind) | tone at `4 × anchor` over the spike window |
+| `below` + percentile | tone at `4 × anchor` over the **fill** window ("priming") |
+| `below` + absolute | silence |
+
+Priming must **exclude the swept derive** (priming it would flatten its own sweep).
+This is also a latent bug in the merged pivotal generator, whose docstring claims
+"favourable ... (no specific suppression — quiet)". It is unreachable there only
+because the sample-exact tier is absolute-only.
+
+### R5. The fill is bounded; the declared percentile window is never overridden
+`PercentileImpl.step` computes over the *current* buffer (`primitive_impls.py`:
+"warm-up: short buffer is OK") at `O(buffer)` **per sample**, so cost grows as
+fill². Filling a declared 2-minute window costs 11.0 s per `realistic_smr` run —
+Task 0's corpus × 5 seeds would take hours. The fill need only be long enough that
+(a) the percentile estimate is stable and (b) the spike stays a small fraction of
+the buffer, or the spike shifts the percentile onto itself. Constraint:
+
+```
+headroom = min(target_pct, 100 − target_pct) / 100
+spike_s / (fill_s + spike_s)  ≤  headroom / 2.5
+```
+
+For `realistic_smr` (p70/p30) that gives fill ≈ 29 s, spike ≈ 4 s: **0.90 s per
+run, a 12× speedup, with all three sweep verdicts unchanged**. No protocol
+semantics are touched — we simply stop waiting for a window we never needed full.
+This is analogous to the existing `phase_override`, and it is what makes the Task-0
+gate runnable.
+
+### R6. The core claim is FALSE below the leaf's decision level (found by the gate)
+
+The spec above states: *"On a fixed realization, 'more in-band signal drives the leaf
+harder' is a real, assertable ordering."* The Task-0 gate falsified this. It is true
+only where the injected drive is **at or above the leaf's decision level**.
+
+Measured on one fixed noise realization (`micro_single_pct`, seed 41), sweeping tone
+amplitude finely; `frac` is the fraction of spike samples with `envelope > threshold`:
+
+| k × floor | mean env | mean thr | frac > thr |
+|---|---|---|---|
+| 0.00 | 0.980 | 1.486 | **0.170** |
+| 0.25 | 0.977 | 1.485 | **0.134** |
+| 0.50 | 1.038 | 1.484 | **0.119** |
+| 0.75 | 1.148 | 1.483 | **0.107** |
+| 1.00 | 1.301 | 1.516 | 0.172 |
+| 2.00 | 2.112 | 1.602 | 0.869 |
+| 4.00 | 4.201 | 1.620 | 1.000 |
+
+The mean envelope **rises** while exceedance **falls**, and the threshold barely moves —
+so this is not the percentile adapting to its own signal.
+
+**Mechanism.** Band-limited noise has a Rayleigh-distributed envelope with a heavy upper
+tail. Adding a *coherent* tone of comparable amplitude makes the envelope Rician, which
+narrows its relative spread and **thins that upper tail**. A p70 threshold computed over
+a quiet window sits in the tail, so exceedance is a tail event: thinning the tail lowers
+it even as the mean rises. Only once the tone dominates the noise does the mean shift
+carry the distribution across the threshold.
+
+This is deterministic and per-realization. More seeds, a longer window, or a
+median-over-seeds escalation cannot fix it. The remedy is to place no *asserted* rung
+below the decision level: `_LADDER = (1, 2, 4, 8) × anchor`, with the no-drive baseline
+still supplying the contrast reference (so the sweep still straddles the boundary —
+baseline below it, rung 1 on it). Verified monotone 5/5 seeds on `smr_up_c4`.
+
+### R7. The percentile anchor is the quiet p-th percentile, not the median
+
+R1 said "measured per-derive noise median" for a percentile leaf. That is the wrong
+statistic: the engine's decision level is the **p-th percentile** of the quiet envelope,
+which is literally what `PercentileImpl` computes. The median *undershoots* for `above`+p70
+(parking an asserted rung inside R6's ambiguous band) and *overshoots* for `below`+p30
+(`theta_down_cz` measured `0.000` at every rung, on every seed — the sweep could not
+resolve the boundary at all). The quiet probe now returns the envelope **samples** per
+derive, and each leaf reads its own `numpy.percentile(quiet_env, target_pct)`.
+
+### R8. The hold-duration sweep is not assertable on this tier
+
+A noise-dominated protocol's *quiet* state already holds reward ~40–50 % of the time, and
+the hold-sweep metric window is only `5 × dwell`, so the tone-driven contribution does not
+dominate the noise-driven firing and the series wiggles. On `METAMORPHIC`-tier protocols
+the hold sweep is therefore **recorded and reported, but asserts nothing** (never a silent
+pass). It keeps asserting on `SAMPLE_EXACT` protocols. This costs no dwell coverage:
+`tests/fuzz/test_engine_regression.py` proves a latched or dead dwell is caught by the
+**rank** sweep's contrast check.
+
+### R9. Multi-leaf reward conditions must validate every leaf
+
+Pre-existing gap: `_classify_single_leaf` ran only for single-leaf rewards, so a
+control-valued `absolute(value: <control>)` threshold in a multi-leaf condition reached the
+sweeps with no resolvable anchor. The favourable background then could not hold that leaf
+TRUE, the `all_of` never fired, and every sweep read `0.000` → false `NO_CONTRAST`. Every
+leaf of a multi-leaf condition is now classified; such protocols SKIP with a feature-mapped
+reason.
+
+> R6–R9 were found by the Task-0 gate going **red on a known-good engine** (22 false
+> positives / 5 seeds, 0 hollow passes), and are recorded in
+> `docs/superpowers/ci/metamorphic-tier-gate-result.md`. The gate did its job: it refused a
+> design that asserted a property outside its domain of validity. No slack was added.
+
+### Consequence for tier routing
+A protocol is **metamorphic-tier iff any reward leaf uses a percentile
+threshold**; its sample-exact scenarios (directed pivotal, dwell, probe) are
+suppressed, because the oracle's DON'T-CARE over percentile regions is exactly
+the hollow pass. `realistic_smr` moves sample-exact → metamorphic;
+`micro_single_pct` moves skipped → fuzzed. The absolute-only clear-margin
+protocols keep the sample-exact tier untouched.

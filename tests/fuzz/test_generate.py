@@ -7,53 +7,58 @@ from pathlib import Path
 
 import pytest
 
+import refrain
 from refrain.fuzz.generate import (
     generate_characterization_probe,
     generate_directed_scenarios,
-    generate_hold_duration_sweep,
-    generate_rank_sweep,
 )
 from refrain.fuzz.surface import build_surface
+from refrain.resolver import resolve
 from tests.fuzz._smr import resolved_smr_ir
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# Snapshot of scenario labels for realistic_smr (all_of protocol).
-# Captured before the Task 3 gates were added to prove both gates are no-ops
-# for all_of protocols (they have percentile thresholds + a ConditionNode reward).
-EXPECTED_REALISTIC_SMR_LABELS = [
-    'dwell_met',
-    'dwell_missed',
-    'hold_sweep:0.5x_dwell',
-    'hold_sweep:0.9x_dwell',
-    'hold_sweep:1.5x_dwell',
-    'hold_sweep:2.5x_dwell',
-    'hold_sweep:5x_dwell',
-    'leaf:above:smr_envelope:smr_t:false',
-    'leaf:above:smr_envelope:smr_t:true',
-    'leaf:below:high_beta_envelope:hbeta_t:false',
-    'leaf:below:high_beta_envelope:hbeta_t:true',
-    'leaf:below:theta_envelope:theta_t:false',
-    'leaf:below:theta_envelope:theta_t:true',
-    'negative_control_quiet',
-    'percentile_warmup_then_spike',
-    'probe:tone_13.5hz',
-    'probe:tone_26.0hz',
-    'probe:tone_6.0hz',
-    'rank_sweep:smr_t:amp_15',
-    'rank_sweep:smr_t:amp_25',
-    'rank_sweep:smr_t:amp_40',
-    'rank_sweep:smr_t:amp_5',
-    'rank_sweep:theta_t:amp_15',
-    'rank_sweep:theta_t:amp_25',
-    'rank_sweep:theta_t:amp_40',
-    'rank_sweep:theta_t:amp_5',
-]
+# `generate_directed_scenarios` is the sample-exact-tier generator: the tier
+# split (build_surface.tier) routes ANY protocol with a percentile-thresholded
+# reward leaf to the metamorphic tier instead, and the sample-exact amplitude
+# picker (`_amplitude_for_truth`) now raises on a non-absolute threshold. So
+# its own coverage tests need an absolute-only composite fixture rather than
+# realistic_smr (percentile-thresholded, metamorphic-tier) — this mirrors
+# realistic_smr's three-leaf all_of shape with absolute thresholds instead.
+_COMPOSITE_ABSOLUTE_PROTOCOL = '''
+protocol "micro_composite_absolute" {
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "smr_envelope" { from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 250 ms) ] }
+  derive "theta_envelope" { from = "raw"
+    pipeline = [ bandpass(band: (4 Hz, 8 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 250 ms) ] }
+  derive "high_beta_envelope" { from = "raw"
+    pipeline = [ bandpass(band: (22 Hz, 30 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 250 ms) ] }
+  threshold "smr_t" { signal = "smr_envelope"; type = absolute(8 uV) }
+  threshold "theta_t" { signal = "theta_envelope"; type = absolute(15 uV) }
+  threshold "hbeta_t" { signal = "high_beta_envelope"; type = absolute(8 uV) }
+  reward {
+    event = dwell(condition: all_of([
+        above("smr_envelope", "smr_t"),
+        below("theta_envelope", "theta_t"),
+        below("high_beta_envelope", "hbeta_t"),
+      ]), duration: 250 ms)
+    continuous = sigmoid("smr_envelope" / "smr_t", midpoint: 1.0, steepness: 3)
+  }
+  output { audio_chime = reward.event }
+  session { phases = [ phase { name = "training"; duration = 30 min } ] }
+}
+'''
+
+
+def _composite_absolute_ir():
+    return resolve(refrain.parse(_COMPOSITE_ABSOLUTE_PROTOCOL), amp=None)
 
 
 @pytest.fixture(scope="module")
 def scenarios():
-    surface = build_surface(resolved_smr_ir())
+    surface = build_surface(_composite_absolute_ir())
     return list(generate_directed_scenarios(surface))
 
 
@@ -77,9 +82,12 @@ def test_has_negative_control_scenario(scenarios):
     assert any("negative" in lb.lower() or "quiet" in lb.lower() for lb in labels)
 
 
-def test_has_percentile_warmup_scenario(scenarios):
+def test_no_percentile_warmup_scenario_for_an_absolute_only_surface(scenarios):
+    # The sample-exact tier is absolute-only (a percentile leaf routes the whole
+    # protocol to the metamorphic tier instead), so the percentile-warmup
+    # scenario never fires here — there is no percentile threshold to warm up.
     tags = {tag for s in scenarios for tag in s.coverage_tags}
-    assert "percentile:warmup_then_spike" in tags
+    assert "percentile:warmup_then_spike" not in tags
 
 
 def test_scenarios_use_phase_override_for_tractable_runs(scenarios):
@@ -96,29 +104,3 @@ def test_characterization_probe_covers_all_derive_bands():
             f"probe missing a tone near {center} Hz"
 
 
-def test_rank_sweep_emits_ordered_series_for_each_percentile_threshold():
-    surface = build_surface(resolved_smr_ir())
-    sweeps = list(generate_rank_sweep(surface))
-    thr_names = [t.name for t in surface.thresholds if t.kind == "percentile"]
-    for thr_name in thr_names:
-        same_thr = [s for s in sweeps if f"metamorphic:rank_sweep:{thr_name}" in s.coverage_tags]
-        assert len(same_thr) >= 3, f"need ≥3 sweep scenarios for {thr_name}, got {len(same_thr)}"
-
-
-def test_hold_duration_sweep_emits_increasing_holds():
-    surface = build_surface(resolved_smr_ir())
-    sweeps = list(generate_hold_duration_sweep(surface))
-    holds = [s.segments[0].duration_s for s in sweeps if s.segments]
-    assert sorted(holds) == holds, "hold-duration sweep must be monotonic"
-    assert len(holds) >= 3
-    tags = {tag for s in sweeps for tag in s.coverage_tags}
-    assert "metamorphic:hold_duration_sweep" in tags
-
-
-def test_all_of_corpus_unchanged_after_gating():
-    from refrain.fuzz.runner import _build_corpus
-    from refrain.parser import parse_file
-    from refrain.resolver import resolve
-    surf = build_surface(resolve(parse_file(REPO_ROOT / "bench/protocols/realistic_smr.refrain"), None))
-    labels = sorted(sc.label for sc in _build_corpus(surf))
-    assert labels == EXPECTED_REALISTIC_SMR_LABELS

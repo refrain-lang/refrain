@@ -91,12 +91,6 @@ def test_no_threshold_single_leaf_reason():
     assert e.value.reason == "reward condition without a resolvable threshold"
 
 
-def test_percentile_single_leaf_reason():
-    with pytest.raises(UnsupportedProtocol) as e:
-        build_surface(_ir("bench/protocols/micro_single_pct.refrain"))
-    assert e.value.reason == "single percentile-leaf reward (needs calibrated oracle)"
-
-
 def test_dynamic_threshold_single_leaf_raises():
     """_classify_single_leaf must reject non-absolute, non-percentile thresholds."""
     from refrain.fuzz.surface import (
@@ -141,4 +135,30 @@ def test_absolute_threshold_unresolved_value_skips_cleanly():
     leaf = ConditionLeaf(op="above", signal="s", threshold="t")
     with pytest.raises(UnsupportedProtocol) as e:
         _classify_single_leaf(leaf, (derive,), (thr,))
+    assert e.value.reason == "absolute threshold value did not resolve to a literal"
+
+
+# ---------------------------------------------------------------------------
+# Multi-leaf reward conditions must validate EVERY leaf, not just single ones
+# ---------------------------------------------------------------------------
+
+
+def test_multi_leaf_condition_with_unresolvable_absolute_leaf_skips_cleanly():
+    """Regression for the metamorphic-tier gate result, Cause A. A multi-leaf
+    `all_of([above(smr, smr_t), below(hbeta, hbeta_t)])` reward whose first leaf
+    uses `absolute(value: <control>)` — a control-valued threshold whose
+    `absolute_uv` never resolves to a literal. `_classify_single_leaf` was never
+    reached for such a leaf because it only ran on single-leaf conditions; the
+    unsupported leaf shape reached the sweeps unvalidated, could hold no anchor,
+    and produced false NO_CONTRAST violations on every sweep, on all 5 fuzz-gate
+    seeds. It must now skip cleanly with the same reason a single-leaf absolute
+    control threshold gets.
+
+    The fixture `bench/protocols/micro_multi_leaf_control_absolute.refrain`
+    reproduces the shape repo-locally (the original was
+    refrain-protocols/.../smr_up_c4_baseline_brainbit.refrain, which is not
+    available in this repo's CI)."""
+    ir = _ir("bench/protocols/micro_multi_leaf_control_absolute.refrain")
+    with pytest.raises(UnsupportedProtocol) as e:
+        build_surface(ir)
     assert e.value.reason == "absolute threshold value did not resolve to a literal"
