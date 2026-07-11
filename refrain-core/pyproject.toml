@@ -4,7 +4,11 @@ build-backend = "maturin"
 
 [project]
 name = "refrain-core"
-version = "0.11.0"
+# Lockstep with the root pyproject.toml `version` — both packages are built
+# from the same commit on every v* tag and are equivalence-gated in CI, so
+# they share one version number. Bump both together in the release PR
+# (guarded by tests/test_version_lockstep.py).
+version = "0.13.0"
 description = "Portable Refrain real-time evaluator (PoC) — Python binding"
 requires-python = ">=3.10"
 

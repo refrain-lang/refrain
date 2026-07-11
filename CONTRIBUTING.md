@@ -94,6 +94,30 @@ If your contribution changes the language contract (something in
 you're flagging a spec ambiguity for future resolution, add a note
 to `docs/DESIGN-NOTES.md` instead of changing SPEC.md directly.
 
+## Cutting a release (maintainers)
+
+`refrain` and `refrain-core` are versioned **in lockstep**: both are
+built from the same commit on every `v*` tag by `release.yml` and are
+Rust↔Python equivalence-gated in CI, so they share one version number
+(a CI test, `tests/test_version_lockstep.py`, fails if they drift).
+The consequence is that `refrain-core`'s number bumps even on
+Python-only releases; that's accepted.
+
+1. Open a PR titled `release: vX.Y.Z` that bumps `version` in **both**
+   `pyproject.toml` (root) and `refrain-core/pyproject.toml`, and moves
+   the `[Unreleased]` CHANGELOG entries into a new `[X.Y.Z]` section.
+   (`refrain-core/Cargo.toml` stays `0.1.0` — wheel versions come from
+   the pyproject files.) Minor bump for additive features, patch for
+   fixes.
+2. Merge it, then tag `vX.Y.Z` **on the merge commit** and push the
+   tag. `release.yml` builds host wheels for both packages plus the
+   mobile artifacts and attaches them to the GitHub Release.
+3. **Never push the tag before the release PR merges** — tagging the
+   pre-bump commit publishes wheels with the old version string. If a
+   mispointed tag was already published: `gh release delete vX.Y.Z
+   --cleanup-tag --yes`, delete the local tag, re-tag the merge
+   commit, push again.
+
 ## Reporting security issues
 
 See `SECURITY.md`. Don't file public issues for security concerns.
