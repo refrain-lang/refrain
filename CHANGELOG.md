@@ -5,6 +5,44 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.14.0] — 2026-07-11
+
+### Added
+- **Montage-aware synthetic channels.** The synthetic source now generates every
+  electrode a protocol's input montages name, not just the ones listed in
+  `requires.channels`. A `placement` control substitutes its bound electrodes
+  into the montage at resolve time, so for the BrainBit `placement_*` protocols
+  — which declare no `requires.channels` at all — the montage is the only place
+  those electrodes appear, and the evaluator died at construction with
+  `bipolar: plus channel 'C3' not in source`. Which montage args name electrodes
+  is read from the primitive registry (`PrimitiveSpec`/`ParamSpec`), so a new
+  montage primitive needs no change in `synthetic.py`. Montage electrodes are
+  appended after the declared channels and the ear channels, which keeps every
+  pre-existing protocol's synthetic signal bit-for-bit unchanged (a channel's
+  noise depends on its index in the generated block).
+
+  On the refrain-protocols corpus this takes `refrain fuzz protocols/ --library
+  lib --seed 42` from **exit 1 (2 errored)** to **exit 0 (0 errored)**, coverage
+  24/38 → **26/38 fuzzed, 0 violations** — enough to turn on that repo's fuzz CI
+  gate.
+
+### Changed
+- **`refrain` and `refrain-core` are now versioned in lockstep.** Both packages
+  are built from the same commit by `release.yml` on every `v*` tag and are
+  Rust↔Python equivalence-gated per commit, so one version number names the
+  guarantee the project actually makes, in place of a compatibility matrix whose
+  off-diagonal entries were never built or tested. `refrain-core` therefore goes
+  0.11.0 → 0.14.0 and will bump on every release from here, including
+  Python-only ones. `tests/test_version_lockstep.py` fails the build if the two
+  `pyproject.toml` versions drift, and `CONTRIBUTING.md` documents the release
+  procedure.
+
+### Fixed
+- A stray `## [Unreleased]` heading stranded mid-CHANGELOG since v0.4.0, which
+  labelled the M5 IR-JSON wire-spec work and the `Evaluator.live` `"auto"`
+  backend default as unreleased when both shipped in v0.4.0. Folded into that
+  release's section.
+
 ## [0.13.0] — 2026-07-11
 
 ### Added
@@ -381,7 +419,7 @@ their pin.
   a control all raise `ResolveError`. The `groups` block merges across `extends`
   (child overrides parent same-named group by re-declaration). See `docs/SPEC.md §4.10`.
 
-## [Unreleased]
+## [0.4.0] — 2026-05-25
 
 ### Changed
 - `Evaluator.live(...)` default backend is now `"auto"`: prefer the compiled
@@ -411,8 +449,6 @@ their pin.
 - Drift gate (`refrain-core/tools/check_equivalence.py`) extended to five
   steps: schema-validation step added after dual-backend pytest, gating every
   CI run on `test_ir_json_schema.py`.
-
-## [0.4.0] — 2026-05-25
 
 ### Added
 - Placement `kind="pair"` — coherence pairs; two-leg binding via `.a`/`.b`
@@ -591,6 +627,6 @@ Implementation bundle that landed pre-0.0.1:
   `docs/EMBEDDING.md`, `docs/HOST-PLUGIN-BRIEF.md`,
   `docs/DESIGN-NOTES.md`.
 
-[Unreleased]: https://github.com/refrain-lang/refrain/compare/v0.1.0...HEAD
+[0.14.0]: https://github.com/refrain-lang/refrain/compare/v0.13.0...v0.14.0
 [0.1.0]: https://github.com/refrain-lang/refrain/compare/v0.0.1...v0.1.0
 [0.0.1]: https://github.com/refrain-lang/refrain/releases/tag/v0.0.1
