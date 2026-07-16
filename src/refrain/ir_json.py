@@ -47,10 +47,77 @@ from .ir import (
     IRThresholdRef,
     IRTuple,
 )
-from .primitive_impls import make_filter_impl
+from .primitive_impls import REFERENCE_KEYWORDS, make_filter_impl
 from .types_ import Dimensions, StreamType
 
 IR_JSON_VERSION = "0.1"
+
+# Param kinds that name a physical electrode. The primitive registry already
+# tags them (bipolar's plus/minus, referential's active/reference/channels), so
+# read them from there rather than restating the list — a new montage primitive
+# then needs no edit here.
+_CHANNEL_PARAM_KINDS = frozenset({"channel_name", "array_of_strings"})
+
+
+def _channel_param_names(call: IRCall) -> frozenset[str]:
+    """Args of this montage call that name electrodes, per the primitive spec."""
+    if call.primitive is None:
+        return frozenset()
+    return frozenset(
+        param.name
+        for signature in call.primitive.signatures
+        for param in signature.params
+        if param.kind in _CHANNEL_PARAM_KINDS
+    )
+
+
+def montage_channels(ir: IRProtocol) -> list[str]:
+    """Physical electrodes named by the protocol's input montages.
+
+    A `placement` control substitutes its bound channels into the montage at
+    resolve time without necessarily appearing in `requires.channels` (the
+    BrainBit `placement_*` protocols declare no channels at all), so the
+    montage is the only place those electrodes are named."""
+    found: list[str] = []
+    for inp in ir.inputs.values():
+        montage = inp.montage
+        channel_params = _channel_param_names(montage)
+        for arg in montage.args:
+            if arg.name not in channel_params:
+                continue
+            # An array is referential's vector form, naming several electrodes;
+            # anything non-literal is unresolved and has nothing to name.
+            values = (
+                arg.value.elements if isinstance(arg.value, IRArray) else (arg.value,)
+            )
+            for value in values:
+                if not isinstance(value, IRStringLit):
+                    continue
+                # `reference` also accepts a re-referencing scheme rather than
+                # an electrode; those are not channels a source can produce.
+                if value.value in REFERENCE_KEYWORDS or value.value in found:
+                    continue
+                found.append(value.value)
+    return found
+
+
+def effective_channels(ir: IRProtocol) -> tuple[str, ...]:
+    """The electrodes the runtime must acquire, in channel-index order.
+
+    `requires.channels` is the author's declaration to the amp and is
+    optional: a montage may name electrodes it omits, and a `placement`
+    protocol typically declares none at all, substituting its bound sites
+    into the montage at resolve time. Fall back to those montage-named
+    electrodes so the emitted list is never empty (the IR-JSON schema pins
+    it to minItems 1, and a runtime cannot acquire from an empty list).
+
+    A declaration, when present, is emitted verbatim: it is the contract with
+    the amp, a channel's index is its position here, and `content_hash`
+    covers it — deriving over the top would renumber existing protocols.
+    """
+    if ir.requires.channels:
+        return tuple(ir.requires.channels)
+    return tuple(montage_channels(ir))
 
 
 def _protocol_ir_version(ir: IRProtocol) -> str:
@@ -391,9 +458,14 @@ def ir_to_json_obj(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> di
     resolver's `sample_rate_chosen_hz`.
     """
     rate = float(sample_rate_hz) if sample_rate_hz is not None else ir.requires.sample_rate_chosen_hz
+    # The montage impls resolve an electrode name against this list
+    # (`bipolar`, `referential`, `passthrough`), so it must be the list the
+    # runtime acquires — the same one emitted as top-level `channels` — and
+    # not the `requires` declaration, which the protocol may omit.
+    channels = effective_channels(ir)
     ctx = _EmitCtx(
         sample_rate_hz=rate,
-        channel_names=tuple(ir.requires.channels),
+        channel_names=channels,
         controls=control_defaults(ir),
     )
     version = _protocol_ir_version(ir)
@@ -402,7 +474,7 @@ def ir_to_json_obj(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> di
         "name": ir.name,
         "extends": ir.extends,
         "sample_rate_hz": rate,
-        "channels": list(ir.requires.channels),
+        "channels": list(channels),
         "requires": _emit_requires(ir.requires),
         "meta": _emit_meta(ir.meta, ctx),
         "inputs": {name: _emit_input(i, ctx) for name, i in ir.inputs.items()},
