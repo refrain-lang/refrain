@@ -120,7 +120,8 @@ level; the IR was never going to be neutral and does not need to be.**
 |---|---|---|
 | `src/refrain/amp_profile.py` | `AmpProfile` gains optional `reference: str \| None = None` | No |
 | `src/refrain/resolver.py` | `amp` namespace root in `_resolve_member_access`, with a field allowlist | No |
-| `src/refrain/primitive_impls.py` | `linked_ears` raises instead of degrading to common-average | **Yes** |
+| `src/refrain/primitive_impls.py` | `linked_ears` raises instead of degrading to common-average (Python evaluator) | **Yes** |
+| `refrain-core/src/eval.rs` | The same fix in the Rust evaluator (`Referential::new`, `eval.rs:250`) | **Yes** |
 | `src/refrain/amp_profiles/*.json` | Populate `reference` on the three shipped profiles | No |
 
 ### Profile schema
@@ -224,25 +225,55 @@ ResolveError: amp profile 'openbci-cyton' declares no 'reference'
 ResolveError: 'amp.adc_bits' is not an exposed amp field; allowed: reference
 ```
 
-### Breaking change: `linked_ears` stops guessing
+### Breaking change: `linked_ears` stops guessing — in **both** evaluators
 
-`ReferentialImpl._resolve_reference` (`primitive_impls.py:116`) raises instead of
-returning `None`:
+The silent degradation exists in **two independent implementations**, and the
+more dangerous one is the one that ships to patients:
+
+| Evaluator | Location | Behaviour today | Runs on |
+|---|---|---|---|
+| Python | `primitive_impls.py:129` | Degrades to common-average, **logs it** | `refrain run`, recorder |
+| Rust | `refrain-core/src/eval.rs:250` | Degrades to common-average, **no log at all** | **cc-mobile**, via `mobile.rs` |
+
+```rust
+// refrain-core/src/eval.rs:250 — no logging, no diagnostic
+if cand.len() < 2 {
+    None            // ← silently becomes common_average
+} else {
+    Some(cand)
+}
+```
+
+cc-mobile is the host that actually ships the BrainBit set — the set whose amp
+declares no ear electrodes. So the silent path is live in the product, in the
+implementation that does not even log.
+
+Both raise instead:
 
 ```
-ValueError: referential: reference 'linked_ears' needs >= 2 of
-  A1/A2/M1/M2/T9/T10; source has ('Cz','F3','F4','Pz').
+referential: reference 'linked_ears' needs >= 2 of A1/A2/M1/M2/T9/T10;
+  source has ('Cz','F3','F4','Pz').
   Use reference: "common_average" explicitly if that is what you want.
 ```
 
-The class docstring (`primitive_impls.py:86`) is updated to drop the
-"falls back to common_average" sentence.
+Python raises `ValueError` from `ReferentialImpl._resolve_reference`
+(`primitive_impls.py:116`); Rust panics from `Referential::new` (`eval.rs:232`),
+matching how that constructor already reports an unknown active channel
+(`eval.rs:236`) and unknown reference (`eval.rs:261`). The Python class docstring
+(`primitive_impls.py:86`) drops its "falls back to common_average" sentence.
+
+Fixing only Python would **widen** the Python/Rust divergence rather than close
+it, and `refrain-core/tests/equivalence.rs` would not reliably catch it: it is a
+golden-vector output comparison over a fixed IR corpus, not a test of this
+branch. The two crates are already lockstep since v0.14.0, so both fixes ship in
+the same release by construction.
 
 - **Who breaks:** file-replay or live sessions using `linked_ears` on a source
-  without ear channels. The existing comment states this case is real.
+  without ear channels, on either evaluator. The existing Python comment states
+  this case is real.
 - **Migration:** declare `reference: "common_average"` explicitly — a one-word
   change that makes the intent stated rather than inferred.
-- **Where the check lives:** runtime (`ReferentialImpl`), where `channel_names`
+- **Where the check lives:** runtime, in both evaluators, where `channel_names`
   is authoritative.
 
 **Deliberately out of scope: a resolve-time pre-check against
@@ -271,8 +302,9 @@ proved the `mode` fold is equivalence-preserving.
 | `amp.adc_bits` → `ResolveError` naming allowed fields | The allowlist holds |
 | Profile with `reference: "bogus"` → `AmpProfileError` at load | Load-time validation |
 | **Whole corpus resolves unchanged with `amp=None`** | **The release is additive** |
-| `linked_ears` on an earless source raises | The break is intentional |
-| Explicit `common_average` still works | The migration path exists |
+| `linked_ears` on an earless source raises (Python) | The break is intentional |
+| `linked_ears` on an earless source panics (Rust, `refrain-core/tests/`) | The fix is not Python-only |
+| Explicit `common_average` still works, both evaluators | The migration path exists |
 
 The first row is the load-bearing test: if the fold is transparent, everything
 downstream (IR-JSON, signatures, `content_hash`) is unaffected by construction.
@@ -296,20 +328,42 @@ release is additive.
 
 ### Precondition (owner action, before step 3)
 
-Audit the replay paths in `coherence-recorder` and `coherence-workstation` for
-`linked_ears` against recordings without ear channels. The `linked_ears` break is
-the one change that bites on upgrade **independently** of sub-project #4, and the
-existing code comment asserts such recordings exist. This audit has not been done.
+Audit for `linked_ears` against sources without ear channels across **both**
+evaluator paths — `coherence-recorder` and `refrain run` (Python), and
+**cc-mobile** (Rust, via `mobile.rs`). The `linked_ears` break is the one change
+that bites on upgrade **independently** of sub-project #4, and the existing Python
+comment asserts such recordings exist.
+
+cc-mobile is the priority: it ships the BrainBit set, whose profile declares no
+ear electrodes, and its evaluator does not log the substitution. Any protocol it
+runs with a literal `linked_ears` is silently mis-montaged today and will begin
+failing loudly at v0.15.0 — which is the correct outcome, but it must be a
+discovery made here rather than in the field.
+
+This audit has not been done. `coherence-recorder` is not checked out locally;
+`coherence-portal` is **not** affected (it compiles only — `resolve()` → IR-JSON —
+and never constructs a `Referential`).
 
 ## Non-goals
 
 - **`requires` neutrality (coupling, sample rate).** Not an engine gap. A neutral
   protocol states its true DSP minimum once and the resolver validates it against
-  the profile. This is authoring work and belongs to sub-project #4. Evidence that
-  the current numbers are drift rather than hardware: `openbci_cyton` runs at
-  250 Hz while 21 generic protocols require `>= 256 Hz`, so the generic set is
-  silently OpenBCI-incompatible today, and 256 is a power of two rather than a
-  DSP-derived bound.
+  the profile. This is authoring work and belongs to sub-project #4.
+
+  Evidence that the generic set's number is drift rather than a derived bound:
+  its highest band edge is **45 Hz** (the corpus edges are 20/22/30/45), which
+  needs on the order of 120 Hz — yet it requires `>= 256 Hz`, roughly double.
+  256 is a power of two, not a filter constraint. The cost is real: `openbci_cyton`
+  runs at 250 Hz, so all 21 of those protocols are **silently OpenBCI-incompatible
+  today** on an amp the engine already ships a profile for.
+
+  The 250-vs-256 delta itself is inert. The only 100 Hz band edges in the corpus
+  are the four BrainBit EMG guards, and they sit at 0.800 × Nyquist at 250 Hz
+  versus 0.781 × at 256 Hz — indistinguishable, and both in poorly-conditioned
+  filter territory for an order-4 bandpass. That marginality is independent
+  corroboration for sub-project #2's `clean_hf_floor`: the BrainBit EMG guard is
+  questionable on filter-design grounds as well as on the amplifier-noise-floor
+  grounds its own protocol comment argues.
 - **Capability-conditional decls** (`when amp.clean_hf_floor`) — sub-project #2.
   This spec deliberately chooses a syntax that makes #2 an extension of the same
   namespace.
@@ -324,11 +378,12 @@ existing code comment asserts such recordings exist. This audit has not been don
    (`REFERENCE_KEYWORDS`, `primitive_impls.py:77`) or a physical channel name
    (`primitive_impls.py:134`). It selects a montage *operation*, which is why the
    exposed vocabulary must stay closed.
-2. **`linked_ears` silently degrades** to common-average on earless sources
-   (`primitive_impls.py:129`). This is the third instance in this platform of one
-   bug class — a plausible default silently substituted: baseline seeding falling
-   back to the 60th percentile instead of the 40th; `thr_uv` missing from the
-   host seed tables after the Phase-2 collapse; and this. The class, not the
+2. **`linked_ears` silently degrades** to common-average on earless sources — in
+   both evaluators (`primitive_impls.py:129`, `refrain-core/src/eval.rs:250`), and
+   the Rust one does not even log it. This is the third instance in this platform
+   of one bug class — a plausible default silently substituted: baseline seeding
+   falling back to the 60th percentile instead of the 40th; `thr_uv` missing from
+   the host seed tables after the Phase-2 collapse; and this. The class, not the
    instance, is what this design refuses.
 3. **Omission already means something.** `reference` defaults to `"linked_ears"`
    (`src/refrain/editor/catalog.json:24`), so "omit the arg to ask the amp" was
