@@ -120,8 +120,10 @@ level; the IR was never going to be neutral and does not need to be.**
 |---|---|---|
 | `src/refrain/amp_profile.py` | `AmpProfile` gains optional `reference: str \| None = None` | No |
 | `src/refrain/resolver.py` | `amp` namespace root in `_resolve_member_access`, with a field allowlist | No |
+| `src/refrain/resolver.py` | **Montage/`requires` consistency lint** (§"The consistency lint") | **Yes** |
 | `src/refrain/primitive_impls.py` | `linked_ears` raises instead of degrading to common-average (Python evaluator) | **Yes** |
-| `refrain-core/src/eval.rs` | The same fix in the Rust evaluator (`Referential::new`, `eval.rs:250`) | **Yes** |
+| `refrain-core/src/eval.rs` | The same fix in the Rust evaluator; `Evaluator::new` becomes fallible | **Yes** |
+| `refrain-core/src/mobile.rs` | New `RefrainError::UnrealizableMontage` variant | No (additive) |
 | `src/refrain/amp_profiles/*.json` | Populate `reference` on the three shipped profiles | No |
 
 ### Profile schema
@@ -257,10 +259,23 @@ referential: reference 'linked_ears' needs >= 2 of A1/A2/M1/M2/T9/T10;
 ```
 
 Python raises `ValueError` from `ReferentialImpl._resolve_reference`
-(`primitive_impls.py:116`); Rust panics from `Referential::new` (`eval.rs:232`),
-matching how that constructor already reports an unknown active channel
-(`eval.rs:236`) and unknown reference (`eval.rs:261`). The Python class docstring
-(`primitive_impls.py:86`) drops its "falls back to common_average" sentence.
+(`primitive_impls.py:116`). The Python class docstring (`primitive_impls.py:86`)
+drops its "falls back to common_average" sentence.
+
+**Rust must return a typed error, not panic.** `RefrainCore::new`
+(`mobile.rs:108`) is already fallible — `Result<Arc<Self>, RefrainError>` with
+`InvalidIr` and `UnknownControl` — but `Evaluator::new` (`eval.rs:822`) returns a
+plain `Self`. A `panic!` inside `Referential::new` would therefore cross the
+uniffi boundary as a panic rather than a typed error, giving cc-mobile a crash or
+an opaque internal error for a case that **will** occur (see §"Audit"). So:
+
+- Add `RefrainError::UnrealizableMontage { message }` (`mobile.rs:22`).
+- Make `Evaluator::new` fallible and propagate `Result` to `RefrainCore::new`.
+
+This deliberately does *not* follow the neighbouring `panic!`s for an unknown
+active channel (`eval.rs:236`) or unknown reference (`eval.rs:261`). Those
+predate the mobile FFI; a third panic on a reachable path would be a regression
+in host-facing behaviour. Migrating those two is out of scope here.
 
 Fixing only Python would **widen** the Python/Rust divergence rather than close
 it, and `refrain-core/tests/equivalence.rs` would not reliably catch it: it is a
@@ -279,13 +294,42 @@ the same release by construction.
 **Deliberately out of scope: a resolve-time pre-check against
 `profile.channels`.** `brainbit_flex.json` documents its channels as placeholders
 overridable via `Evaluator.live(channel_names=...)`, so a compile-time check
-against them would reject valid setups.
+against them would reject valid setups. The lint below is a different check: it
+is protocol-internal and needs no profile.
 
-This leaves one honest gap: a literal-`linked_ears` protocol compiled for BrainBit
-passes compile and fails at session start. That is the generic set on BrainBit —
-the combination nobody runs today (it is why the fork exists), and it disappears
-when sub-project #4 re-authors those protocols onto `amp.reference`, which is
-realizable by construction. Closing it here would cost more than it buys.
+### The consistency lint
+
+The audit (below) showed these protocols are **internally inconsistent**, and
+that the inconsistency is checkable without an amp profile at all:
+
+> `reference: "linked_ears"` requires ear electrodes to exist in the source, but
+> `requires.channels = ["Pz"]` never asks for them. The protocol depends on
+> channels it does not declare.
+
+The resolver therefore gains a lint:
+
+> If an `input`'s montage resolves to `reference: "linked_ears"`, then
+> `requires.channels` must declare at least two of A1/A2/M1/M2/T9/T10.
+
+```
+ResolveError: input "raw" uses reference: "linked_ears", which needs >= 2 of
+  A1/A2/M1/M2/T9/T10, but requires.channels declares ["Pz"].
+  Add the reference electrodes to requires.channels, or use
+  reference: amp.reference / "common_average".
+```
+
+This fires with `amp=None`, so it runs in `refrain-protocols` CI and catches all
+21 affected protocols **at compile time in CI** rather than at session start on a
+patient's device. It makes the runtime raise a backstop rather than the only
+defence.
+
+It is **breaking for the corpus**: all 21 generic `linked_ears` protocols fail it
+today. That is the finding, not a side effect — but it means the lint cannot land
+before those declarations are fixed. See §"Rollout" for the sequencing.
+
+Scope note: the lint covers `linked_ears` only. `common_average` needs no
+particular channel, `device` needs none, and a literal channel name is already
+checked at runtime. Generalising it is not needed.
 
 ## Testing
 
@@ -303,46 +347,104 @@ proved the `mode` fold is equivalence-preserving.
 | Profile with `reference: "bogus"` → `AmpProfileError` at load | Load-time validation |
 | **Whole corpus resolves unchanged with `amp=None`** | **The release is additive** |
 | `linked_ears` on an earless source raises (Python) | The break is intentional |
-| `linked_ears` on an earless source panics (Rust, `refrain-core/tests/`) | The fix is not Python-only |
+| `linked_ears` on an earless source returns `RefrainError::UnrealizableMontage` (Rust) | The fix is not Python-only, and reaches the host as a typed error |
 | Explicit `common_average` still works, both evaluators | The migration path exists |
+| `linked_ears` + `requires.channels` without ears → `ResolveError` at `amp=None` | The lint fires in CI, no profile needed |
+| `linked_ears` + `requires.channels` declaring A1/A2 → resolves | The lint does not over-fire |
+| A single-channel `linked_ears` source never yields an all-zero stream | The flatline is gone, not relocated |
 
 The first row is the load-bearing test: if the fold is transparent, everything
 downstream (IR-JSON, signatures, `content_hash`) is unaffected by construction.
 
 ## Rollout
 
+**Step 0 ships first and needs no engine release.** The audit found a live,
+patient-facing defect whose fix is pure authoring — it must not wait on v0.15.0.
+
+0. **`refrain-protocols`, immediately, against v0.14.0:** add the reference
+   electrodes to `requires.channels` on the 21 generic `linked_ears` protocols
+   (`["Pz"]` → `["Pz", "A1", "A2"]`).
+
+   This needs no engine feature. It makes the protocols honest, and honesty is
+   sufficient: it **activates the guard that already exists** at
+   `resolver.py:313`, so compiling any of them for `brainbit_flex` now fails with
+   *"amp 'brainbit-flex' is missing required channels: ['A1', 'A2']"*. They stop
+   being assignable to BrainBit — which is correct — and the flatline exposure
+   closes without a release. `q21` and `openbci_cyton` both declare A1/A2, so
+   they are unaffected.
+
 1. `refrain` PR: profile field + load validation, `amp` namespace + allowlist,
-   `linked_ears` fix, tests.
+   the consistency lint, the `linked_ears` runtime fix (both evaluators),
+   `RefrainError::UnrealizableMontage` + fallible `Evaluator::new`, tests.
 2. Populate `reference` on the three shipped profiles.
 3. Release **v0.15.0**. `refrain` and `refrain_core` are lockstep since v0.14.0:
    bump **both** `pyproject.toml` + CHANGELOG in a `release: v0.15.0` PR, then tag
    the merge commit. Never tag before that PR merges or the published wheels are
-   mislabeled. The CHANGELOG needs an explicit **BREAKING** entry for
-   `linked_ears`.
+   mislabeled. The CHANGELOG needs explicit **BREAKING** entries for the
+   `linked_ears` runtime change and the consistency lint.
 4. `refrain-protocols`: repin CI from v0.14.0 to v0.15.0 and confirm the suite,
-   the catalog gate, and the fuzz gate (26/38 fuzzed, 0 violations) stay green
-   **with zero protocol edits**.
+   the catalog gate, and the fuzz gate (26/38 fuzzed, 0 violations) stay green.
 
-Step 4 is the acceptance gate: it proves against 39 real protocols that the
-release is additive.
+**Ordering is load-bearing.** Step 0 must precede step 3, because the step-1 lint
+rejects exactly the declarations step 0 fixes. Run in this order, step 4 needs no
+protocol edits of its own and remains a clean acceptance gate: it proves against
+39 real protocols that the engine change is additive.
 
-### Precondition (owner action, before step 3)
+Step 0 is independently valuable and independently shippable. If v0.15.0 slips,
+step 0 must not slip with it.
 
-Audit for `linked_ears` against sources without ear channels across **both**
-evaluator paths — `coherence-recorder` and `refrain run` (Python), and
-**cc-mobile** (Rust, via `mobile.rs`). The `linked_ears` break is the one change
-that bites on upgrade **independently** of sub-project #4, and the existing Python
-comment asserts such recordings exist.
+## Audit (completed 2026-07-16)
 
-cc-mobile is the priority: it ships the BrainBit set, whose profile declares no
-ear electrodes, and its evaluator does not log the substitution. Any protocol it
-runs with a literal `linked_ears` is silently mis-montaged today and will begin
-failing loudly at v0.15.0 — which is the correct outcome, but it must be a
-discovery made here rather than in the field.
+Run before planning, to decide whether the `linked_ears` break was safe to ship.
+It found the opposite question was the right one: **the current behaviour is a
+silent flatline, and the break is the fix.**
 
-This audit has not been done. `coherence-recorder` is not checked out locally;
-`coherence-portal` is **not** affected (it compiles only — `resolve()` → IR-JSON —
-and never constructs a `Referential`).
+### cc-mobile
+
+**Bundled protocols: unaffected.** All seven `assets/nf/*.refrain` use
+`reference: "device"`; `linked_ears` appears nowhere in the app.
+
+**Assigned protocols: exposed.** The chain:
+
+1. `src/nf/assignedNfb.ts:27-30` — channel names come from the IR when it declares
+   them, else `BRAINBIT_FLEX.channelMap`.
+2. Generic `smr_up_c4.refrain` declares `channels = ["C4"]` with
+   `reference: "linked_ears"`.
+3. `Referential::new(active="C4", reference="linked_ears", channels=["C4"])` finds
+   no ear electrodes → `cand.len() < 2` → `None`.
+4. `run()` (`eval.rs:276`): `None => row.iter().sum() / row.len()` — the mean of a
+   **single** channel is that channel.
+5. `active - refv` = **C4 − C4 = 0**.
+
+The protocol does not run on a different montage. It runs on **identically zero**,
+silently, with no log. Python does the same (`raw_chunk.mean(axis=1)` over one
+column).
+
+This is not one protocol:
+
+> **All 21 generic `linked_ears` protocols declare zero ear electrodes in
+> `requires.channels`. Nineteen are single-channel — dead signal. The two
+> two-channel cases (`faa_f3f4`, `alpha_coherence_c3c4`) degrade to a half-bipolar
+> `(C3 − C4)/2` — wrong, but non-zero.**
+
+Several (`alpha_theta_pz`, `faa_f3f4`) do not use `mode`, so the staging
+version-skew 422 does not mask them. Any protection today is accidental.
+
+### Root cause
+
+The engine's guard already exists and is correct — `resolver.py:313` rejects a
+protocol whose `requires.channels` the amp cannot supply. **The protocols defeat
+it by under-declaring**: they depend on ear electrodes for the montage but never
+require them. The montage layer then silently substitutes rather than failing.
+Hence rollout step 0, which is the actual defect fix.
+
+### Other surfaces
+
+- **`coherence-portal`: not affected.** It compiles only (`resolve()` → IR-JSON)
+  and never constructs a `Referential`.
+- **`coherence-recorder` / `refrain run`:** Python path. Same exposure in
+  principle; the Python evaluator at least logs the substitution. Not audited in
+  depth — the fix is identical and step 0 closes the library-side cause for both.
 
 ## Non-goals
 
@@ -368,7 +470,12 @@ and never constructs a `Referential`).
   This spec deliberately chooses a syntax that makes #2 an extension of the same
   namespace.
 - **Library re-authoring or retiring `brainbit/`** — sub-projects #4 and #7.
-- **A resolve-time `linked_ears` realizability check** — see §"Breaking change".
+- **A resolve-time `linked_ears` check against `profile.channels`** — the profile's
+  channels are overridable placeholders. The consistency lint is a different
+  thing: protocol-internal, profile-free, and in scope.
+- **Migrating the pre-existing `panic!`s** at `eval.rs:236` / `eval.rs:261` to
+  typed errors. They predate the mobile FFI and deserve the same treatment, but
+  not here.
 - **Exposing further amp fields.** Additions to the allowlist are a deliberate,
   versioned decision, not an implementation detail.
 
@@ -391,3 +498,9 @@ and never constructs a `Referential`).
 4. **The engine already models three amps** (`brainbit_flex`, `openbci_cyton`,
    `q21`) while the library forks for one. The O(protocols × devices) cost is
    already accrued and unpaid for Q21 and OpenBCI.
+5. **The guard was already there.** `resolver.py:313` has always rejected a
+   protocol whose `requires.channels` the connected amp cannot supply. The
+   flatline is not a missing check — it is a correct check routed around by
+   protocols that under-declare what they depend on. That is worth remembering
+   the next time something silently misbehaves here: look for the guard that
+   exists and is being bypassed before adding a new one.
