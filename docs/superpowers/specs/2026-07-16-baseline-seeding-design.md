@@ -91,15 +91,22 @@ free exactly once — now.
 ### 2.1 Surface
 
 ```refrain
-control "thr_uv" {
-  type = voltage
-  default = 2.0 uV
-  range = (0.5 uV, 10 uV)
-  live_tunable = true
-  seed {
-    from   = "env"                              // a derive name
-    window = last 60 s                          // the trim
-    value  = percentile(target_pct: reward_pct) // binds to the control
+controls {
+  reward_pct = percent {
+    default      = 70
+    range        = (50, 90)
+    live_tunable = true
+  }
+
+  thr_uv = voltage {
+    default      = 2.0 uV
+    range        = (0.5 uV, 10 uV)
+    live_tunable = true
+    seed = percentile {
+      from       = "env"        // a derive name
+      window     = 60 s         // the trim
+      target_pct = reward_pct   // binds to the control
+    }
   }
 }
 ```
@@ -107,10 +114,22 @@ control "thr_uv" {
 Read aloud: *`thr_uv` gets its value from the last 60 s of the `env` signal
 during warmup, at the percentile given by `reward_pct`.*
 
-Grammar note: `seed` parses as a `block_expr` (no new rule needed — phases already
-work this way). `window = last 60 s` introduces one new keyword, `last`; the
-duration reuses `number_with_unit`. The trim itself is free: the buffer is a
-`deque(maxlen=window_samples)`, so "the last 60 s" is what it structurally holds.
+**Grammar: no changes required.** Controls are already written
+`<name> = <kind> { ... }` (`env_center = frequency { ... }`,
+`threshold_style = mode { ... }`), which is `assignment: NAME "=" expression`
+over `block_expr: NAME? block`. `seed = percentile { ... }` is the identical
+shape one level down, so the parser needs no new rule and no new keyword.
+
+Two consequences of following the house pattern:
+
+- **The statistic is the block kind**, mirroring how a control's type is its
+  block kind. A future `seed = median { ... }` or `seed = mean { ... }` needs no
+  syntax change — only a resolver case.
+- **`window = 60 s`, not `last 60 s`.** This reuses the existing
+  `percentile(window: 2 min)` convention, where a window is already understood as
+  the trailing N seconds. The trim is structural: the buffer is a
+  `deque(maxlen=window_samples)`, so "the last 60 s" is simply what it holds. The
+  word `last` would be redundant.
 
 **`target_pct: reward_pct` is the load-bearing line.** `reward_pct` already
 exists in these protocols and is already correct per protocol (70 up / 30 down).
@@ -154,13 +173,18 @@ warrant an author-declared tolerance.
 `IRControl` gains one optional field:
 
 ```python
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class IRControlSeed:
+    statistic: str        # "percentile" (v1: the only one) — from the block kind
     from_entity: str      # canonical "derive/env"
     window_samples: int   # baked at compile rate
-    statistic: str        # "percentile" (v1: the only one)
     target_pct: IRExpr    # existing control_ref or number node
+    loc: Loc | None = None
 ```
+
+`IRControl` (`ir.py:264`) gains `seed: IRControlSeed | None = None`. It is a
+frozen slots dataclass whose optional fields are all defaulted, so appending one
+more is additive for every existing construction site.
 
 **`target_pct` reuses existing `Expr` variants deliberately.** `Expr` is an
 internally-tagged serde enum (`refrain-core/src/ir.rs:209`); an unknown *variant*
