@@ -303,3 +303,25 @@ def test_unknown_binding_name_is_resolve_diagnostic():
     assert len(r.errors) == 1
     assert r.errors[0].stage == "resolve"
     assert "no_such_control" in r.errors[0].message
+
+
+# A protocol that names no electrode anywhere — no `requires.channels`, and a
+# montage (`passthrough`) that names none either — leaves nothing to acquire.
+# `schema_error` is reserved for compiler bugs and the HTTP layer maps it to
+# 500, so this must surface as an ordinary user-facing diagnostic instead.
+NO_CHANNELS_ANYWHERE_SRC = '''protocol "no_channels" {
+  meta { version = "0.1.0"; evidence = "demo"; description = "x" }
+  requires { sample_rate = ">= 256 Hz" }
+  input "raw" { montage = passthrough() }
+  output { audio_gain = 0 }
+}'''
+
+
+def test_protocol_naming_no_channels_is_a_diagnostic_not_a_schema_error():
+    result = compile_to_ir_json(NO_CHANNELS_ANYWHERE_SRC, sample_rate_hz=256.0)
+    assert result.schema_error is None, "must not surface as a 500"
+    assert len(result.errors) == 1
+    diag = result.errors[0]
+    assert diag.stage == "resolve"
+    assert diag.severity == "error"
+    assert "channels" in diag.message

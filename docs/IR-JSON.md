@@ -52,8 +52,15 @@ mismatched rate silently mis-tunes every IIR/FIR filter.
 
 Two channel lists exist and are easy to confuse:
 
-- The IR-JSON **`channels`** field is the protocol's *declared required* (logical)
-  channels — `ir.requires.channels`. For `realistic_smr` this is `["Cz"]`.
+- The IR-JSON **`channels`** field is the protocol's *required* (logical)
+  channels. For `realistic_smr` this is `["Cz"]`. It is `ir.requires.channels`
+  when the protocol declares one; a protocol may legally omit that declaration
+  (a `placement` control substitutes its bound electrodes into the montage at
+  resolve time, so the BrainBit `placement_*` protocols declare none at all),
+  and the field then lists the electrodes the input montages name. Either way it
+  is never empty — the schema pins it to `minItems: 1`. The `requires.channels`
+  sub-field always echoes the declaration verbatim, so it *may* be empty; read
+  top-level `channels` for the effective list.
 - The **physical acquisition layout** the host passes to the runtime constructor
   (`Evaluator.live(..., channel_names=...)` / `RustEvaluator(ir_json,
   sample_rate_hz, channels)`) is the complete electrode set, *including reference
@@ -80,8 +87,8 @@ present in the serialized output (verified against `realistic_smr.ir.json`):
 | `name` | `string \| null` | Protocol name (`smr_cz_v1`, etc.). |
 | `extends` | `string \| null` | Parent protocol name, if any. |
 | `sample_rate_hz` | number | Baked runtime sample rate (host choice, ≥ `requires.sample_rate_min_hz`). |
-| `channels` | array of string | Protocol's declared *required* channels (`ir.requires.channels`), e.g. `["Cz"]` — NOT the host's physical electrode layout (that is a runtime input; see Rule 2). |
-| `requires` | object | Hardware requirements block (`coupling`, `sample_rate_min_hz`, `sample_rate_chosen_hz`, `channels`, `impedance`, `markers`). |
+| `channels` | array of string (non-empty) | Protocol's *required* channels, e.g. `["Cz"]` — `ir.requires.channels`, or the electrodes the montages name when the protocol declares none (see Rule 2). NOT the host's physical electrode layout (that is a runtime input). |
+| `requires` | object | Hardware requirements block (`coupling`, `sample_rate_min_hz`, `sample_rate_chosen_hz`, `channels`, `impedance`, `markers`). Its `channels` echoes the author's declaration verbatim and may be empty; top-level `channels` is the effective list. |
 | `meta` | object | Authoring metadata; values are `Expr` nodes (typically `string` or `array`). |
 | `inputs` | object | Named `Input` objects, keyed by user name. |
 | `derives` | object | Named `Derive` objects, keyed by user name. |
@@ -168,7 +175,9 @@ threshold, reward, and conditional output expressions.
   "refrain_ir_version": "0.1",
   "name": "smr_cz_v1",
   "sample_rate_hz": 256.0,
-  "channels": ["Cz"],              // protocol's required channels (ir.requires.channels)
+  "channels": ["Cz"],              // electrodes to acquire, in channel-index order
+                                   // (ir.requires.channels; falls back to the
+                                   // electrodes the montages name — see below)
   ...
 
   // Physical montage: Cz re-referenced to linked ears (the host passes the

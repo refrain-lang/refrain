@@ -1074,6 +1074,20 @@ def test_bipolar_pair_not_in_allowed_fails():
         resolve(parse(_BIPOLAR_PROTO), _AMP, bindings={"site": ("F3", "F4")})
 
 
+def test_bipolar_placement_binds_json_array():
+    """JSON has no tuple type, so an over-the-wire binding for a two-leg
+    placement arrives as a 2-element array. `set` already normalizes
+    list -> tuple; bipolar must too, or /compile cannot bind one at all."""
+    ir = resolve(parse(_BIPOLAR_PROTO), _AMP, bindings={"site": ["C3", "C4"]})
+    assert _bipolar_legs(ir) == ("C3", "C4")
+
+
+def test_bipolar_json_array_of_wrong_arity_still_fails():
+    """Normalizing list -> tuple must not weaken the 2-leg arity check."""
+    with pytest.raises(ResolveError, match="2-tuple"):
+        resolve(parse(_BIPOLAR_PROTO), _AMP, bindings={"site": ["C3", "C4", "Cz"]})
+
+
 # ---------------------------------------------------------------------------
 # Task 1 (Mode 2): kind="pair" — coherence pairs with .a/.b leg member access
 # ---------------------------------------------------------------------------
@@ -1106,6 +1120,14 @@ def test_pair_legs_bind_default(amp):
 
 def test_pair_legs_bind_override(amp):
     ir = resolve(parse(_PAIR_PROTO), amp, bindings={"coh": ("F3", "F4")})
+    assert _active_of(ir, "a") == "F3"
+    assert _active_of(ir, "b") == "F4"
+
+
+def test_pair_legs_bind_json_array(amp):
+    """The wire shape for a coherence pair: JSON renders a tuple as an array,
+    so `{"coh": ["F3","F4"]}` is what /compile actually receives."""
+    ir = resolve(parse(_PAIR_PROTO), amp, bindings={"coh": ["F3", "F4"]})
     assert _active_of(ir, "a") == "F3"
     assert _active_of(ir, "b") == "F4"
 

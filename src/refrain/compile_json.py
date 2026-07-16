@@ -19,7 +19,7 @@ from typing import Any
 from . import __version__
 from .ast import File
 from .compose import ComposeError, ParentLoader, compose, parse_ref
-from .ir_json import ir_to_json_obj
+from .ir_json import effective_channels, ir_to_json_obj
 from .parser import ParseError, parse, parse_file
 from .resolver import ResolveError, resolve
 
@@ -206,6 +206,26 @@ def compile_to_ir_json(
         ir = resolve(composed, bindings=bindings)
     except ResolveError as exc:
         return CompileResult(None, base_meta, [_located("resolve", exc)])
+
+    # A protocol that names no electrode — neither in `requires.channels` nor
+    # in any montage — gives the runtime nothing to acquire, and the emitted
+    # `channels` would trip the schema's minItems. That is an authoring gap,
+    # not a compiler bug, so report it as a diagnostic rather than letting it
+    # reach `schema_error` (which the HTTP layer maps to an opaque 500).
+    if not effective_channels(ir):
+        return CompileResult(
+            None,
+            base_meta,
+            [
+                Diagnostic(
+                    stage="resolve",
+                    message=(
+                        "protocol names no channels: declare `requires.channels` "
+                        "or name an electrode in an input montage"
+                    ),
+                )
+            ],
+        )
 
     obj = ir_to_json_obj(ir, sample_rate_hz=sample_rate_hz)
     canonical = json.dumps(obj, indent=2)
