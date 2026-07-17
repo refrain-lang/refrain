@@ -147,3 +147,9 @@ def test_reference_invalid_raises(tmp_path):
     f = tmp_path / "amp.json"; f.write_text(json.dumps(data))
     with pytest.raises(AmpProfileError, match="reference"):
         load_amp_profile(f)
+
+
+def test_shipped_profiles_declare_reference():
+    assert load_amp_profile(PROFILES_DIR / "brainbit_flex.json").reference == "device"
+    assert load_amp_profile(PROFILES_DIR / "q21.json").reference == "linked_ears"
+    assert load_amp_profile(PROFILES_DIR / "openbci_cyton.json").reference == "linked_ears"
