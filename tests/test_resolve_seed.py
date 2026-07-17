@@ -51,3 +51,20 @@ def test_target_pct_number_literal_is_accepted():
     src = BASE % {"seed": 'seed = percentile { from = "env"; window = 60 s; target_pct = 40 }'}
     obj = compile_to_ir_json(src).ir_json
     assert obj["controls"]["thr_uv"]["seed"]["target_pct"]["node"] == "number"
+
+
+_SEED = 'seed = percentile { from = "env"; window = 60 s; target_pct = reward_pct }'
+
+
+def test_window_longer_than_warmup_is_a_resolve_error():
+    # shrink the 90 s warmup below the 60 s window (replace before %-substitution)
+    tmpl = BASE.replace('duration = 90 s; output_muted = true',
+                        'duration = 30 s; output_muted = true')
+    res = compile_to_ir_json(tmpl % {"seed": _SEED})
+    assert res.errors and "warmup" in res.errors[0].message.lower()
+
+
+def test_window_equal_to_warmup_is_allowed():
+    tmpl = BASE.replace('duration = 90 s; output_muted = true',
+                        'duration = 60 s; output_muted = true')
+    assert not compile_to_ir_json(tmpl % {"seed": _SEED}).errors

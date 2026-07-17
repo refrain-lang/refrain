@@ -1153,7 +1153,21 @@ class _Resolver:
             self._validate_seed_target_pct(name, target_pct)
             # 3. Bake the window at the compile (chosen) rate.
             window_samples = max(1, int(round(pend.window_ms / 1000.0 * rate)))
-            # (Task 7 inserts the warmup-fits check here.)
+            # 4. A window longer than a timed, output-muted warmup phase 0
+            #    can never fill — refuse at compile (phase durations are
+            #    numeric literals, so this is always knowable now).
+            phases = session_ir.phases
+            first = phases[0] if phases else None
+            if first is not None and first.output_muted and first.mode != "open":
+                warmup_samples = int(round(first.duration_ms / 1000.0 * rate))
+                if window_samples > warmup_samples:
+                    raise ResolveError(
+                        f"control {name!r}.seed.window "
+                        f"({pend.window_ms / 1000:.1f}s) exceeds the warmup phase "
+                        f"{first.name!r} ({first.duration_ms / 1000:.1f}s); the "
+                        "buffer can never fill",
+                        loc=pend.loc,
+                    )
             # (Task 8 inserts dead-seed elimination here.)
             seed = IRControlSeed(
                 statistic=pend.statistic,
