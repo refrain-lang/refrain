@@ -53,3 +53,34 @@ def test_seed_fires_exactly_once():
     assert latch.fired is True
     assert latch.value == seeded_value
     assert ev._controls["control/thr_uv"] == seeded_value
+
+
+def test_skip_warmup_fails_closed():
+    ev = _build()
+    ev.start(skip_warmup=True)          # warmup skipped -> measurement never happens
+    events = ev.step_chunk(np.full((256, 1), 5.0))
+    latch = ev._seed_latches["control/thr_uv"]
+    assert latch.status == "insufficient_samples"
+    assert ev._seed_failed_mute is True
+    assert events == []                  # output suppressed for the session
+
+
+def test_host_write_during_warmup_disarms_not_fails():
+    ev = _build()
+    ev.start(skip_warmup=False)
+    ev.step_chunk(np.full((256, 1), 5.0))   # one warmup chunk
+    ev.set_control("thr_uv", 1.5)            # clinician takes over
+    _run(ev, value=5.0, n_chunks=4)          # cross into run
+    latch = ev._seed_latches["control/thr_uv"]
+    assert latch.status == "disarmed_by_host"
+    assert latch.fired is False
+    assert ev._seed_failed_mute is False     # disarmed != failed -> runs normally
+
+
+def test_nonfinite_samples_are_skipped_not_counted():
+    ev = _build()
+    ev.start(skip_warmup=False)
+    good = np.full((256, 1), 5.0); good[:10] = np.nan   # NaNs must not poison/crash
+    ev.step_chunk(good)
+    _run(ev, value=5.0, n_chunks=4)
+    assert ev._seed_latches["control/thr_uv"].status == "seeded"
