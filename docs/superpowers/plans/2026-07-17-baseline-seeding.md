@@ -25,6 +25,132 @@ Copied verbatim from `docs/superpowers/specs/2026-07-16-baseline-seeding-design.
 - **Fail closed, and `disarmed ≠ failed`.** A measurement that could not happen (skip_warmup, early advance, short open warmup, `< window_samples` finite samples) ⇒ suppress reward output for the session via the existing per-chunk `suppress_output` path. A clinician who wrote the control during warmup ⇒ **disarm** (run normally). Never conflate them.
 - **Do not hand-roll storage.** Reuse `PercentileImpl` (Python) / `Percentile` (Rust) for the window; the deque idiom is already open-coded 6× per backend.
 - **`seed_report()` is deliberately not a tap.** `refrain-core/tests/taps.rs:70` asserts exact tap key-set equality; a new tap key would force regenerating every `*.taps.json`. Keep it a separate accessor, exactly as v0.8.0 did for `export_state()`.
+- **Surface syntax is block-delimited with quoted names.** Every `.refrain` protocol is `protocol "name" { meta{…} requires{…} input "x"{ montage=… } derive "y"{ from=…; pipeline=[…] } threshold "z"{ signal=…; type=… } reward{…} output{…} controls{…} session{ phases=[ phase{ name=…; duration=…; output_muted=… }, … ] } }`. Fields inside a block are separated by newlines **or** `;`; list elements by `,`. A control's type is `<name> = <kind> { … }`; a mode-conditional is a **ternary** `cond ? then : else` (e.g. `type = threshold_style == "baseline" ? absolute(value: thr_uv) : percentile(target_pct: reward_pct, window: 2 min)`). The `seed = percentile { … }` sub-block **parses today** and is ignored at resolve until the feature lands (verified). **Use the Verified Protocol Fixtures below verbatim** — they were compiled against the live compiler. Note two hazards proven during plan authoring: (1) Python `str.format()` breaks on a protocol body full of `{}` — use `%`-substitution (`BASE % {"seed": …}`); (2) the `[0,1]` output clamp masks a retune when the signal saturates (see [[project_refrain_parity_fixtures]]) — runtime tests feed a small input so scaled values stay in range.
+
+## Verified Protocol Fixtures
+
+**Task 4 creates `tests/_seed_fixtures.py` with exactly this content.** Every later Python task imports from it (`from tests._seed_fixtures import …`) rather than re-embedding a protocol string. `tests/` is already a package (`tests/__init__.py`); the leading `_` keeps pytest from collecting it. All strings below compiled with **zero errors** against the live compiler, and the runtime path (`parse → resolve → Evaluator.live(backend="python") → start → step_chunk`) was exercised. Notes: resolve/emit fixtures use a `referential` montage (env value irrelevant there); `SEED_PROTO` uses `passthrough()` so a constant input gives a **nonzero** constant `env` (a `referential` montage cancels a constant to 0 — verified); the ternary mode-conditional and the `seed` sub-block (parsed-and-ignored pre-feature) are confirmed.
+
+```python
+# tests/_seed_fixtures.py — protocol fixtures, compile-verified against the
+# real surface syntax. Do not hand-edit the syntax; if a change is needed,
+# re-compile via refrain.compile_json.compile_to_ir_json and confirm no errors.
+
+SEEDING = '''protocol "seed_demo" {
+  meta { version = "1.0.0"; evidence = "clinical"; description = "seeding demo" }
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "env" {
+    from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude() ]
+  }
+  threshold "thr" { signal = "env"; type = absolute(value: thr_uv) }
+  reward { continuous = sigmoid("env" / "thr", midpoint: 1.0, steepness: 3) }
+  output { fb = reward.continuous }
+  controls {
+    reward_pct = percent { default = 70; range = (50, 90); live_tunable = true }
+    thr_uv = voltage {
+      default = 2.0 uV; range = (0.5 uV, 10 uV); live_tunable = true
+      seed = percentile { from = "env"; window = 60 s; target_pct = reward_pct }
+    }
+  }
+  session { phases = [
+    phase { name = "warmup"; duration = 90 s; output_muted = true },
+    phase { name = "run";    duration = 300 s },
+  ] }
+}'''
+
+# Identical minus the seed line (control declaration survives; no seed emitted).
+NON_SEEDING = SEEDING.replace(
+    '\n      seed = percentile { from = "env"; window = 60 s; target_pct = reward_pct }', '')
+
+# Resolve-validation template. Substitute ONE seed line via `%` (NOT .format —
+# the body is full of literal braces): BASE % {"seed": '<seed line or empty>'}.
+BASE = '''protocol "seed_demo" {
+  meta { version = "1.0.0"; evidence = "clinical"; description = "seeding demo" }
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "env" {
+    from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude() ]
+  }
+  threshold "thr" { signal = "env"; type = absolute(value: thr_uv) }
+  reward { continuous = sigmoid("env" / "thr", midpoint: 1.0, steepness: 3) }
+  output { fb = reward.continuous }
+  controls {
+    reward_pct = percent { default = 70; range = (50, 90); live_tunable = true }
+    thr_uv = voltage {
+      default = 2.0 uV; range = (0.5 uV, 10 uV); live_tunable = true
+      %(seed)s
+    }
+  }
+  session { phases = [
+    phase { name = "warmup"; duration = 90 s; output_muted = true },
+    phase { name = "run";    duration = 300 s },
+  ] }
+}'''
+
+GOOD = BASE % {"seed": 'seed = percentile { from = "env"; window = 60 s; target_pct = reward_pct }'}
+
+# Short-warmup runtime protocol (3 s warmup, 2 s window); thr_uv default 9.9 uV
+# so a seed to ~5 visibly moves it. `magnitude()`-only derive -> constant env
+# for a constant input (exact percentile parity).
+SEED_PROTO = '''protocol "seed_run" {
+  meta { version = "1.0.0"; evidence = "clinical"; description = "runtime seed" }
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = passthrough() }
+  derive "env" { from = "raw"; pipeline = [ magnitude() ] }
+  threshold "thr" { signal = "env"; type = absolute(value: thr_uv) }
+  reward { continuous = sigmoid("env" / "thr", midpoint: 1.0, steepness: 3) }
+  output { fb = reward.continuous }
+  controls {
+    reward_pct = percent { default = 70; range = (50, 90); live_tunable = true }
+    thr_uv = voltage {
+      default = 9.9 uV; range = (0.5 uV, 10 uV); live_tunable = true
+      seed = percentile { from = "env"; window = 2 s; target_pct = reward_pct }
+    }
+  }
+  session { phases = [
+    phase { name = "warmup"; duration = 3 s; output_muted = true },
+    phase { name = "run";    duration = 5 s },
+  ] }
+}'''
+
+# Mode-conditional for dead-seed elimination (adapted from tests/test_compile_json.py
+# MODE_SRC). bindings={"threshold_style":"adaptive"} folds the absolute(thr_uv)
+# branch out -> thr_uv unreferenced -> its seed must be dropped. "baseline" keeps it.
+MODE_SRC = '''protocol "seed_mode" {
+  meta { version = "1.0"; evidence = "clinical"; description = "x" }
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "env" {
+    from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude() ]
+  }
+  threshold "env_t" {
+    signal = "env"
+    type = threshold_style == "baseline"
+             ? absolute(value: thr_uv)
+             : percentile(target_pct: reward_pct, window: 2 min)
+  }
+  reward { continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+  output { audio_gain = reward.continuous }
+  controls {
+    threshold_style = mode { choices = ["adaptive", "baseline"]; default = "adaptive" }
+    reward_pct = percent { default = 70; range = (50, 90); live_tunable = true }
+    thr_uv = voltage {
+      default = 2.0 uV; range = (0.5 uV, 10 uV); live_tunable = true
+      seed = percentile { from = "env"; window = 60 s; target_pct = reward_pct }
+    }
+  }
+  session { phases = [
+    phase { name = "warmup"; duration = 90 s; output_muted = true },
+    phase { name = "run";    duration = 300 s },
+  ] }
+}'''
+```
+
+Two `.refrain` files (Task 1 `exprpos_control`, Task 16 `seed_smr_baseline`) are given verbatim in their tasks, in the same verified block syntax.
 
 ## Scope
 
@@ -85,21 +211,28 @@ The bug: `refrain-core/src/eval.rs:1902` compiles a `control_ref` in a plain val
 In `refrain-core/tests/set_control.rs`, add:
 
 ```rust
+// Add a fixture loader if set_control.rs has none — reuse the pattern from
+// refrain-core/tests/equivalence.rs (read tests/fixtures/<stem>.ir.json,
+// serde_json::from_str::<Protocol>). The output stream key is `output/<name>`;
+// confirm against the returned map keys if this assert can't find it.
 #[test]
 fn expression_position_control_ref_is_live() {
-    // `output = { x = gain * env }` with `gain` a control_ref in a plain
-    // value position (not a percentile/smooth/sigmoid slot). Before the fix
-    // this baked to a frozen Const; set_control was a silent no-op.
-    let ir = load_ir("exprpos_control"); // helper already in this test file
+    // reward.continuous = gain * "env", output x = reward.continuous, with `gain`
+    // a control_ref in a plain value position (not a percentile/smooth/sigmoid
+    // slot). Before the fix this baked to a frozen Const; set_control was a silent
+    // no-op. Feed a SMALL input so gain*env stays inside the [0,1] output clamp
+    // for both gain values (0.1 -> 0.1, then 3x -> 0.3); a saturating input would
+    // clamp both to 1.0 and mask the retune (see project_refrain_parity_fixtures).
+    let ir = load_ir("exprpos_control");
     let mut ev = Evaluator::new(&ir, 256.0, &["Cz".into()]);
     ev.start(false);
-    let before = ev.step_chunk(&vec![vec![1.0_f64]; 8]);
+    let before = ev.step_chunk(&vec![vec![0.1_f64]; 8]);
     ev.set_control("gain", 3.0).unwrap();
-    let after = ev.step_chunk(&vec![vec![1.0_f64]; 8]);
+    let after = ev.step_chunk(&vec![vec![0.1_f64]; 8]);
     let x_before = *before["output/x"].last().unwrap();
     let x_after = *after["output/x"].last().unwrap();
     assert!(
-        (x_after - 3.0 * x_before).abs() < 1e-9,
+        x_before > 1e-6 && (x_after - 3.0 * x_before).abs() < 1e-9,
         "set_control on an expression-position control_ref must retune live: \
          before={x_before}, after={x_after}"
     );
@@ -132,27 +265,23 @@ Confirm `control_cell` is in scope (it is the `dsp::control_cell` used at `eval.
 
 - [ ] **Step 4: Create the fixture protocol**
 
-Create `bench/protocols/exprpos_control.refrain` — a minimal protocol whose output multiplies a stream by a control in a plain value position:
+Create `bench/protocols/exprpos_control.refrain` — verified block syntax; `gain` sits in a plain value position (`gain * "env"`), not a recognised DSP slot:
 
 ```refrain
-protocol exprpos_control
-
-requires { sample_rate = ">= 256 Hz" }
-
-controls {
-  gain = frequency {
-    default      = 1.0 Hz
-    range        = (0.5 Hz, 5 Hz)
-    live_tunable = true
+protocol "exprpos_control" {
+  meta { version = "1.0.0"; evidence = "demo"; description = "expr-position control ref" }
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "env" { from = "raw"; pipeline = [ magnitude() ] }
+  reward { continuous = gain * "env" }
+  output { x = reward.continuous }
+  controls {
+    gain = frequency { default = 1.0 Hz; range = (0.5 Hz, 5 Hz); live_tunable = true }
   }
 }
-
-input raw = passthrough("Cz")
-derive env = magnitude(raw)
-output { x = gain * env }
 ```
 
-Register the stem in `gen_fixtures.py`'s generation list (the tuple at `refrain-core/tools/gen_fixtures.py:235-249`) and add it to `SETCONTROL_STEM` handling only if a set_control schedule is wanted; for parity the plain fixture suffices.
+Register the stem in `gen_fixtures.py`'s generation list (the tuple at `refrain-core/tools/gen_fixtures.py:235-249`). This fixture has no `session`, so the reference run uses `skip_warmup=True` like the rest of the corpus (no warmup needed — the test drives `set_control` directly). No `SETCONTROL_STEM` schedule is required.
 
 - [ ] **Step 5: Regenerate fixtures and run the full Rust suite**
 
@@ -407,46 +536,24 @@ git commit -m "feat(ir): add IRControlSeed and IRControl.seed"
 **Files:**
 - Modify: `src/refrain/ir_json.py:123-138` (`_protocol_ir_version`), `:397-409` (`_emit_control`); add `_emit_seed`
 - Create: `src/refrain/schema/ir-json-v0.3.schema.json`
+- Create: `tests/_seed_fixtures.py` (verified protocol fixtures — copy from the "Verified Protocol Fixtures" section)
 - Test: `tests/test_ir_json_seed.py` (extend)
 
 **Interfaces:**
 - Consumes: `IRControlSeed` (Task 3); `_emit_expr(expr, ctx)` (`ir_json.py:238`); `_EmitCtx` (`ir_json.py:141`).
+- Produces (for later tasks): `tests/_seed_fixtures.py` exporting `SEEDING`, `NON_SEEDING`, `BASE`, `GOOD`, `SEED_PROTO`, `MODE_SRC`.
 - Produces: wire `"seed": {"statistic","from","window_samples","target_pct"}` on a control, present only when seeded; `refrain_ir_version == "0.3"` for seeding protocols.
 
-- [ ] **Step 1: Define shared fixtures and write the failing unit tests**
+- [ ] **Step 1: Create the verified fixtures module, then write the failing unit tests**
 
-Append to `tests/test_ir_json_seed.py`. The `SEEDING`/`NON_SEEDING` protocol strings are module-level so Tasks 6 and 12 can import them; the tests here build an `IRControl` directly, so they are green the moment `_emit_seed` exists — **no dependency on the resolver** (Tasks 5–6). The end-to-end assertions that compile `SEEDING`/`NON_SEEDING` live in Task 6, where the resolver makes them pass.
+First create `tests/_seed_fixtures.py` with **exactly** the content from the plan's "Verified Protocol Fixtures" section (`SEEDING`, `NON_SEEDING`, `BASE`, `GOOD`, `SEED_PROTO`, `MODE_SRC`). These are compile-verified block-syntax protocols; Tasks 5–12 import from this module. Do not retype the protocols — copy them verbatim from that section.
+
+Then append the direct-emit unit tests to `tests/test_ir_json_seed.py`. They build an `IRControl` directly, so they are green the moment `_emit_seed` exists — **no dependency on the resolver** (Tasks 5–6). The end-to-end assertions that compile `SEEDING`/`NON_SEEDING` live in Task 6, where the resolver makes them pass.
 
 ```python
 from refrain.ir import IRControl, IRControlSeed, IRNumberLit
 from refrain.ir_json import _emit_control, _EmitCtx
 from refrain.dims import Dimensions  # match Task 3's import
-
-# Shared protocol fixtures — imported by Tasks 6 and 12. The end-to-end
-# assertions that consume these are added in Task 6 (they need the resolver).
-SEEDING = '''
-protocol seed_demo
-requires { sample_rate = ">= 256 Hz" }
-controls {
-  reward_pct = percent { default = 70 range = (50, 90) live_tunable = true }
-  thr_uv = voltage {
-    default = 2.0 uV range = (0.5 uV, 10 uV) live_tunable = true
-    seed = percentile { from = "env" window = 60 s target_pct = reward_pct }
-  }
-}
-input raw = passthrough("Cz")
-derive env = magnitude(raw)
-threshold t = above(env, absolute(thr_uv))
-output { fb = t }
-session { phases = [
-  phase { name = "warmup" duration = 90 s output_muted = true }
-  phase { name = "run" duration = 300 s }
-] }
-'''
-
-NON_SEEDING = SEEDING.replace(
-    'seed = percentile { from = "env" window = 60 s target_pct = reward_pct }\n', ''
-)
 
 
 def _ctx():
@@ -555,7 +662,8 @@ Expected: PASS — all tests in the file, including the two direct-emit unit tes
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/refrain/ir_json.py src/refrain/schema/ir-json-v0.3.schema.json tests/test_ir_json_seed.py
+git add src/refrain/ir_json.py src/refrain/schema/ir-json-v0.3.schema.json \
+        tests/_seed_fixtures.py tests/test_ir_json_seed.py
 git commit -m "feat(ir-json): emit control seed when present; tag seeding protocols v0.3"
 ```
 
@@ -578,44 +686,21 @@ The seed's `from` (a derive) and warmup phase are resolved **after** controls (`
 Create `tests/test_resolve_seed.py`:
 
 ```python
-import pytest
-from refrain.resolver import ResolveError
 from refrain.compile_json import compile_to_ir_json
+from tests._seed_fixtures import BASE, GOOD  # verified block-syntax fixtures (Task 4)
 
-BASE = '''
-protocol seed_demo
-requires {{ sample_rate = ">= 256 Hz" }}
-controls {{
-  reward_pct = percent {{ default = 70 range = (50, 90) live_tunable = true }}
-  thr_uv = voltage {{
-    default = 2.0 uV range = (0.5 uV, 10 uV) live_tunable = true
-    {seed}
-  }}
-}}
-input raw = passthrough("Cz")
-derive env = magnitude(raw)
-threshold t = above(env, absolute(thr_uv))
-output {{ fb = t }}
-session {{ phases = [
-  phase {{ name = "warmup" duration = 90 s output_muted = true }}
-  phase {{ name = "run" duration = 300 s }}
-] }}
-'''
-
-GOOD = BASE.format(
-    seed='seed = percentile { from = "env" window = 60 s target_pct = reward_pct }')
+# BASE is a `%`-template: substitute ONE seed line via `BASE % {"seed": "..."}`.
+# NEVER str.format() — the protocol body is full of literal `{}`.
 
 
 def test_seed_block_rejects_unknown_statistic():
-    src = BASE.format(
-        seed='seed = median { from = "env" window = 60 s target_pct = reward_pct }')
+    src = BASE % {"seed": 'seed = median { from = "env"; window = 60 s; target_pct = reward_pct }'}
     res = compile_to_ir_json(src)
     assert res.errors and "percentile" in res.errors[0].message
 
 
 def test_seed_block_requires_duration_window():
-    src = BASE.format(
-        seed='seed = percentile { from = "env" window = 60 target_pct = reward_pct }')
+    src = BASE % {"seed": 'seed = percentile { from = "env"; window = 60; target_pct = reward_pct }'}
     res = compile_to_ir_json(src)
     assert res.errors and "window" in res.errors[0].message
 ```
@@ -739,32 +824,29 @@ def test_good_seed_resolves_and_bakes_window():
 
 
 def test_unknown_from_is_a_resolve_error():
-    src = BASE.format(
-        seed='seed = percentile { from = "nope" window = 60 s target_pct = reward_pct }')
+    src = BASE % {"seed": 'seed = percentile { from = "nope"; window = 60 s; target_pct = reward_pct }'}
     res = compile_to_ir_json(src)
     assert res.errors and "nope" in res.errors[0].message
 
 
 def test_target_pct_must_be_a_percent_control_or_number():
-    # bind to a voltage control -> rejected
-    src = BASE.format(
-        seed='seed = percentile { from = "env" window = 60 s target_pct = thr_uv }')
+    # bind to a voltage control (thr_uv) -> rejected
+    src = BASE % {"seed": 'seed = percentile { from = "env"; window = 60 s; target_pct = thr_uv }'}
     res = compile_to_ir_json(src)
     assert res.errors and "percent" in res.errors[0].message
 
 
 def test_target_pct_number_literal_is_accepted():
-    src = BASE.format(
-        seed='seed = percentile { from = "env" window = 60 s target_pct = 40 }')
+    src = BASE % {"seed": 'seed = percentile { from = "env"; window = 60 s; target_pct = 40 }'}
     obj = compile_to_ir_json(src).ir_json
     assert obj["controls"]["thr_uv"]["seed"]["target_pct"]["node"] == "number"
 ```
 
-Also add the **end-to-end emitter assertions** here — they were deferred from Task 4 because they need the resolver, which this task completes. Append to `tests/test_ir_json_seed.py` (importing the fixtures defined there in Task 4):
+Also add the **end-to-end emitter assertions** here — they were deferred from Task 4 because they need the resolver, which this task completes. Append to `tests/test_ir_json_seed.py`:
 
 ```python
 from refrain.compile_json import compile_to_ir_json
-# SEEDING / NON_SEEDING are module-level fixtures already defined in this file (Task 4).
+from tests._seed_fixtures import SEEDING, NON_SEEDING  # verified fixtures (Task 4)
 
 
 def test_seeding_protocol_emits_seed_and_v03():
@@ -884,19 +966,21 @@ Phase durations are numeric literals (`resolver.py:1760`), so the compiler alway
 Append to `tests/test_resolve_seed.py`:
 
 ```python
+_SEED = 'seed = percentile { from = "env"; window = 60 s; target_pct = reward_pct }'
+
+
 def test_window_longer_than_warmup_is_a_resolve_error():
-    src = BASE.replace('duration = 90 s output_muted = true',
-                       'duration = 30 s output_muted = true').format(
-        seed='seed = percentile { from = "env" window = 60 s target_pct = reward_pct }')
-    res = compile_to_ir_json(src)
+    # shrink the 90 s warmup below the 60 s window (replace before %-substitution)
+    tmpl = BASE.replace('duration = 90 s; output_muted = true',
+                        'duration = 30 s; output_muted = true')
+    res = compile_to_ir_json(tmpl % {"seed": _SEED})
     assert res.errors and "warmup" in res.errors[0].message.lower()
 
 
 def test_window_equal_to_warmup_is_allowed():
-    src = BASE.replace('duration = 90 s output_muted = true',
-                       'duration = 60 s output_muted = true').format(
-        seed='seed = percentile { from = "env" window = 60 s target_pct = reward_pct }')
-    assert not compile_to_ir_json(src).errors
+    tmpl = BASE.replace('duration = 90 s; output_muted = true',
+                        'duration = 60 s; output_muted = true')
+    assert not compile_to_ir_json(tmpl % {"seed": _SEED}).errors
 ```
 
 - [ ] **Step 2: Run to verify the first fails**
@@ -953,43 +1037,25 @@ Control declarations survive mode folding even when unreferenced (`ir_json.py:41
 
 A `mode` control that folds `thr_uv` out of the adaptive branch must yield zero seeds in the adaptive artifact. Append to `tests/test_resolve_seed.py`:
 
+`MODE_SRC` (verified fixtures, Task 4) uses a `threshold_style = mode { choices = ["adaptive", "baseline"] }` control and a ternary threshold `type = threshold_style == "baseline" ? absolute(value: thr_uv) : percentile(target_pct: reward_pct, window: 2 min)`. Binding `adaptive` deletes the `absolute(value: thr_uv)` branch at AST level, so `thr_uv` has no surviving `control_ref`. Append to `tests/test_resolve_seed.py`:
+
 ```python
-MODE_SRC = '''
-protocol seed_mode
-requires { sample_rate = ">= 256 Hz" }
-controls {
-  reward_pct = percent { default = 70 range = (50, 90) live_tunable = true }
-  style = mode { choices = ["baseline", "adaptive"] default = "baseline" }
-  thr_uv = voltage {
-    default = 2.0 uV range = (0.5 uV, 10 uV) live_tunable = true
-    seed = percentile { from = "env" window = 60 s target_pct = reward_pct }
-  }
-}
-input raw = passthrough("Cz")
-derive env = magnitude(raw)
-threshold t = above(env, when style is "baseline" then absolute(thr_uv)
-                                                    else percentile(env, target_pct: reward_pct, window: 60 s))
-output { fb = t }
-session { phases = [
-  phase { name = "warmup" duration = 90 s output_muted = true }
-  phase { name = "run" duration = 300 s }
-] }
-'''
+from tests._seed_fixtures import MODE_SRC  # verified ternary mode-conditional
 
 
 def test_seed_dropped_when_control_folded_out():
-    # Bind style=adaptive -> the `absolute(thr_uv)` branch is deleted at AST
-    # level, so thr_uv has no surviving control_ref. Its seed must be dropped.
-    obj = compile_to_ir_json(MODE_SRC, bindings={"style": "adaptive"}).ir_json
+    # adaptive -> percentile branch survives, absolute(thr_uv) is deleted, so
+    # thr_uv is unreferenced. Its seed must be dropped from the resolved IR.
+    obj = compile_to_ir_json(MODE_SRC, bindings={"threshold_style": "adaptive"}).ir_json
     assert "seed" not in obj["controls"].get("thr_uv", {})
 
 
 def test_seed_kept_when_control_referenced():
-    obj = compile_to_ir_json(MODE_SRC, bindings={"style": "baseline"}).ir_json
+    obj = compile_to_ir_json(MODE_SRC, bindings={"threshold_style": "baseline"}).ir_json
     assert "seed" in obj["controls"]["thr_uv"]
 ```
 
-Verify the `when ... is ... then ... else ...` mode-conditional syntax against an existing protocol that uses it (`grep -rl "when .* is " bench/protocols`); adjust the fixture's conditional to the exact house form if it differs.
+Confirmed against the live compiler: `adaptive` → threshold `env_t` callee `percentile` (thr_uv folded out); `baseline` → callee `absolute` (thr_uv referenced).
 
 - [ ] **Step 2: Run to verify the first fails**
 
@@ -1239,49 +1305,40 @@ git commit -m "feat(eval): seed-latch scaffolding — ingest, _apply_control, la
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `tests/test_eval_seed.py` — assert the control is written to the measured percentile at the run edge and holds (uses the `GOOD`/`BASE` protocol from Task 5 via a small helper that steps a constant-ish signal):
+Append to `tests/test_eval_seed.py`. Construct via the **real** API — `Evaluator.live(resolve(parse(src)), …, backend="python")` (there is no `from_ir_json`; the constructor takes a resolved `IRProtocol`, not the JSON dict). `backend="python"` pins the reference engine regardless of whether the Rust wheel is built.
 
 ```python
 import numpy as np
-from refrain.compile_json import compile_to_ir_json
-from refrain.eval_ import Evaluator   # adjust to the actual constructor/entrypoint
-
-SEED_PROTO = '''
-protocol seed_run
-requires { sample_rate = ">= 256 Hz" }
-controls {
-  reward_pct = percent { default = 70 range = (50, 90) live_tunable = true }
-  thr_uv = voltage { default = 9.9 uV range = (0.5 uV, 10 uV) live_tunable = true
-    seed = percentile { from = "env" window = 2 s target_pct = reward_pct } }
-}
-input raw = passthrough("Cz")
-derive env = magnitude(raw)
-threshold t = above(env, absolute(thr_uv))
-output { fb = t }
-session { phases = [
-  phase { name = "warmup" duration = 3 s output_muted = true }
-  phase { name = "run" duration = 5 s }
-] }
-'''
+from refrain.parser import parse
+from refrain.resolver import resolve
+from refrain.eval_ import Evaluator
+from tests._seed_fixtures import SEED_PROTO   # verified block-syntax fixture (Task 4)
 
 
-def _run(evaluator, value, n_chunks, chunk=256):
+def _build(src=SEED_PROTO, *, bindings=None):
+    ir = resolve(parse(src), bindings=bindings) if bindings else resolve(parse(src))
+    return Evaluator.live(ir, sample_rate_hz=256.0, channel_names=("Cz",), backend="python")
+
+
+def _run(ev, value, n_chunks, chunk=256):
     for _ in range(n_chunks):
-        evaluator.step_chunk(np.full((chunk, 1), value, dtype=np.float64))
+        ev.step_chunk(np.full((chunk, 1), value, dtype=np.float64))
 
 
 def test_seed_writes_control_at_run_edge_and_holds():
-    ir = compile_to_ir_json(SEED_PROTO).ir_json
-    ev = Evaluator.from_ir_json(ir, sample_rate_hz=256.0, channel_names=("Cz",))  # match real API
+    ev = _build()
     ev.start(skip_warmup=False)
-    _run(ev, value=5.0, n_chunks=4)   # ~4 s warmup at 256/chunk -> crosses into run
+    # 3 s warmup at 256 Hz = 768 samples = 3 chunks (ingest); the 4th chunk is the
+    # first `run` chunk, where the seed fires before any threshold steps.
+    _run(ev, value=5.0, n_chunks=4)
     report = ev.seed_report()
-    # env of a constant 5.0 passthrough is 5.0; percentile of a constant is 5.0.
     assert report["thr_uv"]["status"] == "seeded"
-    assert abs(report["thr_uv"]["value"] - 5.0) < 1e-9
+    # The seed writes percentile(env); for a constant input env is constant, so the
+    # written value equals env's last tap — montage arithmetic is irrelevant here.
+    assert abs(report["thr_uv"]["value"] - ev.last_taps()["derive/env"]) < 1e-9
 ```
 
-`seed_report()` arrives in Task 12; if executing strictly in order, assert against `ev._seed_latches["control/thr_uv"].value` here and switch to `seed_report()` after Task 12.
+`seed_report()` arrives in Task 12; if executing strictly in order, assert against `ev._seed_latches["control/thr_uv"].value` here and switch to `seed_report()` after Task 12. Confirm the env tap key is `derive/env` (it is — derives tap as `derive/<name>`).
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -1372,8 +1429,7 @@ Append to `tests/test_eval_seed.py`:
 
 ```python
 def test_skip_warmup_fails_closed():
-    ir = compile_to_ir_json(SEED_PROTO).ir_json
-    ev = Evaluator.from_ir_json(ir, sample_rate_hz=256.0, channel_names=("Cz",))
+    ev = _build()
     ev.start(skip_warmup=True)          # warmup skipped -> measurement never happens
     events = ev.step_chunk(np.full((256, 1), 5.0))
     latch = ev._seed_latches["control/thr_uv"]
@@ -1383,8 +1439,7 @@ def test_skip_warmup_fails_closed():
 
 
 def test_host_write_during_warmup_disarms_not_fails():
-    ir = compile_to_ir_json(SEED_PROTO).ir_json
-    ev = Evaluator.from_ir_json(ir, sample_rate_hz=256.0, channel_names=("Cz",))
+    ev = _build()
     ev.start(skip_warmup=False)
     ev.step_chunk(np.full((256, 1), 5.0))   # one warmup chunk
     ev.set_control("thr_uv", 1.5)            # clinician takes over
@@ -1396,8 +1451,7 @@ def test_host_write_during_warmup_disarms_not_fails():
 
 
 def test_nonfinite_samples_are_skipped_not_counted():
-    ir = compile_to_ir_json(SEED_PROTO).ir_json
-    ev = Evaluator.from_ir_json(ir, sample_rate_hz=256.0, channel_names=("Cz",))
+    ev = _build()
     ev.start(skip_warmup=False)
     good = np.full((256, 1), 5.0); good[:10] = np.nan   # NaNs must not poison/crash
     ev.step_chunk(good)
@@ -1432,8 +1486,7 @@ git commit -m "test(eval): cover the §2.6 fail-closed / disarm / NaN matrix"
 
 ```python
 def test_seed_report_shape():
-    ir = compile_to_ir_json(SEED_PROTO).ir_json
-    ev = Evaluator.from_ir_json(ir, sample_rate_hz=256.0, channel_names=("Cz",))
+    ev = _build()
     ev.start(skip_warmup=False)
     _run(ev, value=5.0, n_chunks=4)
     r = ev.seed_report()["thr_uv"]
@@ -1446,8 +1499,8 @@ def test_seed_report_shape():
 
 
 def test_seed_report_empty_for_non_seeding_protocol():
-    ir = compile_to_ir_json(NON_SEEDING).ir_json   # from tests/test_ir_json_seed.py
-    ev = Evaluator.from_ir_json(ir, sample_rate_hz=256.0, channel_names=("Cz",))
+    from tests._seed_fixtures import NON_SEEDING   # verified fixture (Task 4)
+    ev = _build(NON_SEEDING)
     ev.start(skip_warmup=True)
     assert ev.seed_report() == {}
 ```
@@ -2022,32 +2075,29 @@ The one genuinely novel piece of engineering (§5, §8 risk 1). Every golden fix
 
 - [ ] **Step 1: Write the fixture protocol**
 
-Create `bench/protocols/seed_smr_baseline.refrain` — a minimal SMR-style baseline protocol with a real warmup and a seed (use a constant-shaped input so parity is exact by construction, per §5):
+Create `bench/protocols/seed_smr_baseline.refrain` — verified block syntax (same shape as `SEED_PROTO`). A `passthrough()` montage + `magnitude()` gives a constant `env` equal to the constant input, so the seeded percentile is exact by construction (per §5). `thr_uv` default 9.9 uV so the seed visibly moves it:
 
 ```refrain
-protocol seed_smr_baseline
-
-requires { sample_rate = ">= 256 Hz" }
-
-controls {
-  reward_pct = percent { default = 70 range = (50, 90) live_tunable = true }
-  thr_uv = voltage {
-    default      = 9.9 uV
-    range        = (0.5 uV, 10 uV)
-    live_tunable = true
-    seed = percentile { from = "env" window = 2 s target_pct = reward_pct }
+protocol "seed_smr_baseline" {
+  meta { version = "1.0.0"; evidence = "clinical"; description = "SMR baseline seed" }
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = passthrough() }
+  derive "env" { from = "raw"; pipeline = [ magnitude() ] }
+  threshold "thr" { signal = "env"; type = absolute(value: thr_uv) }
+  reward { continuous = sigmoid("env" / "thr", midpoint: 1.0, steepness: 3) }
+  output { fb = reward.continuous }
+  controls {
+    reward_pct = percent { default = 70; range = (50, 90); live_tunable = true }
+    thr_uv = voltage {
+      default = 9.9 uV; range = (0.5 uV, 10 uV); live_tunable = true
+      seed = percentile { from = "env"; window = 2 s; target_pct = reward_pct }
+    }
   }
+  session { phases = [
+    phase { name = "warmup"; duration = 3 s; output_muted = true },
+    phase { name = "run";    duration = 5 s },
+  ] }
 }
-
-input raw = passthrough("Cz")
-derive env = magnitude(raw)
-threshold t = above(env, absolute(thr_uv))
-output { fb = t }
-
-session { phases = [
-  phase { name = "warmup" duration = 3 s output_muted = true }
-  phase { name = "run" duration = 5 s }
-] }
 ```
 
 - [ ] **Step 2: Add a `skip_warmup=False` generation path**
@@ -2126,7 +2176,7 @@ Append to `tests/test_compile_json.py`:
 
 ```python
 def test_meta_echoes_seeded_control_names():
-    from tests.test_ir_json_seed import SEEDING, NON_SEEDING   # reuse fixtures
+    from tests._seed_fixtures import SEEDING, NON_SEEDING   # verified fixtures (Task 4)
     assert compile_to_ir_json(SEEDING).meta["seeds"] == ["thr_uv"]
     assert compile_to_ir_json(NON_SEEDING).meta["seeds"] == []
 ```
