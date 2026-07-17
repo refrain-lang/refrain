@@ -309,8 +309,13 @@ that the inconsistency is checkable without an amp profile at all:
 
 The resolver therefore gains a lint:
 
-> If an `input`'s montage resolves to `reference: "linked_ears"`, then
+> If an `input`'s montage carries a **literal** `reference: "linked_ears"`, then
 > `requires.channels` must declare at least two of A1/A2/M1/M2/T9/T10.
+
+It keys on the literal spelling, not the post-fold value, and so does **not** fire
+on `reference: amp.reference` — whose ear requirement is amp-dependent and is
+validated per amp at `resolver.py:313`, not statically (see §"Integration
+consequences the slice forces us to solve").
 
 ```
 ResolveError: input "raw" uses reference: "linked_ears", which needs >= 2 of
@@ -356,6 +361,55 @@ proved the `mode` fold is equivalence-preserving.
 
 The first row is the load-bearing test: if the fold is transparent, everything
 downstream (IR-JSON, signatures, `content_hash`) is unaffected by construction.
+
+## Definition of done — the working slice
+
+The point is not that `amp.reference` *exists*; it is that a real protocol,
+authored once, *runs correctly on more than one amp*. The original failure mode of
+this whole area was capability parked in demo files and never applied to the
+clinical set. So "done" for the first increment is a vertical slice, not a
+primitive:
+
+1. **Engine** — `amp.reference` is built, fails closed, and the fold is proven
+   equivalence-preserving (§"Testing"). The `linked_ears` runtime break and the
+   consistency lint land with it.
+2. **Library** — **one** real protocol, SMR at Cz, is re-authored amp-neutral:
+   `reference: amp.reference`, its site as a `placement` (the construct already
+   exists — `placement_smr_active_brainbit.refrain` demonstrates it), and honest
+   `requires.channels`. This replaces both the generic and the BrainBit copy of
+   that concept — it is the first file of the one library.
+3. **Proof, both directions:**
+   - `resolve(amp=brainbit_flex)` → `reference` folds to `"device"`, the site
+     binds to the placed electrode, and the evaluator produces a **live, non-zero**
+     stream on synthetic input — the flatline is gone on the exact
+     protocol/amp pair that exhibited it.
+   - `resolve(amp=q21)` → `reference` folds to `"linked_ears"`, and it runs.
+   - One protocol source, two amps, two correct montages, zero per-device copies.
+4. **Gates** — corpus roundtrip, catalog, and fuzz stay green.
+
+Steps 2–4 live in `refrain-protocols` and depend on the engine release; the plan
+sequences them. This slice is the proof that the abstraction works end to end;
+broadening to the rest of the library is follow-on, not part of this increment.
+
+### Integration consequences the slice forces us to solve
+
+Authoring the first `amp.reference` protocol has two effects the plan must handle —
+better found on one file than on 38:
+
+1. **The `amp=None` gates need an amp.** An `amp.reference` protocol cannot resolve
+   with `amp=None` — that is the fail-closed contract, working as designed. But the
+   corpus roundtrip and fuzz gates resolve every protocol at `amp=None`. So those
+   harnesses must supply a **default amp profile** (per-protocol, or a documented
+   fallback) for any protocol that reads `amp.*`. This is a `refrain-protocols`
+   test-infrastructure change, and the slice is where it gets built.
+2. **`requires.channels` lists the active site(s) only.** For an `amp.reference`
+   protocol, whether reference electrodes are needed is *amp-dependent*
+   (BrainBit → `device`, none; Q21 → `linked_ears`, needs A1/A2). It therefore
+   cannot be declared statically, and must not be. The per-amp guard at
+   `resolver.py:313` validates availability against the connected amp's channels.
+   The consistency lint (§"The consistency lint") is scoped to the **legacy literal
+   `reference: "linked_ears"`** form only; it does not — and must not — fire on
+   `amp.reference`, whose ear requirement is resolved per amp, not statically.
 
 ## Rollout
 
