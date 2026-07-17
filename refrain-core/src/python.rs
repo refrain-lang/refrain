@@ -158,6 +158,24 @@ impl RustEvaluator {
             .map_err(pyo3::exceptions::PyKeyError::new_err)
     }
 
+    /// `eval_.Evaluator.seed_report`: per-control baseline-seed outcome (§2.7),
+    /// keyed by bare control name. Empty for a non-seeding protocol.
+    fn seed_report<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let out = PyDict::new(py);
+        for (name, e) in self.inner.seed_report() {
+            let d = PyDict::new(py);
+            d.set_item("status", e.status)?;
+            d.set_item("value", e.value)?; // Option<f64> -> None/float
+            d.set_item("source", e.source)?;
+            d.set_item("target_pct", e.target_pct)?;
+            d.set_item("n_samples", e.n_samples)?;
+            d.set_item("window_s", e.window_s)?;
+            d.set_item("at_time_s", e.at_time_s)?;
+            out.set_item(name, d)?;
+        }
+        Ok(out)
+    }
+
     /// Process one `(n_samples, n_channels)` chunk and return the feedback
     /// `Event`s, matching the Python evaluator's `step_chunk` return value.
     /// Also caches the per-chunk streams map into `self.inner.last_streams`

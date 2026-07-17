@@ -734,6 +734,8 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -756,6 +758,8 @@ fun uniffi_refrain_core_checksum_method_refraincore_current_phase(
 fun uniffi_refrain_core_checksum_method_refraincore_hold(
 ): Short
 fun uniffi_refrain_core_checksum_method_refraincore_last_taps(
+): Short
+fun uniffi_refrain_core_checksum_method_refraincore_seed_report(
 ): Short
 fun uniffi_refrain_core_checksum_method_refraincore_set_clock_frozen(
 ): Short
@@ -831,6 +835,8 @@ fun uniffi_refrain_core_fn_method_refraincore_current_phase(`ptr`: Pointer,uniff
 fun uniffi_refrain_core_fn_method_refraincore_hold(`ptr`: Pointer,`held`: Byte,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
 fun uniffi_refrain_core_fn_method_refraincore_last_taps(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_refrain_core_fn_method_refraincore_seed_report(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_refrain_core_fn_method_refraincore_set_clock_frozen(`ptr`: Pointer,`frozen`: Byte,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
@@ -978,6 +984,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_refrain_core_checksum_method_refraincore_last_taps() != 62853.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_refrain_core_checksum_method_refraincore_seed_report() != 3631.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_refrain_core_checksum_method_refraincore_set_clock_frozen() != 49829.toShort()) {
@@ -1161,6 +1170,29 @@ public object FfiConverterUInt: FfiConverter<UInt, Int> {
 
     override fun write(value: UInt, buf: ByteBuffer) {
         buf.putInt(value.toInt())
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterULong: FfiConverter<ULong, Long> {
+    override fun lift(value: Long): ULong {
+        return value.toULong()
+    }
+
+    override fun read(buf: ByteBuffer): ULong {
+        return lift(buf.getLong())
+    }
+
+    override fun lower(value: ULong): Long {
+        return value.toLong()
+    }
+
+    override fun allocationSize(value: ULong) = 8UL
+
+    override fun write(value: ULong, buf: ByteBuffer) {
+        buf.putLong(value.toLong())
     }
 }
 
@@ -1426,6 +1458,14 @@ public interface RefrainCoreInterface {
     fun `lastTaps`(): Map<kotlin.String, kotlin.Double>
     
     /**
+     * `eval::Evaluator::seed_report`: per-control baseline-seed outcome
+     * (§2.7), keyed by bare control name. Empty for a non-seeding protocol.
+     * (BTreeMap → HashMap so uniffi maps it to a Swift `[String: SeedReport]`
+     * / Kotlin `Map`.)
+     */
+    fun `seedReport`(): Map<kotlin.String, SeedReport>
+    
+    /**
      * `eval::Evaluator::set_clock_frozen`: freeze/resume the phase clock on any
      * phase type (transport pause); orthogonal to output muting.
      */
@@ -1622,6 +1662,24 @@ open class RefrainCore: Disposable, AutoCloseable, RefrainCoreInterface
     callWithPointer {
     uniffiRustCall() { _status ->
     UniffiLib.INSTANCE.uniffi_refrain_core_fn_method_refraincore_last_taps(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `eval::Evaluator::seed_report`: per-control baseline-seed outcome
+     * (§2.7), keyed by bare control name. Empty for a non-seeding protocol.
+     * (BTreeMap → HashMap so uniffi maps it to a Swift `[String: SeedReport]`
+     * / Kotlin `Map`.)
+     */override fun `seedReport`(): Map<kotlin.String, SeedReport> {
+            return FfiConverterMapStringTypeSeedReport.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_refrain_core_fn_method_refraincore_seed_report(
         it, _status)
 }
     }
@@ -1849,6 +1907,62 @@ public object FfiConverterTypePhaseInfo: FfiConverterRustBuffer<PhaseInfo> {
             FfiConverterOptionalDouble.write(value.`remainingS`, buf)
             FfiConverterBoolean.write(value.`clockFrozen`, buf)
             FfiConverterBoolean.write(value.`held`, buf)
+    }
+}
+
+
+
+/**
+ * Mirror of `eval::SeedReportEntry` / `eval_.Evaluator.seed_report`: one
+ * control's baseline-seed outcome (§2.7). Field-for-field move, no logic.
+ */
+data class SeedReport (
+    var `status`: kotlin.String, 
+    var `value`: kotlin.Double?, 
+    var `source`: kotlin.String, 
+    var `targetPct`: kotlin.Double, 
+    var `nSamples`: kotlin.ULong, 
+    var `windowS`: kotlin.Double, 
+    var `atTimeS`: kotlin.Double?
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeSeedReport: FfiConverterRustBuffer<SeedReport> {
+    override fun read(buf: ByteBuffer): SeedReport {
+        return SeedReport(
+            FfiConverterString.read(buf),
+            FfiConverterOptionalDouble.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterDouble.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterDouble.read(buf),
+            FfiConverterOptionalDouble.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: SeedReport) = (
+            FfiConverterString.allocationSize(value.`status`) +
+            FfiConverterOptionalDouble.allocationSize(value.`value`) +
+            FfiConverterString.allocationSize(value.`source`) +
+            FfiConverterDouble.allocationSize(value.`targetPct`) +
+            FfiConverterULong.allocationSize(value.`nSamples`) +
+            FfiConverterDouble.allocationSize(value.`windowS`) +
+            FfiConverterOptionalDouble.allocationSize(value.`atTimeS`)
+    )
+
+    override fun write(value: SeedReport, buf: ByteBuffer) {
+            FfiConverterString.write(value.`status`, buf)
+            FfiConverterOptionalDouble.write(value.`value`, buf)
+            FfiConverterString.write(value.`source`, buf)
+            FfiConverterDouble.write(value.`targetPct`, buf)
+            FfiConverterULong.write(value.`nSamples`, buf)
+            FfiConverterDouble.write(value.`windowS`, buf)
+            FfiConverterOptionalDouble.write(value.`atTimeS`, buf)
     }
 }
 
@@ -2127,6 +2241,45 @@ public object FfiConverterMapStringDouble: FfiConverterRustBuffer<Map<kotlin.Str
         value.forEach { (k, v) ->
             FfiConverterString.write(k, buf)
             FfiConverterDouble.write(v, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterMapStringTypeSeedReport: FfiConverterRustBuffer<Map<kotlin.String, SeedReport>> {
+    override fun read(buf: ByteBuffer): Map<kotlin.String, SeedReport> {
+        val len = buf.getInt()
+        return buildMap<kotlin.String, SeedReport>(len) {
+            repeat(len) {
+                val k = FfiConverterString.read(buf)
+                val v = FfiConverterTypeSeedReport.read(buf)
+                this[k] = v
+            }
+        }
+    }
+
+    override fun allocationSize(value: Map<kotlin.String, SeedReport>): ULong {
+        val spaceForMapSize = 4UL
+        val spaceForChildren = value.map { (k, v) ->
+            FfiConverterString.allocationSize(k) +
+            FfiConverterTypeSeedReport.allocationSize(v)
+        }.sum()
+        return spaceForMapSize + spaceForChildren
+    }
+
+    override fun write(value: Map<kotlin.String, SeedReport>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        // The parens on `(k, v)` here ensure we're calling the right method,
+        // which is important for compatibility with older android devices.
+        // Ref https://blog.danlew.net/2017/03/16/kotlin-puzzler-whose-line-is-it-anyways/
+        value.forEach { (k, v) ->
+            FfiConverterString.write(k, buf)
+            FfiConverterTypeSeedReport.write(v, buf)
         }
     }
 }
