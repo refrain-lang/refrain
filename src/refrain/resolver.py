@@ -36,6 +36,8 @@ follow-up.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
+
 from . import ast as A
 from . import primitives as P
 from .amp_profile import AmpProfile
@@ -105,6 +107,21 @@ class ResolveError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# Baseline seeding (SPEC baseline-seeding) — parsed here, validated in a
+# post-pass once controls/derives/session are all resolved (Task 6).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _PendingSeed:
+    statistic: str
+    from_raw: str
+    window_ms: float
+    target_pct_ast: "A.Expr"
+    loc: "Loc | None"
+
+
+# ---------------------------------------------------------------------------
 # Output channel registry (SPEC §4.8)
 # ---------------------------------------------------------------------------
 
@@ -170,6 +187,11 @@ class _Resolver:
 
         # Named block declarations (staged-protocol feature).
         self._blocks: dict[str, IRBlock] = {}
+
+        # Pending baseline-seed blocks, captured during control resolution
+        # and validated/baked in a post-pass (Task 6) once derives and
+        # session phases are resolved.
+        self._pending_seeds: dict[str, _PendingSeed] = {}
 
     # -- Top-level entry ----------------------------------------------------
 
@@ -1036,6 +1058,8 @@ class _Resolver:
             if isinstance(tune_strategy_expr, A.StringLit)
             else None
         )
+        if "seed" in fields:
+            self._pending_seeds[name] = self._parse_control_seed(name, fields["seed"])
         return IRControl(
             name=name,
             canonical_name=f"control/{name}",
@@ -1049,6 +1073,52 @@ class _Resolver:
             live_tunable=live_tunable,
             tune_strategy=tune_strategy,
             loc=block.loc,
+        )
+
+    def _parse_control_seed(self, name: str, seed_ast: A.Expr) -> _PendingSeed:
+        """Parse (but do not validate against derives/session) a control's
+        `seed = <statistic> { ... }` sub-block.
+
+        Cross-section checks — the `from` derive existing, resolving
+        `target_pct` against a sibling control, baking the window against
+        the session's warmup phase — are deferred to a post-pass (Task 6)
+        since derives and session phases resolve after controls.
+        """
+        if not isinstance(seed_ast, A.BlockExpr) or seed_ast.name is None:
+            raise ResolveError(
+                f"control {name!r}.seed must be a typed block "
+                "(e.g. `seed = percentile { ... }`)",
+                loc=seed_ast.loc,
+            )
+        statistic = seed_ast.name
+        if statistic != "percentile":
+            raise ResolveError(
+                f"control {name!r}.seed: unsupported statistic {statistic!r} "
+                "(v1 supports only `percentile`)",
+                loc=seed_ast.loc,
+            )
+        fields = self._assignments_dict(seed_ast.body)
+        from_expr = fields.get("from")
+        if not isinstance(from_expr, A.StringLit):
+            raise ResolveError(
+                f"control {name!r}.seed.from must be a quoted derive name",
+                loc=seed_ast.loc,
+            )
+        window_expr = fields.get("window")
+        if not isinstance(window_expr, A.NumberLit) or window_expr.unit not in ("ms", "s", "min"):
+            raise ResolveError(
+                f"control {name!r}.seed.window must be a duration literal (ms/s/min)",
+                loc=seed_ast.loc,
+            )
+        if "target_pct" not in fields:
+            raise ResolveError(
+                f"control {name!r}.seed needs a `target_pct` field", loc=seed_ast.loc)
+        return _PendingSeed(
+            statistic=statistic,
+            from_raw=from_expr.value,
+            window_ms=_to_milliseconds(window_expr),
+            target_pct_ast=fields["target_pct"],
+            loc=seed_ast.loc,
         )
 
     def _resolve_placement_control(self, name: str, fields: dict, loc) -> IRControl:
