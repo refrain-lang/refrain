@@ -413,13 +413,17 @@ git commit -m "feat(ir): add IRControlSeed and IRControl.seed"
 - Consumes: `IRControlSeed` (Task 3); `_emit_expr(expr, ctx)` (`ir_json.py:238`); `_EmitCtx` (`ir_json.py:141`).
 - Produces: wire `"seed": {"statistic","from","window_samples","target_pct"}` on a control, present only when seeded; `refrain_ir_version == "0.3"` for seeding protocols.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Define shared fixtures and write the failing unit tests**
 
-Append to `tests/test_ir_json_seed.py`:
+Append to `tests/test_ir_json_seed.py`. The `SEEDING`/`NON_SEEDING` protocol strings are module-level so Tasks 6 and 12 can import them; the tests here build an `IRControl` directly, so they are green the moment `_emit_seed` exists — **no dependency on the resolver** (Tasks 5–6). The end-to-end assertions that compile `SEEDING`/`NON_SEEDING` live in Task 6, where the resolver makes them pass.
 
 ```python
-from refrain.compile_json import compile_to_ir_json
+from refrain.ir import IRControl, IRControlSeed, IRNumberLit
+from refrain.ir_json import _emit_control, _EmitCtx
+from refrain.dims import Dimensions  # match Task 3's import
 
+# Shared protocol fixtures — imported by Tasks 6 and 12. The end-to-end
+# assertions that consume these are added in Task 6 (they need the resolver).
 SEEDING = '''
 protocol seed_demo
 requires { sample_rate = ">= 256 Hz" }
@@ -445,42 +449,6 @@ NON_SEEDING = SEEDING.replace(
 )
 
 
-def test_seeding_protocol_emits_seed_and_v03():
-    res = compile_to_ir_json(SEEDING)
-    assert not res.errors, res.errors
-    obj = res.ir_json
-    assert obj["refrain_ir_version"] == "0.3"
-    seed = obj["controls"]["thr_uv"]["seed"]
-    assert seed["statistic"] == "percentile"
-    assert seed["from"] == "derive/env"
-    assert seed["window_samples"] == int(round(60 * 256))  # baked at 256 Hz
-    assert seed["target_pct"]["node"] == "control_ref"
-    assert seed["target_pct"]["target"] == "control/reward_pct"
-
-
-def test_non_seeding_control_omits_seed_and_keeps_low_version():
-    obj = compile_to_ir_json(NON_SEEDING).ir_json
-    assert "seed" not in obj["controls"]["thr_uv"]
-    assert obj["refrain_ir_version"] == "0.1"
-```
-
-- [ ] **Step 2: Run to verify they fail**
-
-Run: `PYTHONPATH=src pytest tests/test_ir_json_seed.py -k seed -v`
-Expected: FAIL — the seeding test errors (grammar/resolve not yet wired) OR `KeyError: 'seed'`. (Tasks 5–6 complete resolution; this task makes the emitter side correct so the tests go green once resolution lands. If the compile still errors here because resolution is incomplete, keep the assertions and let Task 6 turn them green — note this in the commit.)
-
-> Sequencing note: the emitter change (this task) and the resolver changes (Tasks 5–6) are mutually dependent for the end-to-end test. Implement the emitter now; the two end-to-end assertions above pass only after Task 6. The **unit** assertion in Step 3 below (calling `_emit_control` directly on a hand-built `IRControl`) passes within this task.
-
-- [ ] **Step 3: Add a direct-emit unit test (green within this task)**
-
-Append:
-
-```python
-from refrain.ir import IRControl, IRControlSeed, IRNumberLit
-from refrain.ir_json import _emit_control, _EmitCtx, _protocol_ir_version
-from refrain.dims import Dimensions  # match Task 3's import
-
-
 def _ctx():
     return _EmitCtx(sample_rate_hz=256.0, channel_names=("Cz",), controls={})
 
@@ -501,7 +469,12 @@ def test_emit_control_omits_seed_when_absent():
     assert "seed" not in _emit_control(ctrl, _ctx())
 ```
 
-- [ ] **Step 4: Implement `_emit_seed` + wire into `_emit_control` and `_protocol_ir_version`**
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `PYTHONPATH=src pytest tests/test_ir_json_seed.py -k emit_control -v`
+Expected: FAIL — `_emit_seed` does not exist yet, so `_emit_control` omits `seed` (the "includes" test fails).
+
+- [ ] **Step 3: Implement `_emit_seed` + wire into `_emit_control` and `_protocol_ir_version`**
 
 Add `_emit_seed` near `_emit_control` in `ir_json.py`:
 
@@ -554,7 +527,7 @@ def _protocol_ir_version(ir: IRProtocol) -> str:
 
 Import `IRControlSeed` at the top of `ir_json.py` (add to the existing `from .ir import (...)` block).
 
-- [ ] **Step 5: Create the v0.3 schema**
+- [ ] **Step 4: Create the v0.3 schema**
 
 Create `src/refrain/schema/ir-json-v0.3.schema.json` by copying `ir-json-v0.2.schema.json` and adding an optional `seed` to the control definition. The control object gains:
 
@@ -574,12 +547,12 @@ Create `src/refrain/schema/ir-json-v0.3.schema.json` by copying `ir-json-v0.2.sc
 
 Add `"0.3"` to whatever `refrain_ir_version` enum/const the validator selects on (`grep -n "refrain_ir_version" src/refrain/schema/*.json src/refrain/*.py` to find the version→schema mapping in `_validate`/`compile_json.py`, and register the new file there).
 
-- [ ] **Step 6: Run tests**
+- [ ] **Step 5: Run tests**
 
-Run: `PYTHONPATH=src pytest tests/test_ir_json_seed.py -k "emit_control or omits" -v`
-Expected: PASS (the two direct-emit unit tests). The two end-to-end tests remain red until Task 6.
+Run: `PYTHONPATH=src pytest tests/test_ir_json_seed.py -v`
+Expected: PASS — all tests in the file, including the two direct-emit unit tests and the Task 3 dataclass tests. (The end-to-end compile assertions are added in Task 6.)
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/refrain/ir_json.py src/refrain/schema/ir-json-v0.3.schema.json tests/test_ir_json_seed.py
@@ -787,10 +760,36 @@ def test_target_pct_number_literal_is_accepted():
     assert obj["controls"]["thr_uv"]["seed"]["target_pct"]["node"] == "number"
 ```
 
+Also add the **end-to-end emitter assertions** here — they were deferred from Task 4 because they need the resolver, which this task completes. Append to `tests/test_ir_json_seed.py` (importing the fixtures defined there in Task 4):
+
+```python
+from refrain.compile_json import compile_to_ir_json
+# SEEDING / NON_SEEDING are module-level fixtures already defined in this file (Task 4).
+
+
+def test_seeding_protocol_emits_seed_and_v03():
+    res = compile_to_ir_json(SEEDING)
+    assert not res.errors, res.errors
+    obj = res.ir_json
+    assert obj["refrain_ir_version"] == "0.3"
+    seed = obj["controls"]["thr_uv"]["seed"]
+    assert seed["statistic"] == "percentile"
+    assert seed["from"] == "derive/env"
+    assert seed["window_samples"] == int(round(60 * 256))  # baked at 256 Hz
+    assert seed["target_pct"]["node"] == "control_ref"
+    assert seed["target_pct"]["target"] == "control/reward_pct"
+
+
+def test_non_seeding_control_omits_seed_and_keeps_low_version():
+    obj = compile_to_ir_json(NON_SEEDING).ir_json
+    assert "seed" not in obj["controls"]["thr_uv"]
+    assert obj["refrain_ir_version"] == "0.1"
+```
+
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `PYTHONPATH=src pytest tests/test_resolve_seed.py -k "good_seed or unknown_from or target_pct" -v`
-Expected: FAIL — the post-pass does not exist, so `thr_uv` has no `seed` key and unknown `from` is not caught.
+Run: `PYTHONPATH=src pytest tests/test_resolve_seed.py -k "good_seed or unknown_from or target_pct" tests/test_ir_json_seed.py -k "seeding_protocol or non_seeding" -v`
+Expected: FAIL — the post-pass does not exist, so `thr_uv` has no `seed` key, unknown `from` is not caught, and the emitted protocol has no `seed`/`0.3`.
 
 - [ ] **Step 3: Wire the post-pass into `resolve`**
 
@@ -855,10 +854,10 @@ In `resolve` (`resolver.py`), after `self._validate_staging(session_ir)` (line 2
 
 Add `IRControlSeed`, `IRRequires`, `IRSession`, `IRExpr` to the `from .ir import (...)` block if not already present (grep to confirm; `IRControlRef`, `IRNumberLit` are already imported per `resolver.py:53-54`).
 
-- [ ] **Step 5: Run tests (including Task 4's end-to-end)**
+- [ ] **Step 5: Run tests (including the deferred end-to-end emitter tests)**
 
 Run: `PYTHONPATH=src pytest tests/test_resolve_seed.py tests/test_ir_json_seed.py -v`
-Expected: PASS — including `test_seeding_protocol_emits_seed_and_v03` and `test_non_seeding_control_omits_seed_and_keeps_low_version` from Task 4, which now go green.
+Expected: PASS — including `test_seeding_protocol_emits_seed_and_v03` and `test_non_seeding_control_omits_seed_and_keeps_low_version` (added in this task's Step 1), which now go green.
 
 - [ ] **Step 6: Commit**
 
