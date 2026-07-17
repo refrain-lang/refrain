@@ -12,9 +12,9 @@ without depending on the Python parser or SciPy.
 
 | Field | Value |
 |---|---|
-| Version string | `"0.1"` |
+| Baseline version | `"0.1"` (emitted when protocol uses no composite or staging features) |
 | Source constant | `IR_JSON_VERSION = "0.1"` in `src/refrain/ir_json.py` |
-| Schema | `src/refrain/schema/ir-json-v0.1.schema.json` |
+| Schemas | `src/refrain/schema/ir-json-v0.1.schema.json`, `ir-json-v0.2.schema.json` |
 
 ### Compatibility policy
 
@@ -92,7 +92,7 @@ present in the serialized output (verified against `realistic_smr.ir.json`):
 
 | Key | JSON type | Meaning |
 |---|---|---|
-| `refrain_ir_version` | `"0.1"` (string const) | Wire-format version; MUST be `"0.1"`. |
+| `refrain_ir_version` | `"0.1"` or `"0.2"` (string) | Wire-format version. Emitted by `_protocol_ir_version()` (src/refrain/ir_json.py:56) as the lowest version that represents the protocol (`"0.2"` for composite/staging features, else `"0.1"`). Runtimes accept `SUPPORTED_IR_VERSIONS`: `"0.1"`, `"0.2"`. |
 | `name` | `string \| null` | Protocol name (`smr_cz_v1`, etc.). |
 | `extends` | `string \| null` | Parent protocol name, if any. |
 | `sample_rate_hz` | number | Baked runtime sample rate (host choice, ≥ `requires.sample_rate_min_hz`). |
