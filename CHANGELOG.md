@@ -5,6 +5,18 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [Unreleased]
+
+### Added
+- **`amp.reference` — montage reference from the connected amp profile.** A
+  protocol may write `referential(active: site, reference: amp.reference)`; the
+  resolver folds it to the connected profile's `reference` (`device` /
+  `linked_ears` / `common_average` / a channel) at resolve time, producing an IR
+  identical to a literal-authored one. `amp` is a new resolver namespace root
+  (allow-list: `reference`). Fails closed: `resolve(amp=None)`, a missing field,
+  or a non-allow-listed field is a `ResolveError`. `AmpProfile` gains an optional
+  `reference` field (no schema bump); the three shipped profiles declare it.
+
 ## [0.14.0] — 2026-07-11
 
 ### Added
