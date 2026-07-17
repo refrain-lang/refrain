@@ -307,6 +307,12 @@ fn control_ref_in_expression_position_is_live() {
     );
     let want = 2.0 * at_default;
     assert!(
+        want < 1.0,
+        "fixture saturates the [0, 1] analog-output clamp: want={want}. \
+         This test cannot distinguish live from frozen once clamped — rescale \
+         the protocol's output binding, do not relax this assertion."
+    );
+    assert!(
         (at_double - want).abs() <= 1e-6 + 1e-4 * want.abs(),
         "expression-position control_ref is frozen: default={at_default}, \
          after set_control(gain, 100)={at_double}, expected {want}"
