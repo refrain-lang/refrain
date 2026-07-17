@@ -28,6 +28,15 @@ without depending on the Python parser or SciPy.
 The schema root declares `"additionalProperties": true`, formalizing the
 ignore-unknown-fields contract at the structural-validation level.
 
+### Version enforcement
+
+A runtime refuses at load any document whose `refrain_ir_version` is not in the
+set it supports (`SUPPORTED_IR_VERSIONS`, `refrain-core/src/ir.rs`), with a
+diagnostic naming the offending version. A document with no tag is treated as
+`0.1`. This is what makes adding a new IR field safe: an old runtime cannot
+silently ignore semantics it does not implement, because it will not load the
+document at all.
+
 ---
 
 ## 2. Two host rules
