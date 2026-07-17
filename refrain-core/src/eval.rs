@@ -1074,6 +1074,14 @@ impl Evaluator {
     /// (e.g. only consumed by coefficient baking) is a no-op success, matching
     /// Python updating `_controls` even when `_control_deps` has no entry.
     pub fn set_control(&mut self, name: &str, value: f64) -> Result<(), String> {
+        self.apply_control_value(name, value)
+    }
+
+    /// Forward a control value to its bound stages. Extracted out of
+    /// `set_control` so the seed-fire path (Task 14) can apply a computed
+    /// baseline value through the same routing without going through the
+    /// public host-facing `set_control` entry point.
+    fn apply_control_value(&mut self, name: &str, value: f64) -> Result<(), String> {
         let target = format!("control/{name}");
         if !self.declared_controls.contains(&target) {
             return Err(format!("no control named {name:?}"));

@@ -51,12 +51,24 @@ pub struct Protocol {
     pub controls: BTreeMap<String, ControlDecl>,
 }
 
-/// A `controls.<name>` declaration. Only the canonical name is needed by the
-/// runtime; the rest of the block (default/range/label) is authoring metadata
-/// serde ignores.
+/// A `controls.<name>` declaration. Only the canonical name and the optional
+/// baseline-seed rule are needed by the runtime; the rest of the block
+/// (default/range/label) is authoring metadata serde ignores.
 #[derive(Debug, Deserialize)]
 pub struct ControlDecl {
     pub canonical_name: String,
+    #[serde(default)]
+    pub seed: Option<ControlSeed>,
+}
+
+/// A control's baseline-seed rule (`_emit_seed`). `target_pct` reuses the
+/// closed `Expr` union (a `number` or a `control_ref`) — no new node kind.
+#[derive(Debug, Deserialize, Clone)]
+pub struct ControlSeed {
+    pub statistic: String,
+    pub from: String,
+    pub window_samples: usize,
+    pub target_pct: Expr,
 }
 
 /// Session timeline (`_emit_session`): an ordered list of phases. The first
@@ -182,7 +194,7 @@ pub struct Derive {
     pub upstream: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Arg {
     pub name: Option<String>,
     pub value: Expr,
@@ -215,7 +227,7 @@ pub struct Coeffs {
     pub lag_samples: Option<usize>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "node")]
 pub enum Expr {
     #[serde(rename = "number")]
