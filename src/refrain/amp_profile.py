@@ -25,6 +25,11 @@ from pathlib import Path
 # Schema version. Bumped on backwards-incompatible field changes.
 AMP_PROFILE_SCHEMA = "refrain-amp-profile/v0"
 
+# Reference-operation keywords a montage may name. Mirrors
+# `primitive_impls.REFERENCE_KEYWORDS`; duplicated to keep this module
+# dependency-light (no scipy). Keep the two in sync.
+AMP_REFERENCE_KEYWORDS = frozenset({"linked_ears", "common_average", "device"})
+
 
 @dataclass(frozen=True, slots=True)
 class Channel:
@@ -58,6 +63,7 @@ class AmpProfile:
     adc_bits: int | None
     input_range_uv: float | None
     resource_limits: ResourceLimits
+    reference: str | None = None
 
     # -- Conveniences -------------------------------------------------------
 
@@ -131,6 +137,15 @@ def _parse_amp_profile(data: dict, *, source: str) -> AmpProfile:
         max_worst_case_us_per_step=int(limits_data.get("max_worst_case_us_per_step", 1000)),
     )
 
+    reference = data.get("reference")
+    if reference is not None:
+        allowed = AMP_REFERENCE_KEYWORDS | {c.name for c in channels}
+        if reference not in allowed:
+            raise AmpProfileError(
+                f"{source}: reference {reference!r} must be a reference keyword "
+                f"{sorted(AMP_REFERENCE_KEYWORDS)} or a declared channel"
+            )
+
     return AmpProfile(
         model=required("model"),
         vendor=required("vendor"),
@@ -144,6 +159,7 @@ def _parse_amp_profile(data: dict, *, source: str) -> AmpProfile:
         adc_bits=data.get("adc_bits"),
         input_range_uv=data.get("input_range_uv"),
         resource_limits=limits,
+        reference=reference,
     )
 
 
