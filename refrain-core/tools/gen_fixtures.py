@@ -243,6 +243,7 @@ if __name__ == "__main__":
         "micro_08_bandpower",
         "micro_09_inhibit",
         "micro_10_autocorr",
+        "micro_11_control_expr",
         "realistic_smr",
         "composite_smr_theta",
     ):
