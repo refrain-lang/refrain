@@ -171,6 +171,16 @@ For `realistic_smr_setcontrol`: replay the `realistic_smr.ir.json` protocol
 with the same signal; at chunk `at_chunk`, call `set_control` for each entry
 in `changes`; compare `.events.json` and `.taps.json` to the references.
 
+**Exception — `seed_smr_baseline`:** baseline-seeding (§2.6) controls are
+seeded from a statistic measured *only during warmup*, so this one bundle is
+generated with `skip_warmup=False` (warmup intact) instead of step 3 above.
+A runtime self-validating this bundle must drive it with the lifecycle-aware
+entry point that advances the warmup→run cursor (Rust: `step_chunk_events`,
+which auto-starts with `skip_warmup=false` and advances the phase cursor;
+read the cached per-chunk streams via `last_streams()`) — the streams-only
+`step_chunk` does not advance the cursor, so the seed would never fire and
+every `output/fb` sample would incorrectly read `0.0`.
+
 ---
 
 ## 4. Tolerance methodology

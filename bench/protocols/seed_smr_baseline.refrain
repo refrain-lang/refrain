@@ -1,0 +1,26 @@
+// seed_smr_baseline.refrain
+// Conformance fixture for baseline seeding (§2.6): a `thr_uv` control seeded
+// from a `percentile` statistic over the warmup window. Generated with
+// `skip_warmup=False` (docs/CONFORMANCE.md notes the exception) so the seed
+// actually fires. The run phase is open-ended (`mode = open`) so a
+// full-length constant signal never runs the session to a stop mid-run.
+protocol "seed_smr_baseline" {
+  meta { version = "1.0.0"; evidence = "clinical"; description = "SMR baseline seed" }
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = passthrough() }
+  derive "env" { from = "raw"; pipeline = [ magnitude() ] }
+  threshold "thr" { signal = "env"; type = absolute(value: thr_uv) }
+  reward { continuous = sigmoid("env" / "thr", midpoint: 1.0, steepness: 3) }
+  output { fb = reward.continuous }
+  controls {
+    reward_pct = percent { default = 70; range = (50, 90); live_tunable = true }
+    thr_uv = voltage {
+      default = 9.9 uV; range = (0.5 uV, 10 uV); live_tunable = true
+      seed = percentile { from = "env"; window = 2 s; target_pct = reward_pct }
+    }
+  }
+  session { phases = [
+    phase { name = "warmup"; duration = 3 s; output_muted = true },
+    phase { name = "run";    mode = open }
+  ] }
+}
