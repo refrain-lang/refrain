@@ -47,3 +47,26 @@ def test_emit_control_omits_seed_when_absent():
     ctrl = IRControl("reward_pct", "control/reward_pct", "percent", Dimensions(),
                      None, None, None, False, None, True, None)
     assert "seed" not in _emit_control(ctrl, _ctx())
+
+
+from refrain.compile_json import compile_to_ir_json
+from tests._seed_fixtures import SEEDING, NON_SEEDING  # verified fixtures (Task 4)
+
+
+def test_seeding_protocol_emits_seed_and_v03():
+    res = compile_to_ir_json(SEEDING)
+    assert not res.errors, res.errors
+    obj = res.ir_json
+    assert obj["refrain_ir_version"] == "0.3"
+    seed = obj["controls"]["thr_uv"]["seed"]
+    assert seed["statistic"] == "percentile"
+    assert seed["from"] == "derive/env"
+    assert seed["window_samples"] == int(round(60 * 256))  # baked at 256 Hz
+    assert seed["target_pct"]["node"] == "control_ref"
+    assert seed["target_pct"]["target"] == "control/reward_pct"
+
+
+def test_non_seeding_control_omits_seed_and_keeps_low_version():
+    obj = compile_to_ir_json(NON_SEEDING).ir_json
+    assert "seed" not in obj["controls"]["thr_uv"]
+    assert obj["refrain_ir_version"] == "0.1"

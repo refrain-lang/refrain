@@ -25,3 +25,29 @@ def test_seed_block_requires_duration_window():
     src = BASE % {"seed": 'seed = percentile { from = "env"; window = 60; target_pct = reward_pct }'}
     res = compile_to_ir_json(src)
     assert res.errors and "window" in res.errors[0].message
+
+
+def test_good_seed_resolves_and_bakes_window():
+    obj = compile_to_ir_json(GOOD).ir_json
+    seed = obj["controls"]["thr_uv"]["seed"]
+    assert seed["from"] == "derive/env"
+    assert seed["window_samples"] == 60 * 256
+
+
+def test_unknown_from_is_a_resolve_error():
+    src = BASE % {"seed": 'seed = percentile { from = "nope"; window = 60 s; target_pct = reward_pct }'}
+    res = compile_to_ir_json(src)
+    assert res.errors and "nope" in res.errors[0].message
+
+
+def test_target_pct_must_be_a_percent_control_or_number():
+    # bind to a voltage control (thr_uv) -> rejected
+    src = BASE % {"seed": 'seed = percentile { from = "env"; window = 60 s; target_pct = thr_uv }'}
+    res = compile_to_ir_json(src)
+    assert res.errors and "percent" in res.errors[0].message
+
+
+def test_target_pct_number_literal_is_accepted():
+    src = BASE % {"seed": 'seed = percentile { from = "env"; window = 60 s; target_pct = 40 }'}
+    obj = compile_to_ir_json(src).ir_json
+    assert obj["controls"]["thr_uv"]["seed"]["target_pct"]["node"] == "number"

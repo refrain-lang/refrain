@@ -54,6 +54,7 @@ from .ir import (
     IRConditional,
     IRControl,
     IRControlRef,
+    IRControlSeed,
     IRCustom,
     IRDerive,
     IRExpr,
@@ -237,6 +238,7 @@ class _Resolver:
         self.output = output_ir
         session_ir = self._resolve_session()
         self._validate_staging(session_ir)
+        self._resolve_control_seeds(requires_ir, session_ir)
         meta_ir = self._resolve_meta()
 
         return IRProtocol(
@@ -1119,6 +1121,66 @@ class _Resolver:
             window_ms=_to_milliseconds(window_expr),
             target_pct_ast=fields["target_pct"],
             loc=seed_ast.loc,
+        )
+
+    def _resolve_control_seeds(self, requires_ir: IRRequires, session_ir: IRSession) -> None:
+        """Post-pass (Task 6): validate each pending seed's `from` derive and
+        `target_pct`, bake `window_samples` at the compile (chosen) rate, and
+        attach the resulting `IRControlSeed` to its control.
+
+        Runs after controls, derives, and session are all resolved so that
+        every derive name and every control (including forward-declared
+        percent controls used as `target_pct`) can be looked up.
+        """
+        if not self._pending_seeds:
+            return
+        rate = float(requires_ir.sample_rate_chosen_hz)
+        for name, pend in self._pending_seeds.items():
+            # 1. `from` must name a real derive. `self.derives` is keyed by
+            #    the bare derive name (e.g. "env"), not its canonical
+            #    "derive/env" form — look it up bare, then read the
+            #    canonical name off the resolved IRDerive.
+            if pend.from_raw not in self.derives:
+                raise ResolveError(
+                    f"control {name!r}.seed.from={pend.from_raw!r} is not a "
+                    "declared derive",
+                    loc=pend.loc,
+                )
+            from_entity = self.derives[pend.from_raw].canonical_name
+            # 2. target_pct is a number or a `percent` control ref (resolved
+            #    now, when every control exists — order-independent).
+            target_pct = self._resolve_value_expr(pend.target_pct_ast)
+            self._validate_seed_target_pct(name, target_pct)
+            # 3. Bake the window at the compile (chosen) rate.
+            window_samples = max(1, int(round(pend.window_ms / 1000.0 * rate)))
+            # (Task 7 inserts the warmup-fits check here.)
+            # (Task 8 inserts dead-seed elimination here.)
+            seed = IRControlSeed(
+                statistic=pend.statistic,
+                from_entity=from_entity,
+                window_samples=window_samples,
+                target_pct=target_pct,
+                loc=pend.loc,
+            )
+            self.controls[name] = replace(self.controls[name], seed=seed)
+
+    def _validate_seed_target_pct(self, name: str, target_pct: IRExpr) -> None:
+        if isinstance(target_pct, IRNumberLit):
+            return
+        if isinstance(target_pct, IRControlRef):
+            ref_name = target_pct.target.removeprefix("control/")
+            ref = self.controls.get(ref_name)
+            if ref is not None and ref.type_kind == "percent":
+                return
+            got = ref.type_kind if ref is not None else "unknown"
+            raise ResolveError(
+                f"control {name!r}.seed.target_pct must bind a `percent` control "
+                f"(got {got!r})",
+                loc=target_pct.loc,
+            )
+        raise ResolveError(
+            f"control {name!r}.seed.target_pct must be a number or a percent control",
+            loc=getattr(target_pct, "loc", None),
         )
 
     def _resolve_placement_control(self, name: str, fields: dict, loc) -> IRControl:
