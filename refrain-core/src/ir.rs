@@ -11,6 +11,11 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 pub struct Protocol {
+    /// Wire schema version (`_protocol_ir_version`). Absent on pre-versioning
+    /// protocols; defaults to the floor so they keep loading. Read ONLY by the
+    /// load-time version gate (SPEC §9.3) — the interpreter never branches on it.
+    #[serde(default = "default_ir_version")]
+    pub refrain_ir_version: String,
     pub sample_rate_hz: f64,
     pub channels: Vec<String>,
     pub inputs: BTreeMap<String, Input>,
@@ -80,6 +85,10 @@ pub struct Phase {
 
 fn default_phase_mode() -> String {
     "timed".to_string()
+}
+
+fn default_ir_version() -> String {
+    "0.1".to_string()
 }
 
 /// A named activation set referenced by `phase.block` (`_emit_block`). Selects

@@ -19,6 +19,31 @@ use crate::dsp::{
 };
 use crate::ir::{Coeffs, Expr, Protocol};
 
+/// Highest IR-JSON schema version this runtime understands. Bumped in lockstep
+/// with `refrain.ir_json._protocol_ir_version`. A protocol tagged higher is
+/// refused at load (SPEC §9.3) rather than run at silent defaults.
+pub const MAX_SUPPORTED_IR_VERSION: &str = "0.3";
+
+/// Refuse a protocol whose schema is newer than this runtime supports. Compares
+/// the dotted `major.minor` numerically so "0.10" > "0.9". A newer version is a
+/// loud, load-time error, before a patient is connected.
+pub fn check_ir_version(p: &Protocol) -> Result<(), String> {
+    fn parse(v: &str) -> (u32, u32) {
+        let mut it = v.split('.');
+        let major = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let minor = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        (major, minor)
+    }
+    if parse(&p.refrain_ir_version) > parse(MAX_SUPPORTED_IR_VERSION) {
+        return Err(format!(
+            "protocol requires IR-JSON schema {} but this runtime supports at \
+             most {}. Update the engine.",
+            p.refrain_ir_version, MAX_SUPPORTED_IR_VERSION
+        ));
+    }
+    Ok(())
+}
+
 /// One unit of evaluator output, mirroring `eval_.Event`. `value` is the
 /// per-chunk mean for value channels and `None` for discrete events.
 #[derive(Clone, Debug)]
