@@ -84,3 +84,23 @@ def test_nonfinite_samples_are_skipped_not_counted():
     ev.step_chunk(good)
     _run(ev, value=5.0, n_chunks=4)
     assert ev._seed_latches["control/thr_uv"].status == "seeded"
+
+
+def test_seed_report_shape():
+    ev = _build()
+    ev.start(skip_warmup=False)
+    _run(ev, value=5.0, n_chunks=4)   # 3 warmup chunks + 1 run chunk -> fires
+    r = ev.seed_report()["thr_uv"]
+    assert r["status"] == "seeded"
+    assert r["source"] == "derive/env"
+    assert r["target_pct"] == 70.0
+    assert r["window_s"] == 2.0          # 512 samples / 256 Hz
+    assert r["n_samples"] >= 512          # 2 s window at 256 Hz
+    assert r["at_time_s"] is not None
+
+
+def test_seed_report_empty_for_non_seeding_protocol():
+    from tests._seed_fixtures import NON_SEEDING   # verified fixture
+    ev = _build(NON_SEEDING)
+    ev.start(skip_warmup=True)
+    assert ev.seed_report() == {}

@@ -1460,6 +1460,25 @@ class Evaluator:
             latch.status = "disarmed_by_host"
         self._apply_control(name, value)
 
+    def seed_report(self) -> dict:
+        """Per-control baseline-seed outcome (§2.7), keyed by bare control name.
+        Empty for a protocol with no seeds. Deliberately NOT a tap — keeps the
+        strict tap key-set parity test untouched (mirrors export_state, v0.8.0)."""
+        if self._rust is not None:
+            return self._rust.seed_report()
+        out: dict[str, dict] = {}
+        for latch in self._seed_latches.values():
+            out[latch.control_name] = {
+                "status": latch.status,
+                "value": latch.value,
+                "source": latch.from_entity,
+                "target_pct": self._seed_target_pct_value(latch.target_pct),
+                "n_samples": latch.n_samples,
+                "window_s": latch.window_samples / self.sample_rate_hz,
+                "at_time_s": latch.at_time_s,
+            }
+        return out
+
     def _apply_control(self, name: str, value: float) -> None:
         """Forward a control value to its dependent impls WITHOUT the disarm
         hook. Used by both `set_control` and the seed latch's fire path (the
