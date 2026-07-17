@@ -134,6 +134,14 @@ fn micro_10_autocorr_equivalent() {
 }
 
 #[test]
+fn micro_11_control_expr_equivalent() {
+    // A control_ref in an output binding: the static streams must match Python
+    // at the default control value. The LIVE behaviour (set_control moves it)
+    // is pinned by set_control.rs::control_ref_in_expression_position_is_live.
+    run_protocol("micro_11_control_expr");
+}
+
+#[test]
 fn realistic_smr_equivalent() {
     run_protocol("realistic_smr");
 }

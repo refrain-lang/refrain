@@ -1894,12 +1894,19 @@ fn build_stage(
 fn build_node(e: &Expr, ctx: &mut BuildCtx) -> CNode {
     match e {
         Expr::Number { value } => CNode::Const(*value),
-        // A `control_ref` in a plain value position (not a recognised tunable
-        // parameter slot) evaluates to its baked default — identical to the
-        // literal `number` the emitter previously baked here. Live retuning is
-        // wired only where a build helper recognises the parameter (percentile
-        // `target_pct`, smooth `tau`, sigmoid `midpoint`).
-        Expr::ControlRef { default, .. } => CNode::Const(*default),
+        // A `control_ref` in a plain value position (an output binding, a derive
+        // formula) is LIVE: it compiles to a shared cell registered as a
+        // `Control::Const` binding, so `set_control` moves it mid-session. This
+        // mirrors the Python evaluator, which rebuilds `control_chunks` from
+        // `self._controls` every chunk (`src/refrain/eval_.py:1399`). Recognised
+        // parameter slots (percentile `target_pct`, smooth `tau`, sigmoid
+        // `midpoint`, reward `weight`) register their own richer bindings
+        // elsewhere.
+        Expr::ControlRef { target, default } => {
+            let cell = control_cell(*default);
+            ctx.register(target, Control::Const { value: cell.clone() });
+            CNode::ConstCell(cell)
+        }
         Expr::Bool { value } => CNode::BoolConst(*value),
         Expr::StreamRef { target } => CNode::Stream(bare(target)),
         Expr::ThresholdRef { target } => CNode::Stream(bare(target)),
