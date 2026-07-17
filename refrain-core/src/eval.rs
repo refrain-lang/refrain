@@ -1894,12 +1894,17 @@ fn build_stage(
 fn build_node(e: &Expr, ctx: &mut BuildCtx) -> CNode {
     match e {
         Expr::Number { value } => CNode::Const(*value),
-        // A `control_ref` in a plain value position (not a recognised tunable
-        // parameter slot) evaluates to its baked default — identical to the
-        // literal `number` the emitter previously baked here. Live retuning is
-        // wired only where a build helper recognises the parameter (percentile
-        // `target_pct`, smooth `tau`, sigmoid `midpoint`).
-        Expr::ControlRef { default, .. } => CNode::Const(*default),
+        // A `control_ref` in a plain value position must retune live, exactly
+        // like Python's `_control_deps` forwarding (Python treats every
+        // control_ref as live, regardless of slot). Register a Const binding
+        // sharing the same cell the node reads each chunk (mirrors the
+        // recognised `absolute(value: <ref>)` slot at `build_threshold_call`),
+        // instead of freezing the baked default into `CNode::Const`.
+        Expr::ControlRef { target, default } => {
+            let cell = control_cell(*default);
+            ctx.register(target, Control::Const { value: cell.clone() });
+            CNode::ConstCell(cell)
+        }
         Expr::Bool { value } => CNode::BoolConst(*value),
         Expr::StreamRef { target } => CNode::Stream(bare(target)),
         Expr::ThresholdRef { target } => CNode::Stream(bare(target)),

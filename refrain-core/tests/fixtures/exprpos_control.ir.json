@@ -1,0 +1,222 @@
+{
+  "refrain_ir_version": "0.1",
+  "name": "exprpos_control",
+  "extends": null,
+  "sample_rate_hz": 256.0,
+  "channels": [
+    "Cz"
+  ],
+  "requires": {
+    "coupling": null,
+    "sample_rate_min_hz": 256,
+    "sample_rate_chosen_hz": 2048,
+    "channels": [
+      "Cz"
+    ],
+    "impedance": "not_required",
+    "markers": "not_required"
+  },
+  "meta": {
+    "version": {
+      "node": "string",
+      "value": "1.0.0"
+    },
+    "evidence": {
+      "node": "string",
+      "value": "demo"
+    },
+    "description": {
+      "node": "string",
+      "value": "expr-position control ref"
+    }
+  },
+  "inputs": {
+    "raw": {
+      "canonical_name": "input/raw",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "montage": {
+        "node": "call",
+        "callee": "referential",
+        "args": [
+          {
+            "name": "active",
+            "value": {
+              "node": "string",
+              "value": "Cz"
+            }
+          },
+          {
+            "name": "reference",
+            "value": {
+              "node": "string",
+              "value": "device"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        }
+      }
+    }
+  },
+  "derives": {
+    "env": {
+      "canonical_name": "derive/env",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "expression": {
+        "node": "call",
+        "callee": "magnitude",
+        "args": [
+          {
+            "name": null,
+            "value": {
+              "node": "stream_ref",
+              "target": "input/raw",
+              "stream_type": {
+                "value_kind": "scalar",
+                "dimensions": {
+                  "time": 0,
+                  "voltage": 1
+                },
+                "vector_size": null
+              }
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        }
+      },
+      "upstream": [
+        "input/raw"
+      ]
+    }
+  },
+  "thresholds": {},
+  "inhibits": {},
+  "reward": {
+    "continuous": {
+      "node": "binop",
+      "op": "*",
+      "left": {
+        "node": "control_ref",
+        "target": "control/gain",
+        "default": 1.0,
+        "dims": {
+          "time": -1,
+          "voltage": 0
+        }
+      },
+      "right": {
+        "node": "stream_ref",
+        "target": "derive/env",
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        }
+      },
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": -1,
+          "voltage": 1
+        },
+        "vector_size": null
+      }
+    },
+    "event": null
+  },
+  "output": {
+    "x": {
+      "node": "reward_field",
+      "field_path": "continuous",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": -1,
+          "voltage": 1
+        },
+        "vector_size": null
+      }
+    }
+  },
+  "controls": {
+    "gain": {
+      "canonical_name": "control/gain",
+      "type_kind": "frequency",
+      "dims": {
+        "time": -1,
+        "voltage": 0
+      },
+      "default": {
+        "node": "number",
+        "value": 1.0,
+        "dims": {
+          "time": -1,
+          "voltage": 0
+        },
+        "unit": "Hz"
+      },
+      "range_low": {
+        "node": "number",
+        "value": 0.5,
+        "dims": {
+          "time": -1,
+          "voltage": 0
+        },
+        "unit": "Hz"
+      },
+      "range_high": {
+        "node": "number",
+        "value": 5.0,
+        "dims": {
+          "time": -1,
+          "voltage": 0
+        },
+        "unit": "Hz"
+      },
+      "log_scale": false,
+      "label": null,
+      "live_tunable": true,
+      "tune_strategy": null
+    }
+  },
+  "session": {
+    "phases": []
+  },
+  "blocks": {},
+  "reward_bundles": {},
+  "topological_order": [
+    "control/gain",
+    "input/raw",
+    "derive/env"
+  ]
+}

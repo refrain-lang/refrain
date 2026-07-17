@@ -245,6 +245,7 @@ if __name__ == "__main__":
         "micro_10_autocorr",
         "realistic_smr",
         "composite_smr_theta",
+        "exprpos_control",
     ):
         generate(stem)
     # passthrough() is a single-channel identity montage, so it needs a

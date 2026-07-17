@@ -51,8 +51,8 @@ struct Schedule {
     changes: Vec<Change>,
 }
 
-fn load_ir() -> Protocol {
-    let s = std::fs::read_to_string(format!("tests/fixtures/{STEM}.ir.json")).unwrap();
+fn load_ir(stem: &str) -> Protocol {
+    let s = std::fs::read_to_string(format!("tests/fixtures/{stem}.ir.json")).unwrap();
     serde_json::from_str(&s).unwrap()
 }
 
@@ -82,7 +82,7 @@ fn load_schedule() -> Schedule {
 /// applied at the scheduled chunk) and assert the event stream matches Python.
 #[test]
 fn realistic_smr_setcontrol_events_equivalent() {
-    let p = load_ir();
+    let p = load_ir(STEM);
     let io = load_io();
     let schedule = load_schedule();
     let want = load_setcontrol_events();
@@ -152,7 +152,7 @@ fn realistic_smr_setcontrol_events_equivalent() {
 /// `target_pct` took effect on the SAME (un-reset) rolling buffer.
 #[test]
 fn realistic_smr_setcontrol_taps_equivalent() {
-    let p = load_ir();
+    let p = load_ir(STEM);
     let io = load_io();
     let schedule = load_schedule();
     let want = load_setcontrol_taps();
@@ -257,5 +257,30 @@ fn realistic_smr_setcontrol_state_preserved() {
         "  {STEM}_setcontrol state :: pre-chunk-{} taps identical to static run, \
          post-change {key} diverged (in-place retune, buffer preserved)",
         schedule.at_chunk
+    );
+}
+
+/// `reward.continuous = gain * "env"`, with `gain` a `control_ref` in a plain
+/// value position (not a recognised percentile/smooth/sigmoid slot). Before
+/// the fix, `build_node` baked `Expr::ControlRef` to a frozen `CNode::Const`,
+/// so `set_control("gain", ...)` was a silent no-op in the Rust core (Python
+/// evaluates it live via `_control_deps`). Feeds a SMALL input (0.1) so
+/// `gain * env` stays inside the `[0,1]` output clamp for both gain values
+/// (0.1 -> 0.1, then 3x -> 0.3); a saturating input would clamp both to 1.0
+/// and mask the retune.
+#[test]
+fn expression_position_control_ref_is_live() {
+    let ir = load_ir("exprpos_control");
+    let mut ev = Evaluator::new(&ir, 256.0, &["Cz".into()]);
+    ev.start(false);
+    let before = ev.step_chunk(&vec![vec![0.1_f64]; 8]);
+    ev.set_control("gain", 3.0).unwrap();
+    let after = ev.step_chunk(&vec![vec![0.1_f64]; 8]);
+    let x_before = *before["output/x"].last().unwrap();
+    let x_after = *after["output/x"].last().unwrap();
+    assert!(
+        x_before > 1e-6 && (x_after - 3.0 * x_before).abs() < 1e-9,
+        "set_control on an expression-position control_ref must retune live: \
+         before={x_before}, after={x_after}"
     );
 }
