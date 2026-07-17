@@ -2,10 +2,10 @@
 
 - **Date:** 2026-07-16
 - **Status:** design (approved; ready to plan)
-- **Scope:** `refrain` engine only. No portal, mobile, or recorder change ships in
-  this sub-project, and no protocol content changes. The single change outside the
-  engine is a one-line CI version pin in `refrain-protocols`, which exists to
-  *verify* the release is additive (rollout step 4).
+- **Scope:** `refrain` engine, plus a `refrain-protocols` follow-on (make the 21
+  generic `linked_ears` protocols declare the electrodes they depend on, and repin
+  CI). The live flatline defect (§"Audit") is **not** closed by this spec — its fix
+  is a device-compatibility gate in the portal/mobile layer, tracked separately.
 - **Target release:** `refrain` v0.15.0 (lockstep with `refrain_core`)
 - **Relationship:** sub-project #1 of the device-agnostic protocol platform
   (Linear **WOR-142**; umbrella design:
@@ -358,20 +358,20 @@ downstream (IR-JSON, signatures, `content_hash`) is unaffected by construction.
 
 ## Rollout
 
-**Step 0 ships first and needs no engine release.** The audit found a live,
-patient-facing defect whose fix is pure authoring — it must not wait on v0.15.0.
+**The flatline fix does not live in this repo.** A verification pass on
+2026-07-17 (see §"Why the protocol edit is not the fix") disproved an earlier
+claim that honest `requires.channels` declarations would close the exposure. The
+compile pipeline is hardcoded to `resolve(amp=None)` (`compile_json.py:4`) and the
+sidecar `/compile` API has no amp field (`server.py:24`), so the channel guard at
+`resolver.py:313` never runs for an assigned protocol regardless of what the
+protocol declares. The immediate defect fix is a device-compatibility check at the
+**portal or mobile** layer, tracked separately; it is out of scope for this
+engine spec.
 
-0. **`refrain-protocols`, immediately, against v0.14.0:** add the reference
-   electrodes to `requires.channels` on the 21 generic `linked_ears` protocols
-   (`["Pz"]` → `["Pz", "A1", "A2"]`).
-
-   This needs no engine feature. It makes the protocols honest, and honesty is
-   sufficient: it **activates the guard that already exists** at
-   `resolver.py:313`, so compiling any of them for `brainbit_flex` now fails with
-   *"amp 'brainbit-flex' is missing required channels: ['A1', 'A2']"*. They stop
-   being assignable to BrainBit — which is correct — and the flatline exposure
-   closes without a release. `q21` and `openbci_cyton` both declare A1/A2, so
-   they are unaffected.
+What this spec's steps below actually accomplish: they make montage resolution
+honest inside the engine and the library, which is a *prerequisite* for the
+portal/mobile fix to be correct (the compat check needs protocols to declare the
+channels they depend on) — not a substitute for it.
 
 1. `refrain` PR: profile field + load validation, `amp` namespace + allowlist,
    the consistency lint, the `linked_ears` runtime fix (both evaluators),
@@ -382,22 +382,35 @@ patient-facing defect whose fix is pure authoring — it must not wait on v0.15.
    the merge commit. Never tag before that PR merges or the published wheels are
    mislabeled. The CHANGELOG needs explicit **BREAKING** entries for the
    `linked_ears` runtime change and the consistency lint.
-4. `refrain-protocols`: repin CI from v0.14.0 to v0.15.0 and confirm the suite,
-   the catalog gate, and the fuzz gate (26/38 fuzzed, 0 violations) stay green.
+4. `refrain-protocols`: make the 21 generic `linked_ears` protocols honest
+   (`["Pz"]` → `["Pz", "A1", "A2"]`) so the step-1 lint passes, then repin CI from
+   v0.14.0 to v0.15.0 and confirm the suite, the catalog gate, and the fuzz gate
+   (26/38 fuzzed, 0 violations) stay green. The declaration edit and the lint must
+   land together: the lint rejects exactly the declarations this step fixes.
 
-**Ordering is load-bearing.** Step 0 must precede step 3, because the step-1 lint
-rejects exactly the declarations step 0 fixes. Run in this order, step 4 needs no
-protocol edits of its own and remains a clean acceptance gate: it proves against
-39 real protocols that the engine change is additive.
+**Ordering is load-bearing.** The `refrain-protocols` declaration edit (step 4)
+must not precede the lint (step 1/3) into `main` alone — the guard that would give
+it teeth (`resolver.py:313`) only fires when an amp is passed, which the portal
+does not do, so on its own the edit changes nothing observable and can drift back.
+Land it with the lint, which enforces it in CI.
 
-Step 0 is independently valuable and independently shippable. If v0.15.0 slips,
-step 0 must not slip with it.
+### The separate, higher-priority defect
+
+The silent flatline (§"Audit") is a live patient-facing defect that this engine
+release does **not** close. It needs a device-compatibility gate where assignment
+actually happens — the portal passing the target amp to a sidecar that accepts one
+(which itself needs the amp added to `CompileRequest`, a separate `refrain` change),
+or a mobile-side check that the assigned IR's required channels are a subset of the
+device's channels. That work is not scheduled and has no Linear issue. It should be
+filed and prioritised independently of, and ahead of, this spec.
 
 ## Audit (completed 2026-07-16)
 
 Run before planning, to decide whether the `linked_ears` break was safe to ship.
 It found the opposite question was the right one: **the current behaviour is a
-silent flatline, and the break is the fix.**
+silent flatline.** The engine break fixes the montage-substitution half of it; the
+half that admits a generic protocol onto a BrainBit in the first place is a
+portal/mobile gap this spec does not close (see §"Root cause").
 
 ### cc-mobile
 
@@ -432,11 +445,43 @@ version-skew 422 does not mask them. Any protection today is accidental.
 
 ### Root cause
 
-The engine's guard already exists and is correct — `resolver.py:313` rejects a
-protocol whose `requires.channels` the amp cannot supply. **The protocols defeat
-it by under-declaring**: they depend on ear electrodes for the montage but never
-require them. The montage layer then silently substitutes rather than failing.
-Hence rollout step 0, which is the actual defect fix.
+Two independent faults compound:
+
+1. **Nothing validates the protocol against the target device at assignment
+   time.** The portal sidecar compiles with `resolve(amp=None)` (`compile_json.py:4`),
+   and its `/compile` API has no amp field (`server.py:24`), so the channel guard
+   at `resolver.py:313` never runs. A generic protocol authored for a 256 Hz,
+   ear-referenced amp is compiled and assigned to a BrainBit client with no
+   objection.
+2. **The montage layer then substitutes instead of failing.** `linked_ears` finds
+   no ear electrodes and silently degrades (§"Breaking change"), and for a
+   single-channel source that degradation is an all-zero stream.
+
+Fault 2 is what this spec fixes. **Fault 1 is the one that actually admits the bad
+assignment, and it lives in the portal/mobile, not here** — see §"Why the protocol
+edit is not the fix".
+
+### Why the protocol edit is not the fix
+
+An earlier draft proposed adding the reference electrodes to `requires.channels`
+("step 0") on the theory that honest declarations would activate the
+`resolver.py:313` guard. A verification pass on 2026-07-17 disproved it:
+
+- `resolve(<generic protocol>, amp=None)` — the portal's actual path — **compiles
+  cleanly**; no channel check runs. Confirmed live.
+- `resolve(<generic protocol>, amp=brainbit_flex)` **does** reject — but on
+  *sample rate* (`>= 256 Hz` vs the profile's 250), before the channel check is
+  even reached. Confirmed live.
+- The sidecar cannot pass an amp anyway: `compile_json.compile_to_ir_json` hardcodes
+  `resolve(amp=None)` and `CompileRequest` (`server.py:24`) exposes only
+  `sample_rate_hz` and `bindings`.
+
+So the guard is real and would already reject these protocols for BrainBit *if the
+amp were passed* — with or without the electrode edit. The gap is entirely that
+the amp is never passed. Editing the 21 protocols is still correct hygiene (it is
+required for the lint to pass and for eventual re-authoring), but it does not, by
+itself, stop the flatline. It is therefore folded into rollout step 4, not
+promoted to an emergency pre-release "step 0".
 
 ### Other surfaces
 
