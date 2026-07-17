@@ -1123,6 +1123,49 @@ class _Resolver:
             loc=seed_ast.loc,
         )
 
+    def _referenced_control_targets(self) -> set[str]:
+        """Canonical targets of every control_ref surviving in the resolved
+        pipeline (derives/thresholds/inhibits/reward/output/bundles). Mirrors
+        the expression walk in `_instantiate_expr`. Seed `target_pct` refs are
+        NOT walked (they live inside control blocks), so a seed can't keep its
+        own control alive."""
+        found: set[str] = set()
+
+        def walk(expr) -> None:
+            if expr is None:
+                return
+            if isinstance(expr, IRControlRef):
+                found.add(expr.target)
+            elif isinstance(expr, IRCall):
+                for a in expr.args:
+                    walk(a.value)
+            elif isinstance(expr, IRBinaryOp):
+                walk(expr.left); walk(expr.right)
+            elif isinstance(expr, IRConditional):
+                walk(expr.cond); walk(expr.then_branch); walk(expr.else_branch)
+            elif isinstance(expr, (IRArray, IRTuple)):
+                for e in expr.elements:
+                    walk(e)
+            elif isinstance(expr, IRBlockExpr):
+                for e in expr.fields.values():
+                    walk(e)
+
+        for d in self.derives.values():
+            walk(d.expression)
+        for t in self.thresholds.values():
+            walk(t.threshold_call)
+        for ih in self.inhibits.values():
+            walk(ih.metric); walk(ih.threshold)
+        if self.reward_ir is not None:
+            walk(self.reward_ir.continuous); walk(self.reward_ir.event)
+            for c in self.reward_ir.components:
+                walk(c.signal); walk(c.weight)
+        for rb in self._reward_bundles.values():
+            walk(rb.continuous); walk(rb.event)
+        for expr in self.output.values():
+            walk(expr)
+        return found
+
     def _resolve_control_seeds(self, requires_ir: IRRequires, session_ir: IRSession) -> None:
         """Post-pass (Task 6): validate each pending seed's `from` derive and
         `target_pct`, bake `window_samples` at the compile (chosen) rate, and
@@ -1135,6 +1178,7 @@ class _Resolver:
         if not self._pending_seeds:
             return
         rate = float(requires_ir.sample_rate_chosen_hz)
+        referenced = self._referenced_control_targets()
         for name, pend in self._pending_seeds.items():
             # 1. `from` must name a real derive. `self.derives` is keyed by
             #    the bare derive name (e.g. "env"), not its canonical
@@ -1168,7 +1212,8 @@ class _Resolver:
                         "buffer can never fill",
                         loc=pend.loc,
                     )
-            # (Task 8 inserts dead-seed elimination here.)
+            if f"control/{name}" not in referenced:
+                continue   # dead seed: control folded out — do not attach
             seed = IRControlSeed(
                 statistic=pend.statistic,
                 from_entity=from_entity,

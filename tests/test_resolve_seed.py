@@ -10,6 +10,7 @@ resolving to a sibling control, baking the window) is Task 6's post-pass.
 
 from refrain.compile_json import compile_to_ir_json
 from tests._seed_fixtures import BASE, GOOD  # verified block-syntax fixtures (Task 4)
+from tests._seed_fixtures import MODE_SRC  # verified ternary mode-conditional
 
 # BASE is a `%`-template: substitute ONE seed line via `BASE % {"seed": "..."}`.
 # NEVER str.format() — the protocol body is full of literal `{}`.
@@ -68,3 +69,15 @@ def test_window_equal_to_warmup_is_allowed():
     tmpl = BASE.replace('duration = 90 s; output_muted = true',
                         'duration = 60 s; output_muted = true')
     assert not compile_to_ir_json(tmpl % {"seed": _SEED}).errors
+
+
+def test_seed_dropped_when_control_folded_out():
+    # adaptive -> percentile branch survives, absolute(thr_uv) is deleted, so
+    # thr_uv is unreferenced. Its seed must be dropped from the resolved IR.
+    obj = compile_to_ir_json(MODE_SRC, bindings={"threshold_style": "adaptive"}).ir_json
+    assert "seed" not in obj["controls"].get("thr_uv", {})
+
+
+def test_seed_kept_when_control_referenced():
+    obj = compile_to_ir_json(MODE_SRC, bindings={"threshold_style": "baseline"}).ir_json
+    assert "seed" in obj["controls"]["thr_uv"]
