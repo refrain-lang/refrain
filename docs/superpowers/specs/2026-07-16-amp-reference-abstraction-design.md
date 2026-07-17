@@ -4,8 +4,9 @@
 - **Status:** design (approved; ready to plan)
 - **Scope:** `refrain` engine, plus a `refrain-protocols` follow-on (make the 21
   generic `linked_ears` protocols declare the electrodes they depend on, and repin
-  CI). The live flatline defect (§"Audit") is **not** closed by this spec — its fix
-  is a device-compatibility gate in the portal/mobile layer, tracked separately.
+  CI). The live flatline defect (§"Audit") is **not** closed by this spec — but its
+  fix is *finishing this abstraction* (reference + placement + re-authoring), not a
+  device firewall. See §"The flatline is a symptom of the half-built abstraction".
 - **Target release:** `refrain` v0.15.0 (lockstep with `refrain_core`)
 - **Relationship:** sub-project #1 of the device-agnostic protocol platform
   (Linear **WOR-142**; umbrella design:
@@ -394,15 +395,42 @@ it teeth (`resolver.py:313`) only fires when an amp is passed, which the portal
 does not do, so on its own the edit changes nothing observable and can drift back.
 Land it with the lint, which enforces it in CI.
 
-### The separate, higher-priority defect
+### The flatline is a symptom of the half-built abstraction — not a firewall to build
 
-The silent flatline (§"Audit") is a live patient-facing defect that this engine
-release does **not** close. It needs a device-compatibility gate where assignment
-actually happens — the portal passing the target amp to a sidecar that accepts one
-(which itself needs the amp added to `CompileRequest`, a separate `refrain` change),
-or a mobile-side check that the assigned IR's required channels are a subset of the
-device's channels. That work is not scheduled and has no Linear issue. It should be
-filed and prioritised independently of, and ahead of, this spec.
+It is tempting to fix the flatline (§"Audit") with a device-compatibility gate:
+have the portal or mobile refuse to run a "generic" protocol on a BrainBit. That
+is the wrong direction. It hardens the `brainbit/`-vs-generic split that the whole
+platform initiative (WOR-142) exists to delete — the goal is **one amp-neutral
+library**, where a protocol authored once runs on any device because the amp
+profile supplies the hardware specifics. A firewall entrenches exactly what we are
+removing.
+
+The flatline occurs precisely *because* the generic protocols are still
+pre-abstraction: they hardcode `reference: "linked_ears"` and a fixed site
+(`active: "C4"`). Finish the abstraction and the failure cannot occur — resolved
+for a BrainBit, `amp.reference` folds to `"device"`, the site is a bound
+`placement`, and the session runs. The resolution is therefore the platform work,
+not a patch:
+
+1. `reference: amp.reference` — this spec (sub-project #1).
+2. The site as a `placement` the host binds to a real electrode — sub-project #2.
+   Reference alone is insufficient: `C4` is not one of a BrainBit's four
+   electrodes, so the site must be device-bound too.
+3. Re-author the generic set onto both, into the single library — sub-project #4.
+
+Passing the amp profile at compile is still wanted, but as **enablement**: it lets
+`resolve()` bake the device reference/rate and bind the placed site, and — as a
+free byproduct — reject only on *genuine physical incapacity* (too few channels,
+wrong rate, no placeable site). That residual check falls out of `resolve()`; it
+is not a hand-maintained per-device allowlist. (It does need the amp added to
+`CompileRequest`/`compile_to_ir_json`, which today hardcode `amp=None` — a small,
+separate `refrain` change.)
+
+Until the re-authoring lands, the interim exposure is bounded: the migration has
+not happened, the generic set is not being cross-assigned to BrainBit clients
+today, and the §"Breaking change" fail-closed error turns any leakage into a loud
+failure instead of a silent flatline. That break is the migration backstop; the
+abstraction is the fix.
 
 ## Audit (completed 2026-07-16)
 
@@ -488,9 +516,10 @@ promoted to an emergency pre-release "step 0".
 - **`coherence-portal`: never flatlines itself, but is where fault 1 lives.** It
   compiles only (`resolve(amp=None)` → IR-JSON) and never constructs a
   `Referential`, so it does not compute the zero stream — but it is the layer that
-  admits a generic protocol onto a BrainBit client without a device check. The
-  higher-priority fix (§"The separate, higher-priority defect") is here or in
-  mobile.
+  admits a not-yet-abstracted protocol onto a BrainBit client without resolving it
+  against the device. The durable fix is the amp-neutral abstraction landing here
+  as *enablement* (pass the amp so `resolve()` binds device specifics), not a
+  device firewall — see §"The flatline is a symptom of the half-built abstraction".
 - **`coherence-recorder` / `refrain run`:** Python path. Same montage-substitution
   exposure in principle; the Python evaluator at least logs it. Not audited in
   depth — the engine break (§"Breaking change") fixes the substitution identically
