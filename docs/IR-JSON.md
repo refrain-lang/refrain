@@ -37,6 +37,13 @@ diagnostic naming the offending version. A document with no tag is treated as
 silently ignore semantics it does not implement, because it will not load the
 document at all.
 
+The gate keys only on `refrain_ir_version`, not on which fields are present —
+so this protection applies only to fields shipped under a version bump. A new
+field carrying semantics that is added without bumping the version is silently
+ignored by old runtimes exactly as §Compatibility policy describes; only
+semantically-inert additions (fields an old runtime can safely disregard) may
+ride an existing version.
+
 ---
 
 ## 2. Two host rules

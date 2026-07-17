@@ -556,3 +556,38 @@ def test_rust_panic_surfaces_as_catchable_runtimeerror():
         refrain_core.RustEvaluator(corrupted, 256.0, ["Cz"])
     assert isinstance(excinfo.value, RuntimeError)   # the guard's conversion
     assert "Rust" in str(excinfo.value)
+
+
+def test_rust_backend_refuses_unsupported_ir_version(smr_ir):
+    """SPEC 9.3: the Rust core must refuse AT LOAD an IR-JSON whose
+    `refrain_ir_version` is not one this runtime supports.
+
+    `refrain-core/tests/ir_deser.rs::refuses_ir_version_newer_than_supported`
+    already pins the pure predicate (`check_ir_version`), but nothing exercised
+    the actual load site — the `RustEvaluator` constructor in
+    `refrain-core/src/python.rs`. `python`/`uniffi` are non-default Cargo
+    features, so a plain `cargo test` never even compiles that call site; if a
+    refactor dropped the `check_ir_version(&p)?` call there, the whole suite
+    (cargo + pytest) would stay green. Drive the real constructor here instead.
+    """
+    refrain_core = pytest.importorskip("refrain_core", reason="refrain_core wheel not installed")
+    import json
+
+    from refrain.ir_json import ir_to_json
+
+    ir_json = ir_to_json(smr_ir, sample_rate_hz=SAMPLE_RATE)
+
+    # Untampered IR must still load fine — otherwise this test could pass
+    # merely because the constructor rejects everything.
+    ok_ev = refrain_core.RustEvaluator(ir_json, float(SAMPLE_RATE), list(CHANNELS))
+    assert ok_ev is not None
+
+    tampered = json.loads(ir_json)
+    tampered["refrain_ir_version"] = "99.0"
+    tampered_json = json.dumps(tampered)
+
+    with pytest.raises(ValueError) as excinfo:
+        refrain_core.RustEvaluator(tampered_json, float(SAMPLE_RATE), list(CHANNELS))
+    msg = str(excinfo.value)
+    assert "99.0" in msg, f"diagnostic must name the offending version, got: {msg}"
+    assert "refrain_ir_version" in msg, f"diagnostic must name the field, got: {msg}"
