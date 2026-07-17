@@ -485,11 +485,16 @@ promoted to an emergency pre-release "step 0".
 
 ### Other surfaces
 
-- **`coherence-portal`: not affected.** It compiles only (`resolve()` → IR-JSON)
-  and never constructs a `Referential`.
-- **`coherence-recorder` / `refrain run`:** Python path. Same exposure in
-  principle; the Python evaluator at least logs the substitution. Not audited in
-  depth — the fix is identical and step 0 closes the library-side cause for both.
+- **`coherence-portal`: never flatlines itself, but is where fault 1 lives.** It
+  compiles only (`resolve(amp=None)` → IR-JSON) and never constructs a
+  `Referential`, so it does not compute the zero stream — but it is the layer that
+  admits a generic protocol onto a BrainBit client without a device check. The
+  higher-priority fix (§"The separate, higher-priority defect") is here or in
+  mobile.
+- **`coherence-recorder` / `refrain run`:** Python path. Same montage-substitution
+  exposure in principle; the Python evaluator at least logs it. Not audited in
+  depth — the engine break (§"Breaking change") fixes the substitution identically
+  for both.
 
 ## Non-goals
 
