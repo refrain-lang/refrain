@@ -19,7 +19,7 @@
   "meta": {
     "description": {
       "node": "string",
-      "value": "control_ref in sigmoid steepness + nested linear midpoint/slope"
+      "value": "control_ref in sigmoid steepness, nested linear midpoint/slope, and inside low/high"
     }
   },
   "inputs": {
@@ -392,9 +392,105 @@
         "vector_size": null
       }
     },
-    "event": null
+    "event": {
+      "node": "call",
+      "callee": "dwell",
+      "args": [
+        {
+          "name": "condition",
+          "value": {
+            "node": "call",
+            "callee": "inside",
+            "args": [
+              {
+                "name": null,
+                "value": {
+                  "node": "stream_ref",
+                  "target": "derive/env",
+                  "stream_type": {
+                    "value_kind": "scalar",
+                    "dimensions": {
+                      "time": 0,
+                      "voltage": 1
+                    },
+                    "vector_size": null
+                  }
+                }
+              },
+              {
+                "name": "low",
+                "value": {
+                  "node": "control_ref",
+                  "target": "control/in_low",
+                  "default": 0.75,
+                  "dims": {
+                    "time": 0,
+                    "voltage": 0
+                  }
+                }
+              },
+              {
+                "name": "high",
+                "value": {
+                  "node": "control_ref",
+                  "target": "control/in_high",
+                  "default": 1.45,
+                  "dims": {
+                    "time": 0,
+                    "voltage": 0
+                  }
+                }
+              }
+            ],
+            "stream_type": {
+              "value_kind": "boolean",
+              "dimensions": {
+                "time": 0,
+                "voltage": 0
+              },
+              "vector_size": null
+            }
+          }
+        },
+        {
+          "name": "duration",
+          "value": {
+            "node": "number",
+            "value": 250.0,
+            "dims": {
+              "time": 1,
+              "voltage": 0
+            },
+            "unit": "ms"
+          }
+        }
+      ],
+      "stream_type": {
+        "value_kind": "event",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      },
+      "coeffs": {
+        "dwell_samples": 64
+      }
+    }
   },
   "output": {
+    "audio_chime": {
+      "node": "reward_field",
+      "field_path": "event",
+      "stream_type": {
+        "value_kind": "event",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      }
+    },
     "audio_gain": {
       "node": "reward_field",
       "field_path": "continuous",
@@ -525,6 +621,84 @@
       "label": "Linear slope",
       "live_tunable": true,
       "tune_strategy": null
+    },
+    "in_low": {
+      "canonical_name": "control/in_low",
+      "type_kind": "number",
+      "dims": {
+        "time": 0,
+        "voltage": 0
+      },
+      "default": {
+        "node": "number",
+        "value": 0.75,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_low": {
+        "node": "number",
+        "value": 0.0,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_high": {
+        "node": "number",
+        "value": 1.5,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "log_scale": false,
+      "label": "Inside band low",
+      "live_tunable": true,
+      "tune_strategy": null
+    },
+    "in_high": {
+      "canonical_name": "control/in_high",
+      "type_kind": "number",
+      "dims": {
+        "time": 0,
+        "voltage": 0
+      },
+      "default": {
+        "node": "number",
+        "value": 1.45,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_low": {
+        "node": "number",
+        "value": 0.5,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_high": {
+        "node": "number",
+        "value": 2.0,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "log_scale": false,
+      "label": "Inside band high",
+      "live_tunable": true,
+      "tune_strategy": null
     }
   },
   "session": {
@@ -544,6 +718,8 @@
     "control/steep",
     "control/lin_mid",
     "control/lin_slope",
+    "control/in_low",
+    "control/in_high",
     "input/raw",
     "derive/env",
     "threshold/env_t"
