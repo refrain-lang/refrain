@@ -29,6 +29,7 @@ Hilbert family:
 
 from __future__ import annotations
 
+import math
 from collections import deque
 from typing import Any
 
@@ -431,6 +432,19 @@ class PercentileImpl(PrimitiveImpl):
 
     def set_ingesting(self, ingesting: bool) -> None:
         self._ingesting = bool(ingesting)
+
+    def ingest(self, x: np.ndarray) -> None:
+        """Append finite samples to the window WITHOUT computing a percentile
+        (seed-latch warmup ingest). Non-finite samples are skipped — never
+        appended, never counted — so both engines share one NaN-skip rule and
+        the full-window check (`n_eff >= window_samples`) is exact."""
+        if not self._ingesting:
+            return
+        for v in x:
+            fv = float(v)
+            if math.isfinite(fv):
+                self._buffer.append(fv)
+                self._seen += 1
 
     def step(self, x: np.ndarray) -> np.ndarray:
         out = np.empty(x.shape[0], dtype=np.float64)

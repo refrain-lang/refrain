@@ -269,6 +269,25 @@ def _walk_calls(expr: IRExpr):
     # Other leaves (refs, literals, member access) carry no impl.
 
 
+class _SeedLatch:
+    """Per-seeded-control polled latch (§2.5). Ingests the `from` derive during
+    warmup; fires once at the warmup→run edge."""
+
+    def __init__(self, *, control_name, control_target, seed, buffer):
+        self.control_name = control_name        # bare, for _apply_control + report key
+        self.control_target = control_target     # "control/<name>"
+        self.from_entity = seed.from_entity       # "derive/<name>"
+        self.target_pct = seed.target_pct          # IRExpr (control_ref or number)
+        self.window_samples = seed.window_samples
+        self.buffer = buffer                        # impls.PercentileImpl (reused storage)
+        self.armed = True
+        self.fired = False
+        self.status = "pending"
+        self.value = None
+        self.n_samples = 0
+        self.at_time_s = None
+
+
 # ---------------------------------------------------------------------------
 # Evaluator
 # ---------------------------------------------------------------------------
@@ -345,6 +364,11 @@ class Evaluator:
         self._control_deps: dict[str, list[impls.PrimitiveImpl]] = {}
         # Pre-instantiate input/derive/threshold/inhibit primitives.
         self._build_pipeline()
+        # One _SeedLatch per seeded control (SPEC §baseline-seeding). Built
+        # unconditionally: on the Rust backend (self._rust, set below) these
+        # Python latches are simply never stepped — the Rust evaluator owns
+        # its own latches — so no backend guard is needed here.
+        self._build_seed_latches()
         # Seed adaptive tracker state from a prior session (Ask 2). Opt-in;
         # None => today's cold start (bit-identical). Applied after the
         # pipeline exists so the stateful impls are constructed.
@@ -731,6 +755,31 @@ class Evaluator:
         self._impls[id(call)] = impl
         for target in control_targets:
             self._control_deps.setdefault(target, []).append(impl)
+
+    # -- Baseline seeding (control seed latches) ----------------------------
+
+    def _build_seed_latches(self) -> None:
+        self._seed_latches: dict[str, _SeedLatch] = {}
+        self._seed_failed_mute = False
+        for name, ctrl in self.ir.controls.items():
+            if ctrl.seed is None:
+                continue
+            init_pct = self._seed_target_pct_value(ctrl.seed.target_pct)
+            # window_ms round-trips to the same window_samples the resolver baked
+            # (window_samples = round(window_ms/1000*rate)), so the buffer cap
+            # matches exactly.
+            window_ms = ctrl.seed.window_samples * 1000.0 / self.sample_rate_hz
+            buf = impls.PercentileImpl(
+                target_pct=init_pct, window_ms=window_ms, sample_rate_hz=self.sample_rate_hz)
+            self._seed_latches[ctrl.canonical_name] = _SeedLatch(
+                control_name=name, control_target=ctrl.canonical_name, seed=ctrl.seed, buffer=buf)
+
+    def _seed_target_pct_value(self, target_pct) -> float:
+        if isinstance(target_pct, IRControlRef):
+            return float(self._controls.get(target_pct.target, 0.0))
+        if isinstance(target_pct, IRNumberLit):
+            return float(target_pct.value)
+        raise TypeError("seed.target_pct must be a control_ref or number")
 
     # -- Adaptive-state seed/export (Ask 2) ---------------------------------
 
@@ -1360,6 +1409,19 @@ class Evaluator:
             # Rust raises KeyError on unknown control names; propagate it.
             self._rust.set_control(name, float(value))
             return
+        # A host write to a seeded control that has not fired yet is a deliberate
+        # clinical judgement — disarm the seed and run normally (§2.6). Disarm,
+        # NOT fail: the clinician just took responsibility for the value.
+        latch = self._seed_latches.get(f"control/{name}")
+        if latch is not None and latch.armed and not latch.fired:
+            latch.armed = False
+            latch.status = "disarmed_by_host"
+        self._apply_control(name, value)
+
+    def _apply_control(self, name: str, value: float) -> None:
+        """Forward a control value to its dependent impls WITHOUT the disarm
+        hook. Used by both `set_control` and the seed latch's fire path (the
+        seed must never disarm itself)."""
         target = f"control/{name}"
         if target not in self._controls:
             raise KeyError(f"no control named {name!r}")
