@@ -781,6 +781,41 @@ class Evaluator:
             return float(target_pct.value)
         raise TypeError("seed.target_pct must be a control_ref or number")
 
+    def _step_seeds(self, stream_values: dict, t0_s: float) -> None:
+        """Drive every armed seed latch for one chunk: ingest the `from` derive
+        during warmup; at the first `run` chunk, fire exactly once — compute the
+        percentile and write the control BEFORE any threshold steps run this
+        chunk (§2.5). A host write to the control (Task 9's `set_control` hook)
+        disarms the latch before it ever reaches here."""
+        for latch in self._seed_latches.values():
+            if not latch.armed:
+                continue
+            src = stream_values.get(latch.from_entity)
+            if self._state == "warmup":
+                if src is not None:
+                    latch.buffer.ingest(src)        # append-only, skips non-finite
+                continue
+            # state == "run", armed, not yet fired -> fire exactly once.
+            if latch.fired:
+                continue
+            latch.fired = True
+            pct = self._seed_target_pct_value(latch.target_pct)  # tracks a live reward_pct
+            latch.buffer.update_control(latch.control_target, pct)
+            st = latch.buffer.export_state()
+            n_eff = int(st["n_eff"])
+            latch.n_samples = n_eff
+            latch.at_time_s = t0_s
+            if n_eff < latch.window_samples:
+                # The measurement did not complete (short/skipped warmup, early
+                # advance) -> fail closed for the rest of the session (§2.6).
+                latch.status = "insufficient_samples"
+                self._seed_failed_mute = True
+                continue
+            value = float(st["value"])
+            latch.value = value
+            latch.status = "seeded"
+            self._apply_control(latch.control_name, value)   # NOT set_control -> no self-disarm
+
     # -- Adaptive-state seed/export (Ask 2) ---------------------------------
 
     def _collect_stateful_impls(self) -> dict[str, Any]:
@@ -967,6 +1002,13 @@ class Evaluator:
             stream_values[d.canonical_name] = self._eval_expr(
                 d.expression, stream_values, control_chunks_cache, actual_chunk_size
             )
+
+        # Baseline seeding (§2.5): ingest the `from` derive during warmup; at the
+        # first run chunk compute the percentile and write the control BEFORE any
+        # threshold steps, so the seeded value is live with no one-chunk lag.
+        if self._seed_latches:
+            self._step_seeds(stream_values, t0_s)
+            suppress_output = suppress_output or self._seed_failed_mute
 
         # Freeze adaptive-window ingestion during mid-session muted rests so a
         # later block's window isn't polluted by rest-period artifact: ingest
