@@ -47,10 +47,15 @@ def test_batch_aggregates_multiple_paths(tmp_path, capsys):
     # --library examples (not examples/library) for othmer_ilf_cz_pz resolution.
     # total 29 = bench/protocols 20 (13 Inc0 + 4 Inc1 fixtures + the metamorphic
     # tier's micro_multi_leaf_control_absolute skip fixture + the expression-
-    # position control_ref regression fixture micro_11_control_expr + Task 3's
-    # param-slot control_ref regression fixture micro_12_control_param_slots,
-    # both of which the fuzzer skips as "reward.event has no all_of/any_of
-    # condition" since they only declare `continuous`) + examples 9.
+    # position control_ref regression fixture micro_11_control_expr (skipped as
+    # "reward.event has no all_of/any_of condition" since it only declares
+    # `continuous`) + Task 3/this task's param-slot control_ref regression
+    # fixture micro_12_control_param_slots, which now also wires a control_ref
+    # into `inside(low:/high:)` inside a `dwell(...)` reward.event and so is
+    # skipped instead as "unrecognized condition expr IRCall" — the same
+    # reason micro_07_ilf/micro_08_bandpower are skipped, since the fuzzer's
+    # condition surface only understands all_of/any_of/above/below, not a bare
+    # `inside(...)`) + examples 9.
     # fuzzed 8 = Inc0's 4 + Inc1's micro_single_above/below/center_bandwidth +
     # Task 6's micro_single_pct (percentile single-leaf no longer skips — it
     # now fuzzes under the metamorphic tier instead of the old calibrated-
