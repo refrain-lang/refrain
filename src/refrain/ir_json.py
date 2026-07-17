@@ -29,6 +29,7 @@ from .ir import (
     IRConditional,
     IRControl,
     IRControlRef,
+    IRControlSeed,
     IRDerive,
     IRExpr,
     IRInhibit,
@@ -126,8 +127,11 @@ def _protocol_ir_version(ir: IRProtocol) -> str:
     A protocol that uses no named components, no weighted combine, and no
     staged-protocol features (blocks / named reward bundles) emits v0.1
     (byte-identical to the pre-v0.2 emitter); anything using the v0.2
-    composite or staging features emits v0.2.
+    composite or staging features emits v0.2; a control with a baseline-seed
+    rule (the newest feature) emits v0.3.
     """
+    if any(c.seed is not None for c in ir.controls.values()):
+        return "0.3"
     if (
         ir.reward.components
         or ir.reward.combine == "weighted"
@@ -394,8 +398,17 @@ def _emit_reward(r: IRReward, ctx: _EmitCtx, version: str) -> dict:
     return base
 
 
-def _emit_control(c: IRControl, ctx: _EmitCtx) -> dict:
+def _emit_seed(seed: IRControlSeed, ctx: _EmitCtx) -> dict:
     return {
+        "statistic": seed.statistic,
+        "from": seed.from_entity,
+        "window_samples": seed.window_samples,
+        "target_pct": _emit_expr(seed.target_pct, ctx),
+    }
+
+
+def _emit_control(c: IRControl, ctx: _EmitCtx) -> dict:
+    out = {
         "canonical_name": c.canonical_name,
         "type_kind": c.type_kind,
         "dims": _emit_dims(c.dims),
@@ -407,6 +420,9 @@ def _emit_control(c: IRControl, ctx: _EmitCtx) -> dict:
         "live_tunable": c.live_tunable,
         "tune_strategy": c.tune_strategy,
     }
+    if c.seed is not None:
+        out["seed"] = _emit_seed(c.seed, ctx)
+    return out
 
 
 def _emit_phase(p: IRPhase) -> dict:
