@@ -1768,13 +1768,6 @@ fn positional(args: &[crate::ir::Arg], idx: usize) -> &Expr {
         .unwrap_or_else(|| panic!("missing positional arg {idx}"))
 }
 
-fn num_named(args: &[crate::ir::Arg], name: &str) -> Option<f64> {
-    args.iter().find_map(|a| match (&a.name, &a.value) {
-        (Some(nm), Expr::Number { value }) if nm == name => Some(*value),
-        _ => None,
-    })
-}
-
 fn string_arg<'a>(args: &'a [crate::ir::Arg], name: &str) -> Option<&'a str> {
     args.iter().find_map(|a| match (&a.name, &a.value) {
         (Some(nm), Expr::Str { value }) if nm == name => Some(value.as_str()),
@@ -1992,8 +1985,17 @@ fn build_compute_call(
         ),
         "inside" => CNode::Inside {
             input: Box::new(build_node(positional(args, 0), ctx)),
-            low: num_named(args, "low").expect("inside needs `low`"),
-            high: num_named(args, "high").expect("inside needs `high`"),
+            // `low`/`high` accept a literal or a control_ref (using the
+            // control's baked default). Not live: InsideImpl defines no
+            // `update_control` in Python, so `set_control` never touches
+            // these slots there — binding them here would diverge from the
+            // reference rather than match it.
+            low: num_named_controllable(args, "low")
+                .map(|(v, _)| v)
+                .expect("inside needs `low`"),
+            high: num_named_controllable(args, "high")
+                .map(|(v, _)| v)
+                .expect("inside needs `high`"),
         },
         "all_of" | "any_of" => {
             let arr = positional(args, 0);
@@ -2011,8 +2013,12 @@ fn build_compute_call(
         "sigmoid" => {
             // `midpoint` is the live-tunable parameter (SigmoidImpl). Accept a
             // literal or a control-ref; bind the latter so set_control updates
-            // the shared midpoint cell. `steepness` stays a literal here
-            // (matches SigmoidImpl picking midpoint as the controllable slot).
+            // the shared midpoint cell. `steepness` accepts a literal or a
+            // control-ref too (using the control's baked default), but is NOT
+            // bound live: SigmoidImpl.update_control always assigns midpoint
+            // regardless of target, so steepness is never live in Python —
+            // binding it here would diverge from the reference rather than
+            // match it.
             let (midpoint_v, target) =
                 num_named_controllable(args, "midpoint").unwrap_or((0.0, None));
             let midpoint = control_cell(midpoint_v);
@@ -2021,13 +2027,20 @@ fn build_compute_call(
             }
             CNode::Sigmoid {
                 midpoint,
-                steepness: num_named(args, "steepness").unwrap_or(1.0),
+                steepness: num_named_controllable(args, "steepness")
+                    .map(|(v, _)| v)
+                    .unwrap_or(1.0),
                 input: Box::new(build_node(positional(args, 0), ctx)),
             }
         }
         "linear" => CNode::Linear {
-            midpoint: num_named(args, "midpoint").unwrap_or(0.0),
-            slope: num_named(args, "slope").unwrap_or(1.0),
+            // `midpoint`/`slope` accept a literal or a control_ref (using the
+            // control's baked default). Not live: LinearImpl defines no
+            // `update_control` in Python, so `set_control` never touches
+            // these slots there — binding them here would diverge from the
+            // reference rather than match it.
+            midpoint: num_named_controllable(args, "midpoint").map(|(v, _)| v).unwrap_or(0.0),
+            slope: num_named_controllable(args, "slope").map(|(v, _)| v).unwrap_or(1.0),
             input: Box::new(build_node(positional(args, 0), ctx)),
         },
         "coherence" => {
