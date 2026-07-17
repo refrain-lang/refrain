@@ -739,6 +739,88 @@ fn seed_node(
     }
 }
 
+/// Outcome of a per-control baseline-seed latch (§2.5/§2.6), mirroring the
+/// Python `_SeedLatch.status` values. Exposed to the host via `seed_report`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SeedStatus {
+    Pending,
+    Seeded,
+    InsufficientSamples,
+    DisarmedByHost,
+}
+
+impl SeedStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            SeedStatus::Pending => "pending",
+            SeedStatus::Seeded => "seeded",
+            SeedStatus::InsufficientSamples => "insufficient_samples",
+            SeedStatus::DisarmedByHost => "disarmed_by_host",
+        }
+    }
+}
+
+/// Per-seeded-control polled latch (§2.5), mirror of the Python `_SeedLatch`.
+/// Ingests its `from` derive's samples during warmup into a reused `Percentile`
+/// buffer, then fires exactly once at the warmup->run edge: reads the target
+/// percentile at a LIVE `target_pct` (tracking a `control_ref` cell if the seed
+/// declares one) and writes the computed value through `apply_control_value`
+/// (never `set_control`, so the seed's own write can't self-disarm it).
+///
+/// `target_pct` is resolved at build time to either a shared cell (a
+/// `control_ref` target) or a fixed constant (a literal `number`), NOT a
+/// `CNode` — `CNode::eval` takes `&mut self`, but `seed_report` (`&self`) must
+/// also read the current target_pct, and a `CNode` can't be read from `&self`.
+struct SeedLatch {
+    /// Bare control name (e.g. "thr_uv") — for `apply_control_value` and the
+    /// `seed_report` key.
+    control_name: String,
+    /// Canonical control target ("control/thr_uv") — for the `set_control`
+    /// disarm-hook lookup.
+    control_target: String,
+    /// Bare derive name (e.g. "env") — `eval_chunk`'s `env` is keyed by the
+    /// BARE derive name, not the canonical `derive/<name>`.
+    from_bare: String,
+    /// Canonical source entity ("derive/env") — for the `seed_report` `source`
+    /// field.
+    from_entity: String,
+    /// `Some` when `target_pct` is a `control_ref` (tracks a live retune);
+    /// `None` when it is a literal `number` (use `target_pct_const`).
+    target_pct_cell: Option<ControlCell>,
+    target_pct_const: f64,
+    window_samples: u64,
+    buffer: Percentile,
+    armed: bool,
+    fired: bool,
+    status: SeedStatus,
+    value: Option<f64>,
+    n_samples: u64,
+    at_time_s: Option<f64>,
+}
+
+impl SeedLatch {
+    /// Current target percentile: the live cell value if `target_pct` is a
+    /// `control_ref`, else the baked constant.
+    fn current_target_pct(&self) -> f64 {
+        self.target_pct_cell
+            .as_ref()
+            .map(|c| *c.lock().unwrap())
+            .unwrap_or(self.target_pct_const)
+    }
+}
+
+/// Per-control baseline-seed outcome (`seed_report()`), mirroring the Python
+/// evaluator's report dict shape.
+pub struct SeedReportEntry {
+    pub status: String,
+    pub value: Option<f64>,
+    pub source: String,
+    pub target_pct: f64,
+    pub n_samples: u64,
+    pub window_s: f64,
+    pub at_time_s: Option<f64>,
+}
+
 pub struct Evaluator {
     inputs: Vec<(String, Montage)>, // (bare input name, montage)
     derives: Vec<(String, CNode)>,
@@ -803,6 +885,12 @@ pub struct Evaluator {
     /// the Python evaluator (KeyError) while still treating a known control
     /// with no bound stages as a no-op success.
     declared_controls: std::collections::HashSet<String>,
+    /// One latch per seeded control (§2.5), built unconditionally in `new`.
+    /// Empty for protocols with no `seed` blocks (the common case) — inert.
+    seed_latches: Vec<SeedLatch>,
+    /// Set for the rest of the session once any latch fails closed
+    /// (insufficient warmup samples) — mutes output regardless of phase.
+    seed_failed: bool,
 }
 
 /// One compiled v0.2 reward component: the bare `name` (tap/stream key), its
@@ -963,6 +1051,43 @@ impl Evaluator {
             })
             .collect();
 
+        // Baseline-seed latches (§2.5): one per `controls.<name>.seed` block,
+        // built unconditionally right after the pipeline/controls so a
+        // `control_ref` `target_pct` registers a `Control::Const` binding
+        // (tracking a live `reward_pct` retune) in the SAME `ctx.controls`
+        // registry every other stage uses.
+        let mut seed_latches: Vec<SeedLatch> = Vec::new();
+        for (bare, decl) in p.controls.iter() {
+            let Some(seed) = &decl.seed else { continue };
+            let (target_pct_cell, target_pct_const) = match &seed.target_pct {
+                Expr::Number { value } => (None, *value),
+                Expr::ControlRef { target, default } => {
+                    let cell = control_cell(*default);
+                    ctx.register(target, Control::Const { value: cell.clone() });
+                    (Some(cell), *default)
+                }
+                _ => (None, 0.0),
+            };
+            let from_bare =
+                seed.from.strip_prefix("derive/").unwrap_or(&seed.from).to_string();
+            seed_latches.push(SeedLatch {
+                control_name: bare.clone(),
+                control_target: decl.canonical_name.clone(),
+                from_bare,
+                from_entity: seed.from.clone(),
+                target_pct_cell,
+                target_pct_const,
+                window_samples: seed.window_samples as u64,
+                buffer: Percentile::new(target_pct_const, seed.window_samples),
+                armed: true,
+                fired: false,
+                status: SeedStatus::Pending,
+                value: None,
+                n_samples: 0,
+                at_time_s: None,
+            });
+        }
+
         Evaluator {
             inputs,
             derives,
@@ -995,6 +1120,8 @@ impl Evaluator {
                 .values()
                 .map(|c| c.canonical_name.clone())
                 .collect(),
+            seed_latches,
+            seed_failed: false,
         }
     }
 
@@ -1074,6 +1201,20 @@ impl Evaluator {
     /// (e.g. only consumed by coefficient baking) is a no-op success, matching
     /// Python updating `_controls` even when `_control_deps` has no entry.
     pub fn set_control(&mut self, name: &str, value: f64) -> Result<(), String> {
+        // A host write to an unfired seeded control disarms its latch (a
+        // deliberate clinical override, not a failure): the seed never fires
+        // for that control, and the session runs normally with the host's
+        // value in place. Mirrors the Python `set_control`'s pre-forward
+        // disarm check.
+        let target = format!("control/{name}");
+        if let Some(latch) =
+            self.seed_latches.iter_mut().find(|l| l.control_target == target)
+        {
+            if latch.armed && !latch.fired {
+                latch.armed = false;
+                latch.status = SeedStatus::DisarmedByHost;
+            }
+        }
         self.apply_control_value(name, value)
     }
 
@@ -1251,7 +1392,7 @@ impl Evaluator {
         // nothing borrows `self` across the mutable stage iterations below.
         // For blockless protocols (empty phases / no blocks) these are all
         // inert: no muting, no masking, no freeze, no bundle selection.
-        let mutes_output = self.phase_mutes_output();
+        let mut mutes_output = self.phase_mutes_output();
         let freeze_ingest = self
             .phases
             .get(self.phase_index)
@@ -1278,6 +1419,19 @@ impl Evaluator {
             let v = node.eval(&env, n);
             env.insert(name.clone(), v);
         }
+
+        // Baseline seeding (§2.5): ingest the `from` derive's tap during
+        // warmup; fire at the first `run` chunk BEFORE the thresholds loop so
+        // a seeded `thr_uv` is live for this very chunk's threshold step (no
+        // one-chunk lag). An incomplete window fails closed (§2.6): mute
+        // output for the rest of the session.
+        if !self.seed_latches.is_empty() {
+            self.step_seeds(&env);
+            if self.seed_failed {
+                mutes_output = true;
+            }
+        }
+
         for (name, node) in self.thresholds.iter_mut() {
             // R6: freeze a percentile threshold's window during mid-session
             // muted rests (no-op for absolute thresholds / non-frozen phases).
@@ -1517,6 +1671,90 @@ impl Evaluator {
         (env, muted, outs)
     }
 
+    /// Drive every armed `SeedLatch` once per chunk (§2.5), mirroring the
+    /// Python `_step_seeds`. During warmup, appends the `from` derive's tap
+    /// into the latch's `Percentile` buffer (append-only, NaN-skipping via
+    /// `Percentile::ingest`). At the first `run` chunk each still-armed latch
+    /// fires exactly once: computes the percentile at a LIVE `target_pct`,
+    /// writes it through `apply_control_value` (never `set_control`, so the
+    /// seed's own write can't self-disarm it), and holds from then on. An
+    /// incomplete window (`n_eff < window_samples`) fails closed: status ->
+    /// `insufficient_samples`, `self.seed_failed` stays set for the rest of
+    /// the session (§2.6).
+    ///
+    /// Borrow-safe by construction: every `self.*` read this needs is hoisted
+    /// into a local BEFORE the `iter_mut()` loop over `seed_latches`, and the
+    /// resulting control writes are collected into `writes` and applied AFTER
+    /// the loop ends — `apply_control_value` takes `&mut self`, so it can
+    /// never be called while `self.seed_latches` is mutably borrowed.
+    fn step_seeds(&mut self, env: &HashMap<String, Val>) {
+        let t0_s = self.samples_pushed as f64 / self.sample_rate_hz;
+        let warmup = self.state == State::Warmup;
+        let mut writes: Vec<(String, f64)> = Vec::new();
+        let mut any_failed = false;
+        for latch in self.seed_latches.iter_mut() {
+            if !latch.armed {
+                continue;
+            }
+            // `env` is keyed by the BARE derive name (`eval_chunk` inserts
+            // `derives` under their bare name), NOT the canonical
+            // `derive/<name>` — look up `from_bare`, not `from_entity`.
+            let src: &[f64] = match env.get(&latch.from_bare) {
+                Some(Val::F(v)) => v.as_slice(),
+                _ => &[],
+            };
+            if warmup {
+                latch.buffer.ingest(src); // append-only, skips non-finite
+                continue;
+            }
+            if latch.fired {
+                continue;
+            }
+            latch.fired = true;
+            let pct = latch.current_target_pct(); // tracks a live reward_pct
+            let n = latch.buffer.n_eff();
+            latch.n_samples = n;
+            latch.at_time_s = Some(t0_s);
+            if n < latch.window_samples {
+                latch.status = SeedStatus::InsufficientSamples;
+                any_failed = true; // set self.seed_failed after the loop
+                continue;
+            }
+            let value = latch.buffer.value_at(pct);
+            latch.value = Some(value);
+            latch.status = SeedStatus::Seeded;
+            writes.push((latch.control_name.clone(), value));
+        }
+        if any_failed {
+            self.seed_failed = true;
+        }
+        for (name, value) in writes {
+            let _ = self.apply_control_value(&name, value); // NOT set_control -> no self-disarm
+        }
+    }
+
+    /// Per-control baseline-seed outcome report (§2.5), mirroring the Python
+    /// `Evaluator.seed_report()`. Keyed by bare control name; empty for
+    /// protocols with no `seed` blocks.
+    pub fn seed_report(&self) -> BTreeMap<String, SeedReportEntry> {
+        let mut out = BTreeMap::new();
+        for latch in &self.seed_latches {
+            out.insert(
+                latch.control_name.clone(),
+                SeedReportEntry {
+                    status: latch.status.as_str().to_string(),
+                    value: latch.value,
+                    source: latch.from_entity.clone(),
+                    target_pct: latch.current_target_pct(),
+                    n_samples: latch.n_samples,
+                    window_s: latch.window_samples as f64 / self.sample_rate_hz,
+                    at_time_s: latch.at_time_s,
+                },
+            );
+        }
+        out
+    }
+
     /// Clinician-observation snapshot from the most recent `step_chunk` /
     /// `step_chunk_events`, mirroring `Evaluator.last_taps()`. Keys are the
     /// canonical prefixed names (`input/raw`, `derive/<name>`,
@@ -1630,12 +1868,16 @@ impl Evaluator {
         // mid-session muted rests suppress emission too (not just the first
         // phase). Output channels are already silenced in eval_chunk for muted
         // phases; this skips the per-channel event emission below.
-        let suppress_output = self.phase_mutes_output();
+        let mut suppress_output = self.phase_mutes_output();
 
         // `muted` is the combined inhibit gate (`_compute_muted`), computed in
         // `eval_chunk`. Inhibit state advances even during warmup; only event
         // emission below is warmup-suppressed.
         let (env, muted, outs) = self.eval_chunk(chunk);
+        // Baseline seeding (§2.6): a fail-closed latch mutes output for the
+        // REST of the session, not just the phase — fold it in after
+        // `eval_chunk` (which is what actually sets `seed_failed`).
+        suppress_output |= self.seed_failed;
 
         // Clone outs for stream coercion so we can still iterate outs below
         // in IR declaration order for event emission. No second eval_chunk =
