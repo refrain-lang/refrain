@@ -57,7 +57,7 @@ pub struct Protocol {
 /// misinterpreted. This crate has no `deny_unknown_fields`, so an unknown field
 /// is invisible to serde — without this gate, a newer protocol would run with
 /// its new semantics dropped and no signal to anyone.
-pub const SUPPORTED_IR_VERSIONS: &[&str] = &["0.1", "0.2"];
+pub const SUPPORTED_IR_VERSIONS: &[&str] = &["0.1", "0.2", "0.3"];
 
 /// Refuse a document tagged with an unsupported schema version. Untagged
 /// documents predate versioning and are treated as "0.1".
@@ -73,12 +73,24 @@ pub fn check_ir_version(p: &Protocol) -> Result<(), String> {
     ))
 }
 
-/// A `controls.<name>` declaration. Only the canonical name is needed by the
-/// runtime; the rest of the block (default/range/label) is authoring metadata
-/// serde ignores.
+/// A `controls.<name>` declaration. Only the canonical name and the optional
+/// baseline-seed rule are needed by the runtime; the rest of the block
+/// (default/range/label) is authoring metadata serde ignores.
 #[derive(Debug, Deserialize)]
 pub struct ControlDecl {
     pub canonical_name: String,
+    #[serde(default)]
+    pub seed: Option<ControlSeed>,
+}
+
+/// A control's baseline-seed rule (`_emit_seed`). `target_pct` reuses the
+/// closed `Expr` union (a `number` or a `control_ref`) — no new node kind.
+#[derive(Debug, Deserialize, Clone)]
+pub struct ControlSeed {
+    pub statistic: String,
+    pub from: String,
+    pub window_samples: usize,
+    pub target_pct: Expr,
 }
 
 /// Session timeline (`_emit_session`): an ordered list of phases. The first
@@ -200,7 +212,7 @@ pub struct Derive {
     pub upstream: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Arg {
     pub name: Option<String>,
     pub value: Expr,
@@ -233,7 +245,7 @@ pub struct Coeffs {
     pub lag_samples: Option<usize>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "node")]
 pub enum Expr {
     #[serde(rename = "number")]

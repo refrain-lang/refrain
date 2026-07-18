@@ -36,6 +36,8 @@ follow-up.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
+
 from . import ast as A
 from . import primitives as P
 from .amp_profile import AmpProfile
@@ -52,6 +54,7 @@ from .ir import (
     IRConditional,
     IRControl,
     IRControlRef,
+    IRControlSeed,
     IRCustom,
     IRDerive,
     IRExpr,
@@ -108,6 +111,21 @@ class ResolveError(Exception):
             super().__init__(f"line {loc.line}:{loc.col}: {message}")
         else:
             super().__init__(message)
+
+
+# ---------------------------------------------------------------------------
+# Baseline seeding (SPEC baseline-seeding) — parsed here, validated in a
+# post-pass once controls/derives/session are all resolved (Task 6).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _PendingSeed:
+    statistic: str
+    from_raw: str
+    window_ms: float
+    target_pct_ast: "A.Expr"
+    loc: "Loc | None"
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +195,11 @@ class _Resolver:
         # Named block declarations (staged-protocol feature).
         self._blocks: dict[str, IRBlock] = {}
 
+        # Pending baseline-seed blocks, captured during control resolution
+        # and validated/baked in a post-pass (Task 6) once derives and
+        # session phases are resolved.
+        self._pending_seeds: dict[str, _PendingSeed] = {}
+
     # -- Top-level entry ----------------------------------------------------
 
     def resolve(self) -> IRProtocol:
@@ -221,6 +244,7 @@ class _Resolver:
         self.output = output_ir
         session_ir = self._resolve_session()
         self._validate_staging(session_ir)
+        self._resolve_control_seeds(session_ir)
         meta_ir = self._resolve_meta()
 
         return IRProtocol(
@@ -1042,6 +1066,8 @@ class _Resolver:
             if isinstance(tune_strategy_expr, A.StringLit)
             else None
         )
+        if "seed" in fields:
+            self._pending_seeds[name] = self._parse_control_seed(name, fields["seed"])
         return IRControl(
             name=name,
             canonical_name=f"control/{name}",
@@ -1055,6 +1081,169 @@ class _Resolver:
             live_tunable=live_tunable,
             tune_strategy=tune_strategy,
             loc=block.loc,
+        )
+
+    def _parse_control_seed(self, name: str, seed_ast: A.Expr) -> _PendingSeed:
+        """Parse (but do not validate against derives/session) a control's
+        `seed = <statistic> { ... }` sub-block.
+
+        Cross-section checks — the `from` derive existing, resolving
+        `target_pct` against a sibling control, baking the window against
+        the session's warmup phase — are deferred to a post-pass (Task 6)
+        since derives and session phases resolve after controls.
+        """
+        if not isinstance(seed_ast, A.BlockExpr) or seed_ast.name is None:
+            raise ResolveError(
+                f"control {name!r}.seed must be a typed block "
+                "(e.g. `seed = percentile { ... }`)",
+                loc=seed_ast.loc,
+            )
+        statistic = seed_ast.name
+        if statistic != "percentile":
+            raise ResolveError(
+                f"control {name!r}.seed: unsupported statistic {statistic!r} "
+                "(v1 supports only `percentile`)",
+                loc=seed_ast.loc,
+            )
+        fields = self._assignments_dict(seed_ast.body)
+        from_expr = fields.get("from")
+        if not isinstance(from_expr, A.StringLit):
+            raise ResolveError(
+                f"control {name!r}.seed.from must be a quoted derive name",
+                loc=seed_ast.loc,
+            )
+        window_expr = fields.get("window")
+        if not isinstance(window_expr, A.NumberLit) or window_expr.unit not in ("ms", "s", "min"):
+            raise ResolveError(
+                f"control {name!r}.seed.window must be a duration literal (ms/s/min)",
+                loc=seed_ast.loc,
+            )
+        if "target_pct" not in fields:
+            raise ResolveError(
+                f"control {name!r}.seed needs a `target_pct` field", loc=seed_ast.loc)
+        return _PendingSeed(
+            statistic=statistic,
+            from_raw=from_expr.value,
+            window_ms=_to_milliseconds(window_expr),
+            target_pct_ast=fields["target_pct"],
+            loc=seed_ast.loc,
+        )
+
+    def _referenced_control_targets(self) -> set[str]:
+        """Canonical targets of every control_ref surviving in the resolved
+        pipeline (derives/thresholds/inhibits/reward/output/bundles). Mirrors
+        the expression walk in `_instantiate_expr`. Seed `target_pct` refs are
+        NOT walked (they live inside control blocks), so a seed can't keep its
+        own control alive."""
+        found: set[str] = set()
+
+        def walk(expr) -> None:
+            if expr is None:
+                return
+            if isinstance(expr, IRControlRef):
+                found.add(expr.target)
+            elif isinstance(expr, IRCall):
+                for a in expr.args:
+                    walk(a.value)
+            elif isinstance(expr, IRBinaryOp):
+                walk(expr.left); walk(expr.right)
+            elif isinstance(expr, IRConditional):
+                walk(expr.cond); walk(expr.then_branch); walk(expr.else_branch)
+            elif isinstance(expr, (IRArray, IRTuple)):
+                for e in expr.elements:
+                    walk(e)
+            elif isinstance(expr, IRBlockExpr):
+                for e in expr.fields.values():
+                    walk(e)
+
+        for d in self.derives.values():
+            walk(d.expression)
+        for t in self.thresholds.values():
+            walk(t.threshold_call)
+        for ih in self.inhibits.values():
+            walk(ih.metric); walk(ih.threshold)
+        if self.reward_ir is not None:
+            walk(self.reward_ir.continuous); walk(self.reward_ir.event)
+            for c in self.reward_ir.components:
+                walk(c.signal); walk(c.weight)
+        for rb in self._reward_bundles.values():
+            walk(rb.continuous); walk(rb.event)
+        for expr in self.output.values():
+            walk(expr)
+        return found
+
+    def _resolve_control_seeds(self, session_ir: IRSession) -> None:
+        """Post-pass (Task 6): validate each pending seed's `from` derive and
+        `target_pct`, and attach the resulting `IRControlSeed` (carrying the
+        rate-independent `window_ms`) to its control. The window is baked to
+        samples at emit time, exactly like DSP filter windows (`_bake_coeffs`).
+
+        Runs after controls, derives, and session are all resolved so that
+        every derive name and every control (including forward-declared
+        percent controls used as `target_pct`) can be looked up.
+        """
+        if not self._pending_seeds:
+            return
+        referenced = self._referenced_control_targets()
+        for name, pend in self._pending_seeds.items():
+            # 1. `from` must name a real derive. `self.derives` is keyed by
+            #    the bare derive name (e.g. "env"), not its canonical
+            #    "derive/env" form — look it up bare, then read the
+            #    canonical name off the resolved IRDerive.
+            if pend.from_raw not in self.derives:
+                raise ResolveError(
+                    f"control {name!r}.seed.from={pend.from_raw!r} is not a "
+                    "declared derive",
+                    loc=pend.loc,
+                )
+            from_entity = self.derives[pend.from_raw].canonical_name
+            # 2. target_pct is a number or a `percent` control ref (resolved
+            #    now, when every control exists — order-independent).
+            target_pct = self._resolve_value_expr(pend.target_pct_ast)
+            self._validate_seed_target_pct(name, target_pct)
+            # 3. A window longer than a timed, output-muted warmup phase 0
+            #    can never fill — refuse at compile (phase durations are
+            #    numeric literals, so this is always knowable now). Compared
+            #    directly in milliseconds — rate-independent.
+            phases = session_ir.phases
+            first = phases[0] if phases else None
+            if first is not None and first.output_muted and first.mode != "open":
+                if pend.window_ms > first.duration_ms:
+                    raise ResolveError(
+                        f"control {name!r}.seed.window "
+                        f"({pend.window_ms / 1000:.1f}s) exceeds the warmup phase "
+                        f"{first.name!r} ({first.duration_ms / 1000:.1f}s); the "
+                        "buffer can never fill",
+                        loc=pend.loc,
+                    )
+            if f"control/{name}" not in referenced:
+                continue   # dead seed: control folded out — do not attach
+            seed = IRControlSeed(
+                statistic=pend.statistic,
+                from_entity=from_entity,
+                window_ms=pend.window_ms,
+                target_pct=target_pct,
+                loc=pend.loc,
+            )
+            self.controls[name] = replace(self.controls[name], seed=seed)
+
+    def _validate_seed_target_pct(self, name: str, target_pct: IRExpr) -> None:
+        if isinstance(target_pct, IRNumberLit):
+            return
+        if isinstance(target_pct, IRControlRef):
+            ref_name = target_pct.target.removeprefix("control/")
+            ref = self.controls.get(ref_name)
+            if ref is not None and ref.type_kind == "percent":
+                return
+            got = ref.type_kind if ref is not None else "unknown"
+            raise ResolveError(
+                f"control {name!r}.seed.target_pct must bind a `percent` control "
+                f"(got {got!r})",
+                loc=target_pct.loc,
+            )
+        raise ResolveError(
+            f"control {name!r}.seed.target_pct must be a number or a percent control",
+            loc=getattr(target_pct, "loc", None),
         )
 
     def _resolve_placement_control(self, name: str, fields: dict, loc) -> IRControl:

@@ -40,6 +40,7 @@ SEED = 0
 def _reference(
     ir, signal: np.ndarray, *,
     channels: tuple[str, ...] = CHANNELS, sample_rate: float = SAMPLE_RATE_HZ,
+    skip_warmup: bool = True,
 ) -> tuple[dict[str, np.ndarray], list[dict], list[dict]]:
     """Drive the canonical Python evaluator once over `signal`, capturing the
     reference output *streams* (ground truth for `equivalence.rs`), the
@@ -48,12 +49,16 @@ def _reference(
     same seeded signal/evaluator — no duplicated signal generation or setup.
 
     `channels`/`sample_rate` default to the corpus-wide constants but may be
-    overridden per fixture (e.g. a single-channel `passthrough()` source)."""
+    overridden per fixture (e.g. a single-channel `passthrough()` source).
+
+    `skip_warmup` defaults to `True` (the corpus-wide convention — see
+    `docs/CONFORMANCE.md` §3) but a baseline-seeding fixture needs warmup
+    intact, since the seed fires only during warmup (§2.6)."""
     ev = Evaluator.live(
         ir, sample_rate_hz=sample_rate, channel_names=channels, record_streams=True,
         backend="python"
     )
-    ev.start(skip_warmup=True)
+    ev.start(skip_warmup=skip_warmup)
 
     events: list[dict] = []
     taps: list[dict] = []
@@ -168,8 +173,20 @@ TAP_BEARING = frozenset({"realistic_smr", "micro_09_inhibit"})
 def generate(
     stem: str, *,
     channels: tuple[str, ...] = CHANNELS, sample_rate: float = SAMPLE_RATE_HZ,
+    skip_warmup: bool = True, signal: np.ndarray | None = None,
+    amp=AMP,
 ) -> None:
-    ir = resolve(parse_file(REPO / "bench" / "protocols" / f"{stem}.refrain"), AMP)
+    # `amp` picks the resolver's `sample_rate_chosen_hz` (the highest
+    # amp-supported rate satisfying `requires.sample_rate`), which a control
+    # seed's `window_samples` is baked at (resolver.py `_resolve_control_seeds`)
+    # — unlike filter/DSP coefficients, which `ir_to_json_obj` re-bakes at
+    # `sample_rate_hz` below. For a control-seed-bearing protocol, `amp` MUST
+    # be chosen so the resolver's chosen rate equals `sample_rate` (the rate
+    # this fixture actually runs at), or the baked window won't correspond to
+    # the runtime's warmup length. `amp=None` makes the chosen rate exactly
+    # the `requires` minimum (`resolver.py::_parse_sample_rate`), matching the
+    # corpus-wide `sample_rate=256` default.
+    ir = resolve(parse_file(REPO / "bench" / "protocols" / f"{stem}.refrain"), amp)
     # Bake at the rate the runtime actually uses (a host choice >= the
     # protocol minimum), which can differ from the resolver's default.
     # Match the production wire format emitted by `ir_to_json` (sort_keys is
@@ -181,9 +198,12 @@ def generate(
         json.dumps(ir_to_json_obj(ir, sample_rate_hz=sample_rate), indent=2)
     )
 
-    rng = np.random.default_rng(SEED)
-    signal = rng.standard_normal((N_SAMPLES, len(channels))) * 10.0
-    streams, events, taps = _reference(ir, signal, channels=channels, sample_rate=sample_rate)
+    if signal is None:
+        rng = np.random.default_rng(SEED)
+        signal = rng.standard_normal((N_SAMPLES, len(channels))) * 10.0
+    streams, events, taps = _reference(
+        ir, signal, channels=channels, sample_rate=sample_rate, skip_warmup=skip_warmup
+    )
 
     io = {
         "sample_rate_hz": sample_rate,
@@ -253,3 +273,26 @@ if __name__ == "__main__":
     # single-channel source (the corpus-wide CHANNELS triple would trip its
     # one-channel guard).
     generate("micro_passthrough_identity", channels=("Cz",))
+    # Baseline-seeding conformance fixture (§2.6): the seed fires only during
+    # warmup, so this is the ONE stem generated with skip_warmup=False. A
+    # constant-fill signal makes the seeded percentile exact by construction.
+    # amp=None so the resolver's chosen rate is exactly 256 Hz (the rate this
+    # fixture runs at) — see the `generate()` docstring note on control-seed
+    # `window_samples` baking.
+    generate(
+        "seed_smr_baseline",
+        channels=("Cz",),
+        skip_warmup=False,
+        signal=np.full((N_SAMPLES, 1), 5.0),
+        amp=None,
+    )
+    # Same seeding conformance shape, but the seeded control is consumed in
+    # EXPRESSION position (`"env" / thr_uv`) rather than via an impl parameter
+    # slot — locks the fire-chunk freshness fix across both backends.
+    generate(
+        "seed_exprpos",
+        channels=("Cz",),
+        skip_warmup=False,
+        signal=np.full((N_SAMPLES, 1), 5.0),
+        amp=None,
+    )

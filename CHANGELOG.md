@@ -5,6 +5,53 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.16.0] — 2026-07-18
+
+### Added
+- **First-class baseline seeding.** A control can now declare
+  `seed = percentile { from, window, target_pct }` to derive its value from
+  the patient's own baseline instead of a fixed default — the standard
+  "set the threshold from the first two minutes of eyes-closed baseline"
+  clinical pattern, expressed in the protocol itself instead of host glue
+  code. During warmup the engine measures the `target_pct` percentile of the
+  named `from` signal over a trailing `window`, writes the control exactly
+  once at the warmup→run edge, and holds it for the rest of the session. The
+  resolver validates that `from` names a real derive, refuses a window that
+  can never fill inside a timed warmup phase, and drops a seed whose control
+  folds out of the resolved IR entirely (dead-seed elimination). If the
+  measurement can't complete — not enough warmup samples, an all-NaN input —
+  the seed fails closed: the control keeps its declared default rather
+  than writing a bogus value, and the session's reward output stays muted
+  for the rest of the run rather than proceeding on that default. A
+  clinician who writes the seeded control
+  before it fires disarms the seed outright: `set_control` during warmup
+  means the clinician just took responsibility for the value, and the seed
+  never overwrites a live tune. Implemented in both the Python evaluator and
+  the Rust core, verified at 1e-9 parity.
+- **`Evaluator.seed_report()`** reports the outcome of every seeded control,
+  keyed by bare control name: status (`pending` / `seeded` /
+  `insufficient_samples` / `disarmed_by_host`), the value it wrote, the
+  source entity, the resolved `target_pct`, the sample count and window it
+  measured over, and the time it fired. Deliberately not a tap — the strict
+  `last_taps()` key-set contract is untouched — and available in Python, over
+  PyO3, and over the uniffi mobile bindings.
+- **IR-JSON `0.3`.** A control's `seed` block (`statistic` / `from` /
+  `window_samples` / `target_pct`) is emitted when the control declares one,
+  and any protocol that uses baseline seeding is tagged
+  `refrain_ir_version: "0.3"`. Protocols that don't use it are unaffected and
+  keep emitting `"0.1"` / `"0.2"` exactly as before. `refrain-core`'s
+  load-time version gate (shipped in 0.15.0) now accepts `"0.3"`.
+
+### Fixed
+- **The seed window baked to samples at the resolver's chosen rate instead
+  of the actual emit rate.** Every other rate-dependent coefficient in the
+  IR is rebaked at emit time; the seed window skipped that step, so
+  compiling at an overridden sample rate — e.g. the compiler service's
+  `sample_rate_hz` override — silently produced the wrong buffer size and a
+  permanently fail-closed seed. `IRControlSeed` now carries a
+  rate-independent `window_ms`, and both the emitter and the pure-Python
+  evaluator bake it to samples at their actual runtime rate.
+
 ## [0.15.0] — 2026-07-18
 
 ### Added

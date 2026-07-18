@@ -416,6 +416,22 @@ fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
+    typealias FfiType = UInt64
+    typealias SwiftType = UInt64
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt64 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterInt64: FfiConverterPrimitive {
     typealias FfiType = Int64
     typealias SwiftType = Int64
@@ -548,6 +564,14 @@ public protocol RefrainCoreProtocol: AnyObject, Sendable {
      * to a Swift `[String: Double]` / Kotlin `Map`.)
      */
     func lastTaps()  -> [String: Double]
+    
+    /**
+     * `eval::Evaluator::seed_report`: per-control baseline-seed outcome
+     * (§2.7), keyed by bare control name. Empty for a non-seeding protocol.
+     * (BTreeMap → HashMap so uniffi maps it to a Swift `[String: SeedReport]`
+     * / Kotlin `Map`.)
+     */
+    func seedReport()  -> [String: SeedReport]
     
     /**
      * `eval::Evaluator::set_clock_frozen`: freeze/resume the phase clock on any
@@ -701,6 +725,19 @@ open func hold(held: Bool) -> Bool  {
 open func lastTaps() -> [String: Double]  {
     return try!  FfiConverterDictionaryStringDouble.lift(try! rustCall() {
     uniffi_refrain_core_fn_method_refraincore_last_taps(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * `eval::Evaluator::seed_report`: per-control baseline-seed outcome
+     * (§2.7), keyed by bare control name. Empty for a non-seeding protocol.
+     * (BTreeMap → HashMap so uniffi maps it to a Swift `[String: SeedReport]`
+     * / Kotlin `Map`.)
+     */
+open func seedReport() -> [String: SeedReport]  {
+    return try!  FfiConverterDictionaryStringTypeSeedReport.lift(try! rustCall() {
+    uniffi_refrain_core_fn_method_refraincore_seed_report(self.uniffiClonePointer(),$0
     )
 })
 }
@@ -1037,6 +1074,120 @@ public func FfiConverterTypePhaseInfo_lower(_ value: PhaseInfo) -> RustBuffer {
 
 
 /**
+ * Mirror of `eval::SeedReportEntry` / `eval_.Evaluator.seed_report`: one
+ * control's baseline-seed outcome (§2.7). Field-for-field move, no logic.
+ */
+public struct SeedReport {
+    public var status: String
+    public var value: Double?
+    public var source: String
+    public var targetPct: Double
+    public var nSamples: UInt64
+    public var windowS: Double
+    public var atTimeS: Double?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(status: String, value: Double?, source: String, targetPct: Double, nSamples: UInt64, windowS: Double, atTimeS: Double?) {
+        self.status = status
+        self.value = value
+        self.source = source
+        self.targetPct = targetPct
+        self.nSamples = nSamples
+        self.windowS = windowS
+        self.atTimeS = atTimeS
+    }
+}
+
+#if compiler(>=6)
+extension SeedReport: Sendable {}
+#endif
+
+
+extension SeedReport: Equatable, Hashable {
+    public static func ==(lhs: SeedReport, rhs: SeedReport) -> Bool {
+        if lhs.status != rhs.status {
+            return false
+        }
+        if lhs.value != rhs.value {
+            return false
+        }
+        if lhs.source != rhs.source {
+            return false
+        }
+        if lhs.targetPct != rhs.targetPct {
+            return false
+        }
+        if lhs.nSamples != rhs.nSamples {
+            return false
+        }
+        if lhs.windowS != rhs.windowS {
+            return false
+        }
+        if lhs.atTimeS != rhs.atTimeS {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(status)
+        hasher.combine(value)
+        hasher.combine(source)
+        hasher.combine(targetPct)
+        hasher.combine(nSamples)
+        hasher.combine(windowS)
+        hasher.combine(atTimeS)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSeedReport: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SeedReport {
+        return
+            try SeedReport(
+                status: FfiConverterString.read(from: &buf), 
+                value: FfiConverterOptionDouble.read(from: &buf), 
+                source: FfiConverterString.read(from: &buf), 
+                targetPct: FfiConverterDouble.read(from: &buf), 
+                nSamples: FfiConverterUInt64.read(from: &buf), 
+                windowS: FfiConverterDouble.read(from: &buf), 
+                atTimeS: FfiConverterOptionDouble.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SeedReport, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.status, into: &buf)
+        FfiConverterOptionDouble.write(value.value, into: &buf)
+        FfiConverterString.write(value.source, into: &buf)
+        FfiConverterDouble.write(value.targetPct, into: &buf)
+        FfiConverterUInt64.write(value.nSamples, into: &buf)
+        FfiConverterDouble.write(value.windowS, into: &buf)
+        FfiConverterOptionDouble.write(value.atTimeS, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSeedReport_lift(_ buf: RustBuffer) throws -> SeedReport {
+    return try FfiConverterTypeSeedReport.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSeedReport_lower(_ value: SeedReport) -> RustBuffer {
+    return FfiConverterTypeSeedReport.lower(value)
+}
+
+
+/**
  * Errors surfaced across the FFI boundary. Currently the only fallible step
  * is deserializing the IR-JSON wire format. `Display`/`Error` are implemented
  * by hand to avoid pulling in `thiserror` just for one variant.
@@ -1282,6 +1433,32 @@ fileprivate struct FfiConverterDictionaryStringDouble: FfiConverterRustBuffer {
     }
 }
 
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterDictionaryStringTypeSeedReport: FfiConverterRustBuffer {
+    public static func write(_ value: [String: SeedReport], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for (key, value) in value {
+            FfiConverterString.write(key, into: &buf)
+            FfiConverterTypeSeedReport.write(value, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String: SeedReport] {
+        let len: Int32 = try readInt(&buf)
+        var dict = [String: SeedReport]()
+        dict.reserveCapacity(Int(len))
+        for _ in 0..<len {
+            let key = try FfiConverterString.read(from: &buf)
+            let value = try FfiConverterTypeSeedReport.read(from: &buf)
+            dict[key] = value
+        }
+        return dict
+    }
+}
+
 private enum InitializationResult {
     case ok
     case contractVersionMismatch
@@ -1307,6 +1484,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_refrain_core_checksum_method_refraincore_last_taps() != 62853) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_refrain_core_checksum_method_refraincore_seed_report() != 3631) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_refrain_core_checksum_method_refraincore_set_clock_frozen() != 49829) {

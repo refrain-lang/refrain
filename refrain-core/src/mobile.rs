@@ -90,6 +90,33 @@ impl From<crate::eval::PhaseSnapshot> for PhaseInfo {
     }
 }
 
+/// Mirror of `eval::SeedReportEntry` / `eval_.Evaluator.seed_report`: one
+/// control's baseline-seed outcome (§2.7). Field-for-field move, no logic.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct SeedReport {
+    pub status: String,
+    pub value: Option<f64>,
+    pub source: String,
+    pub target_pct: f64,
+    pub n_samples: u64,
+    pub window_s: f64,
+    pub at_time_s: Option<f64>,
+}
+
+impl From<crate::eval::SeedReportEntry> for SeedReport {
+    fn from(e: crate::eval::SeedReportEntry) -> Self {
+        SeedReport {
+            status: e.status,
+            value: e.value,
+            source: e.source,
+            target_pct: e.target_pct,
+            n_samples: e.n_samples,
+            window_s: e.window_s,
+            at_time_s: e.at_time_s,
+        }
+    }
+}
+
 /// Mobile-facing handle that owns one `eval::Evaluator`. Thin wrapper: every
 /// method forwards to the evaluator. The `Mutex` provides the interior
 /// mutability uniffi's `&self` methods need (the evaluator's chunk methods are
@@ -189,6 +216,20 @@ impl RefrainCore {
     /// to a Swift `[String: Double]` / Kotlin `Map`.)
     pub fn last_taps(&self) -> std::collections::HashMap<String, f64> {
         self.inner.lock().unwrap().last_taps().into_iter().collect()
+    }
+
+    /// `eval::Evaluator::seed_report`: per-control baseline-seed outcome
+    /// (§2.7), keyed by bare control name. Empty for a non-seeding protocol.
+    /// (BTreeMap → HashMap so uniffi maps it to a Swift `[String: SeedReport]`
+    /// / Kotlin `Map`.)
+    pub fn seed_report(&self) -> std::collections::HashMap<String, SeedReport> {
+        self.inner
+            .lock()
+            .unwrap()
+            .seed_report()
+            .into_iter()
+            .map(|(k, e)| (k, e.into()))
+            .collect()
     }
 }
 

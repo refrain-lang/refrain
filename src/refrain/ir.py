@@ -261,6 +261,19 @@ class IRReward:
 
 
 @dataclass(frozen=True, slots=True)
+class IRControlSeed:
+    """A control's baseline-seed rule (SPEC §baseline-seeding): derive the
+    control's value from a percentile of a named signal measured during warmup,
+    then hold it for the run."""
+
+    statistic: str          # "percentile" — v1's only statistic; from the block kind
+    from_entity: str        # canonical source, e.g. "derive/env"
+    window_ms: float        # trailing window, rate-independent; baked to samples at emit time
+    target_pct: IRExpr      # a `number` node or a `percent` control_ref
+    loc: Loc | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class IRControl:
     name: str
     canonical_name: str    # "control/<name>"
@@ -284,6 +297,7 @@ class IRControl:
     # Mode-control fields (empty/None for non-mode controls):
     choices: tuple = ()                  # mode only: tuple of allowed string choices
     default_mode: str | None = None      # mode only: the default choice
+    seed: IRControlSeed | None = None    # baseline-seed rule, or None
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,6 +392,7 @@ __all__ = [
     "IRConditional",
     "IRControl",
     "IRControlRef",
+    "IRControlSeed",
     "IRCustom",
     "IRDerive",
     "IRExpr",

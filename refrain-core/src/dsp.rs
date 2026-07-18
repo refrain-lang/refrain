@@ -278,6 +278,36 @@ impl Percentile {
         self.seen = n as u64;
     }
 
+    /// Append finite samples to the window WITHOUT computing a percentile
+    /// (seed-latch warmup ingest). Non-finite samples are skipped — never
+    /// pushed, never counted — so Rust matches Python's NaN-skip instead of
+    /// panicking in `percentile_linear`.
+    pub fn ingest(&mut self, x: &[f64]) {
+        if !self.ingesting {
+            return;
+        }
+        for &v in x {
+            if v.is_finite() {
+                if self.buf.len() == self.cap {
+                    self.buf.pop_front();
+                }
+                self.buf.push_back(v);
+                self.seen += 1;
+            }
+        }
+    }
+
+    /// Percentile of the current window at an explicit target (seed fire path,
+    /// where the target tracks a live control read at the warmup->run edge).
+    pub fn value_at(&self, pct: f64) -> f64 {
+        if self.buf.is_empty() { 0.0 } else { percentile_linear(&self.buf, pct) }
+    }
+
+    /// Effective sample count (capped at the window), for the full-window check.
+    pub fn n_eff(&self) -> u64 {
+        self.seen.min(self.cap as u64)
+    }
+
     /// Freeze (false) or resume (true) buffer ingestion. A frozen window keeps
     /// emitting over its existing buffer (R6 mid-session-rest handling).
     pub fn set_ingesting(&mut self, ingesting: bool) {
@@ -637,5 +667,19 @@ impl Dwell {
             self.was_holding = holding;
         }
         (events, holds)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Percentile;
+
+    #[test]
+    fn ingest_skips_nonfinite_and_value_at_matches() {
+        let mut p = Percentile::new(70.0, 10);
+        p.ingest(&[1.0, 2.0, f64::NAN, 3.0, f64::INFINITY, 4.0]);
+        assert_eq!(p.n_eff(), 4);
+        // linear percentile of [1,2,3,4] at 70 == 3.1 (NumPy 'linear')
+        assert!((p.value_at(70.0) - 3.1).abs() < 1e-9);
     }
 }

@@ -51,8 +51,8 @@ struct Schedule {
     changes: Vec<Change>,
 }
 
-fn load_ir() -> Protocol {
-    let s = std::fs::read_to_string(format!("tests/fixtures/{STEM}.ir.json")).unwrap();
+fn load_ir(stem: &str) -> Protocol {
+    let s = std::fs::read_to_string(format!("tests/fixtures/{stem}.ir.json")).unwrap();
     serde_json::from_str(&s).unwrap()
 }
 
@@ -82,7 +82,7 @@ fn load_schedule() -> Schedule {
 /// applied at the scheduled chunk) and assert the event stream matches Python.
 #[test]
 fn realistic_smr_setcontrol_events_equivalent() {
-    let p = load_ir();
+    let p = load_ir(STEM);
     let io = load_io();
     let schedule = load_schedule();
     let want = load_setcontrol_events();
@@ -152,7 +152,7 @@ fn realistic_smr_setcontrol_events_equivalent() {
 /// `target_pct` took effect on the SAME (un-reset) rolling buffer.
 #[test]
 fn realistic_smr_setcontrol_taps_equivalent() {
-    let p = load_ir();
+    let p = load_ir(STEM);
     let io = load_io();
     let schedule = load_schedule();
     let want = load_setcontrol_taps();

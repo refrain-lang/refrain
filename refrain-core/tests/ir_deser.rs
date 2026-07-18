@@ -121,6 +121,28 @@ fn deserializes_phase_mode_block_and_staging() {
     assert!(p.reward_bundles["br"].continuous.is_some());
 }
 
+#[test]
+fn deserializes_a_control_seed() {
+    let json = r#"{
+      "sample_rate_hz":256.0,"channels":["Cz"],"inputs":{},"derives":{},
+      "controls":{"thr_uv":{"canonical_name":"control/thr_uv","seed":{
+        "statistic":"percentile","from":"derive/env","window_samples":15360,
+        "target_pct":{"node":"number","value":70.0}}}}
+    }"#;
+    let p: refrain_core::ir::Protocol = serde_json::from_str(json).unwrap();
+    let seed = p.controls["thr_uv"].seed.as_ref().unwrap();
+    assert_eq!(seed.window_samples, 15360);
+    assert_eq!(seed.from, "derive/env");
+}
+
+#[test]
+fn control_without_seed_still_deserializes() {
+    let json = r#"{"sample_rate_hz":256.0,"channels":["Cz"],"inputs":{},"derives":{},
+      "controls":{"reward_pct":{"canonical_name":"control/reward_pct"}}}"#;
+    let p: refrain_core::ir::Protocol = serde_json::from_str(json).unwrap();
+    assert!(p.controls["reward_pct"].seed.is_none());
+}
+
 /// SPEC 9.3: a protocol whose schema is newer than this runtime supports must
 /// be refused at load with a clear diagnostic — never silently ignored. An
 /// unknown field is invisible to serde, so without this gate a newer protocol

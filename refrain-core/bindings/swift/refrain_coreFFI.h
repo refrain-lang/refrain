@@ -286,6 +286,11 @@ int8_t uniffi_refrain_core_fn_method_refraincore_hold(void*_Nonnull ptr, int8_t 
 RustBuffer uniffi_refrain_core_fn_method_refraincore_last_taps(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_FN_METHOD_REFRAINCORE_SEED_REPORT
+#define UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_FN_METHOD_REFRAINCORE_SEED_REPORT
+RustBuffer uniffi_refrain_core_fn_method_refraincore_seed_report(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_FN_METHOD_REFRAINCORE_SET_CLOCK_FROZEN
 #define UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_FN_METHOD_REFRAINCORE_SET_CLOCK_FROZEN
 void uniffi_refrain_core_fn_method_refraincore_set_clock_frozen(void*_Nonnull ptr, int8_t frozen, RustCallStatus *_Nonnull out_status
@@ -612,6 +617,12 @@ uint16_t uniffi_refrain_core_checksum_method_refraincore_hold(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_CHECKSUM_METHOD_REFRAINCORE_LAST_TAPS
 #define UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_CHECKSUM_METHOD_REFRAINCORE_LAST_TAPS
 uint16_t uniffi_refrain_core_checksum_method_refraincore_last_taps(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_CHECKSUM_METHOD_REFRAINCORE_SEED_REPORT
+#define UNIFFI_FFIDEF_UNIFFI_REFRAIN_CORE_CHECKSUM_METHOD_REFRAINCORE_SEED_REPORT
+uint16_t uniffi_refrain_core_checksum_method_refraincore_seed_report(void
     
 );
 #endif
