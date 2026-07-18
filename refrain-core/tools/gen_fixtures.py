@@ -285,3 +285,13 @@ if __name__ == "__main__":
         signal=np.full((N_SAMPLES, 1), 5.0),
         amp=None,
     )
+    # Same seeding conformance shape, but the seeded control is consumed in
+    # EXPRESSION position (`"env" / thr_uv`) rather than via an impl parameter
+    # slot — locks the fire-chunk freshness fix across both backends.
+    generate(
+        "seed_exprpos",
+        channels=("Cz",),
+        skip_warmup=False,
+        signal=np.full((N_SAMPLES, 1), 5.0),
+        amp=None,
+    )

@@ -1,0 +1,29 @@
+// seed_exprpos.refrain
+// Conformance fixture for baseline seeding (§2.6): a `thr_uv` control seeded
+// from a `percentile` statistic over the warmup window, consumed in
+// EXPRESSION position (bare operand `"env" / thr_uv`) rather than through an
+// impl parameter slot (cf. seed_smr_baseline's `absolute(value: thr_uv)`).
+// Locks cross-backend parity for the fire-chunk staleness fix: on the chunk
+// the seed fires, Python must read the freshly seeded value (not the
+// pre-seed default) for downstream expression-position consumers, matching
+// the Rust core's shared ConstCell. Generated with `skip_warmup=False` (docs/
+// CONFORMANCE.md notes the exception) so the seed actually fires.
+protocol "seed_exprpos" {
+  meta { version = "1.0.0"; evidence = "clinical"; description = "seeded control in expr position" }
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = passthrough() }
+  derive "env" { from = "raw"; pipeline = [ magnitude() ] }
+  reward { continuous = sigmoid("env" / thr_uv, midpoint: 1.0, steepness: 3) }
+  output { fb = reward.continuous }
+  controls {
+    reward_pct = percent { default = 70; range = (50, 90); live_tunable = true }
+    thr_uv = voltage {
+      default = 9.9 uV; range = (0.5 uV, 10 uV); live_tunable = true
+      seed = percentile { from = "env"; window = 2 s; target_pct = reward_pct }
+    }
+  }
+  session { phases = [
+    phase { name = "warmup"; duration = 3 s; output_muted = true },
+    phase { name = "run";    mode = open }
+  ] }
+}

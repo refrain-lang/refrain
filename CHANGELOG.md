@@ -20,8 +20,10 @@ bumps are additive; major bumps may break compatibility.
   can never fill inside a timed warmup phase, and drops a seed whose control
   folds out of the resolved IR entirely (dead-seed elimination). If the
   measurement can't complete — not enough warmup samples, an all-NaN input —
-  the seed fails closed and the control keeps its declared default rather
-  than writing a bogus value. A clinician who writes the seeded control
+  the seed fails closed: the control keeps its declared default rather
+  than writing a bogus value, and the session's reward output stays muted
+  for the rest of the run rather than proceeding on that default. A
+  clinician who writes the seeded control
   before it fires disarms the seed outright: `set_control` during warmup
   means the clinician just took responsibility for the value, and the seed
   never overwrites a live tune. Implemented in both the Python evaluator and

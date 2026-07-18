@@ -57,7 +57,8 @@ def test_healthz():
 def test_version():
     body = client.get("/version").json()
     assert body["refrain_version"] == refrain.__version__
-    assert body["ir_versions_supported"] == ["0.1", "0.2"]
+    assert body["ir_versions_supported"] == ["0.1", "0.2", "0.3"]
+    assert body["schema_versions"] == ["0.1", "0.2", "0.3"]
 
 
 def test_compile_returns_canonical_text_matching_hash():

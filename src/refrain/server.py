@@ -42,8 +42,8 @@ def healthz() -> dict[str, Any]:
 def version() -> dict[str, Any]:
     return {
         "refrain_version": __version__,
-        "ir_versions_supported": ["0.1", "0.2"],
-        "schema_versions": ["0.1", "0.2"],
+        "ir_versions_supported": ["0.1", "0.2", "0.3"],
+        "schema_versions": ["0.1", "0.2", "0.3"],
     }
 
 

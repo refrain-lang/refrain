@@ -104,3 +104,36 @@ def test_seed_report_empty_for_non_seeding_protocol():
     ev = _build(NON_SEEDING)
     ev.start(skip_warmup=True)
     assert ev.seed_report() == {}
+
+
+EXPRPOS_SEED = '''protocol "exprpos_seed" {
+  meta { version="1.0.0"; evidence="clinical"; description="seeded control in expr position" }
+  requires { sample_rate=">= 256 Hz"; channels=["Cz"] }
+  input "raw" { montage = passthrough() }
+  derive "env" { from="raw"; pipeline=[ magnitude() ] }
+  reward { continuous = sigmoid("env" / thr_uv, midpoint: 1.0, steepness: 3) }
+  output { fb = reward.continuous }
+  controls {
+    reward_pct = percent { default=70; range=(50,90); live_tunable=true }
+    thr_uv = voltage { default=9.9 uV; range=(0.5 uV,10 uV); live_tunable=true
+      seed = percentile { from="env"; window=2 s; target_pct=reward_pct } }
+  }
+  session { phases=[ phase{name="warmup"; duration=3 s; output_muted=true}, phase{name="run"; mode=open} ] }
+}'''
+
+
+def test_expression_position_seeded_control_is_fresh_on_fire_chunk():
+    import numpy as np
+    from refrain.parser import parse
+    from refrain.resolver import resolve
+    from refrain.eval_ import Evaluator
+    ir = resolve(parse(EXPRPOS_SEED))
+    ev = Evaluator.live(ir, sample_rate_hz=256.0, channel_names=("Cz",), record_streams=True, backend="python")
+    ev.start(skip_warmup=False)
+    fb = None
+    for i in range(4):  # chunks 0-2 warmup, chunk 3 = first run chunk = fire
+        ev.step_chunk(np.full((256, 1), 5.0, dtype=np.float64))
+        fb = float(np.asarray(ev.last_streams()["output/fb"])[-1])
+    # On the fire chunk the seed wrote thr_uv=5.0, so env/thr_uv=1.0 -> sigmoid=0.5,
+    # NOT the stale-default 0.1847 (sigmoid(5/9.9)). This is the Rust-matching value.
+    assert abs(fb - 0.5) < 1e-9, f"fire-chunk output must reflect the seeded control: {fb}"

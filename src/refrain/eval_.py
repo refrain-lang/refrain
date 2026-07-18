@@ -784,7 +784,13 @@ class Evaluator:
             return float(target_pct.value)
         raise TypeError("seed.target_pct must be a control_ref or number")
 
-    def _step_seeds(self, stream_values: dict, t0_s: float) -> None:
+    def _step_seeds(
+        self,
+        stream_values: dict,
+        control_chunks_cache: dict[str, np.ndarray],
+        actual_chunk_size: int,
+        t0_s: float,
+    ) -> None:
         """Drive every armed seed latch for one chunk: ingest the `from` derive
         during warmup; at the first `run` chunk, fire exactly once — compute the
         percentile and write the control BEFORE any threshold steps run this
@@ -818,6 +824,15 @@ class Evaluator:
             latch.value = value
             latch.status = "seeded"
             self._apply_control(latch.control_name, value)   # NOT set_control -> no self-disarm
+            # Refresh this chunk's control broadcast cache so expression-position
+            # control_refs (e.g. `"env" / thr_uv` as a bare operand, not an impl
+            # param slot) read the freshly seeded value THIS chunk too — matching
+            # the Rust core's shared ConstCell, which is always fresh. Without
+            # this, expression-position consumers evaluated after _step_seeds
+            # would read the stale pre-seed default for one chunk (impl-parameter
+            # consumers already refresh via update_control, so they're unaffected).
+            control_chunks_cache[latch.control_target] = np.full(
+                actual_chunk_size, value, dtype=np.float64)
 
     # -- Adaptive-state seed/export (Ask 2) ---------------------------------
 
@@ -1010,7 +1025,7 @@ class Evaluator:
         # first run chunk compute the percentile and write the control BEFORE any
         # threshold steps, so the seeded value is live with no one-chunk lag.
         if self._seed_latches:
-            self._step_seeds(stream_values, t0_s)
+            self._step_seeds(stream_values, control_chunks_cache, actual_chunk_size, t0_s)
             suppress_output = suppress_output or self._seed_failed_mute
 
         # Freeze adaptive-window ingestion during mid-session muted rests so a
