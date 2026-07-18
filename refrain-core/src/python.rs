@@ -84,7 +84,7 @@ impl RustEvaluator {
     ) -> PyResult<Self> {
         let p: Protocol = serde_json::from_str(ir_json)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("IR-JSON: {e}")))?;
-        crate::eval::check_ir_version(&p)
+        crate::ir::check_ir_version(&p)
             .map_err(pyo3::exceptions::PyValueError::new_err)?;
         let inner = guard("evaluator construction", || {
             let mut ev = Evaluator::new(&p, sample_rate_hz, &channel_names);

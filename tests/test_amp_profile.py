@@ -102,3 +102,54 @@ def test_channel_string_form(tmp_path):
     p = load_amp_profile(good)
     assert p.has_channel("Cz")
     assert all(c.kind == "eeg" for c in p.channels)
+
+
+def test_reference_attribute_exists():
+    p = load_amp_profile(PROFILES_DIR / "openbci_cyton.json")
+    assert hasattr(p, "reference")
+
+
+def test_reference_keyword_accepted(tmp_path):
+    data = {
+        "schema": AMP_PROFILE_SCHEMA, "model": "m", "vendor": "v",
+        "coupling": ["ac"], "sample_rates_hz": [250],
+        "channels": ["Cz"], "supports_impedance_check": False,
+        "supports_markers": False, "max_simultaneous_channels": 4,
+        "adc_bits": 24, "input_range_uv": 300000.0,
+        "reference": "device",
+    }
+    f = tmp_path / "amp.json"; f.write_text(json.dumps(data))
+    assert load_amp_profile(f).reference == "device"
+
+
+def test_reference_channel_name_accepted(tmp_path):
+    data = {
+        "schema": AMP_PROFILE_SCHEMA, "model": "m", "vendor": "v",
+        "coupling": ["ac"], "sample_rates_hz": [250],
+        "channels": ["Cz", "A1"], "supports_impedance_check": False,
+        "supports_markers": False, "max_simultaneous_channels": 4,
+        "adc_bits": 24, "input_range_uv": 300000.0,
+        "reference": "A1",
+    }
+    f = tmp_path / "amp.json"; f.write_text(json.dumps(data))
+    assert load_amp_profile(f).reference == "A1"
+
+
+def test_reference_invalid_raises(tmp_path):
+    data = {
+        "schema": AMP_PROFILE_SCHEMA, "model": "m", "vendor": "v",
+        "coupling": ["ac"], "sample_rates_hz": [250],
+        "channels": ["Cz"], "supports_impedance_check": False,
+        "supports_markers": False, "max_simultaneous_channels": 4,
+        "adc_bits": 24, "input_range_uv": 300000.0,
+        "reference": "bogus",
+    }
+    f = tmp_path / "amp.json"; f.write_text(json.dumps(data))
+    with pytest.raises(AmpProfileError, match="reference"):
+        load_amp_profile(f)
+
+
+def test_shipped_profiles_declare_reference():
+    assert load_amp_profile(PROFILES_DIR / "brainbit_flex.json").reference == "device"
+    assert load_amp_profile(PROFILES_DIR / "q21.json").reference == "linked_ears"
+    assert load_amp_profile(PROFILES_DIR / "openbci_cyton.json").reference == "linked_ears"

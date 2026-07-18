@@ -5,7 +5,7 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
-## [0.15.0] — 2026-07-17
+## [0.16.0] — 2026-07-18
 
 ### Added
 - **First-class baseline seeding.** A control can now declare
@@ -39,21 +39,10 @@ bumps are additive; major bumps may break compatibility.
   `window_samples` / `target_pct`) is emitted when the control declares one,
   and any protocol that uses baseline seeding is tagged
   `refrain_ir_version: "0.3"`. Protocols that don't use it are unaffected and
-  keep emitting `"0.1"` / `"0.2"` exactly as before.
-- **SPEC §9.3's runtime-compatibility gate is now implemented.** A protocol
-  tagged with an IR-JSON schema newer than a runtime understands is refused
-  at load with a clear diagnostic instead of silently running with the
-  unrecognized fields ignored. `refrain-core` refuses anything above IR-JSON
-  `"0.3"`.
+  keep emitting `"0.1"` / `"0.2"` exactly as before. `refrain-core`'s
+  load-time version gate (shipped in 0.15.0) now accepts `"0.3"`.
 
 ### Fixed
-- **Expression-position `control_ref` was a frozen no-op in the Rust core.**
-  A control referenced from inside an expression, rather than passed as a
-  primitive's direct keyword argument, never retuned live: `set_control`
-  updated the control cell, but nothing downstream re-read it. This was a
-  real bug independent of seeding, but seeding depends on it — a seeded
-  control's value has to actually reach the pipeline it feeds — so it's
-  fixed as a prerequisite here.
 - **The seed window baked to samples at the resolver's chosen rate instead
   of the actual emit rate.** Every other rate-dependent coefficient in the
   IR is rebaked at emit time; the seed window skipped that step, so
@@ -62,6 +51,31 @@ bumps are additive; major bumps may break compatibility.
   permanently fail-closed seed. `IRControlSeed` now carries a
   rate-independent `window_ms`, and both the emitter and the pure-Python
   evaluator bake it to samples at their actual runtime rate.
+
+## [0.15.0] — 2026-07-18
+
+### Added
+- **`amp.reference` — montage reference from the connected amp profile.** A
+  protocol may write `referential(active: site, reference: amp.reference)`; the
+  resolver folds it to the connected profile's `reference` (`device` /
+  `linked_ears` / `common_average` / a channel) at resolve time, producing an IR
+  identical to a literal-authored one. `amp` is a new resolver namespace root
+  (allow-list: `reference`). Fails closed: `resolve(amp=None)`, a missing field,
+  or a non-allow-listed field is a `ResolveError`. `AmpProfile` gains an optional
+  `reference` field (no schema bump); the three shipped profiles declare it.
+
+### Fixed
+- **`control_ref` in a parameter slot now uses the control's baked default**, not
+  the primitive's. A recognised param-slot `control_ref` returned no value and the
+  call fell back to the primitive default, silently discarding the control's own
+  default from chunk 0 — so the Rust core disagreed with Python (e.g.
+  `sigmoid(steepness:)` off by ~37×, and `inside(low:/high:)` panicked). (refrain-core)
+- **The runtime now refuses IR newer than it supports** (SPEC §9.3). The core never
+  checked `refrain_ir_version`, so an old core silently ignored fields a newer
+  protocol needed; it now rejects at load with a clear diagnostic. (refrain-core)
+- **An expression-position `control_ref` is live, not frozen.** It compiled to a
+  constant, making `set_control` a silent no-op; it now binds over a shared cell so
+  retunes take effect, matching the Python evaluator. (refrain-core)
 
 ## [0.14.1] — 2026-07-16
 

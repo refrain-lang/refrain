@@ -6,6 +6,7 @@
 
   "coupling": ["ac"],
   "sample_rates_hz": [250],
+  "reference": "linked_ears",
 
   "channels": [
     {"name": "Fp1", "kind": "eeg"},

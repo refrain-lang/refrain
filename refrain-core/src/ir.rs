@@ -11,11 +11,6 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 pub struct Protocol {
-    /// Wire schema version (`_protocol_ir_version`). Absent on pre-versioning
-    /// protocols; defaults to the floor so they keep loading. Read ONLY by the
-    /// load-time version gate (SPEC §9.3) — the interpreter never branches on it.
-    #[serde(default = "default_ir_version")]
-    pub refrain_ir_version: String,
     pub sample_rate_hz: f64,
     pub channels: Vec<String>,
     pub inputs: BTreeMap<String, Input>,
@@ -49,6 +44,33 @@ pub struct Protocol {
     /// value/default lives inline as a `control_ref` at each use site).
     #[serde(default)]
     pub controls: BTreeMap<String, ControlDecl>,
+    /// The IR-JSON schema version this document was emitted against
+    /// (`src/refrain/ir_json.py:56` `_protocol_ir_version` tags it per
+    /// protocol). Absent on pre-versioning documents, which are treated as
+    /// "0.1".
+    #[serde(default)]
+    pub refrain_ir_version: Option<String>,
+}
+
+/// IR-JSON schema versions this core can honour. SPEC 9.3: a document tagged
+/// newer than any of these is refused at load rather than silently
+/// misinterpreted. This crate has no `deny_unknown_fields`, so an unknown field
+/// is invisible to serde — without this gate, a newer protocol would run with
+/// its new semantics dropped and no signal to anyone.
+pub const SUPPORTED_IR_VERSIONS: &[&str] = &["0.1", "0.2", "0.3"];
+
+/// Refuse a document tagged with an unsupported schema version. Untagged
+/// documents predate versioning and are treated as "0.1".
+pub fn check_ir_version(p: &Protocol) -> Result<(), String> {
+    let tag = p.refrain_ir_version.as_deref().unwrap_or("0.1");
+    if SUPPORTED_IR_VERSIONS.contains(&tag) {
+        return Ok(());
+    }
+    Err(format!(
+        "unsupported refrain_ir_version {tag:?}: this runtime supports \
+         {SUPPORTED_IR_VERSIONS:?}. Update the runtime, or recompile the \
+         protocol against a supported version."
+    ))
 }
 
 /// A `controls.<name>` declaration. Only the canonical name and the optional
@@ -97,10 +119,6 @@ pub struct Phase {
 
 fn default_phase_mode() -> String {
     "timed".to_string()
-}
-
-fn default_ir_version() -> String {
-    "0.1".to_string()
 }
 
 /// A named activation set referenced by `phase.block` (`_emit_block`). Selects

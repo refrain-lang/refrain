@@ -260,27 +260,61 @@ fn realistic_smr_setcontrol_state_preserved() {
     );
 }
 
-/// `reward.continuous = gain * "env"`, with `gain` a `control_ref` in a plain
-/// value position (not a recognised percentile/smooth/sigmoid slot). Before
-/// the fix, `build_node` baked `Expr::ControlRef` to a frozen `CNode::Const`,
-/// so `set_control("gain", ...)` was a silent no-op in the Rust core (Python
-/// evaluates it live via `_control_deps`). Feeds a SMALL input (0.1) so
-/// `gain * env` stays inside the `[0,1]` output clamp for both gain values
-/// (0.1 -> 0.1, then 3x -> 0.3); a saturating input would clamp both to 1.0
-/// and mask the retune.
+/// A `control_ref` in a plain expression position (an output binding) must be
+/// LIVE, matching the Python evaluator, which rebuilds its control cache every
+/// chunk (`eval_.py:1399`). Regression: `build_node` compiled these to
+/// `CNode::Const`, freezing them at the default and making `set_control` a
+/// silent no-op success.
 #[test]
-fn expression_position_control_ref_is_live() {
-    let ir = load_ir("exprpos_control");
-    let mut ev = Evaluator::new(&ir, 256.0, &["Cz".into()]);
-    ev.start(false);
-    let before = ev.step_chunk(&vec![vec![0.1_f64]; 8]);
-    ev.set_control("gain", 3.0).unwrap();
-    let after = ev.step_chunk(&vec![vec![0.1_f64]; 8]);
-    let x_before = *before["output/x"].last().unwrap();
-    let x_after = *after["output/x"].last().unwrap();
+fn control_ref_in_expression_position_is_live() {
+    const S: &str = "micro_11_control_expr";
+    let ir = std::fs::read_to_string(format!("tests/fixtures/{S}.ir.json"))
+        .expect("fixture missing — run tools/gen_fixtures.py");
+    let p: Protocol = serde_json::from_str(&ir).expect("parse ir");
+    let io: Io = serde_json::from_str(
+        &std::fs::read_to_string(format!("tests/fixtures/{S}.io.json")).unwrap(),
+    )
+    .expect("parse io");
+
+    // Feed the SAME four chunks twice: once at the default gain (50), once
+    // after set_control(gain, 100). Identical input, so a live control must
+    // exactly double `output/audio_gain`; a frozen one leaves it unchanged.
+    let run = |gain: Option<f64>| -> f64 {
+        let mut ev = Evaluator::new(&p, io.sample_rate_hz, &io.channels);
+        ev.start(true);
+        if let Some(g) = gain {
+            ev.set_control("gain", g).expect("gain is a declared control");
+        }
+        let mut last = 0.0;
+        for c in 0..4 {
+            let chunk = &io.input[c * io.chunk_size..(c + 1) * io.chunk_size];
+            ev.step_chunk_events(chunk);
+            last = *ev
+                .last_taps()
+                .get("output/audio_gain")
+                .expect("output/audio_gain tap");
+        }
+        last
+    };
+
+    let at_default = run(None);
+    let at_double = run(Some(100.0));
+
     assert!(
-        x_before > 1e-6 && (x_after - 3.0 * x_before).abs() < 1e-9,
-        "set_control on an expression-position control_ref must retune live: \
-         before={x_before}, after={x_after}"
+        at_default.abs() > 1e-9,
+        "degenerate fixture: output is 0 at the default gain, so this test \
+         cannot distinguish live from frozen"
+    );
+    let want = 2.0 * at_default;
+    assert!(
+        want < 1.0,
+        "fixture saturates the [0, 1] analog-output clamp: want={want}. \
+         This test cannot distinguish live from frozen once clamped — rescale \
+         the protocol's output binding, do not relax this assertion."
+    );
+    assert!(
+        (at_double - want).abs() <= 1e-6 + 1e-4 * want.abs(),
+        "expression-position control_ref is frozen: default={at_default}, \
+         after set_control(gain, 100)={at_double}, expected {want}"
     );
 }

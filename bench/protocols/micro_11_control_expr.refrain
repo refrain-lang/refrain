@@ -1,0 +1,42 @@
+// Exercises a control_ref in a plain EXPRESSION position (an output binding),
+// as opposed to a recognised tunable parameter slot (percentile target_pct,
+// smooth tau, sigmoid midpoint, reward weight). Regression fixture for the
+// Rust build_node divergence: such refs must be live on BOTH backends.
+protocol "micro_11_control_expr" {
+  meta { description = "control_ref in expression position" }
+
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+
+  input "raw" { montage = referential(active: "Cz", reference: "device") }
+
+  derive "env" {
+    from = "raw"
+    pipeline = [
+      bandpass(band: (12 Hz, 15 Hz), order: 4),
+      rectify(),
+      smooth(tau: 0.5 s),
+    ]
+  }
+
+  threshold "env_t" { signal = "env"; type = absolute(value: 1.0 uV) }
+
+  reward { continuous = sigmoid("env" - "env_t", midpoint: 0.0, steepness: 3) }
+
+  controls {
+    gain = percent {
+      default      = 50
+      range        = (0, 100)
+      label        = "Output gain"
+      live_tunable = true
+    }
+  }
+
+  // `/ 100` keeps the product inside the [0, 1] clamp every analog output
+  // channel gets (both backends): at the default gain=50 this is <= 0.5 * the
+  // sigmoid's [0, 1] range, and set_control(gain, 100) still tops out at 1.0
+  // * that range. The constant divisor cancels in the live/default ratio the
+  // regression test checks, so it doesn't affect what's being pinned.
+  output { audio_gain = gain / 100 * reward.continuous }
+
+  session { phases = [ phase { name = "run"; duration = 16 s } ] }
+}

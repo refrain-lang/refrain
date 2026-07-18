@@ -12,9 +12,9 @@ without depending on the Python parser or SciPy.
 
 | Field | Value |
 |---|---|
-| Version string | `"0.1"` (default; see below for `"0.3"`) |
+| Baseline version | `"0.1"` (emitted when a protocol uses no composite, staging, or seeding features) |
 | Source constant | `IR_JSON_VERSION = "0.1"` in `src/refrain/ir_json.py` |
-| Schema | `src/refrain/schema/ir-json-v0.1.schema.json` |
+| Schemas | `src/refrain/schema/ir-json-v0.1.schema.json`, `ir-json-v0.2.schema.json`, `ir-json-v0.3.schema.json` |
 
 The emitter tags the wire object with the lowest version whose fields it
 actually used, not a single fixed constant: `"0.1"` for most protocols,
@@ -35,6 +35,22 @@ superset of the previous one's fields. This document otherwise describes the
 
 The schema root declares `"additionalProperties": true`, formalizing the
 ignore-unknown-fields contract at the structural-validation level.
+
+### Version enforcement
+
+A runtime refuses at load any document whose `refrain_ir_version` is not in the
+set it supports (`SUPPORTED_IR_VERSIONS`, `refrain-core/src/ir.rs`), with a
+diagnostic naming the offending version. A document with no tag is treated as
+`0.1`. This is what makes adding a new IR field safe: an old runtime cannot
+silently ignore semantics it does not implement, because it will not load the
+document at all.
+
+The gate keys only on `refrain_ir_version`, not on which fields are present —
+so this protection applies only to fields shipped under a version bump. A new
+field carrying semantics that is added without bumping the version is silently
+ignored by old runtimes exactly as §Compatibility policy describes; only
+semantically-inert additions (fields an old runtime can safely disregard) may
+ride an existing version.
 
 ---
 
@@ -91,7 +107,7 @@ present in the serialized output (verified against `realistic_smr.ir.json`):
 
 | Key | JSON type | Meaning |
 |---|---|---|
-| `refrain_ir_version` | `"0.1"` (string const) | Wire-format version; MUST be `"0.1"`. |
+| `refrain_ir_version` | `"0.1"` or `"0.2"` (string) | Wire-format version. Emitted by `_protocol_ir_version()` (src/refrain/ir_json.py:56) as the lowest version that represents the protocol (`"0.2"` for composite/staging features, else `"0.1"`). Runtimes accept `SUPPORTED_IR_VERSIONS`: `"0.1"`, `"0.2"`. |
 | `name` | `string \| null` | Protocol name (`smr_cz_v1`, etc.). |
 | `extends` | `string \| null` | Parent protocol name, if any. |
 | `sample_rate_hz` | number | Baked runtime sample rate (host choice, ≥ `requires.sample_rate_min_hz`). |

@@ -1,0 +1,105 @@
+// micro_12_control_param_slots.refrain
+// Regression fixture: a control_ref placed in a RECOGNISED parameter slot
+// (sigmoid `steepness`, linear `midpoint`/`slope` — nested inside sigmoid's
+// input; `inside`'s `low`/`high` in the reward event's dwell condition) must
+// take the CONTROL's baked default on both backends, not the primitive's own
+// fallback default.
+//
+// Rust's `num_named` (refrain-core/src/eval.rs) matched only `Expr::Number`;
+// handed a `control_ref` it returned `None` and the call site silently fell
+// back to the PRIMITIVE's own default instead of the control's. Reproduced
+// end-to-end: sigmoid(steepness: <control default 8>) gave reward.continuous
+// 0.0096 on Python and 0.3591 on Rust — a 37x error — before any
+// `set_control`. `inside`'s low/high (same bug class) didn't merely diverge:
+// `num_named` returning `None` there fed straight into
+// `.expect("inside needs \`low\`")`, so wiring a control into `inside`
+// PANICKED the Rust build outright instead of producing a wrong number. See
+// task-3-report.md ("Coverage: inside(low:/high:)") for the RED probe that
+// reproduced that panic.
+//
+// `linear` is nested inside sigmoid's `__input__` (a `stream_ref_or_expr`
+// slot, same as any binary expression) purely to exercise its `midpoint`/
+// `slope` slots in the same fixture — not an invented grammar form. `inside`
+// is exercised the same way every real protocol uses it (see
+// micro_07_ilf.refrain / micro_08_bandpower.refrain): as the condition inside
+// `reward.event`'s `dwell(...)`, wrapping a `stream_ref` signal.
+//
+// DEGENERACY TRAP (bit micro_11 previously): analog outputs are clamped to
+// [0,1] by both backends, so a saturated fixture proves nothing. Sigmoid's
+// own output is naturally in [0,1]; the constants below are chosen so the
+// signal swings through the transition region rather than pinning at an
+// extreme (checked against the generated fixture, not just asserted here).
+// Likewise `in_low`/`in_high` are chosen against "env"'s actual generated
+// range so `inside("env", ...)` is true for part of the run and false for
+// the rest — not always-true or always-false, which would compare equal on
+// both backends for the wrong reason.
+protocol "micro_12_control_param_slots" {
+  meta { description = "control_ref in sigmoid steepness, nested linear midpoint/slope, and inside low/high" }
+
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+
+  input "raw" { montage = referential(active: "Cz", reference: "device") }
+
+  derive "env" {
+    from = "raw"
+    pipeline = [
+      bandpass(band: (12 Hz, 15 Hz), order: 4),
+      rectify(),
+      smooth(tau: 0.5 s),
+    ]
+  }
+
+  threshold "env_t" { signal = "env"; type = absolute(value: 1.0 uV) }
+
+  reward {
+    event = dwell(
+      condition: inside("env", low: in_low, high: in_high),
+      duration: 250 ms
+    )
+    continuous = sigmoid(
+      linear("env" - "env_t", midpoint: lin_mid, slope: lin_slope),
+      midpoint: 0.0,
+      steepness: steep
+    )
+  }
+
+  controls {
+    steep = number {
+      default      = 6
+      range        = (1, 12)
+      label        = "Sigmoid steepness"
+      live_tunable = true
+    }
+    lin_mid = number {
+      default      = 0.3
+      range        = (0, 2)
+      label        = "Linear midpoint"
+      live_tunable = true
+    }
+    lin_slope = number {
+      default      = 1.5
+      range        = (0.5, 4)
+      label        = "Linear slope"
+      live_tunable = true
+    }
+    in_low = number {
+      default      = 0.75
+      range        = (0, 1.5)
+      label        = "Inside band low"
+      live_tunable = true
+    }
+    in_high = number {
+      default      = 1.45
+      range        = (0.5, 2)
+      label        = "Inside band high"
+      live_tunable = true
+    }
+  }
+
+  output {
+    audio_chime = reward.event
+    audio_gain  = reward.continuous
+  }
+
+  session { phases = [ phase { name = "run"; duration = 16 s } ] }
+}

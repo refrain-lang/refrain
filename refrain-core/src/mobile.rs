@@ -139,7 +139,7 @@ impl RefrainCore {
     ) -> Result<std::sync::Arc<Self>, RefrainError> {
         let p: Protocol = serde_json::from_str(&ir_json)
             .map_err(|e| RefrainError::InvalidIr { message: e.to_string() })?;
-        crate::eval::check_ir_version(&p)
+        crate::ir::check_ir_version(&p)
             .map_err(|message| RefrainError::InvalidIr { message })?;
         Ok(std::sync::Arc::new(Self {
             inner: Mutex::new(Evaluator::new(&p, sample_rate_hz, &channel_names)),

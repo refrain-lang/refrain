@@ -91,6 +91,12 @@ from .types_ import (
 )
 
 
+# Amp-profile fields a protocol may read via the `amp` namespace. An
+# allow-list, not the whole dataclass: exposed fields are facts a protocol
+# ADOPTS; the profile's other fields are constraints the resolver CHECKS.
+_AMP_ALLOWED_FIELDS: tuple[str, ...] = ("reference",)
+
+
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
@@ -2097,10 +2103,35 @@ class _Resolver:
         path = _collect_member_path(expr)
         if path is not None and path[0] == "reward":
             return self._resolve_reward_field(path[1:], expr.loc)
+        if path is not None and path[0] == "amp":
+            return self._resolve_amp_field(path[1:], expr.loc)
         raise ResolveError(
-            "member access is only supported on `reward` (e.g. `reward.event.holds`)",
+            "member access is only supported on `reward` (e.g. `reward.event.holds`) "
+            "and `amp` (e.g. `amp.reference`)",
             loc=expr.loc,
         )
+
+    def _resolve_amp_field(self, parts: tuple[str, ...], loc: Loc | None) -> IRExpr:
+        member = ".".join(("amp",) + parts)
+        if len(parts) != 1 or parts[0] not in _AMP_ALLOWED_FIELDS:
+            raise ResolveError(
+                f"{member!r} is not an exposed amp field; "
+                f"allowed: {', '.join(_AMP_ALLOWED_FIELDS)}",
+                loc=loc,
+            )
+        if self.amp is None:
+            raise ResolveError(
+                f"{member!r} requires an amp profile, but resolve() was called "
+                f"with amp=None",
+                loc=loc,
+            )
+        value = getattr(self.amp, parts[0])
+        if value is None:
+            raise ResolveError(
+                f"amp profile {self.amp.model!r} declares no {parts[0]!r}",
+                loc=loc,
+            )
+        return IRStringLit(value=value, loc=loc)
 
     def _bundle_field_expr(self, field: str) -> IRExpr | None:
         """Return a representative declared bundle's `continuous`/`event` expr,
