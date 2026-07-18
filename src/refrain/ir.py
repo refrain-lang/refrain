@@ -268,7 +268,7 @@ class IRControlSeed:
 
     statistic: str          # "percentile" — v1's only statistic; from the block kind
     from_entity: str        # canonical source, e.g. "derive/env"
-    window_samples: int     # trailing window, baked at the compile rate
+    window_ms: float        # trailing window, rate-independent; baked to samples at emit time
     target_pct: IRExpr      # a `number` node or a `percent` control_ref
     loc: Loc | None = None
 

@@ -402,7 +402,7 @@ def _emit_seed(seed: IRControlSeed, ctx: _EmitCtx) -> dict:
     return {
         "statistic": seed.statistic,
         "from": seed.from_entity,
-        "window_samples": seed.window_samples,
+        "window_samples": max(1, int(round(seed.window_ms / 1000.0 * ctx.sample_rate_hz))),
         "target_pct": _emit_expr(seed.target_pct, ctx),
     }
 

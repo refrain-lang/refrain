@@ -278,7 +278,10 @@ class _SeedLatch:
         self.control_target = control_target     # "control/<name>"
         self.from_entity = seed.from_entity       # "derive/<name>"
         self.target_pct = seed.target_pct          # IRExpr (control_ref or number)
-        self.window_samples = seed.window_samples
+        # Baked at the evaluator's actual runtime rate by `buffer` itself
+        # (PercentileImpl), not re-derived from the rate-independent
+        # `seed.window_ms` here — single source of truth, no round-trip.
+        self.window_samples = buffer.window_samples
         self.buffer = buffer                        # impls.PercentileImpl (reused storage)
         self.armed = True
         self.fired = False
@@ -765,10 +768,10 @@ class Evaluator:
             if ctrl.seed is None:
                 continue
             init_pct = self._seed_target_pct_value(ctrl.seed.target_pct)
-            # window_ms round-trips to the same window_samples the resolver baked
-            # (window_samples = round(window_ms/1000*rate)), so the buffer cap
-            # matches exactly.
-            window_ms = ctrl.seed.window_samples * 1000.0 / self.sample_rate_hz
+            # window_ms is rate-independent on the IR (SPEC baseline-seeding
+            # fix); bake it to samples here at the evaluator's actual runtime
+            # rate, exactly like DSP filter windows are baked (_bake_coeffs).
+            window_ms = ctrl.seed.window_ms
             buf = impls.PercentileImpl(
                 target_pct=init_pct, window_ms=window_ms, sample_rate_hz=self.sample_rate_hz)
             self._seed_latches[ctrl.canonical_name] = _SeedLatch(

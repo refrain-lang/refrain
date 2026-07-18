@@ -238,7 +238,7 @@ class _Resolver:
         self.output = output_ir
         session_ir = self._resolve_session()
         self._validate_staging(session_ir)
-        self._resolve_control_seeds(requires_ir, session_ir)
+        self._resolve_control_seeds(session_ir)
         meta_ir = self._resolve_meta()
 
         return IRProtocol(
@@ -1166,10 +1166,11 @@ class _Resolver:
             walk(expr)
         return found
 
-    def _resolve_control_seeds(self, requires_ir: IRRequires, session_ir: IRSession) -> None:
+    def _resolve_control_seeds(self, session_ir: IRSession) -> None:
         """Post-pass (Task 6): validate each pending seed's `from` derive and
-        `target_pct`, bake `window_samples` at the compile (chosen) rate, and
-        attach the resulting `IRControlSeed` to its control.
+        `target_pct`, and attach the resulting `IRControlSeed` (carrying the
+        rate-independent `window_ms`) to its control. The window is baked to
+        samples at emit time, exactly like DSP filter windows (`_bake_coeffs`).
 
         Runs after controls, derives, and session are all resolved so that
         every derive name and every control (including forward-declared
@@ -1177,7 +1178,6 @@ class _Resolver:
         """
         if not self._pending_seeds:
             return
-        rate = float(requires_ir.sample_rate_chosen_hz)
         referenced = self._referenced_control_targets()
         for name, pend in self._pending_seeds.items():
             # 1. `from` must name a real derive. `self.derives` is keyed by
@@ -1195,16 +1195,14 @@ class _Resolver:
             #    now, when every control exists — order-independent).
             target_pct = self._resolve_value_expr(pend.target_pct_ast)
             self._validate_seed_target_pct(name, target_pct)
-            # 3. Bake the window at the compile (chosen) rate.
-            window_samples = max(1, int(round(pend.window_ms / 1000.0 * rate)))
-            # 4. A window longer than a timed, output-muted warmup phase 0
+            # 3. A window longer than a timed, output-muted warmup phase 0
             #    can never fill — refuse at compile (phase durations are
-            #    numeric literals, so this is always knowable now).
+            #    numeric literals, so this is always knowable now). Compared
+            #    directly in milliseconds — rate-independent.
             phases = session_ir.phases
             first = phases[0] if phases else None
             if first is not None and first.output_muted and first.mode != "open":
-                warmup_samples = int(round(first.duration_ms / 1000.0 * rate))
-                if window_samples > warmup_samples:
+                if pend.window_ms > first.duration_ms:
                     raise ResolveError(
                         f"control {name!r}.seed.window "
                         f"({pend.window_ms / 1000:.1f}s) exceeds the warmup phase "
@@ -1217,7 +1215,7 @@ class _Resolver:
             seed = IRControlSeed(
                 statistic=pend.statistic,
                 from_entity=from_entity,
-                window_samples=window_samples,
+                window_ms=pend.window_ms,
                 target_pct=target_pct,
                 loc=pend.loc,
             )

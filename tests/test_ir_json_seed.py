@@ -7,7 +7,7 @@ def test_ircontrol_carries_an_optional_seed():
     seed = IRControlSeed(
         statistic="percentile",
         from_entity="derive/env",
-        window_samples=15360,
+        window_ms=60000.0,
         target_pct=IRNumberLit(value=70.0, dims=Dimensions(), unit=None),
     )
     ctrl = IRControl(
@@ -16,7 +16,7 @@ def test_ircontrol_carries_an_optional_seed():
         log_scale=False, label=None, live_tunable=True, tune_strategy=None,
         seed=seed,
     )
-    assert ctrl.seed.window_samples == 15360
+    assert ctrl.seed.window_ms == 60000.0
     assert ctrl.seed.from_entity == "derive/env"
 
 
@@ -34,7 +34,7 @@ def _ctx():
 
 
 def test_emit_control_includes_seed_when_present():
-    seed = IRControlSeed("percentile", "derive/env", 15360,
+    seed = IRControlSeed("percentile", "derive/env", 60000.0,
                          IRNumberLit(value=70.0, dims=Dimensions(), unit=None))
     ctrl = IRControl("thr_uv", "control/thr_uv", "voltage", Dimensions(),
                      None, None, None, False, None, True, None, seed=seed)
@@ -70,3 +70,11 @@ def test_non_seeding_control_omits_seed_and_keeps_low_version():
     obj = compile_to_ir_json(NON_SEEDING).ir_json
     assert "seed" not in obj["controls"]["thr_uv"]
     assert obj["refrain_ir_version"] == "0.1"
+
+
+def test_seed_window_rebakes_at_emit_rate():
+    from tests._seed_fixtures import SEED_PROTO  # 2 s window
+
+    for rate, expected in [(256.0, 512), (512.0, 1024), (1024.0, 2048)]:
+        obj = compile_to_ir_json(SEED_PROTO, sample_rate_hz=rate).ir_json
+        assert obj["controls"]["thr_uv"]["seed"]["window_samples"] == expected, rate
