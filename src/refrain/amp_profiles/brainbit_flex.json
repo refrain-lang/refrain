@@ -6,6 +6,7 @@
 
   "coupling": ["ac"],
   "sample_rates_hz": [250],
+  "reference": "device",
 
   "_comment_channels": "The BrainBit Flex has 4 user-placeable scalp electrodes plus a dedicated hardware reference and ground. The channel labels here are placeholders for a common SMR-training placement (Cz active + 3 free positions); change them to match your actual electrode layout, or override at session start via Evaluator.live(channel_names=...).",
   "channels": [
@@ -22,7 +23,7 @@
   "adc_bits": 24,
   "input_range_uv": 300000,
 
-  "_comment_reference": "The BrainBit's dedicated reference electrode is ear-mounted, and the SDK delivers data already referenced to it. Protocols should use `referential(active: \"X\", reference: \"device\")` for monopolar-Cz-style montages — the channel is taken as-recorded with no software re-referencing.",
+  "_comment_reference": "The BrainBit's dedicated reference electrode is ear-mounted, and the SDK delivers data already referenced to it.",
 
   "resource_limits": {
     "max_state_kb": 64,
