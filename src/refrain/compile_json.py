@@ -183,6 +183,7 @@ def compile_to_ir_json(
         "content_hash": None,
         "extends": None,
         "bindings": applied_bindings,
+        "seeds": [],
     }
 
     try:
@@ -229,6 +230,11 @@ def compile_to_ir_json(
 
     obj = ir_to_json_obj(ir, sample_rate_hz=sample_rate_hz)
     canonical = json.dumps(obj, indent=2)
+    seeds = sorted(
+        c.canonical_name.removeprefix("control/")
+        for c in ir.controls.values()
+        if c.seed is not None
+    )
     meta = {
         "refrain_version": __version__,
         "ir_version": obj["refrain_ir_version"],
@@ -236,6 +242,7 @@ def compile_to_ir_json(
         "content_hash": _content_hash(canonical),
         "extends": file_ast.protocol.extends,
         "bindings": applied_bindings,
+        "seeds": seeds,
     }
     schema_error = _validate(obj) if validate else None
     return CompileResult(

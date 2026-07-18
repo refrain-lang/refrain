@@ -325,3 +325,14 @@ def test_protocol_naming_no_channels_is_a_diagnostic_not_a_schema_error():
     assert diag.stage == "resolve"
     assert diag.severity == "error"
     assert "channels" in diag.message
+
+
+# ---------------------------------------------------------------------------
+# Seeded control echoes (meta.seeds) — baseline seeding feature
+# ---------------------------------------------------------------------------
+
+
+def test_meta_echoes_seeded_control_names():
+    from tests._seed_fixtures import SEEDING, NON_SEEDING  # verified fixtures
+    assert compile_to_ir_json(SEEDING).meta["seeds"] == ["thr_uv"]
+    assert compile_to_ir_json(NON_SEEDING).meta["seeds"] == []
