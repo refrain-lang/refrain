@@ -431,3 +431,68 @@ def test_ir_json_excludes_mode_controls():
     obj = ir_to_json_obj(ir, sample_rate_hz=250)
     assert "threshold_style" not in obj["controls"]
     assert "reward_pct" in obj["controls"]
+
+
+
+# ---------------------------------------------------------------------------
+# Effective channel list — `requires.channels` is optional (a montage may name
+# electrodes it omits; the BrainBit `placement_*` protocols declare none at
+# all), but the schema pins top-level `channels` to minItems 1. The emitter
+# must fall back to the electrodes the montages name.
+# ---------------------------------------------------------------------------
+
+_NO_REQUIRES_CHANNELS = '''
+    protocol "p" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      requires { sample_rate = ">= 256 Hz" }
+      input "raw" { montage = bipolar(plus: "C3", minus: "C4") }
+      reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+      output { audio_gain = reward.continuous }
+    }
+'''
+
+_PLACEMENT_NO_REQUIRES_CHANNELS = '''
+    protocol "p" {
+      meta { version = "1.0"; evidence = "clinical"; description = "x" }
+      requires { sample_rate = ">= 256 Hz" }
+      controls { site = placement { kind = "active"; default = "C3"; allowed = ["C3","Cz"] } }
+      input "raw" { montage = referential(active: site, reference: "device") }
+      reward { continuous = sigmoid("raw", midpoint: 0 uV, steepness: 1) }
+      output { audio_gain = reward.continuous }
+    }
+'''
+
+
+def test_channels_fall_back_to_montage_when_requires_omits_them():
+    """A protocol that declares no `requires.channels` must still emit the
+    electrodes its montages name — not an empty (schema-invalid) list."""
+    obj = ir_to_json_obj(resolve(parse(_NO_REQUIRES_CHANNELS)), sample_rate_hz=250)
+    assert obj["channels"] == ["C3", "C4"]
+
+
+def test_unbound_placement_channels_come_from_its_default():
+    """A placement substitutes its bound site into the montage at resolve time
+    without appearing in `requires.channels`; baking with no binding must still
+    yield the default-resolved electrode rather than an empty list."""
+    obj = ir_to_json_obj(resolve(parse(_PLACEMENT_NO_REQUIRES_CHANNELS)), sample_rate_hz=250)
+    assert obj["channels"] == ["C3"]
+
+
+def test_declared_requires_channels_win_over_montage():
+    """When the author declares `requires.channels`, it is the contract with
+    the amp and is emitted verbatim — deriving must not renumber or extend it
+    (channel index == position, and `content_hash` covers this list)."""
+    src = _NO_REQUIRES_CHANNELS.replace(
+        'sample_rate = ">= 256 Hz"',
+        'sample_rate = ">= 256 Hz"; channels = ["C4", "C3", "A1"]',
+    )
+    obj = ir_to_json_obj(resolve(parse(src)), sample_rate_hz=250)
+    assert obj["channels"] == ["C4", "C3", "A1"]
+
+
+def test_requires_block_echoes_the_declaration_not_the_derived_list():
+    """`requires` echoes what the author wrote; only top-level `channels` is
+    the effective acquisition list. An omitted declaration stays empty."""
+    obj = ir_to_json_obj(resolve(parse(_NO_REQUIRES_CHANNELS)), sample_rate_hz=250)
+    assert obj["requires"]["channels"] == []
+    assert obj["channels"] == ["C3", "C4"]

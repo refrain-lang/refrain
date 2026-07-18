@@ -134,6 +134,23 @@ fn micro_10_autocorr_equivalent() {
 }
 
 #[test]
+fn micro_11_control_expr_equivalent() {
+    // A control_ref in an output binding: the static streams must match Python
+    // at the default control value. The LIVE behaviour (set_control moves it)
+    // is pinned by set_control.rs::control_ref_in_expression_position_is_live.
+    run_protocol("micro_11_control_expr");
+}
+
+#[test]
+fn micro_12_control_param_slots_equivalent() {
+    // A control_ref in a recognised parameter slot (sigmoid steepness, linear
+    // midpoint/slope) must take the CONTROL's baked default on both backends.
+    // Regression: Rust's num_named matched only Expr::Number, so a control_ref
+    // fell through to the primitive's fallback — a 37x error in reward.continuous.
+    run_protocol("micro_12_control_param_slots");
+}
+
+#[test]
 fn realistic_smr_equivalent() {
     run_protocol("realistic_smr");
 }

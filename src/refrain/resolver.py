@@ -1428,6 +1428,12 @@ class _Resolver:
                     loc=loc,
                 )
             value = self.bindings[name]
+            # JSON has no tuple type, so every multi-channel binding — a
+            # `set` list, a `pair`/`bipolar` 2-tuple — arrives over /compile
+            # as an array. Normalize once here, at the wire boundary, so the
+            # per-kind shape checks below see the tuple they specify.
+            if isinstance(value, list):
+                value = tuple(value)
         else:
             # Use default: active default_placement is a 1-tuple; bipolar/pair is a 2-tuple;
             # set is a tuple of N channel strings.
@@ -1438,8 +1444,6 @@ class _Resolver:
 
         if ctrl.kind == "set":
             # set: value must be a list or tuple of channel-name strings.
-            if isinstance(value, list):
-                value = tuple(value)
             if not isinstance(value, tuple) or not all(isinstance(ch, str) for ch in value):
                 raise ResolveError(
                     f"placement {name!r} (set): binding value must be a list/tuple of "

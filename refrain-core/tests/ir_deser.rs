@@ -120,3 +120,55 @@ fn deserializes_phase_mode_block_and_staging() {
     assert!(p.reward_bundles.contains_key("br"));
     assert!(p.reward_bundles["br"].continuous.is_some());
 }
+
+/// SPEC 9.3: a protocol whose schema is newer than this runtime supports must
+/// be refused at load with a clear diagnostic — never silently ignored. An
+/// unknown field is invisible to serde, so without this gate a newer protocol
+/// runs with its new semantics dropped and nobody is told.
+#[test]
+fn refuses_ir_version_newer_than_supported() {
+    let mut v: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string("tests/fixtures/micro_03_envelope.ir.json").unwrap(),
+    )
+    .unwrap();
+    v["refrain_ir_version"] = serde_json::Value::String("99.0".into());
+
+    let p: Protocol = serde_json::from_str(&v.to_string()).expect("still deserializes");
+    let err = refrain_core::ir::check_ir_version(&p)
+        .expect_err("must refuse IR newer than supported");
+    assert!(
+        err.contains("99.0") && err.contains("refrain_ir_version"),
+        "diagnostic must name the offending version and the field, got: {err}"
+    );
+}
+
+/// The versions this core claims to support must pass the gate. Guards against
+/// it being over-eager.
+#[test]
+fn accepts_supported_ir_versions() {
+    for stem in ["micro_03_envelope", "realistic_smr"] {
+        let p = load(stem);
+        let tag = p.refrain_ir_version.clone().unwrap_or_else(|| "0.1".into());
+        assert!(
+            refrain_core::ir::SUPPORTED_IR_VERSIONS.contains(&tag.as_str()),
+            "{stem} is tagged {tag}, which this core does not claim to support"
+        );
+        refrain_core::ir::check_ir_version(&p)
+            .unwrap_or_else(|e| panic!("{stem} ({tag}) must pass the gate: {e}"));
+    }
+}
+
+/// A document with no version tag predates versioning; treat it as 0.1 and
+/// accept it.
+#[test]
+fn accepts_ir_with_no_version_tag() {
+    let mut v: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string("tests/fixtures/micro_03_envelope.ir.json").unwrap(),
+    )
+    .unwrap();
+    v.as_object_mut().unwrap().remove("refrain_ir_version");
+
+    let p: Protocol = serde_json::from_str(&v.to_string()).expect("untagged must deserialize");
+    assert!(p.refrain_ir_version.is_none());
+    refrain_core::ir::check_ir_version(&p).expect("untagged must pass the gate");
+}

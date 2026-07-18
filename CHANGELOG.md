@@ -16,6 +16,21 @@ bumps are additive; major bumps may break compatibility.
   (allow-list: `reference`). Fails closed: `resolve(amp=None)`, a missing field,
   or a non-allow-listed field is a `ResolveError`. `AmpProfile` gains an optional
   `reference` field (no schema bump); the three shipped profiles declare it.
+## [0.14.1] — 2026-07-16
+
+### Fixed
+- **IR-JSON emitted `"channels": []` for any protocol that omits
+  `requires.channels`**, which trips the emitter's own schema (`minItems: 1`).
+  `compile_to_ir_json` reported it as `schema_error` and the server mapped it to
+  an opaque HTTP 500 — the failure the Coherence portal hits on compile-on-upload
+  for the BrainBit `placement_*` protocols (a `placement` control substitutes its
+  bound sites into the montage at resolve time, so those protocols name their
+  electrodes nowhere else). The emitter now derives the channel set from the input
+  montages when `requires.channels` is omitted, via a shared
+  `ir_json.effective_channels` / `montage_channels` that the synthetic source
+  (v0.14.0) also uses — one derivation, both consumers. Plain single-site
+  protocols with no `channels` line compile identically; nothing changes for
+  protocols that do declare `requires.channels`.
 
 ## [0.14.0] — 2026-07-11
 
@@ -639,6 +654,7 @@ Implementation bundle that landed pre-0.0.1:
   `docs/EMBEDDING.md`, `docs/HOST-PLUGIN-BRIEF.md`,
   `docs/DESIGN-NOTES.md`.
 
+[0.14.1]: https://github.com/refrain-lang/refrain/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/refrain-lang/refrain/compare/v0.13.0...v0.14.0
 [0.1.0]: https://github.com/refrain-lang/refrain/compare/v0.0.1...v0.1.0
 [0.0.1]: https://github.com/refrain-lang/refrain/releases/tag/v0.0.1

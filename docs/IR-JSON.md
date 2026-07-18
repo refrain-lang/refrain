@@ -12,9 +12,9 @@ without depending on the Python parser or SciPy.
 
 | Field | Value |
 |---|---|
-| Version string | `"0.1"` |
+| Baseline version | `"0.1"` (emitted when protocol uses no composite or staging features) |
 | Source constant | `IR_JSON_VERSION = "0.1"` in `src/refrain/ir_json.py` |
-| Schema | `src/refrain/schema/ir-json-v0.1.schema.json` |
+| Schemas | `src/refrain/schema/ir-json-v0.1.schema.json`, `ir-json-v0.2.schema.json` |
 
 ### Compatibility policy
 
@@ -27,6 +27,22 @@ without depending on the Python parser or SciPy.
 
 The schema root declares `"additionalProperties": true`, formalizing the
 ignore-unknown-fields contract at the structural-validation level.
+
+### Version enforcement
+
+A runtime refuses at load any document whose `refrain_ir_version` is not in the
+set it supports (`SUPPORTED_IR_VERSIONS`, `refrain-core/src/ir.rs`), with a
+diagnostic naming the offending version. A document with no tag is treated as
+`0.1`. This is what makes adding a new IR field safe: an old runtime cannot
+silently ignore semantics it does not implement, because it will not load the
+document at all.
+
+The gate keys only on `refrain_ir_version`, not on which fields are present —
+so this protection applies only to fields shipped under a version bump. A new
+field carrying semantics that is added without bumping the version is silently
+ignored by old runtimes exactly as §Compatibility policy describes; only
+semantically-inert additions (fields an old runtime can safely disregard) may
+ride an existing version.
 
 ---
 
@@ -52,8 +68,15 @@ mismatched rate silently mis-tunes every IIR/FIR filter.
 
 Two channel lists exist and are easy to confuse:
 
-- The IR-JSON **`channels`** field is the protocol's *declared required* (logical)
-  channels — `ir.requires.channels`. For `realistic_smr` this is `["Cz"]`.
+- The IR-JSON **`channels`** field is the protocol's *required* (logical)
+  channels. For `realistic_smr` this is `["Cz"]`. It is `ir.requires.channels`
+  when the protocol declares one; a protocol may legally omit that declaration
+  (a `placement` control substitutes its bound electrodes into the montage at
+  resolve time, so the BrainBit `placement_*` protocols declare none at all),
+  and the field then lists the electrodes the input montages name. Either way it
+  is never empty — the schema pins it to `minItems: 1`. The `requires.channels`
+  sub-field always echoes the declaration verbatim, so it *may* be empty; read
+  top-level `channels` for the effective list.
 - The **physical acquisition layout** the host passes to the runtime constructor
   (`Evaluator.live(..., channel_names=...)` / `RustEvaluator(ir_json,
   sample_rate_hz, channels)`) is the complete electrode set, *including reference
@@ -76,12 +99,12 @@ present in the serialized output (verified against `realistic_smr.ir.json`):
 
 | Key | JSON type | Meaning |
 |---|---|---|
-| `refrain_ir_version` | `"0.1"` (string const) | Wire-format version; MUST be `"0.1"`. |
+| `refrain_ir_version` | `"0.1"` or `"0.2"` (string) | Wire-format version. Emitted by `_protocol_ir_version()` (src/refrain/ir_json.py:56) as the lowest version that represents the protocol (`"0.2"` for composite/staging features, else `"0.1"`). Runtimes accept `SUPPORTED_IR_VERSIONS`: `"0.1"`, `"0.2"`. |
 | `name` | `string \| null` | Protocol name (`smr_cz_v1`, etc.). |
 | `extends` | `string \| null` | Parent protocol name, if any. |
 | `sample_rate_hz` | number | Baked runtime sample rate (host choice, ≥ `requires.sample_rate_min_hz`). |
-| `channels` | array of string | Protocol's declared *required* channels (`ir.requires.channels`), e.g. `["Cz"]` — NOT the host's physical electrode layout (that is a runtime input; see Rule 2). |
-| `requires` | object | Hardware requirements block (`coupling`, `sample_rate_min_hz`, `sample_rate_chosen_hz`, `channels`, `impedance`, `markers`). |
+| `channels` | array of string (non-empty) | Protocol's *required* channels, e.g. `["Cz"]` — `ir.requires.channels`, or the electrodes the montages name when the protocol declares none (see Rule 2). NOT the host's physical electrode layout (that is a runtime input). |
+| `requires` | object | Hardware requirements block (`coupling`, `sample_rate_min_hz`, `sample_rate_chosen_hz`, `channels`, `impedance`, `markers`). Its `channels` echoes the author's declaration verbatim and may be empty; top-level `channels` is the effective list. |
 | `meta` | object | Authoring metadata; values are `Expr` nodes (typically `string` or `array`). |
 | `inputs` | object | Named `Input` objects, keyed by user name. |
 | `derives` | object | Named `Derive` objects, keyed by user name. |
@@ -168,7 +191,9 @@ threshold, reward, and conditional output expressions.
   "refrain_ir_version": "0.1",
   "name": "smr_cz_v1",
   "sample_rate_hz": 256.0,
-  "channels": ["Cz"],              // protocol's required channels (ir.requires.channels)
+  "channels": ["Cz"],              // electrodes to acquire, in channel-index order
+                                   // (ir.requires.channels; falls back to the
+                                   // electrodes the montages name — see below)
   ...
 
   // Physical montage: Cz re-referenced to linked ears (the host passes the

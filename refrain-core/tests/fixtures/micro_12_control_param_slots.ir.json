@@ -1,0 +1,727 @@
+{
+  "refrain_ir_version": "0.1",
+  "name": "micro_12_control_param_slots",
+  "extends": null,
+  "sample_rate_hz": 256.0,
+  "channels": [
+    "Cz"
+  ],
+  "requires": {
+    "coupling": null,
+    "sample_rate_min_hz": 256,
+    "sample_rate_chosen_hz": 2048,
+    "channels": [
+      "Cz"
+    ],
+    "impedance": "not_required",
+    "markers": "not_required"
+  },
+  "meta": {
+    "description": {
+      "node": "string",
+      "value": "control_ref in sigmoid steepness, nested linear midpoint/slope, and inside low/high"
+    }
+  },
+  "inputs": {
+    "raw": {
+      "canonical_name": "input/raw",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "montage": {
+        "node": "call",
+        "callee": "referential",
+        "args": [
+          {
+            "name": "active",
+            "value": {
+              "node": "string",
+              "value": "Cz"
+            }
+          },
+          {
+            "name": "reference",
+            "value": {
+              "node": "string",
+              "value": "device"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        }
+      }
+    }
+  },
+  "derives": {
+    "env": {
+      "canonical_name": "derive/env",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "expression": {
+        "node": "call",
+        "callee": "smooth",
+        "args": [
+          {
+            "name": null,
+            "value": {
+              "node": "call",
+              "callee": "rectify",
+              "args": [
+                {
+                  "name": null,
+                  "value": {
+                    "node": "call",
+                    "callee": "bandpass",
+                    "args": [
+                      {
+                        "name": null,
+                        "value": {
+                          "node": "stream_ref",
+                          "target": "input/raw",
+                          "stream_type": {
+                            "value_kind": "scalar",
+                            "dimensions": {
+                              "time": 0,
+                              "voltage": 1
+                            },
+                            "vector_size": null
+                          }
+                        }
+                      },
+                      {
+                        "name": "band",
+                        "value": {
+                          "node": "tuple",
+                          "elements": [
+                            {
+                              "node": "number",
+                              "value": 12.0,
+                              "dims": {
+                                "time": -1,
+                                "voltage": 0
+                              },
+                              "unit": "Hz"
+                            },
+                            {
+                              "node": "number",
+                              "value": 15.0,
+                              "dims": {
+                                "time": -1,
+                                "voltage": 0
+                              },
+                              "unit": "Hz"
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "name": "order",
+                        "value": {
+                          "node": "number",
+                          "value": 4.0,
+                          "dims": {
+                            "time": 0,
+                            "voltage": 0
+                          },
+                          "unit": null
+                        }
+                      }
+                    ],
+                    "stream_type": {
+                      "value_kind": "scalar",
+                      "dimensions": {
+                        "time": 0,
+                        "voltage": 1
+                      },
+                      "vector_size": null
+                    },
+                    "coeffs": {
+                      "sos": [
+                        [
+                          1.6715446089233602e-06,
+                          3.3430892178467204e-06,
+                          1.6715446089233602e-06,
+                          1.0,
+                          -1.8185096561303429,
+                          0.9315627107642395
+                        ],
+                        [
+                          1.0,
+                          2.0,
+                          1.0,
+                          1.0,
+                          -1.8412452919491165,
+                          0.9368353820975004
+                        ],
+                        [
+                          1.0,
+                          -2.0,
+                          1.0,
+                          1.0,
+                          -1.839707340181905,
+                          0.9695237593944186
+                        ],
+                        [
+                          1.0,
+                          -2.0,
+                          1.0,
+                          1.0,
+                          -1.8884806674118457,
+                          0.974950612677361
+                        ]
+                      ]
+                    }
+                  }
+                }
+              ],
+              "stream_type": {
+                "value_kind": "scalar",
+                "dimensions": {
+                  "time": 0,
+                  "voltage": 1
+                },
+                "vector_size": null
+              }
+            }
+          },
+          {
+            "name": "tau",
+            "value": {
+              "node": "number",
+              "value": 0.5,
+              "dims": {
+                "time": 1,
+                "voltage": 0
+              },
+              "unit": "s"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        },
+        "coeffs": {
+          "alpha": 0.007782061739756485
+        }
+      },
+      "upstream": [
+        "input/raw"
+      ]
+    }
+  },
+  "thresholds": {
+    "env_t": {
+      "canonical_name": "threshold/env_t",
+      "signal": "derive/env",
+      "threshold_call": {
+        "node": "call",
+        "callee": "absolute",
+        "args": [
+          {
+            "name": "value",
+            "value": {
+              "node": "number",
+              "value": 1.0,
+              "dims": {
+                "time": 0,
+                "voltage": 1
+              },
+              "unit": "uV"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        }
+      },
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "live_tunable": false
+    }
+  },
+  "inhibits": {},
+  "reward": {
+    "continuous": {
+      "node": "call",
+      "callee": "sigmoid",
+      "args": [
+        {
+          "name": null,
+          "value": {
+            "node": "call",
+            "callee": "linear",
+            "args": [
+              {
+                "name": null,
+                "value": {
+                  "node": "binop",
+                  "op": "-",
+                  "left": {
+                    "node": "stream_ref",
+                    "target": "derive/env",
+                    "stream_type": {
+                      "value_kind": "scalar",
+                      "dimensions": {
+                        "time": 0,
+                        "voltage": 1
+                      },
+                      "vector_size": null
+                    }
+                  },
+                  "right": {
+                    "node": "threshold_ref",
+                    "target": "threshold/env_t",
+                    "stream_type": {
+                      "value_kind": "scalar",
+                      "dimensions": {
+                        "time": 0,
+                        "voltage": 1
+                      },
+                      "vector_size": null
+                    }
+                  },
+                  "stream_type": {
+                    "value_kind": "scalar",
+                    "dimensions": {
+                      "time": 0,
+                      "voltage": 1
+                    },
+                    "vector_size": null
+                  }
+                }
+              },
+              {
+                "name": "midpoint",
+                "value": {
+                  "node": "control_ref",
+                  "target": "control/lin_mid",
+                  "default": 0.3,
+                  "dims": {
+                    "time": 0,
+                    "voltage": 0
+                  }
+                }
+              },
+              {
+                "name": "slope",
+                "value": {
+                  "node": "control_ref",
+                  "target": "control/lin_slope",
+                  "default": 1.5,
+                  "dims": {
+                    "time": 0,
+                    "voltage": 0
+                  }
+                }
+              }
+            ],
+            "stream_type": {
+              "value_kind": "scalar",
+              "dimensions": {
+                "time": 0,
+                "voltage": 0
+              },
+              "vector_size": null
+            }
+          }
+        },
+        {
+          "name": "midpoint",
+          "value": {
+            "node": "number",
+            "value": 0.0,
+            "dims": {
+              "time": 0,
+              "voltage": 0
+            },
+            "unit": null
+          }
+        },
+        {
+          "name": "steepness",
+          "value": {
+            "node": "control_ref",
+            "target": "control/steep",
+            "default": 6.0,
+            "dims": {
+              "time": 0,
+              "voltage": 0
+            }
+          }
+        }
+      ],
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      }
+    },
+    "event": {
+      "node": "call",
+      "callee": "dwell",
+      "args": [
+        {
+          "name": "condition",
+          "value": {
+            "node": "call",
+            "callee": "inside",
+            "args": [
+              {
+                "name": null,
+                "value": {
+                  "node": "stream_ref",
+                  "target": "derive/env",
+                  "stream_type": {
+                    "value_kind": "scalar",
+                    "dimensions": {
+                      "time": 0,
+                      "voltage": 1
+                    },
+                    "vector_size": null
+                  }
+                }
+              },
+              {
+                "name": "low",
+                "value": {
+                  "node": "control_ref",
+                  "target": "control/in_low",
+                  "default": 0.75,
+                  "dims": {
+                    "time": 0,
+                    "voltage": 0
+                  }
+                }
+              },
+              {
+                "name": "high",
+                "value": {
+                  "node": "control_ref",
+                  "target": "control/in_high",
+                  "default": 1.45,
+                  "dims": {
+                    "time": 0,
+                    "voltage": 0
+                  }
+                }
+              }
+            ],
+            "stream_type": {
+              "value_kind": "boolean",
+              "dimensions": {
+                "time": 0,
+                "voltage": 0
+              },
+              "vector_size": null
+            }
+          }
+        },
+        {
+          "name": "duration",
+          "value": {
+            "node": "number",
+            "value": 250.0,
+            "dims": {
+              "time": 1,
+              "voltage": 0
+            },
+            "unit": "ms"
+          }
+        }
+      ],
+      "stream_type": {
+        "value_kind": "event",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      },
+      "coeffs": {
+        "dwell_samples": 64
+      }
+    }
+  },
+  "output": {
+    "audio_chime": {
+      "node": "reward_field",
+      "field_path": "event",
+      "stream_type": {
+        "value_kind": "event",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      }
+    },
+    "audio_gain": {
+      "node": "reward_field",
+      "field_path": "continuous",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      }
+    }
+  },
+  "controls": {
+    "steep": {
+      "canonical_name": "control/steep",
+      "type_kind": "number",
+      "dims": {
+        "time": 0,
+        "voltage": 0
+      },
+      "default": {
+        "node": "number",
+        "value": 6.0,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_low": {
+        "node": "number",
+        "value": 1.0,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_high": {
+        "node": "number",
+        "value": 12.0,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "log_scale": false,
+      "label": "Sigmoid steepness",
+      "live_tunable": true,
+      "tune_strategy": null
+    },
+    "lin_mid": {
+      "canonical_name": "control/lin_mid",
+      "type_kind": "number",
+      "dims": {
+        "time": 0,
+        "voltage": 0
+      },
+      "default": {
+        "node": "number",
+        "value": 0.3,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_low": {
+        "node": "number",
+        "value": 0.0,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_high": {
+        "node": "number",
+        "value": 2.0,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "log_scale": false,
+      "label": "Linear midpoint",
+      "live_tunable": true,
+      "tune_strategy": null
+    },
+    "lin_slope": {
+      "canonical_name": "control/lin_slope",
+      "type_kind": "number",
+      "dims": {
+        "time": 0,
+        "voltage": 0
+      },
+      "default": {
+        "node": "number",
+        "value": 1.5,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_low": {
+        "node": "number",
+        "value": 0.5,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_high": {
+        "node": "number",
+        "value": 4.0,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "log_scale": false,
+      "label": "Linear slope",
+      "live_tunable": true,
+      "tune_strategy": null
+    },
+    "in_low": {
+      "canonical_name": "control/in_low",
+      "type_kind": "number",
+      "dims": {
+        "time": 0,
+        "voltage": 0
+      },
+      "default": {
+        "node": "number",
+        "value": 0.75,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_low": {
+        "node": "number",
+        "value": 0.0,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_high": {
+        "node": "number",
+        "value": 1.5,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "log_scale": false,
+      "label": "Inside band low",
+      "live_tunable": true,
+      "tune_strategy": null
+    },
+    "in_high": {
+      "canonical_name": "control/in_high",
+      "type_kind": "number",
+      "dims": {
+        "time": 0,
+        "voltage": 0
+      },
+      "default": {
+        "node": "number",
+        "value": 1.45,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_low": {
+        "node": "number",
+        "value": 0.5,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_high": {
+        "node": "number",
+        "value": 2.0,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "log_scale": false,
+      "label": "Inside band high",
+      "live_tunable": true,
+      "tune_strategy": null
+    }
+  },
+  "session": {
+    "phases": [
+      {
+        "name": "run",
+        "duration_ms": 16000.0,
+        "output_muted": false,
+        "mode": "timed",
+        "block": null
+      }
+    ]
+  },
+  "blocks": {},
+  "reward_bundles": {},
+  "topological_order": [
+    "control/steep",
+    "control/lin_mid",
+    "control/lin_slope",
+    "control/in_low",
+    "control/in_high",
+    "input/raw",
+    "derive/env",
+    "threshold/env_t"
+  ]
+}
