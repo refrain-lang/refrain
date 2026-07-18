@@ -5,7 +5,7 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
-## [Unreleased]
+## [0.15.0] — 2026-07-18
 
 ### Added
 - **`amp.reference` — montage reference from the connected amp profile.** A
@@ -16,6 +16,20 @@ bumps are additive; major bumps may break compatibility.
   (allow-list: `reference`). Fails closed: `resolve(amp=None)`, a missing field,
   or a non-allow-listed field is a `ResolveError`. `AmpProfile` gains an optional
   `reference` field (no schema bump); the three shipped profiles declare it.
+
+### Fixed
+- **`control_ref` in a parameter slot now uses the control's baked default**, not
+  the primitive's. A recognised param-slot `control_ref` returned no value and the
+  call fell back to the primitive default, silently discarding the control's own
+  default from chunk 0 — so the Rust core disagreed with Python (e.g.
+  `sigmoid(steepness:)` off by ~37×, and `inside(low:/high:)` panicked). (refrain-core)
+- **The runtime now refuses IR newer than it supports** (SPEC §9.3). The core never
+  checked `refrain_ir_version`, so an old core silently ignored fields a newer
+  protocol needed; it now rejects at load with a clear diagnostic. (refrain-core)
+- **An expression-position `control_ref` is live, not frozen.** It compiled to a
+  constant, making `set_control` a silent no-op; it now binds over a shared cell so
+  retunes take effect, matching the Python evaluator. (refrain-core)
+
 ## [0.14.1] — 2026-07-16
 
 ### Fixed
