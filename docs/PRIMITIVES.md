@@ -356,7 +356,7 @@ Maps an input stream to [0, 1] based on rolling percentile statistics. The 5th p
 auto_range(window: 5 min, percentile: (5, 95))
 ```
 
-The percentile estimator uses the P² online algorithm, so memory is constant in window size.
+The percentile estimator keeps the full trailing window and calls `numpy.percentile` (Python) / `percentile_linear` (Rust) once per sample — memory is O(window), not constant. The P² online algorithm (constant-memory, five running markers) is not implemented; see `docs/DESIGN-NOTES.md`. This matters beyond `auto_range`: control baseline seeding (`seed = percentile { ... }`, see `docs/SPEC.md`) leans on the full-buffer representation to read a percentile straight off the warmup prefill. If a P² estimator ever lands, seeding needs rework — P² state is five markers, not a buffer a percentile can be read from directly.
 
 **Cross-session persistence (seed/export).** `auto_range` (and `percentile`)
 trackers start cold each session. To carry a user-adaptive ceiling across

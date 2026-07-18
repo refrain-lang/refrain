@@ -12,9 +12,17 @@ without depending on the Python parser or SciPy.
 
 | Field | Value |
 |---|---|
-| Version string | `"0.1"` |
+| Version string | `"0.1"` (default; see below for `"0.3"`) |
 | Source constant | `IR_JSON_VERSION = "0.1"` in `src/refrain/ir_json.py` |
 | Schema | `src/refrain/schema/ir-json-v0.1.schema.json` |
+
+The emitter tags the wire object with the lowest version whose fields it
+actually used, not a single fixed constant: `"0.1"` for most protocols,
+rising to `"0.2"` for staged/composite-reward protocols and `"0.3"` for a
+protocol with a control baseline-seed rule (§3.1 below; schema at
+`src/refrain/schema/ir-json-v0.3.schema.json`). Each version's schema is a
+superset of the previous one's fields. This document otherwise describes the
+`"0.1"` shape; §3.1 covers the `"0.3"` addition.
 
 ### Compatibility policy
 
@@ -105,6 +113,41 @@ present in the serialized output (verified against `realistic_smr.ir.json`):
   to preserve it, and `eval_chunk` emits events in that same sequence.
 - `topological_order` governs when each derive is evaluated relative to its
   upstream inputs and thresholds.
+
+### 3.1 Control `seed` (v0.3)
+
+An entry in `controls` may carry an optional `seed` object, present only
+when the source protocol declared a `seed = percentile { ... }` rule on
+that control (`docs/SPEC.md` §4.9.4). Presence of `seed` on any control is
+what bumps `refrain_ir_version` to `"0.3"` for the whole document; a
+protocol with no seeded controls never emits it and stays at `"0.1"` /
+`"0.2"`.
+
+```json
+"controls": {
+  "smr_target_pct": {
+    "canonical_name": "control/smr_target_pct",
+    "type_kind": "percent",
+    "default": { "node": "number", "value": 70.0 },
+    "live_tunable": true,
+    "seed": {
+      "statistic": "percentile",
+      "from": "derive/smr_envelope",
+      "window_samples": 30720,
+      "target_pct": { "node": "number", "value": 70.0 }
+    }
+  }
+}
+```
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `statistic` | `"percentile"` (string const) | The statistic used to derive the seeded value. v0.3's only value. |
+| `from` | string | Canonical name of the source derive (e.g. `"derive/smr_envelope"`), already resolved — not the bare protocol-source name. |
+| `window_samples` | integer, ≥ 1 | The trailing measurement window, baked to samples **at this document's `sample_rate_hz`** (top-level field), not at the resolver's `requires.sample_rate_chosen_hz`. Recompiling the same protocol at a different emitted rate produces a different `window_samples` for an unchanged source-level `window`. |
+| `target_pct` | `Expr` (§4) | The percentile to measure — either a `number` node or a `control_ref` node targeting a sibling `percent`-kind control. |
+
+A consumer that understands `"0.3"` measures `from`'s samples into a buffer of `window_samples` during warmup, and at the warmup→run boundary writes the `target_pct` percentile of that buffer into the control once, then holds it. A consumer that only understands `"0.1"`/`"0.2"` never sees a `"0.3"`-tagged document at all — SPEC §9.3's version gate refuses it at load, since silently ignoring `seed` would run the control unbaselined instead of failing loudly.
 
 ---
 

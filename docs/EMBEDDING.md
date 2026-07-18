@@ -455,6 +455,55 @@ entities that exist in the resolved protocol are present:
 
 ---
 
+## Introspection: seed reports and cross-session state
+
+Two more `Evaluator` accessors report internal state that, like the live
+taps, is a host convenience rather than something that changes the protocol
+IR. Both are deliberately **not** taps — they don't share `last_taps()`'s
+strict key-set contract — so read them separately.
+
+**`seed_report()`** — a control declared `seed = percentile { from, window,
+target_pct }` (SPEC's baseline-seeding surface) measures its value from the
+patient's own signal during warmup and writes it once at the warmup→run
+edge. `Evaluator.seed_report()` returns the outcome of every such control,
+keyed by bare control name (not the tap's `control/<name>` form):
+
+```python
+report = evaluator.seed_report()
+# { "smr_target_pct": {
+#     "status": "seeded",             # "pending" | "seeded" | "insufficient_samples" | "disarmed_by_host"
+#     "value": 7.42,
+#     "source": "derive/smr_envelope",
+#     "target_pct": 70.0,
+#     "n_samples": 500,
+#     "window_s": 120.0,
+#     "at_time_s": 120.0,
+#   } }
+```
+
+`insufficient_samples` means the seed failed closed — not enough warmup
+samples reached the buffer (or they were all non-finite) — and the control
+kept its declared default rather than writing a measured value. `pending`
+means warmup hasn't reached the run edge yet. `disarmed_by_host` means a
+clinician called `set_control()` on the seeded control before it fired; that
+disarms the seed permanently for the session rather than racing it. Empty
+for a protocol with no seeded controls.
+
+**`export_state()` / `seed_state`** — separate from control baseline
+seeding, this is cross-*session* persistence for the adaptive trackers
+behind `percentile` and `auto_range` (SPEC's `percentile`/`auto_range`
+primitives, not the control `seed` block above — same word, different
+feature). Those trackers start cold every session; to carry an
+adaptive ceiling forward, read the compact summary with
+`evaluator.export_state()` at session end, persist it to the patient
+record, and hand it back on the next run via
+`Evaluator.live(..., seed_state=<prior export>)`. The state is a small,
+rate-independent anchor set (not a raw buffer) and never touches the
+protocol IR. See `docs/PRIMITIVES.md` for the shape of `export_state()`'s
+per-entity values.
+
+---
+
 ## Channel-order and montage notes
 
 When you call `Evaluator.live(channel_names=(...))`, those names define

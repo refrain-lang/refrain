@@ -489,7 +489,11 @@ Time-series math: `magnitude`, `rectify`, `smooth` (one-pole IIR with
 
 Statistics: `percentile` (windowed `numpy.percentile`; the P² online
 algorithm is a future optimization), `auto_range` (rolling-percentile
-normalisation to [0, 1]).
+normalisation to [0, 1]). Both keep the full trailing window rather than a
+constant-size sketch — control baseline seeding (`seed = percentile { ... }`)
+depends on that full-buffer representation to read a percentile straight off
+the warmup prefill, so swapping in P² later is a seeding-affecting change, not
+a transparent optimization. See `docs/PRIMITIVES.md`.
 
 Conditions / events: `above`, `below`, `inside`, `all_of`, `any_of`,
 `dwell` (state machine producing both rising-edge events and `.holds`

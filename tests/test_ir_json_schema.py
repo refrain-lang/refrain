@@ -27,6 +27,7 @@ SCHEMA_DIR = REPO / "src" / "refrain" / "schema"
 SCHEMA_BY_VERSION = {
     "0.1": SCHEMA_DIR / "ir-json-v0.1.schema.json",
     "0.2": SCHEMA_DIR / "ir-json-v0.2.schema.json",
+    "0.3": SCHEMA_DIR / "ir-json-v0.3.schema.json",
 }
 FIXTURES = REPO / "refrain-core" / "tests" / "fixtures"
 IR_JSON_FILES = sorted(FIXTURES.glob("*.ir.json"))

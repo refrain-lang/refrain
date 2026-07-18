@@ -671,6 +671,43 @@ Each entry is `<ident> = (low Hz, high Hz)`: a frequency 2-tuple with `low < hig
 
 **Wire invariant:** front-end only — the fanned IR uses existing node types; the `bands` block is resolve-time-only and omitted from the wire. `IR_JSON_VERSION` unchanged.
 
+#### 4.9.4 `seed` — control baseline seeding
+
+A control field, not a top-level block — unrelated to the band-axis "seed" reference in §4.9.3 above (same word, different feature). `seed` lets a control derive its initial value from the patient's own signal instead of a fixed `default`, the "set the threshold from the first two minutes of baseline" clinical pattern:
+
+```refrain
+controls {
+  smr_target_pct = percent {
+    default      = 70
+    live_tunable = true
+    seed = percentile {
+      from        = "smr_envelope"   // a declared derive, by bare name
+      window      = 120 s            // trailing window measured during warmup
+      target_pct  = 70                // number literal, or a `percent` control_ref
+    }
+  }
+}
+```
+
+**Statistic is the block kind.** `seed = <statistic> { ... }` — the block's typed name names the statistic. v1 supports only `percentile`; an unrecognized statistic is a `ResolveError`. The fields inside the block belong to that statistic (`percentile` takes `from`/`window`/`target_pct`); a future statistic would define its own field set under its own block kind.
+
+**Fields (`percentile`):**
+- `from` (required): a quoted derive name — the signal the percentile is measured over. Must name a derive declared elsewhere in the protocol.
+- `window` (required): a duration literal (`ms`/`s`/`min`) — the trailing window, in real time, the statistic is measured over. Rate-independent; baked to samples at emit time (below).
+- `target_pct` (required): the percentile to measure — either a number literal or a `control_ref` to a sibling `percent` control (so the clinician can tune *which* percentile seeds the value, not just the value itself).
+
+**Resolve-time guarantees:**
+- **Real derive.** `from` is validated against the resolved derive set; a name that doesn't resolve is a `ResolveError`, not a silent no-op.
+- **`target_pct` typing.** A number literal is accepted as-is; a `control_ref` is accepted only if it targets a control declared `percent` — binding it to any other control kind is a `ResolveError`.
+- **Warmup fits.** If the protocol's first session phase is a timed, output-muted warmup (not `mode = "open"`), `window` must fit inside that phase's duration. A seed whose window can never fill is refused at compile time, not discovered fail-closed at runtime.
+- **Dead-seed elimination.** If the seeded control is never referenced anywhere in the resolved pipeline (derives, thresholds, inhibits, reward, output), the seed is dropped rather than attached — an unused control's seed rule would just be dead weight on the wire.
+
+**Runtime semantics (informative; full behavior in `docs/EMBEDDING.md`'s `seed_report()` section):** during warmup the engine measures `from`'s samples into a trailing buffer sized to `window`; at the warmup→run edge it computes the `target_pct` percentile of that buffer and writes the control exactly once, then holds. A clinician who calls `set_control` on the seeded control before it fires disarms the seed for the rest of the session instead of racing it. If the buffer can't be filled with finite samples by the run edge, the seed fails closed and the control keeps its declared `default`.
+
+**Wire format.** A seeded control's IR-JSON carries a `seed` object (`statistic`/`from`/`window_samples`/`target_pct`) under `controls.<name>`; `window_samples` is `window` baked to samples **at the emitted `sample_rate_hz`**, not the resolver's chosen rate — the same rebaking discipline as every other rate-dependent coefficient. A protocol using `seed` is tagged `refrain_ir_version: "0.3"`. See `docs/IR-JSON.md`.
+
+**§9.3 is now enforced.** A runtime that doesn't understand IR-JSON `"0.3"` refuses a seeded protocol at load (§9.3) rather than silently ignoring the `seed` field and running an unbaselined default — the version gate described in §9.3 is implemented, not aspirational, as of this feature.
+
 ### 4.10 `session`
 
 Session structure. Phases, durations, breaks, schedule.
@@ -993,6 +1030,8 @@ Declared via the file header convention (or a `schema_version` field in `meta` i
 ### 9.3 Runtime compatibility
 
 A runtime declares the schema versions it supports. A protocol whose schema is newer than the runtime supports is refused at load with a clear diagnostic.
+
+Implemented in `refrain-core`: a runtime built against IR-JSON `"0.3"` refuses a protocol tagged with any newer schema at load, rather than deserializing it with unrecognized fields silently ignored. Control baseline seeding (§4.9.4) is the feature that first depends on this gate — an older runtime that ignored an unrecognized `seed` field would run the protocol unbaselined, which is worse than refusing to load it.
 
 ---
 
