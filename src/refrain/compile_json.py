@@ -1,9 +1,14 @@
 # Copyright 2026 Refrain Language Authors.
 # Licensed under the Apache License, Version 2.0 (see LICENSE).
 """Compile `.refrain` source to IR-JSON — the one path the CLI and the
-HTTP service both call. Wraps `parse -> resolve(amp=None) -> ir_to_json_obj`,
+HTTP service both call. Wraps `parse -> resolve(amp=...) -> ir_to_json_obj`,
 attaches compile metadata (version, ir version, content hash), and (later)
 validates the emitted IR-JSON against the bundled schema.
+
+`amp` names a bundled amplifier profile (e.g. `"brainbit_flex"`); when set, the
+protocol resolves against it so `reference: amp.reference` folds to the device's
+real reference and site availability is checked. Omitted, resolution runs with
+`amp=None` exactly as before, so every literal-reference protocol is unchanged.
 """
 
 from __future__ import annotations
@@ -17,11 +22,15 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .amp_profile import AmpProfile, load_amp_profile
 from .ast import File
 from .compose import ComposeError, ParentLoader, compose, parse_ref
 from .ir_json import effective_channels, ir_to_json_obj
 from .parser import ParseError, parse, parse_file
 from .resolver import ResolveError, resolve
+
+# Bundled amp profiles ship beside this module (src/refrain/amp_profiles/*.json).
+_AMP_PROFILE_DIR = Path(__file__).resolve().parent / "amp_profiles"
 
 
 @dataclass(frozen=True)
@@ -44,6 +53,12 @@ class CompileResult:
     `schema_error` is set only when the emitted IR-JSON fails its own schema
     (a compiler bug); the HTTP layer maps it to 500. It is never a user error.
 
+    `request_error` is set only when a *request parameter* is invalid — today,
+    an `amp` name the service does not bundle. That is a caller/version-skew
+    error, not a protocol that fails to compile, so the HTTP layer maps it to a
+    typed 4xx (distinct from the 200 + `errors` diagnostics a bad protocol gets,
+    and from the 500 a compiler bug gets). It carries the typed detail body.
+
     `ir_json_text` is the verbatim canonical serialization that `content_hash`
     covers (`json.dumps(ir_json, indent=2)`). Non-Python consumers (the Go
     portal, the browser editor) cannot reproduce Python's serialization
@@ -55,12 +70,25 @@ class CompileResult:
     meta: dict[str, Any]
     errors: list[Diagnostic]
     schema_error: str | None = None
+    request_error: dict[str, Any] | None = None
     ir_json_text: str | None = None
     unresolved_parents: list[str] = field(default_factory=list)
 
 
 def _content_hash(canonical: str) -> str:
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+@cache
+def _bundled_amp_names() -> frozenset[str]:
+    """Names of the amp profiles bundled with the package (files, sans `.json`).
+
+    The membership set for the `amp` request field: a name is accepted only if
+    it is one of these. Because the name is checked against this set and never
+    joined onto a path, `..`, path separators, and absolute paths are rejected
+    as unknown names — there is no traversal surface.
+    """
+    return frozenset(p.stem for p in _AMP_PROFILE_DIR.glob("*.json"))
 
 
 class _ParentNotFoundError(Exception):
@@ -162,7 +190,7 @@ def _validate(obj: dict[str, Any]) -> str | None:
     return None
 
 
-def compile_to_ir_json(
+def compile_to_ir_json(  # noqa: PLR0911 — linear compile pipeline: one guard-clause return per outcome
     source: str,
     *,
     sample_rate_hz: float | None = None,
@@ -170,11 +198,18 @@ def compile_to_ir_json(
     parents: dict[str, str] | None = None,
     library_dirs: list[str] | None = None,
     bindings: dict[str, object] | None = None,
+    amp: str | None = None,
 ) -> CompileResult:
     # `meta["bindings"]` echoes the applied bindings verbatim ({} when
     # omitted). Consumers use it as a capability gate: an older service that
     # ignored `bindings` would return default-variant IR, and only a positive
     # echo proves the requested variant is the one that was baked.
+    #
+    # `meta["amp"]` is the same kind of probe for the amp profile: the resolved
+    # profile name (or None when none was requested). An older image drops the
+    # request field and returns fail-closed / literal-only IR with no echo, so a
+    # caller reads the echo to confirm its `amp.reference` protocol was resolved
+    # against the device it asked for.
     applied_bindings = dict(bindings or {})
     base_meta: dict[str, Any] = {
         "refrain_version": __version__,
@@ -183,8 +218,29 @@ def compile_to_ir_json(
         "content_hash": None,
         "extends": None,
         "bindings": applied_bindings,
+        "amp": amp,
         "seeds": [],
     }
+
+    # Resolve the amp *name* to a bundled profile up front. An amp the service
+    # does not bundle is a bad request parameter (a caller or version-skew
+    # error), surfaced as a typed 4xx — not a 200 protocol diagnostic and not a
+    # 500. The name is validated against the bundled set (see `_bundled_amp_names`);
+    # a valid one is loaded and passed to `resolve()`.
+    amp_profile: AmpProfile | None = None
+    if amp is not None:
+        if amp not in _bundled_amp_names():
+            return CompileResult(
+                None,
+                base_meta,
+                [],
+                request_error={
+                    "error": "unknown_amp",
+                    "amp": amp,
+                    "allowed": sorted(_bundled_amp_names()),
+                },
+            )
+        amp_profile = load_amp_profile(_AMP_PROFILE_DIR / f"{amp}.json")
 
     try:
         file_ast = parse(source)
@@ -204,7 +260,7 @@ def compile_to_ir_json(
         return CompileResult(None, base_meta, [_located("compose", exc)])
 
     try:
-        ir = resolve(composed, bindings=bindings)
+        ir = resolve(composed, amp=amp_profile, bindings=bindings)
     except ResolveError as exc:
         return CompileResult(None, base_meta, [_located("resolve", exc)])
 
@@ -242,6 +298,7 @@ def compile_to_ir_json(
         "content_hash": _content_hash(canonical),
         "extends": file_ast.protocol.extends,
         "bindings": applied_bindings,
+        "amp": amp,
         "seeds": seeds,
     }
     schema_error = _validate(obj) if validate else None
