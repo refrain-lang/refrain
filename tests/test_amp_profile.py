@@ -26,7 +26,10 @@ def test_shipped_q21_loads():
     assert p.model == "neurofield-q21"
     assert p.vendor == "Neurofield"
     assert "dc" in p.coupling and "ac" in p.coupling
-    assert 256 in p.sample_rates_hz and 2048 in p.sample_rates_hz
+    # The Q21 streams at a single rate: CANbus bandwidth caps it at 256 Hz
+    # (21 ch x 24 bit at higher rates would exceed the bus), so the profile
+    # declares only 256 -- it must not advertise rates the hardware can't reach.
+    assert p.sample_rates_hz == (256,)
     assert p.has_channel("T3") and p.has_channel("Cz")
     assert p.supports_impedance_check is True
 
@@ -39,8 +42,18 @@ def test_shipped_openbci_cyton_loads():
     assert not p.supports_coupling("dc")
 
 
-def test_best_sample_rate_at_least():
-    p = load_amp_profile(PROFILES_DIR / "q21.json")
+def test_best_sample_rate_at_least(tmp_path):
+    # Rate-selection logic (pick the highest supported rate >= the minimum) is
+    # exercised against a synthetic multi-rate profile: no *shipped* amp offers
+    # several rates -- the Q21 is CANbus-capped at 256 Hz -- but the selection
+    # code stays live for any future multi-rate hardware.
+    prof = tmp_path / "multi.json"
+    prof.write_text(json.dumps({
+        "schema": AMP_PROFILE_SCHEMA, "model": "m", "vendor": "v",
+        "coupling": ["dc"], "sample_rates_hz": [256, 512, 1024, 2048],
+        "channels": [],
+    }))
+    p = load_amp_profile(prof)
     assert p.best_sample_rate_at_least(256) == 2048
     assert p.best_sample_rate_at_least(513) == 2048
     assert p.best_sample_rate_at_least(2049) is None

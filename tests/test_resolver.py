@@ -10,6 +10,7 @@ Three layers:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -336,7 +337,17 @@ def test_sample_rate_above_amp_capability_raises():
         resolve(parse(src), cyton)
 
 
-def test_resolver_picks_highest_rate_at_least_requested(amp):
+def test_resolver_picks_highest_rate_at_least_requested(tmp_path):
+    # Uses a synthetic multi-rate amp: the shipped Q21 is CANbus-capped at a
+    # single 256 Hz rate, so a fixture-built profile is needed to prove the
+    # resolver picks the *highest* supported rate >= the protocol minimum.
+    prof = tmp_path / "multi.json"
+    prof.write_text(json.dumps({
+        "schema": "refrain-amp-profile/v0", "model": "m", "vendor": "v",
+        "coupling": ["dc"], "sample_rates_hz": [256, 512, 1024, 2048],
+        "channels": [{"name": "Cz", "kind": "eeg"}],
+    }))
+    multi = load_amp_profile(prof)
     src = '''
         protocol "P" {
           requires {
@@ -346,7 +357,7 @@ def test_resolver_picks_highest_rate_at_least_requested(amp):
           meta { version = "1.0" }
         }
     '''
-    ir = resolve(parse(src), amp)
+    ir = resolve(parse(src), multi)
     assert ir.requires.sample_rate_chosen_hz == 2048
     assert ir.requires.sample_rate_min_hz == 256
 

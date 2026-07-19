@@ -105,10 +105,11 @@ def test_bandpass_bakes_sos_matching_live_evaluator(smr_ir):
 
 
 def test_sample_rate_override_bakes_at_target_rate(smr_ir):
-    # The runtime rate is a host choice (the amp may support several rates
-    # >= the protocol minimum). The emitter must bake coefficients at the
-    # rate the runtime will actually use, not the resolver's default.
-    target = 256.0
+    # The runtime rate is a host choice: the emitter must bake coefficients at
+    # the rate the runtime will actually use, not the resolver's default. Use a
+    # target != the resolver default (smr_cz resolves to 256 Hz against the Q21)
+    # so the override is observable.
+    target = 512.0
     assert smr_ir.requires.sample_rate_chosen_hz != target  # guard: they differ here
     obj = ir_to_json_obj(smr_ir, sample_rate_hz=target)
     assert obj["sample_rate_hz"] == target

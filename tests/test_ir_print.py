@@ -46,7 +46,7 @@ def test_ir_dump_contains_protocol_name(smr_ir):
 
 def test_ir_dump_shows_sample_rate_chosen(smr_ir):
     out = print_ir(smr_ir)
-    assert "2048 Hz" in out
+    assert "256 Hz" in out
 
 
 def test_ir_dump_shows_typed_streams(smr_ir):

@@ -5,7 +5,7 @@
   "firmware": "2024.03.1",
 
   "coupling": ["dc", "ac"],
-  "sample_rates_hz": [256, 512, 1024, 2048],
+  "sample_rates_hz": [256],
   "reference": "linked_ears",
 
   "channels": [

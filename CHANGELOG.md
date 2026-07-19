@@ -5,6 +5,23 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.16.1] — 2026-07-18
+
+### Fixed
+- **Q21 amp profile advertised sample rates it cannot stream.** `q21.json`
+  declared `sample_rates_hz: [256, 512, 1024, 2048]`, but the Neurofield Q21 is
+  CANbus-bandwidth-capped at 256 Hz (21 channels × 24 bit at higher rates
+  exceeds the bus). Because the resolver picks the *highest* advertised rate at
+  or above a protocol's minimum, every protocol requiring `>= 250/256 Hz`
+  resolved against the Q21 to 2048 Hz — 8× the real rate. Corrected to `[256]`.
+  This removes an ~64× slowdown in the protocol fuzzer (whose percentile
+  stepping is O(fs²)), drops unrealistic runtime CPU, and makes q21-resolved
+  coefficients bake at the rate the hardware actually runs. Amp profiles must
+  declare only rates the hardware can reach; the other shipped profiles were
+  already single-rate and unaffected. Note: this changes the chosen rate — and
+  therefore any q21-keyed `content_hash` / baked coefficients — for affected
+  protocols.
+
 ## [0.16.0] — 2026-07-18
 
 ### Added
