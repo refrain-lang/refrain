@@ -5,6 +5,38 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.17.0] — 2026-07-19
+
+### Added
+- **Compiler service `/compile` accepts an optional `amp` profile.** The
+  `amp.reference` abstraction (0.15.0) folds a protocol's montage reference to
+  the connected amplifier's real reference at resolve time — but only when
+  `resolve()` is given an amp profile, and the compiler service hardcoded
+  `resolve(amp=None)`. An `amp.reference` protocol therefore could not compile
+  through the service at all: it hit the fail-closed "requires an amp profile"
+  error. `CompileRequest` and `compile_to_ir_json` now take an optional `amp`
+  naming a **bundled** profile (`brainbit_flex` / `q21` / `openbci_cyton`); the
+  protocol resolves against it, so `reference: amp.reference` folds to the
+  device's real reference (`device` for BrainBit, `linked_ears` for Q21 and
+  OpenBCI) and the site is validated against the amp's channels. The name is
+  checked against the bundled profile set and never joined onto a path, so
+  `..`, path separators, and absolute paths are rejected as unknown names. An
+  unknown name returns a typed 400 (`{"error": "unknown_amp", ...}`), distinct
+  from a protocol that fails to compile (200 + diagnostics) and a compiler bug
+  (500). `meta.amp` echoes the applied profile name (or `null`), exactly
+  parallel to `meta.bindings`, as the caller's capability probe — an older
+  image drops the field and returns no echo, so callers fail closed. Omitting
+  `amp` is unchanged: `resolve(amp=None)` as before, so every existing
+  literal-reference protocol compiles byte-identically. As a byproduct this is
+  the flatline fix at the compile layer: an amp-neutral protocol whose site the
+  amp cannot host (e.g. an Fz protocol on brainbit_flex) is rejected with the
+  resolver's "missing required channels" error at compile, instead of silently
+  flatlining at session start. Known follow-up (WOR-165): the bundled BrainBit
+  profile lists placeholder channels overridable at session start via
+  `Evaluator.live(channel_names=...)`, so compile-time site validation uses
+  those declared channels; inline per-session channel placement is a later
+  enhancement.
+
 ## [0.16.1] — 2026-07-18
 
 ### Fixed
