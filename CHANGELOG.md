@@ -5,6 +5,21 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.17.1] — 2026-07-19
+
+### Fixed
+- **`brainbit_flex` amp profile now declares the full 10-20 roster.** The
+  bundled profile shipped a 4-site placeholder roster (`Cz, F3, F4, Pz`), so
+  resolving any protocol placed elsewhere (`C4`, `Fz`, `O1`, `O2`, …) against
+  `brainbit_flex` fail-closed with "missing required channels", and the
+  compiler service's per-amp bake skipped that combination — brainbit_flex
+  clients silently fell back to amp-neutral IR. Because the Flex's 4 electrodes
+  are user-placeable, the profile now lists the positions the device can be
+  placed at: the standard clinical 19-channel 10-20 set (same nomenclature as
+  `q21.json`), with `max_simultaneous_channels` (4) carrying the real hardware
+  limit. `reference` stays `device`. Additive — every site that already hosted
+  still hosts.
+
 ## [0.17.0] — 2026-07-19
 
 ### Added

@@ -42,6 +42,28 @@ def test_shipped_openbci_cyton_loads():
     assert not p.supports_coupling("dc")
 
 
+def test_shipped_brainbit_flex_loads():
+    p = load_amp_profile(PROFILES_DIR / "brainbit_flex.json")
+    assert p.model == "brainbit-flex"
+    assert p.vendor == "BrainBit"
+    assert p.coupling == ("ac",)
+    assert p.sample_rates_hz == (250,)
+    assert p.reference == "device"
+    # The Flex's 4 electrodes are user-placeable, so the roster is the standard
+    # clinical 19-channel 10-20 set (the positions the device can be placed at,
+    # same nomenclature as q21), not a fixed 4-channel montage;
+    # max_simultaneous_channels (4) carries the hardware limit.
+    expected_1020 = {
+        "Fp1", "Fp2", "F3", "F4", "C3", "C4", "P3", "P4", "O1", "O2",
+        "F7", "F8", "T3", "T4", "T5", "T6", "Fz", "Cz", "Pz",
+    }
+    assert p.channel_names() == expected_1020
+    # Every site the protocol library (generic + BrainBit fork + Companion Solo)
+    # places on must host on the Flex, or its protocol fails amp resolution.
+    for site in ("C3", "C4", "Cz", "F3", "F4", "Fz", "O1", "O2", "Pz"):
+        assert p.has_channel(site), site
+
+
 def test_best_sample_rate_at_least(tmp_path):
     # Rate-selection logic (pick the highest supported rate >= the minimum) is
     # exercised against a synthetic multi-rate profile: no *shipped* amp offers
