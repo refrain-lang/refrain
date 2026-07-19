@@ -8,11 +8,26 @@
   "sample_rates_hz": [250],
   "reference": "device",
 
-  "_comment_channels": "The BrainBit Flex has 4 user-placeable scalp electrodes plus a dedicated hardware reference and ground. The channel labels here are placeholders for a common SMR-training placement (Cz active + 3 free positions); change them to match your actual electrode layout, or override at session start via Evaluator.live(channel_names=...).",
+  "_comment_channels": "The BrainBit Flex has 4 user-placeable scalp electrodes plus a dedicated hardware reference and ground. Because the 4 electrodes can be placed at any site, this roster lists the positions the device SUPPORTS being placed at (the standard clinical 19-channel 10-20 set, same nomenclature as q21.json) rather than a fixed montage; `max_simultaneous_channels` (4) is the real hardware limit. A protocol may name any of these sites in `requires.channels`.",
   "channels": [
-    {"name": "Cz", "kind": "eeg"},
+    {"name": "Fp1", "kind": "eeg"},
+    {"name": "Fp2", "kind": "eeg"},
     {"name": "F3", "kind": "eeg"},
     {"name": "F4", "kind": "eeg"},
+    {"name": "C3", "kind": "eeg"},
+    {"name": "C4", "kind": "eeg"},
+    {"name": "P3", "kind": "eeg"},
+    {"name": "P4", "kind": "eeg"},
+    {"name": "O1", "kind": "eeg"},
+    {"name": "O2", "kind": "eeg"},
+    {"name": "F7", "kind": "eeg"},
+    {"name": "F8", "kind": "eeg"},
+    {"name": "T3", "kind": "eeg"},
+    {"name": "T4", "kind": "eeg"},
+    {"name": "T5", "kind": "eeg"},
+    {"name": "T6", "kind": "eeg"},
+    {"name": "Fz", "kind": "eeg"},
+    {"name": "Cz", "kind": "eeg"},
     {"name": "Pz", "kind": "eeg"}
   ],
 
