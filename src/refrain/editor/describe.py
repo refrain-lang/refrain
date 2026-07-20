@@ -6,6 +6,7 @@ import refrain
 from refrain import ast as A
 from refrain.editor.catalog import _fmt_num
 from refrain.editor.render import RENDERABLE_CONTROL_KINDS
+from refrain.ir import IRControlRef, IRNumberLit
 from refrain.resolver import resolve
 
 
@@ -13,8 +14,28 @@ def _num(expr: Any):
     return getattr(expr, "value", None)
 
 
-def _control_view(name: str, ctl: Any) -> dict:
+def _seed_view(seed: Any) -> dict:
+    """Serialize a control's baseline-seed rule for the protocol-model. `from`
+    and a bound `target_pct` are emitted as the bare names the surface uses
+    (`derive/env` -> `env`, `control/reward_pct` -> `{"bind": "reward_pct"}`);
+    a literal target_pct stays a number."""
+    tp = seed.target_pct
+    if isinstance(tp, IRControlRef):
+        target: Any = {"bind": tp.target.removeprefix("control/")}
+    elif isinstance(tp, IRNumberLit):
+        target = tp.value
+    else:                                   # resolver guarantees number | percent-ref
+        target = _num(tp)
     return {
+        "statistic": seed.statistic,
+        "from": seed.from_entity.removeprefix("derive/"),
+        "window_ms": seed.window_ms,
+        "target_pct": target,
+    }
+
+
+def _control_view(name: str, ctl: Any) -> dict:
+    view = {
         "name": name,
         "kind": ctl.type_kind,
         "default": _num(ctl.default),
@@ -23,6 +44,9 @@ def _control_view(name: str, ctl: Any) -> dict:
         "label": ctl.label or name,
         "live_tunable": bool(ctl.live_tunable),
     }
+    if getattr(ctl, "seed", None) is not None:
+        view["seed"] = _seed_view(ctl.seed)
+    return view
 
 
 def _placement_view(name: str, ctl: Any) -> dict:
