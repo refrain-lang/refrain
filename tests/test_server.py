@@ -252,17 +252,18 @@ AMP_NEUTRAL_SRC = '''protocol "smr_neutral" {
   output { audio_gain = 0 }
 }'''
 
-# Same neutral form, but sited at Fz — an electrode brainbit_flex (Cz/F3/F4/Pz)
-# cannot host. The 250 Hz floor clears brainbit's rate check, so resolution
-# reaches — and fails at — the channel guard rather than the sample-rate guard.
-AMP_NEUTRAL_FZ_SRC = '''protocol "smr_neutral_fz" {
-  meta { version = "1.0"; evidence = "clinical"; description = "amp-neutral smr at Fz" }
+# Same neutral form, but sited at Oz — an occipital-midline electrode that
+# brainbit_flex's 19-channel 10-20 roster still does not carry. The 250 Hz floor
+# clears brainbit's rate check, so resolution reaches — and fails at — the
+# channel guard rather than the sample-rate guard.
+AMP_UNHOSTABLE_OZ_SRC = '''protocol "smr_neutral_oz" {
+  meta { version = "1.0"; evidence = "clinical"; description = "amp-neutral smr at Oz" }
   requires {
     sample_rate = ">= 250 Hz"
-    channels    = ["Fz"]
+    channels    = ["Oz"]
   }
   input "raw" {
-    montage = referential(active: "Fz", reference: amp.reference)
+    montage = referential(active: "Oz", reference: amp.reference)
   }
   output { audio_gain = 0 }
 }'''
@@ -314,7 +315,7 @@ def test_compile_amp_cannot_host_site_is_missing_channels_error():
     # The flatline fix: an amp that cannot host the protocol's site is rejected
     # loudly at compile, not silently flatlined at session start.
     r = client.post("/compile", json={
-        "refrain": AMP_NEUTRAL_FZ_SRC, "sample_rate_hz": 250.0, "amp": "brainbit_flex"})
+        "refrain": AMP_UNHOSTABLE_OZ_SRC, "sample_rate_hz": 250.0, "amp": "brainbit_flex"})
     assert r.status_code == 200
     body = r.json()
     assert body["ir_json"] is None
