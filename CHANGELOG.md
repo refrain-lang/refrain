@@ -5,6 +5,26 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.18.0] — 2026-07-20
+
+### Added
+- **Protocol editor round-trips control baseline seeds.** The catalog editor's
+  `describe_protocol` / `render_protocol` pair previously dropped a control's
+  first-class `seed = percentile { … }` block (shipped 0.15.0): the model carried
+  no seed and the re-rendered protocol had none, silently reverting a
+  baseline-seeded protocol's emitted IR from 0.3 to 0.2 — so editing such a
+  protocol in the catalog UI stripped the patient's warmup-derived threshold.
+  `describe` now emits a `seed` view (surfacing `from` and a bound `target_pct`
+  as bare names, a literal `target_pct` as a number); `render` emits the
+  `seed = percentile { from; window; target_pct }` block inside the control body;
+  and `protocol-model.schema.json` documents it. Additive and editor-only — a
+  non-seeded protocol round-trips byte-identically.
+
+### Fixed
+- **`refrain` / `refrain-core` version lockstep restored.** 0.17.1 bumped the
+  root `pyproject.toml` to 0.17.1 but left `refrain-core` at 0.17.0, tripping
+  `test_version_lockstep`; both are realigned (and advanced to 0.18.0 here).
+
 ## [0.17.1] — 2026-07-19
 
 ### Fixed
