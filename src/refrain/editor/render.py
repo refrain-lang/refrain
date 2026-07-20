@@ -3,10 +3,10 @@ from __future__ import annotations
 from refrain.editor.catalog import Catalog, _fmt_duration, _fmt_num, load_catalog, render_slot
 
 _CONTROL_BODY = {
-    "frequency": '{name} = frequency {{\n      default = {default} Hz\n      range   = ({lo} Hz, {hi} Hz)\n      label   = "{label}"{live}\n    }}',
-    "percent":   '{name} = percent {{\n      default = {default}\n      range   = ({lo}, {hi})\n      label   = "{label}"{live}\n    }}',
-    "voltage":   '{name} = voltage {{\n      default = {default} uV\n      range   = ({lo} uV, {hi} uV)\n      label   = "{label}"{live}\n    }}',
-    "number":    '{name} = number {{\n      default = {default}\n      range   = ({lo}, {hi})\n      label   = "{label}"{live}\n    }}',
+    "frequency": '{name} = frequency {{\n      default = {default} Hz\n      range   = ({lo} Hz, {hi} Hz)\n      label   = "{label}"{live}{seed}\n    }}',
+    "percent":   '{name} = percent {{\n      default = {default}\n      range   = ({lo}, {hi})\n      label   = "{label}"{live}{seed}\n    }}',
+    "voltage":   '{name} = voltage {{\n      default = {default} uV\n      range   = ({lo} uV, {hi} uV)\n      label   = "{label}"{live}{seed}\n    }}',
+    "number":    '{name} = number {{\n      default = {default}\n      range   = ({lo}, {hi})\n      label   = "{label}"{live}{seed}\n    }}',
 }
 
 # The control kinds render can emit. `describe` gates `in_subset` on this so a
@@ -23,12 +23,27 @@ def _fill(template: str, slots_def: list[dict], slot_values: dict) -> str:
     return template.format(**{n: render_slot(v, typed[n]) for n, v in slot_values.items()})
 
 
+def _render_seed(s: dict) -> str:
+    """Render a control's `seed = percentile { ... }` block (leading newline so
+    it slots after `live_tunable` inside the control body). window_ms -> the
+    most natural duration unit; target_pct is a bound control's bare name or a
+    literal number."""
+    tp = s["target_pct"]
+    tp_txt = tp["bind"] if isinstance(tp, dict) else _fmt_num(tp)
+    return ("\n      seed = percentile {\n"
+            f'        from       = "{s["from"]}"\n'
+            f"        window     = {_fmt_duration(s['window_ms'])}\n"
+            f"        target_pct = {tp_txt}\n"
+            "      }")
+
+
 def _render_control(c: dict) -> str:
     live = "\n      live_tunable = true" if c.get("live_tunable") else ""
+    seed = _render_seed(c["seed"]) if c.get("seed") else ""
     lo, hi = (c.get("range") or [None, None])
     return _CONTROL_BODY[c["kind"]].format(
         name=c["name"], default=_fmtnum(c["default"]),
-        lo=_fmtnum(lo), hi=_fmtnum(hi), label=c.get("label", c["name"]), live=live)
+        lo=_fmtnum(lo), hi=_fmtnum(hi), label=c.get("label", c["name"]), live=live, seed=seed)
 
 
 def _render_placement(p: dict) -> str:

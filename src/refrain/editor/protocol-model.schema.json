@@ -46,6 +46,10 @@
       "properties": {"name": {"type": "string"}, "kind": {"type": "string"},
         "default": {}, "unit": {"type": ["string", "null"]},
         "range": {"type": ["array", "null"]}, "label": {"type": "string"},
-        "live_tunable": {"type": "boolean"}}}
+        "live_tunable": {"type": "boolean"},
+        "seed": {"type": "object", "additionalProperties": false,
+          "required": ["statistic", "from", "window_ms", "target_pct"],
+          "properties": {"statistic": {"type": "string"}, "from": {"type": "string"},
+            "window_ms": {"type": "number"}, "target_pct": {"$ref": "#/$defs/slotValue"}}}}}
   }
 }

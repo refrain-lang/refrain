@@ -301,3 +301,66 @@ def test_active_placement_round_trips():
     assert pl and pl[0]["kind"] == "active" and pl[0]["default"] == ["Cz"]
     assert pl[0]["allowed"] == ["C3", "Cz", "C4"]
     assert _ir(PLACEMENT) == _ir(render_protocol(d["model"]))
+
+
+# Baseline-seeded control (`seed = percentile { ... }`), first-class as of the
+# language feature that shipped in v0.15.0. The editor must round-trip the seed
+# rather than silently drop it — otherwise editing a seeded protocol in the
+# catalog UI strips the patient's baseline threshold. Two target_pct forms:
+# a `percent` control bind (the generic operant cores) and a literal (BrainBit).
+SEEDED_BIND = '''
+protocol "smr_up_c4_seeded" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["sensorimotor_sleep"] }
+  requires { sample_rate = ">= 256 Hz"; channels = ["C4"] }
+  input "raw" { montage = referential(active: "C4", reference: "linked_ears") }
+  derive "env" { from = "raw"
+    pipeline = [ bandpass(center: env_center, bandwidth: ratio(1.25), order: 4),
+                 hilbert(), magnitude(), smooth(tau: 250 ms) ] }
+  threshold "env_t" { signal = "env"; type = absolute(value: thr_uv) }
+  reward { event = dwell(condition: above("env", "env_t"), duration: 250 ms)
+           continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+  output { audio_chime = reward.event; audio_gain = reward.event.holds ? reward.continuous : 0 }
+  controls {
+    env_center = frequency { default = 13.4164 Hz; range = (10.73 Hz, 16.1 Hz); label = "SMR band center" }
+    reward_pct = percent { default = 70; range = (50, 90); label = "Target reward %"; live_tunable = true }
+    thr_uv = voltage { default = 2.0 uV; range = (0.5 uV, 30.0 uV); label = "Threshold"; live_tunable = true
+      seed = percentile { from = "env"; window = 60 s; target_pct = reward_pct } }
+  }
+}
+'''
+
+SEEDED_LIT = '''
+protocol "smr_up_c4_seeded_lit" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["sensorimotor_sleep"] }
+  requires { sample_rate = ">= 256 Hz"; channels = ["C4"] }
+  input "raw" { montage = referential(active: "C4", reference: "linked_ears") }
+  derive "env" { from = "raw"
+    pipeline = [ bandpass(center: env_center, bandwidth: ratio(1.25), order: 4),
+                 hilbert(), magnitude(), smooth(tau: 250 ms) ] }
+  threshold "env_t" { signal = "env"; type = absolute(value: thr_uv) }
+  reward { event = dwell(condition: above("env", "env_t"), duration: 250 ms)
+           continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+  output { audio_chime = reward.event; audio_gain = reward.event.holds ? reward.continuous : 0 }
+  controls {
+    env_center = frequency { default = 13.4164 Hz; range = (10.73 Hz, 16.1 Hz); label = "SMR band center" }
+    thr_uv = voltage { default = 2.0 uV; range = (0.5 uV, 30.0 uV); label = "Threshold"; live_tunable = true
+      seed = percentile { from = "env"; window = 60 s; target_pct = 40 } }
+  }
+}
+'''
+
+
+def test_seeded_control_bind_round_trips():
+    d = describe_protocol(SEEDED_BIND)
+    assert d["in_subset"] is True
+    thr = next(c for c in d["model"]["controls"] if c["name"] == "thr_uv")
+    assert thr.get("seed"), "describe dropped the control seed"
+    assert _ir(SEEDED_BIND) == _ir(render_protocol(d["model"]))
+
+
+def test_seeded_control_literal_round_trips():
+    d = describe_protocol(SEEDED_LIT)
+    assert d["in_subset"] is True
+    thr = next(c for c in d["model"]["controls"] if c["name"] == "thr_uv")
+    assert thr.get("seed"), "describe dropped the control seed"
+    assert _ir(SEEDED_LIT) == _ir(render_protocol(d["model"]))
