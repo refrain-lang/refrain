@@ -149,6 +149,13 @@
      "slots": [{"name": "pair", "type": "site", "control_bindable": true}],
      "template": "bipolar(pair: {pair})"},
 
+    {"id": "montage.bipolar_lit", "kind": "montage",
+     "slots": [
+       {"name": "plus", "type": "site", "control_bindable": false},
+       {"name": "minus", "type": "site", "control_bindable": false}
+     ],
+     "template": "bipolar(plus: {plus}, minus: {minus})"},
+
     {"id": "derive.lf_envelope", "kind": "derive", "form": "pipeline",
      "slots": [
        {"name": "band", "type": "raw"},

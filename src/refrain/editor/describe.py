@@ -150,8 +150,12 @@ def _match_input(decl: A.NamedDecl) -> dict:
     if isinstance(montage, A.Call) and montage.callee == "passthrough":
         return {"name": decl.name, "block": "montage.passthrough", "slots": {}}
     if isinstance(montage, A.Call) and montage.callee == "bipolar":
-        return {"name": decl.name, "block": "montage.bipolar",
-                "slots": {"pair": _slot_from_expr(_arg(montage, "pair"))}}
+        if _arg(montage, "pair") is not None:
+            return {"name": decl.name, "block": "montage.bipolar",
+                    "slots": {"pair": _slot_from_expr(_arg(montage, "pair"))}}
+        return {"name": decl.name, "block": "montage.bipolar_lit",
+                "slots": {"plus": _slot_from_expr(_arg(montage, "plus")),
+                          "minus": _slot_from_expr(_arg(montage, "minus"))}}
     raise _NotInSubset("montage not referential/passthrough/bipolar")
 
 
