@@ -5,6 +5,19 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.19.0] — 2026-07-20
+
+### Added
+- **Literal bipolar montages in the protocol editor (`montage.bipolar_lit`).** The
+  catalog editor can now author `bipolar(plus: "T3", minus: "T4")` montages: a new
+  `montage.bipolar_lit` block (slots `plus`/`minus`, template
+  `bipolar(plus: {plus}, minus: {minus})`) plus a `describe_protocol` parse rule
+  that disambiguates the literal form from the placement-bound `bipolar(pair: …)`
+  (unchanged). `bipolar(plus, minus)` already resolved in the language, so this is
+  editor-catalog only — no compiler, IR, or runtime change. Enables the
+  goal-authoring "Bipolar site" surface in refrain-editor. Both `refrain` and
+  `refrain-core` advance to 0.19.0 (version lockstep).
+
 ## [0.18.0] — 2026-07-20
 
 ### Added
