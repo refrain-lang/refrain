@@ -364,3 +364,28 @@ def test_seeded_control_literal_round_trips():
     thr = next(c for c in d["model"]["controls"] if c["name"] == "thr_uv")
     assert thr.get("seed"), "describe dropped the control seed"
     assert _ir(SEEDED_LIT) == _ir(render_protocol(d["model"]))
+
+
+BIPOLAR_LIT = '''
+protocol "theta_down_t3t4" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["adhd_attention"] }
+  requires { sample_rate = ">= 256 Hz"; channels = ["T3","T4"] }
+  input "raw" { montage = bipolar(plus: "T3", minus: "T4") }
+  derive "env" { from = "raw"
+    pipeline = [ bandpass(band: (4 Hz, 8 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 250 ms) ] }
+  threshold "env_t" { signal = "env"; type = percentile(target_pct: 30, window: 2 min) }
+  reward { event = dwell(condition: below("env", "env_t"), duration: 250 ms)
+           continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+  output { audio_chime = reward.event }
+  session { phases = [ phase { name = "training"; duration = 5 min } ] }
+}
+'''
+
+
+def test_bipolar_lit_is_in_subset_and_round_trips():
+    d = describe_protocol(BIPOLAR_LIT)
+    assert d["in_subset"] is True and d["model"] is not None
+    montage = d["model"]["inputs"][0]
+    assert montage["block"] == "montage.bipolar_lit"
+    assert montage["slots"] == {"plus": "T3", "minus": "T4"}
+    assert _ir(BIPOLAR_LIT) == _ir(render_protocol(d["model"]))
