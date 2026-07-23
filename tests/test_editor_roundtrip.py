@@ -210,6 +210,25 @@ def test_compound_reward_and_artifact_inhibit_round_trip():
     assert _ir(COMPOUND) == _ir(render_protocol(m))
 
 
+ANYOF = COMPOUND.replace('"smr_compound_cz"', '"smr_anyof_cz"').replace("all_of", "any_of")
+
+
+def test_anyof_compound_reward_round_trips():
+    d = describe_protocol(ANYOF)
+    assert d["in_subset"] is True
+    m = d["model"]
+    assert m["reward"]["block"] == "reward.operant_compound_anyof"
+    assert 'above("smr", "smr_t")' in m["reward"]["slots"]["conditions"]
+    out = render_protocol(m)
+    assert "any_of([" in out and "all_of" not in out
+    assert _ir(ANYOF) == _ir(out)
+
+
+def test_anyof_bare_ref_continuous_not_in_subset():
+    src = ANYOF.replace('sigmoid("smr" / "smr_t"', 'sigmoid("smr"')
+    assert describe_protocol(src)["in_subset"] is False
+
+
 # Staged / N-phase: a `block` decl activated by a phase's `block = "..."` field.
 STAGED = '''
 protocol "staged_smr_cz" {
