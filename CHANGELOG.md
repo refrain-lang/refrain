@@ -5,6 +5,22 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.20.0] — 2026-07-23
+
+### Added
+- **Any-of compound rewards in the protocol editor (`reward.operant_compound_anyof`).**
+  The catalog editor can now author `any_of([...])` compound rewards: a new
+  `reward.operant_compound_anyof` block (identical to `reward.operant_compound`
+  except the id and `any_of` in the template) plus a `describe_protocol` branch
+  that routes `any_of(...)` compound rewards to it (bare-ref-continuous `any_of`
+  stays out of subset). Compound condition args must now be string refs — numeric
+  literals (`above("smr", 2.5)`) were silently re-quoted into refs on round-trip
+  (a semantic change) and are now out-of-subset in both editor implementations.
+  `any_of` already resolved in the language, so this is editor-catalog only — no
+  compiler, IR, or runtime change. Enables the goal-authoring "Any of them"
+  combine in refrain-editor. Both `refrain` and `refrain-core` advance to 0.20.0
+  (version lockstep).
+
 ## [0.19.0] — 2026-07-20
 
 ### Added
