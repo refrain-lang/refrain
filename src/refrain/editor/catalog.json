@@ -83,6 +83,17 @@
      ],
      "template": "event      = dwell(condition: all_of([{conditions}]), duration: {dwell})\n    continuous = sigmoid(\"{cont_num}\" / \"{cont_den}\", midpoint: {midpoint}, steepness: {steepness})"},
 
+    {"id": "reward.operant_compound_anyof", "kind": "reward",
+     "slots": [
+       {"name": "conditions", "type": "raw"},
+       {"name": "cont_num", "type": "ref", "control_bindable": false},
+       {"name": "cont_den", "type": "ref", "control_bindable": false},
+       {"name": "midpoint", "type": "number", "control_bindable": false, "default": 1.0},
+       {"name": "steepness", "type": "number", "control_bindable": false, "default": 3},
+       {"name": "dwell", "type": "raw", "control_bindable": false, "default": 250}
+     ],
+     "template": "event      = dwell(condition: any_of([{conditions}]), duration: {dwell})\n    continuous = sigmoid(\"{cont_num}\" / \"{cont_den}\", midpoint: {midpoint}, steepness: {steepness})"},
+
     {"id": "inhibit.artifact", "kind": "inhibit",
      "slots": [
        {"name": "input", "type": "ref"},

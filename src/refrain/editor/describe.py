@@ -306,14 +306,17 @@ def _match_reward(block: A.SectionBlock) -> dict:
     if not isinstance(ev, A.Call) or ev.callee != "dwell":
         raise _NotInSubset("reward.event not a dwell()")
     cond = _arg(ev, "condition")
-    if isinstance(cond, A.Call) and cond.callee == "all_of":  # compound operant: target + inhibits
+    if isinstance(cond, A.Call) and cond.callee in ("all_of", "any_of"):  # compound operant: target + inhibits
+        combinator = cond.callee
         arr = cond.args[0].value
         if not isinstance(arr, (A.Array, A.Tuple)):
-            raise _NotInSubset("all_of arg not a list")
+            raise _NotInSubset(f"{combinator} arg not a list")
         parts = []
         for c in arr.elements:
             if not (isinstance(c, A.Call) and c.callee in ("above", "below")):
-                raise _NotInSubset("all_of condition not above/below")
+                raise _NotInSubset(f"{combinator} condition not above/below")
+            if not (isinstance(c.args[0].value, A.StringLit) and isinstance(c.args[1].value, A.StringLit)):
+                raise _NotInSubset(f"{combinator} condition args not string refs")
             parts.append(f'{c.callee}("{c.args[0].value.value}", "{c.args[1].value.value}")')
         if not (isinstance(cont, A.Call) and cont.callee == "sigmoid"):
             raise _NotInSubset("compound reward continuous not a sigmoid()")
@@ -321,12 +324,16 @@ def _match_reward(block: A.SectionBlock) -> dict:
         dwell = _expr_to_str(_arg(ev, "duration"))
         if (isinstance(carg, A.BinaryOp) and carg.op == "/"
                 and isinstance(carg.left, A.StringLit) and isinstance(carg.right, A.StringLit)):
-            return {"name": None, "block": "reward.operant_compound",
+            block = ("reward.operant_compound" if combinator == "all_of"
+                     else "reward.operant_compound_anyof")
+            return {"name": None, "block": block,
                     "slots": {"conditions": ", ".join(parts),
                               "cont_num": carg.left.value, "cont_den": carg.right.value,
                               "midpoint": _arg(cont, "midpoint").value,
                               "steepness": _arg(cont, "steepness").value, "dwell": dwell}}
         if isinstance(carg, A.StringLit):         # bare-ref continuous (e.g. coherence)
+            if combinator == "any_of":
+                raise _NotInSubset("any_of compound with bare-ref continuous not in subset")
             return {"name": None, "block": "reward.operant_compound_abs",
                     "slots": {"conditions": ", ".join(parts), "cont_signal": carg.value,
                               "midpoint": _arg(cont, "midpoint").value,
