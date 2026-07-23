@@ -229,6 +229,11 @@ def test_anyof_bare_ref_continuous_not_in_subset():
     assert describe_protocol(src)["in_subset"] is False
 
 
+def test_compound_numeric_condition_arg_not_in_subset():
+    assert describe_protocol(ANYOF.replace('above("smr", "smr_t")', 'above("smr", 2.5)'))["in_subset"] is False
+    assert describe_protocol(COMPOUND.replace('above("smr", "smr_t")', 'above("smr", 2.5)'))["in_subset"] is False
+
+
 # Staged / N-phase: a `block` decl activated by a phase's `block = "..."` field.
 STAGED = '''
 protocol "staged_smr_cz" {

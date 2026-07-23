@@ -315,6 +315,8 @@ def _match_reward(block: A.SectionBlock) -> dict:
         for c in arr.elements:
             if not (isinstance(c, A.Call) and c.callee in ("above", "below")):
                 raise _NotInSubset(f"{combinator} condition not above/below")
+            if not (isinstance(c.args[0].value, A.StringLit) and isinstance(c.args[1].value, A.StringLit)):
+                raise _NotInSubset(f"{combinator} condition args not string refs")
             parts.append(f'{c.callee}("{c.args[0].value.value}", "{c.args[1].value.value}")')
         if not (isinstance(cont, A.Call) and cont.callee == "sigmoid"):
             raise _NotInSubset("compound reward continuous not a sigmoid()")
