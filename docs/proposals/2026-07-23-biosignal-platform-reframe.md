@@ -59,7 +59,8 @@ feedback paradigms." The bounded-DSL principle is reaffirmed, not relaxed.
 | IR-JSON schema / embedding API / Rust core parity | **none** | no |
 | `refrain` docs & framing (README, CONCEPT, SPEC prose) | heavy | no |
 | Language vocabulary (`montage`, band/site framing) | targeted, mostly docs | maybe (naming only) |
-| `refrain-protocols` `meta` schema (modality, site, goals) | moderate | yes (tags) — do now |
+| `refrain-protocols` schema (modality) | moderate | yes (tags) — do now |
+| `refrain-protocols` *distributed content* (goals, evidence, citations, comments) → general-wellness neutral | heavy | yes (vocab) — do now |
 | `refrain-editor` presentation layer (sites, bands, labels) | moderate | no (first-party) |
 | Consuming apps (recorder, companion) | pin bump + modality handling | no at IR level |
 
@@ -136,46 +137,95 @@ vocabulary. The language shouldn't grow a taxonomy it doesn't execute on.
 
 ---
 
-## 4. `refrain-protocols` — schema generalization
+## 4. `refrain-protocols` — make the distributed library maximally neutral
 
-`schema/protocol-meta.schema.json` is already partway neutral (it has a
-`modality` field) but several tags are EEG-shaped. This is the one place with a
-real **breaking (but additive-friendly) schema change** — do it in the clean-slate
-window.
+The distributed protocols are the artifacts people actually pick up and run, so
+this is where neutrality matters most. Two independent axes:
 
-- **`modality`** — currently `enum: ["eeg", "hrv"]`, default `eeg`. Widen to at
-  least `["eeg", "ecg", "hrv", "gsr", "emg", "temp"]` (hrv derived from ecg — keep
-  both since the *signal* and the *derived tachogram* differ). Keep default
-  `eeg` so existing files are valid untouched.
-- **`site`** — description says *"Scalp site(s), e.g. 'Cz', 'F3/F4',
-  'tachogram'"* — `tachogram` is not a scalp site. Generalize the *description*
-  to "channel / source label (EEG scalp site, or `tachogram`/`gsr`/… for other
-  modalities)." No type change; it's already a free string.
-- **`bands`** — EEG-centric but already free-form strings (HRV uses `hrv-lf`).
-  Keep; document that it's optional and modality-scoped (empty/omitted for
-  modalities with no band concept, e.g. raw GSR level).
-- **`goals`** — enum is entirely mental-state/EEG-oriented (`adhd_attention`,
-  `sensorimotor_sleep`, …). Add non-EEG training goals: e.g.
-  `hrv_coherence`, `stress_downregulation`, `relaxation_arousal`,
-  `interoception`. Unknown values already fall into "Other" (good), but the
-  first-class picker groups should name the ones we ship.
-- **`hardware`** — enum `["generic", "brainbit_flex", "clinical_amp"]` is
-  EEG-amp-centric. Add non-EEG classes as they arrive (e.g. `hrv_sensor`,
-  `gsr_sensor`) or generalize to `generic` + a free `requires_features` list.
-- **`reward_style` / `direction` / `threshold_style`** — modality-neutral
-  already. Leave.
+- **Axis A — modality-neutral** (biosignal, not EEG-only): the `meta` schema.
+- **Axis B — intended-use-neutral** (general-wellness, not clinical/medical): the
+  *content* of the distributed files — goals, evidence claims, citations, titles,
+  comments, disclaimers.
 
-Also:
+Axis B is the bigger lift and the one that keeps the whole platform out of the
+medical-device corner the reframe is stepping away from. Today the distributed
+library reads clinically: `goals = ["adhd_attention"]` / `["mood_regulation",
+"trauma_recovery"]`, `evidence = "established"` framed as *clinical-literature
+support*, citations presented as efficacy evidence, and file comments like *"the
+depression FAA protocol."* (~90 clinical/indication references across
+`protocols/` + docs.) Directive: **make what's distributed as neutral as
+possible** — general-wellness biosignal-training building blocks, no diagnostic
+or therapeutic claims.
+
+### 4.1 Axis A — `schema/protocol-meta.schema.json` (modality)
+
+Already partway neutral (it has a `modality` field). This is the one real
+**breaking-but-additive schema change** — do it in the clean-slate window.
+
+- **`modality`** — `enum: ["eeg", "hrv"]` → widen to `["eeg", "ecg", "hrv",
+  "gsr", "emg", "temp"]` (keep both `ecg` and `hrv` — signal vs. derived
+  tachogram differ). Keep default `eeg` so existing files stay valid.
+- **`site`** — description *"Scalp site(s)… 'tachogram'"* mixes concepts.
+  Generalize the description to "channel / source label (EEG scalp site, or
+  `tachogram`/`gsr`/… for other modalities)." Free string already; no type change.
+- **`bands`** — EEG-centric but already free-form (HRV uses `hrv-lf`). Keep;
+  document as optional and modality-scoped (omit for modalities with no band
+  concept, e.g. raw GSR level).
+- **`hardware`** — `["generic", "brainbit_flex", "clinical_amp"]` is
+  EEG-amp-centric *and* clinically loaded. Rename `clinical_amp` → a neutral
+  capability class (e.g. `research_amp` / `pro_sensor`) and add non-EEG classes
+  as they arrive, or collapse to `generic` + free `requires_features`.
+- **`reward_style` / `direction` / `threshold_style`** — modality-neutral. Leave.
+
+### 4.2 Axis B — neutralize the distributed content (intended-use)
+
+The strong form of the reframe. Recommended mapping (dial back per §8 if you want
+to retain clinical provenance for researchers):
+
+| Clinical vector, today | Neutral form |
+|---|---|
+| `goals` diagnosis names — `adhd_attention`, `calm_anxiety`, `mood_regulation`, `trauma_recovery` | wellness-outcome names — `focus_attention`, `calm_stress`, `mood_balance`; **drop `trauma_recovery`** (fold to `resilience`/`calm`) |
+| `goals` already-neutral — `sensorimotor_sleep`, `alertness_performance`, `flow_connectivity`, `deep_meditative` | keep (maybe `sensorimotor_sleep` → `sleep_quality`) |
+| new modality goals | `hrv_coherence`, `stress_downregulation`, `relaxation_arousal`, `interoception` |
+| `evidence` = *"clinical-literature support"* (`established`/`probable`/`exploratory`) | reframe meaning to *"how established the signal-training **approach** is"* (prior art), **not** clinical efficacy. Keep tiers; strip "clinical" from the label. Consider renaming the field to `maturity`/`provenance` |
+| `citation` framed as efficacy evidence | keep — but frame as **origin / prior art**, neutral provenance, not proof of outcome |
+| titles/summaries — *"Sharpen attention", "Lift mood"* | already general-wellness in tone — **good, this is the target register**; keep |
+| file **comments** — *"the depression FAA protocol", "for mood / approach-motivation"* | strip clinical/indication phrasing; describe the **signal training**, not an indication |
+| `indication` / `population` / `safety_monitoring` fields (referenced in host-app-guide) | drop from the distributed contract, or make clearly optional/host-side; a neutral library doesn't ship indications |
+
+The FAA protocol is the sharpest example: today `goals = ["mood_regulation",
+"trauma_recovery"]` with a "depression protocol" comment. Neutralized: `goals =
+["mood_balance"]`, comment describes the F3/F4 alpha-asymmetry *training*, no
+depression/trauma claim.
+
+**Floor to be honest about:** you cannot make SMR/theta-beta *not* originate in
+clinical literature. Maximal-neutral doesn't mean hiding provenance — it means
+the distributed artifacts make **no diagnostic or therapeutic claim**, present as
+general-wellness signal-training building blocks, and carry citations as origin,
+not efficacy. That's the honest neutral, and it matches the essay's
+general-wellness envelope.
+
+### 4.3 Docs & mechanical passes
+
 - **README** — *"Reference neurofeedback & HRV protocol library"* → *"Reference
-  biosignal training-protocol library"*. Keep the tags-not-folders and
-  files-are-source-of-truth story verbatim; it's modality-agnostic already.
-- **`docs/host-app-guide.md`** — grouping/filter guidance still holds; **add a
-  `modality` filter chip** to §2 and note modality in the row chips. The guide's
-  "list by parse, resolve on select" contract is unchanged.
-- **Backfill** — add explicit `modality = "eeg"` to every existing EEG protocol
-  file in one mechanical pass (currently relying on the default), so the corpus
-  is self-describing once multiple modalities coexist. `hrv_resonance.refrain`
-  already sets `modality = "hrv"`.
+  biosignal training-protocol library."* Keep tags-not-folders and
+  files-are-source-of-truth verbatim (modality-agnostic already). Reframe the
+  ⚠️ untested badge language from clinical → general-wellness while keeping its
+  honesty ("untested, not validated, not a medical device, no health claims").
+- **`docs/evidence.md`, `docs/tagging.md`** — sweep "clinical," "medical device,"
+  "clinician owns responsibility," "the science supports it" → general-wellness /
+  prior-art framing. Keep the two-axis (status vs. maturity) model and the
+  untested-badge honesty.
+- **`docs/host-app-guide.md`** — grouping/filter guidance holds; **add a
+  `modality` filter chip**; **rename the "Clinical-safety UX" section** to a
+  neutral "trust & provenance" framing and drop `indication`/`population` from
+  the recommended surface. "List by parse, resolve on select" unchanged.
+- **Backfill `modality = "eeg"`** on every existing EEG file in one mechanical
+  pass (currently relying on default). `hrv_resonance.refrain` already sets `hrv`.
+- **Regenerate** `catalog.json` and the seed generator (`tools/gen_seed_
+  protocols.py`, `tools/build_catalog.py`) so the neutralized vocabulary is the
+  source, and update `schema` + CI (`tests/test_schema_fields.py`) to the new
+  enums. Unknown-value → "Other" bucketing stays.
 
 ---
 
@@ -292,9 +342,12 @@ Order matters only where a downstream repo reads an upstream contract.
 1. **`refrain` docs + vocabulary decision (§3).** Pure narrative + one docs
    paragraph for `montage`. No code risk. Unblocks consistent language everywhere
    else. → new minor release.
-2. **`refrain-protocols` schema (§4).** Widen `modality`/`goals`/`hardware`,
-   generalize `site`/`bands` descriptions, README/host-app-guide, backfill
-   `modality = "eeg"`. → schema + library release.
+2. **`refrain-protocols` — both axes (§4).** Axis A: widen `modality`/`hardware`,
+   generalize `site`/`bands`. Axis B: neutralize the distributed content —
+   wellness-reframe `goals`, strip clinical framing from `evidence`/citations/
+   comments/docs, drop indication fields. Backfill `modality = "eeg"`, regenerate
+   catalog + seeds, update CI enums. → schema + library release. **This is the
+   heaviest single unit of work in the plan.**
 3. **`refrain-editor` modality-awareness (§5).** Depends on knowing the modality
    vocabulary from step 2. → editor release.
 4. **Consuming apps (§6).** Bump `refrain` and `refrain-protocols` pins; absorb
@@ -317,11 +370,21 @@ Steps 1–2 can proceed immediately; 3 waits on 2; 4 waits on 2–3.
 3. **Modality vocabulary to ship now** — which signals get first-class enum
    values in `protocol-meta.schema.json` (proposed: eeg, ecg, hrv, gsr, emg,
    temp)?
-4. **`goals` additions** — confirm the non-EEG training goals to name (proposed:
-   hrv_coherence, stress_downregulation, relaxation_arousal, interoception).
-5. **Editor package/CSS rename** — drop the `nf-` connotation now, or leave it?
+4. **How far to neutralize the distributed content (§4.2)** — the key positioning
+   call. Maximal (recommended, per your directive): wellness-reframe all
+   diagnosis-flavored `goals`, drop `trauma_recovery`, strip "clinical" from
+   `evidence`, reframe citations as provenance, drop `indication`/`population`.
+   Dial-back option: keep the clinical `evidence` tier + citations as-is (retains
+   research credibility) but still drop diagnosis-flavored goals and
+   medical-claim comments. Confirm the depth.
+5. **`goals` vocabulary** — confirm the neutralized set + non-EEG additions
+   (proposed keep/rename: `focus_attention`, `calm_stress`, `mood_balance`,
+   `sleep_quality`, `alertness_performance`, `flow_connectivity`,
+   `deep_meditative`; new: `hrv_coherence`, `stress_downregulation`,
+   `relaxation_arousal`, `interoception`; drop: `trauma_recovery`).
+6. **Editor package/CSS rename** — drop the `nf-` connotation now, or leave it?
    (cosmetic; free in the clean-slate window)
-6. **This doc's home** — keep in public `refrain`, or move to a private repo
+7. **This doc's home** — keep in public `refrain`, or move to a private repo
    (§9)?
 
 ---
@@ -339,6 +402,10 @@ private repo before the branch merges. Flagged so the choice is deliberate.
 
 ## 10. One-line summary
 
-Broaden the *platform*; keep *Refrain* a bounded training-paradigm DSL. ~90%
-narrative, ~10% naming/schema, ~0% semantics. Do the breaking schema bits now
-while there are no external consumers. Evolve the editor — don't fork it.
+Broaden the *platform*; keep *Refrain* a bounded training-paradigm DSL. In the
+language it's ~90% narrative, ~10% naming, ~0% semantics — but the **distributed
+protocol library** is the real content work: make it maximally neutral on *both*
+axes (biosignal, not EEG-only; general-wellness, not clinical) so what people
+pick up carries no diagnostic or therapeutic claim. Do the breaking schema +
+vocabulary bits now while there are no external consumers. Evolve the editor —
+don't fork it.
