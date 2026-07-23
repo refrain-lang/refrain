@@ -26,3 +26,15 @@ def test_control_binding_shape_validates():
     m["derives"] = [{"name": "env", "block": "derive.envelope", "from": "raw",
                      "slots": {"center": {"bind": "env_center"}, "ratio": 1.25, "smooth_tau_ms": 250}}]
     validate_model(m)
+
+
+def test_seed_statistic_must_be_percentile():
+    m = dict(_GOOD)
+    m["controls"] = [{"name": "thr_uv", "kind": "voltage", "default": 2.0, "unit": "uV",
+                      "range": [0.5, 30.0], "label": "Threshold", "live_tunable": True,
+                      "seed": {"statistic": "percentile", "from": "env",
+                               "window_ms": 60000, "target_pct": 40}}]
+    validate_model(m)  # the only engine-supported statistic
+    m["controls"][0]["seed"] = dict(m["controls"][0]["seed"], statistic="mean")
+    with pytest.raises(jsonschema.ValidationError):
+        validate_model(m)
