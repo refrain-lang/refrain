@@ -55,6 +55,18 @@ def test_conditional_threshold_shape_validates():
     validate_model(m)
 
 
+def test_mode_and_boolean_control_shapes_validate():
+    m = dict(_GOOD)
+    m["controls"] = [
+        {"name": "threshold_style", "kind": "mode",
+         "choices": ["baseline", "adaptive"], "default": "adaptive",
+         "label": "Threshold style", "final": False},
+        {"name": "artifact_guard", "kind": "boolean", "default": True,
+         "label": "Artifact guard", "live_tunable": True},
+    ]
+    validate_model(m)
+
+
 def test_conditional_threshold_missing_branch_fails():
     m = dict(_GOOD)
     m["thresholds"] = [{

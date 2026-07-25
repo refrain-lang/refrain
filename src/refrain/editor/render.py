@@ -7,6 +7,8 @@ _CONTROL_BODY = {
     "percent":   '{name} = percent {{\n      default = {default}\n      range   = ({lo}, {hi})\n      label   = "{label}"{live}{seed}\n    }}',
     "voltage":   '{name} = voltage {{\n      default = {default} uV\n      range   = ({lo} uV, {hi} uV)\n      label   = "{label}"{live}{seed}\n    }}',
     "number":    '{name} = number {{\n      default = {default}\n      range   = ({lo}, {hi})\n      label   = "{label}"{live}{seed}\n    }}',
+    "boolean":   '{name} = boolean {{\n      default = {default}\n      label   = "{label}"{live}\n    }}',
+    "mode":      '{name} = mode {{ choices = [{choices}]; default = "{default}"; label = "{label}"{final} }}',
 }
 
 # The control kinds render can emit. `describe` gates `in_subset` on this so a
@@ -38,6 +40,25 @@ def _render_seed(s: dict) -> str:
 
 
 def _render_control(c: dict) -> str:
+    """Render one `controls { ... }` entry.
+
+    `mode` and `boolean` are dispatched separately: neither has a numeric
+    `default`, so running either through the numeric branch's `_fmtnum`
+    would misrender it — most insidiously for `boolean`, where Python's
+    `isinstance(True, int) is True` means a numeric formatter would happily
+    (and silently) print `1`/`0` instead of `true`/`false`.
+    """
+    if c["kind"] == "mode":
+        choices = ", ".join(f'"{x}"' for x in c["choices"])
+        final = "; final = true" if c.get("final") else ""
+        return _CONTROL_BODY["mode"].format(
+            name=c["name"], choices=choices, default=c["default"],
+            label=c.get("label", c["name"]), final=final)
+    if c["kind"] == "boolean":
+        live = "\n      live_tunable = true" if c.get("live_tunable") else ""
+        return _CONTROL_BODY["boolean"].format(
+            name=c["name"], default=("true" if c["default"] else "false"),
+            label=c.get("label", c["name"]), live=live)
     live = "\n      live_tunable = true" if c.get("live_tunable") else ""
     seed = _render_seed(c["seed"]) if c.get("seed") else ""
     lo, hi = (c.get("range") or [None, None])
@@ -90,23 +111,6 @@ def _render_threshold_call(cat: Catalog, branch: dict) -> str:
     b = cat.block(branch["block"])
     filled = _fill(b["template"], b["slots"], branch["slots"])
     return filled.removeprefix("type = ")
-
-
-def _render_mode_decl(name: str, m: dict) -> str:
-    """Render the mode control a conditional threshold's condition names.
-
-    Not general mode-control rendering (there is no `RENDERABLE_CONTROL_KINDS`
-    entry for "mode") — this exists only so a threshold.conditional node's
-    referenced control still resolves after render (the resolver folds
-    `mode == "x" ? a : b` by looking up the *declared* control, so omitting it
-    breaks resolution outright rather than merely losing editability)."""
-    choices = ", ".join(f'"{c}"' for c in m["choices"])
-    parts = [f"choices = [{choices}]", f'default = "{m["default"]}"']
-    if m.get("label"):
-        parts.append(f'label = "{m["label"]}"')
-    if m.get("final"):
-        parts.append("final = true")
-    return f'{name} = mode {{ {"; ".join(parts)} }}'
 
 
 def _render_conditional_threshold(n: dict, cat: Catalog) -> str:
@@ -164,10 +168,12 @@ def render_protocol(model: dict, catalog: Catalog | None = None) -> str:
         else:
             L.append(f'  derive "{n["name"]}" {{\n    from = "{n["from"]}"\n    pipeline = [ {body} ]\n  }}')
 
-    mode_decls: dict[str, dict] = {}  # mode controls referenced by conditional thresholds
     for n in model["thresholds"]:
         if n["block"] == "threshold.conditional":
-            mode_decls.setdefault(n["mode_control"], n["mode_decl"])
+            # The mode control the condition names is not rendered here — it
+            # lives in `model["controls"]` like any other mode control (see
+            # `_build_model`), which is also what keeps it from being emitted
+            # twice.
             L.append(_render_conditional_threshold(n, cat))
             continue
         b = cat.block(n["block"])
@@ -188,17 +194,10 @@ def render_protocol(model: dict, catalog: Catalog | None = None) -> str:
         L.append(f'    {o["channel"]} = {o["route"]}')
     L.append("  }")
 
-    if model["controls"] or model.get("placements") or mode_decls:
+    if model["controls"] or model.get("placements"):
         L.append("  controls {")
         L.extend("    " + _render_placement(pl) for pl in model.get("placements", []))
-        pending_modes = dict(mode_decls)          # consumed as each anchor control is emitted
-        for c in model["controls"]:
-            for name, m in list(pending_modes.items()):
-                if m.get("insert_before") == c["name"]:
-                    L.append("    " + _render_mode_decl(name, m))
-                    del pending_modes[name]
-            L.append("    " + _render_control(c))
-        L.extend("    " + _render_mode_decl(name, m) for name, m in pending_modes.items())
+        L.extend("    " + _render_control(c) for c in model["controls"])
         L.append("  }")
 
     for blk in model.get("blocks", []):           # staged: per-phase threshold sets

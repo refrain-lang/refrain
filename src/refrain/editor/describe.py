@@ -319,16 +319,21 @@ def _mode_decls_by_name(p: A.Protocol) -> dict:
     resolves) when that control is actually declared as `mode { ... }`
     (`_eval_mode_condition` requires `type_kind == "mode"`). Unlike a
     percent/voltage control, dropping this declaration on render doesn't just
-    make it un-editable — it makes the protocol fail to resolve at all, so the
-    conditional-threshold node carries the declaration it needs (`mode_decl`)
-    rather than relying on the general (not yet built) mode-control-in-model
-    plumbing.
+    make it un-editable — it makes the protocol fail to resolve at all.
+
+    This function covers *every* mode decl, not just conditional-referenced
+    ones: `_build_model` uses it to fold every mode control (referenced or
+    not) into `model["controls"]` at its original position. The
+    conditional-threshold node's own `mode_decl` field is redundant with that
+    (kept for readability) — `render.py` renders a mode exactly once, from
+    `model["controls"]`.
 
     `insert_before` (the next plain-kind control declared after it in source,
-    or None if it trails them all) lets the renderer reinsert the mode control
-    at its original position — every real protocol declares it before the
-    controls whose branch it selects, and the resolver's `topological_order`
-    is source-position-sensitive, so appending it at the end would flip that
+    or None if it trails them all) lets `_build_model` reinsert the mode
+    control at its original position — every real protocol declares it before
+    the controls whose branch it selects (or, for an unrelated mode, wherever
+    it happened to be declared), and the resolver's `topological_order` is
+    source-position-sensitive, so appending it at the end would flip that
     order and fail the round-trip IR comparison.
     """
     out: dict = {}
@@ -490,13 +495,18 @@ def _match_session(block: A.SectionBlock) -> dict:
     return {"phases": phases}
 
 
-def _build_model(ast, controls, placements=()) -> dict:
+def _build_model(ast, controls, placements=(), modes=()) -> dict:
     p = ast.protocol
     if p.extends is not None:                          # inheritance is not modelled
         raise _NotInSubset("extends not in subset")
-    for c in controls:                                 # only kinds render can emit
+    for c in list(controls) + list(modes):              # only kinds render can emit
         if c["kind"] not in RENDERABLE_CONTROL_KINDS:
             raise _NotInSubset(f"control kind '{c['kind']}' not renderable")
+        if c["kind"] == "boolean" and (c.get("range") is not None or c.get("seed") is not None):
+            # The generic control-resolve path doesn't reject range/seed on a
+            # boolean kind, but render has no template slot for either — admit
+            # only the shape it can reproduce exactly, not a lossy guess.
+            raise _NotInSubset(f"boolean control '{c['name']}' has an unsupported range/seed")
     mode_decls = _mode_decls_by_name(p)
     inputs, derives, thresholds, outputs, reward_components, blocks = [], [], [], [], [], []
     reward, requires, session = None, {"sample_rate": "", "channels": []}, {"phases": []}
@@ -528,6 +538,28 @@ def _build_model(ast, controls, placements=()) -> dict:
                       # placement `allowed` at render time, so the section is dropped
             else:
                 raise _NotInSubset(f"section '{stmt.keyword}' not in subset")
+
+    # Fold every declared mode control into the control list at its original
+    # source position, using the very same `insert_before` anchor computed
+    # for the conditional-threshold case (`_mode_decls_by_name` is not
+    # filtered to referenced modes — it always covered every mode decl). This
+    # is now the *only* place a mode control gets rendered: a
+    # `threshold.conditional` node's `mode_decl` is redundant metadata, kept
+    # for readability, not consulted by `render.py` — so a mode referenced by
+    # a conditional threshold and an unrelated mode control both flow through
+    # this single path, and neither can be emitted twice.
+    controls = list(controls)
+    modes_by_name = {m["name"]: m for m in modes}
+    for name, decl in mode_decls.items():
+        m = modes_by_name.get(name)
+        if m is None:
+            continue  # declared but unresolved — resolve() would already have failed
+        idx = len(controls)
+        if decl["insert_before"] is not None:
+            idx = next((i for i, c in enumerate(controls) if c["name"] == decl["insert_before"]),
+                       len(controls))
+        controls.insert(idx, m)
+
     return {"name": p.name, "meta": _meta_from_ast(ast), "requires": requires,
             "inputs": inputs, "derives": derives, "thresholds": thresholds,
             "inhibits": [], "reward_components": reward_components, "reward": reward,
@@ -557,7 +589,7 @@ def describe_protocol(source: str, *, amp: Any = None) -> dict:
             controls.append(_control_view(name, ctl))
 
     try:
-        model = _build_model(ast, controls, placements)
+        model = _build_model(ast, controls, placements, modes)
         in_subset = True
     except (_NotInSubset, KeyError, AttributeError, TypeError, IndexError):
         # Intentional out-of-subset, or a matcher hit an unexpected AST shape:

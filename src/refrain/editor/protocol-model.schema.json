@@ -64,6 +64,8 @@
         "default": {}, "unit": {"type": ["string", "null"]},
         "range": {"type": ["array", "null"]}, "label": {"type": "string"},
         "live_tunable": {"type": "boolean"},
+        "choices": {"type": "array", "items": {"type": "string"}},
+        "final": {"type": "boolean"},
         "seed": {"type": "object", "additionalProperties": false,
           "required": ["statistic", "from", "window_ms", "target_pct"],
           "properties": {"statistic": {"const": "percentile"}, "from": {"type": "string"},
