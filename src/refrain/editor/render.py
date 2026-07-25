@@ -82,6 +82,51 @@ def _render_phase(p: dict) -> str:
     return "      phase { " + "; ".join(parts) + " }"
 
 
+def _render_threshold_call(cat: Catalog, branch: dict) -> str:
+    """Render just the constructor-call side of a threshold branch (e.g.
+    `percentile(target_pct: reward_pct, window: 2 min)`), stripping the shared
+    `type = ` prefix baked into the catalog template so it can be embedded on
+    either side of a mode-conditional ternary."""
+    b = cat.block(branch["block"])
+    filled = _fill(b["template"], b["slots"], branch["slots"])
+    return filled.removeprefix("type = ")
+
+
+def _render_mode_decl(name: str, m: dict) -> str:
+    """Render the mode control a conditional threshold's condition names.
+
+    Not general mode-control rendering (there is no `RENDERABLE_CONTROL_KINDS`
+    entry for "mode") — this exists only so a threshold.conditional node's
+    referenced control still resolves after render (the resolver folds
+    `mode == "x" ? a : b` by looking up the *declared* control, so omitting it
+    breaks resolution outright rather than merely losing editability)."""
+    choices = ", ".join(f'"{c}"' for c in m["choices"])
+    parts = [f"choices = [{choices}]", f'default = "{m["default"]}"']
+    if m.get("label"):
+        parts.append(f'label = "{m["label"]}"')
+    if m.get("final"):
+        parts.append("final = true")
+    return f'{name} = mode {{ {"; ".join(parts)} }}'
+
+
+def _render_conditional_threshold(n: dict, cat: Catalog) -> str:
+    keys = ["signal", "type"] + (["live_tunable"] if n.get("live_tunable") else [])
+    kw = max(len(k) for k in keys)
+    cond = f'{n["mode_control"]} == "{n["equals"]}"'
+    cont_indent = " " * (kw + 9)
+    lines = [
+        f'  threshold "{n["name"]}" {{',
+        f'    {"signal".ljust(kw)} = "{n["signal"]}"',
+        f'    {"type".ljust(kw)} = {cond}',
+        f'{cont_indent}? {_render_threshold_call(cat, n["when_true"])}',
+        f'{cont_indent}: {_render_threshold_call(cat, n["when_false"])}',
+    ]
+    if n.get("live_tunable"):
+        lines.append(f'    {"live_tunable".ljust(kw)} = true')
+    lines.append("  }")
+    return "\n".join(lines)
+
+
 def _quote(v):
     if isinstance(v, bool):                       # bool before int (bool is an int subclass)
         return "true" if v else "false"
@@ -119,7 +164,12 @@ def render_protocol(model: dict, catalog: Catalog | None = None) -> str:
         else:
             L.append(f'  derive "{n["name"]}" {{\n    from = "{n["from"]}"\n    pipeline = [ {body} ]\n  }}')
 
+    mode_decls: dict[str, dict] = {}  # mode controls referenced by conditional thresholds
     for n in model["thresholds"]:
+        if n["block"] == "threshold.conditional":
+            mode_decls.setdefault(n["mode_control"], n["mode_decl"])
+            L.append(_render_conditional_threshold(n, cat))
+            continue
         b = cat.block(n["block"])
         lt = "; live_tunable = true" if n.get("live_tunable") else ""
         L.append(f'  threshold "{n["name"]}" {{ signal = "{n["signal"]}"; {_fill(b["template"], b["slots"], n["slots"])}{lt} }}')
@@ -138,10 +188,17 @@ def render_protocol(model: dict, catalog: Catalog | None = None) -> str:
         L.append(f'    {o["channel"]} = {o["route"]}')
     L.append("  }")
 
-    if model["controls"] or model.get("placements"):
+    if model["controls"] or model.get("placements") or mode_decls:
         L.append("  controls {")
         L.extend("    " + _render_placement(pl) for pl in model.get("placements", []))
-        L.extend("    " + _render_control(c) for c in model["controls"])
+        pending_modes = dict(mode_decls)          # consumed as each anchor control is emitted
+        for c in model["controls"]:
+            for name, m in list(pending_modes.items()):
+                if m.get("insert_before") == c["name"]:
+                    L.append("    " + _render_mode_decl(name, m))
+                    del pending_modes[name]
+            L.append("    " + _render_control(c))
+        L.extend("    " + _render_mode_decl(name, m) for name, m in pending_modes.items())
         L.append("  }")
 
     for blk in model.get("blocks", []):           # staged: per-phase threshold sets
