@@ -5,6 +5,30 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.21.0] — 2026-07-26
+
+### Added
+- **Mode-conditional thresholds in the protocol editor
+  (`threshold.conditional`), plus `mode` and `boolean` controls.** The editor's
+  model could not represent
+  `type = threshold_style == "baseline" ? absolute(...) : percentile(...)` — the
+  adaptive/baseline collapse nearly every configurable protocol uses — because
+  `_match_threshold` accepted only a bare `percentile(...)`/`absolute(...)` call.
+  Measured across the `refrain-protocols` corpus, that single gap accounted for
+  **20 of the 22** out-of-subset protocols; the subset goes from **16/38 to
+  36/38** with zero round-trip mismatches. The two branches reuse the existing
+  threshold node shapes, and the node carries the referenced mode's declaration:
+  the resolver folds `mode == "x" ? a : b` by looking up the *declared* control,
+  so rendering without it makes `resolve()` fail outright, not merely hurt
+  editability. `mode` and `boolean` join `RENDERABLE_CONTROL_KINDS`
+  (`boolean` renders `true`/`false`, never `1`/`0`), and modes are now threaded
+  into the model so an unreferenced one is no longer dropped on render.
+  Reversed-operand (`"x" == mode`) and `!=` conditions are deliberately left out
+  of subset — narrower than the resolver accepts, because admitting a shape that
+  round-trips lossily would silently rewrite a clinician's protocol.
+  Editor-catalog only — no compiler, IR, or runtime change. Both `refrain` and
+  `refrain-core` advance to 0.21.0 (version lockstep).
+
 ## [0.20.0] — 2026-07-23
 
 ### Added
