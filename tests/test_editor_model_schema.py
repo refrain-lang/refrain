@@ -38,3 +38,42 @@ def test_seed_statistic_must_be_percentile():
     m["controls"][0]["seed"] = dict(m["controls"][0]["seed"], statistic="mean")
     with pytest.raises(jsonschema.ValidationError):
         validate_model(m)
+
+
+def test_conditional_threshold_shape_validates():
+    m = dict(_GOOD)
+    m["thresholds"] = [{
+        "name": "smr_t", "block": "threshold.conditional", "signal": "smr_envelope",
+        "mode_control": "threshold_style", "equals": "baseline",
+        "mode_decl": {"choices": ["baseline", "adaptive"], "default": "adaptive",
+                      "label": "Threshold style"},
+        "when_true": {"block": "threshold.absolute", "slots": {"value": {"bind": "smr_threshold_uv"}}},
+        "when_false": {"block": "threshold.percentile",
+                        "slots": {"target_pct": {"bind": "smr_reward_pct"}, "window_ms": 120000}},
+        "live_tunable": True,
+    }]
+    validate_model(m)
+
+
+def test_mode_and_boolean_control_shapes_validate():
+    m = dict(_GOOD)
+    m["controls"] = [
+        {"name": "threshold_style", "kind": "mode",
+         "choices": ["baseline", "adaptive"], "default": "adaptive",
+         "label": "Threshold style", "final": False},
+        {"name": "artifact_guard", "kind": "boolean", "default": True,
+         "label": "Artifact guard", "live_tunable": True},
+    ]
+    validate_model(m)
+
+
+def test_conditional_threshold_missing_branch_fails():
+    m = dict(_GOOD)
+    m["thresholds"] = [{
+        "name": "smr_t", "block": "threshold.conditional", "signal": "smr_envelope",
+        "mode_control": "threshold_style", "equals": "baseline",
+        "when_true": {"block": "threshold.absolute", "slots": {"value": {"bind": "smr_threshold_uv"}}},
+        # when_false omitted — a conditional threshold with only one branch is malformed
+    }]
+    with pytest.raises(jsonschema.ValidationError):
+        validate_model(m)

@@ -7,6 +7,8 @@ _CONTROL_BODY = {
     "percent":   '{name} = percent {{\n      default = {default}\n      range   = ({lo}, {hi})\n      label   = "{label}"{live}{seed}\n    }}',
     "voltage":   '{name} = voltage {{\n      default = {default} uV\n      range   = ({lo} uV, {hi} uV)\n      label   = "{label}"{live}{seed}\n    }}',
     "number":    '{name} = number {{\n      default = {default}\n      range   = ({lo}, {hi})\n      label   = "{label}"{live}{seed}\n    }}',
+    "boolean":   '{name} = boolean {{\n      default = {default}\n      label   = "{label}"{live}\n    }}',
+    "mode":      '{name} = mode {{ choices = [{choices}]; default = "{default}"; label = "{label}"{final} }}',
 }
 
 # The control kinds render can emit. `describe` gates `in_subset` on this so a
@@ -38,6 +40,25 @@ def _render_seed(s: dict) -> str:
 
 
 def _render_control(c: dict) -> str:
+    """Render one `controls { ... }` entry.
+
+    `mode` and `boolean` are dispatched separately: neither has a numeric
+    `default`, so running either through the numeric branch's `_fmtnum`
+    would misrender it — most insidiously for `boolean`, where Python's
+    `isinstance(True, int) is True` means a numeric formatter would happily
+    (and silently) print `1`/`0` instead of `true`/`false`.
+    """
+    if c["kind"] == "mode":
+        choices = ", ".join(f'"{x}"' for x in c["choices"])
+        final = "; final = true" if c.get("final") else ""
+        return _CONTROL_BODY["mode"].format(
+            name=c["name"], choices=choices, default=c["default"],
+            label=c.get("label", c["name"]), final=final)
+    if c["kind"] == "boolean":
+        live = "\n      live_tunable = true" if c.get("live_tunable") else ""
+        return _CONTROL_BODY["boolean"].format(
+            name=c["name"], default=("true" if c["default"] else "false"),
+            label=c.get("label", c["name"]), live=live)
     live = "\n      live_tunable = true" if c.get("live_tunable") else ""
     seed = _render_seed(c["seed"]) if c.get("seed") else ""
     lo, hi = (c.get("range") or [None, None])
@@ -82,6 +103,34 @@ def _render_phase(p: dict) -> str:
     return "      phase { " + "; ".join(parts) + " }"
 
 
+def _render_threshold_call(cat: Catalog, branch: dict) -> str:
+    """Render just the constructor-call side of a threshold branch (e.g.
+    `percentile(target_pct: reward_pct, window: 2 min)`), stripping the shared
+    `type = ` prefix baked into the catalog template so it can be embedded on
+    either side of a mode-conditional ternary."""
+    b = cat.block(branch["block"])
+    filled = _fill(b["template"], b["slots"], branch["slots"])
+    return filled.removeprefix("type = ")
+
+
+def _render_conditional_threshold(n: dict, cat: Catalog) -> str:
+    keys = ["signal", "type"] + (["live_tunable"] if n.get("live_tunable") else [])
+    kw = max(len(k) for k in keys)
+    cond = f'{n["mode_control"]} == "{n["equals"]}"'
+    cont_indent = " " * (kw + 9)
+    lines = [
+        f'  threshold "{n["name"]}" {{',
+        f'    {"signal".ljust(kw)} = "{n["signal"]}"',
+        f'    {"type".ljust(kw)} = {cond}',
+        f'{cont_indent}? {_render_threshold_call(cat, n["when_true"])}',
+        f'{cont_indent}: {_render_threshold_call(cat, n["when_false"])}',
+    ]
+    if n.get("live_tunable"):
+        lines.append(f'    {"live_tunable".ljust(kw)} = true')
+    lines.append("  }")
+    return "\n".join(lines)
+
+
 def _quote(v):
     if isinstance(v, bool):                       # bool before int (bool is an int subclass)
         return "true" if v else "false"
@@ -120,6 +169,13 @@ def render_protocol(model: dict, catalog: Catalog | None = None) -> str:
             L.append(f'  derive "{n["name"]}" {{\n    from = "{n["from"]}"\n    pipeline = [ {body} ]\n  }}')
 
     for n in model["thresholds"]:
+        if n["block"] == "threshold.conditional":
+            # The mode control the condition names is not rendered here — it
+            # lives in `model["controls"]` like any other mode control (see
+            # `_build_model`), which is also what keeps it from being emitted
+            # twice.
+            L.append(_render_conditional_threshold(n, cat))
+            continue
         b = cat.block(n["block"])
         lt = "; live_tunable = true" if n.get("live_tunable") else ""
         L.append(f'  threshold "{n["name"]}" {{ signal = "{n["signal"]}"; {_fill(b["template"], b["slots"], n["slots"])}{lt} }}')

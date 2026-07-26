@@ -254,26 +254,115 @@ def _match_reward_component(decl: A.NamedDecl) -> dict:
                       "weight": _slot_from_expr(bm.get("weight"))}}
 
 
-def _match_threshold(decl: A.NamedDecl) -> dict:
-    bm = _body_map(decl)
-    t = bm["type"]
+def _match_threshold_type(t) -> dict:
+    """Match a threshold `type` expression to its `{block, slots}` shape.
+
+    Shared by the plain threshold path and each branch of a mode-conditional
+    ternary threshold (`_match_conditional_threshold`) — a percentile/absolute
+    call means the same thing, and renders the same way, in either position.
+    """
     if isinstance(t, A.Call) and t.callee == "percentile":
-        node = {"name": decl.name, "block": "threshold.percentile", "signal": bm["signal"].value,
+        return {"block": "threshold.percentile",
                 "slots": {"target_pct": _slot_from_expr(_arg(t, "target_pct")),
                           "window_ms": _to_ms(_arg(t, "window"))}}
-    elif isinstance(t, A.Call) and t.callee == "absolute":
+    if isinstance(t, A.Call) and t.callee == "absolute":
         named = _arg(t, "value")
         if named is not None:                     # absolute(value: <control|literal>)
-            node = {"name": decl.name, "block": "threshold.absolute", "signal": bm["signal"].value,
-                    "slots": {"value": _slot_from_expr(named)}}
-        else:                                     # positional: absolute(8 uV)
-            node = {"name": decl.name, "block": "threshold.absolute_lit", "signal": bm["signal"].value,
-                    "slots": {"value": _slot_from_expr(t.args[0].value)}}
+            return {"block": "threshold.absolute", "slots": {"value": _slot_from_expr(named)}}
+        return {"block": "threshold.absolute_lit",  # positional: absolute(8 uV)
+                "slots": {"value": _slot_from_expr(t.args[0].value)}}
+    raise _NotInSubset(f"threshold {getattr(t, 'callee', '?')} not in subset")
+
+
+def _match_conditional_threshold(name: str, signal: str, t: A.Conditional,
+                                  mode_decls: dict) -> dict:
+    """Match a mode-folded ternary threshold: `type = <mode> == "<choice>"
+    ? <call> : <call>`. This is the adaptive/baseline collapse the protocol
+    library restructured around (refrain's resolver folds it at resolve time
+    via `_fold_mode_conditionals`/`_eval_mode_condition`), so the condition
+    must be exactly a mode-control name compared to a string literal — anything
+    looser (reversed operands, `!=`, a non-mode name) is left out of subset
+    rather than guessed at.
+    """
+    cond = t.cond
+    if not (isinstance(cond, A.BinaryOp) and cond.op == "=="
+            and isinstance(cond.left, A.NameRef) and isinstance(cond.right, A.StringLit)):
+        raise _NotInSubset("conditional threshold condition not <mode-control> == \"<choice>\"")
+    mode_name = cond.left.name
+    if mode_name not in mode_decls:
+        raise _NotInSubset(f"conditional threshold condition '{mode_name}' not a declared mode")
+    return {"name": name, "block": "threshold.conditional", "signal": signal,
+            "mode_control": mode_name, "equals": cond.right.value,
+            "mode_decl": mode_decls[mode_name],
+            "when_true": _match_threshold_type(t.then_branch),
+            "when_false": _match_threshold_type(t.else_branch)}
+
+
+def _match_threshold(decl: A.NamedDecl, mode_decls: dict) -> dict:
+    bm = _body_map(decl)
+    t = bm["type"]
+    if isinstance(t, A.Conditional):
+        node = _match_conditional_threshold(decl.name, bm["signal"].value, t, mode_decls)
     else:
-        raise _NotInSubset(f"threshold {getattr(t, 'callee', '?')} not in subset")
+        node = {"name": decl.name, "signal": bm["signal"].value, **_match_threshold_type(t)}
     if bool(getattr(bm.get("live_tunable"), "value", False)):  # threshold-level live flag
         node["live_tunable"] = True
     return node
+
+
+def _mode_decls_by_name(p: A.Protocol) -> dict:
+    """Map mode-control name -> {choices, default, label, final, insert_before}
+    straight off the AST `controls` section.
+
+    A mode-conditional threshold's condition names a mode control by
+    reference; the resolver only folds the ternary (and thus only ever
+    resolves) when that control is actually declared as `mode { ... }`
+    (`_eval_mode_condition` requires `type_kind == "mode"`). Unlike a
+    percent/voltage control, dropping this declaration on render doesn't just
+    make it un-editable — it makes the protocol fail to resolve at all.
+
+    This function covers *every* mode decl, not just conditional-referenced
+    ones: `_build_model` uses it to fold every mode control (referenced or
+    not) into `model["controls"]` at its original position. The
+    conditional-threshold node's own `mode_decl` field is redundant with that
+    (kept for readability) — `render.py` renders a mode exactly once, from
+    `model["controls"]`.
+
+    `insert_before` (the next plain-kind control declared after it in source,
+    or None if it trails them all) lets `_build_model` reinsert the mode
+    control at its original position — every real protocol declares it before
+    the controls whose branch it selects (or, for an unrelated mode, wherever
+    it happened to be declared), and the resolver's `topological_order` is
+    source-position-sensitive, so appending it at the end would flip that
+    order and fail the round-trip IR comparison.
+    """
+    out: dict = {}
+    for stmt in p.body:
+        if not (isinstance(stmt, A.SectionBlock) and stmt.keyword == "controls"):
+            continue
+        assigns = [a for a in stmt.body if isinstance(a, A.Assignment)]
+        for i, a in enumerate(assigns):
+            if not (isinstance(a.value, A.BlockExpr) and a.value.name == "mode"):
+                continue
+            fields = _body_map(a.value)
+            choices = fields.get("choices")
+            default = fields.get("default")
+            if not isinstance(choices, A.Array) or not isinstance(default, A.StringLit):
+                continue  # malformed mode decl — let the resolver's own error surface
+            insert_before = next(
+                (later.target for later in assigns[i + 1:]
+                 if isinstance(later.value, A.BlockExpr)
+                 and later.value.name not in ("mode", "placement")),
+                None,
+            )
+            out[a.target] = {
+                "choices": [e.value for e in choices.elements],
+                "default": default.value,
+                "label": getattr(fields.get("label"), "value", None) or a.target,
+                "final": bool(getattr(fields.get("final"), "value", False)),
+                "insert_before": insert_before,
+            }
+    return out
 
 
 def _match_reward(block: A.SectionBlock) -> dict:
@@ -406,13 +495,19 @@ def _match_session(block: A.SectionBlock) -> dict:
     return {"phases": phases}
 
 
-def _build_model(ast, controls, placements=()) -> dict:
+def _build_model(ast, controls, placements=(), modes=()) -> dict:
     p = ast.protocol
     if p.extends is not None:                          # inheritance is not modelled
         raise _NotInSubset("extends not in subset")
-    for c in controls:                                 # only kinds render can emit
+    for c in list(controls) + list(modes):              # only kinds render can emit
         if c["kind"] not in RENDERABLE_CONTROL_KINDS:
             raise _NotInSubset(f"control kind '{c['kind']}' not renderable")
+        if c["kind"] == "boolean" and (c.get("range") is not None or c.get("seed") is not None):
+            # The generic control-resolve path doesn't reject range/seed on a
+            # boolean kind, but render has no template slot for either — admit
+            # only the shape it can reproduce exactly, not a lossy guess.
+            raise _NotInSubset(f"boolean control '{c['name']}' has an unsupported range/seed")
+    mode_decls = _mode_decls_by_name(p)
     inputs, derives, thresholds, outputs, reward_components, blocks = [], [], [], [], [], []
     reward, requires, session = None, {"sample_rate": "", "channels": []}, {"phases": []}
     for stmt in p.body:
@@ -422,7 +517,7 @@ def _build_model(ast, controls, placements=()) -> dict:
             elif stmt.keyword == "derive":
                 derives.append(_match_derive(stmt))
             elif stmt.keyword == "threshold":
-                thresholds.append(_match_threshold(stmt))
+                thresholds.append(_match_threshold(stmt, mode_decls))
             elif stmt.keyword == "block":                # staged: per-phase threshold set
                 blocks.append(_match_block(stmt))
             elif stmt.keyword in ("reward", "inhibit"):  # named weighted-composite components
@@ -443,6 +538,28 @@ def _build_model(ast, controls, placements=()) -> dict:
                       # placement `allowed` at render time, so the section is dropped
             else:
                 raise _NotInSubset(f"section '{stmt.keyword}' not in subset")
+
+    # Fold every declared mode control into the control list at its original
+    # source position, using the very same `insert_before` anchor computed
+    # for the conditional-threshold case (`_mode_decls_by_name` is not
+    # filtered to referenced modes — it always covered every mode decl). This
+    # is now the *only* place a mode control gets rendered: a
+    # `threshold.conditional` node's `mode_decl` is redundant metadata, kept
+    # for readability, not consulted by `render.py` — so a mode referenced by
+    # a conditional threshold and an unrelated mode control both flow through
+    # this single path, and neither can be emitted twice.
+    controls = list(controls)
+    modes_by_name = {m["name"]: m for m in modes}
+    for name, decl in mode_decls.items():
+        m = modes_by_name.get(name)
+        if m is None:
+            continue  # declared but unresolved — resolve() would already have failed
+        idx = len(controls)
+        if decl["insert_before"] is not None:
+            idx = next((i for i, c in enumerate(controls) if c["name"] == decl["insert_before"]),
+                       len(controls))
+        controls.insert(idx, m)
+
     return {"name": p.name, "meta": _meta_from_ast(ast), "requires": requires,
             "inputs": inputs, "derives": derives, "thresholds": thresholds,
             "inhibits": [], "reward_components": reward_components, "reward": reward,
@@ -472,7 +589,7 @@ def describe_protocol(source: str, *, amp: Any = None) -> dict:
             controls.append(_control_view(name, ctl))
 
     try:
-        model = _build_model(ast, controls, placements)
+        model = _build_model(ast, controls, placements, modes)
         in_subset = True
     except (_NotInSubset, KeyError, AttributeError, TypeError, IndexError):
         # Intentional out-of-subset, or a matcher hit an unexpected AST shape:
