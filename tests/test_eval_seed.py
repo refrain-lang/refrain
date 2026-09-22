@@ -1,5 +1,6 @@
 import math
 import numpy as np
+import pytest
 from refrain.primitive_impls import PercentileImpl
 from refrain.parser import parse
 from refrain.resolver import resolve
@@ -104,6 +105,45 @@ def test_seed_report_empty_for_non_seeding_protocol():
     ev = _build(NON_SEEDING)
     ev.start(skip_warmup=True)
     assert ev.seed_report() == {}
+
+
+def _number_seed_protocol(*, ranged: bool) -> str:
+    range_field = "range=(0.5,1.0);" if ranged else ""
+    return f'''protocol "number_seed_range" {{
+  meta {{ version="1.0.0"; evidence="clinical"; description="number seed bounds" }}
+  requires {{ sample_rate=">= 256 Hz"; channels=["Cz"] }}
+  input "raw" {{ montage = passthrough() }}
+  derive "ratio" {{ from="raw"; pipeline=[ magnitude() ] }}
+  reward {{ continuous = sigmoid("ratio" / crossover, midpoint: 1.0, steepness: 3) }}
+  output {{ fb = reward.continuous }}
+  controls {{
+    crossover = number {{ default=0.6; {range_field} live_tunable=true
+      seed = percentile {{ from="ratio"; window=2 s; target_pct=65 }} }}
+  }}
+  session {{ phases=[ phase{{name="warmup"; duration=3 s; output_muted=true}}, phase{{name="run"; mode=open}} ] }}
+}}'''
+
+
+@pytest.mark.parametrize(
+    ("warmup_value", "expected"),
+    [(0.25, 0.5), (0.75, 0.75), (1.25, 1.0)],
+)
+def test_number_seed_is_clamped_to_declared_range(warmup_value, expected):
+    ev = _build(_number_seed_protocol(ranged=True))
+    ev.start(skip_warmup=False)
+    _run(ev, value=warmup_value, n_chunks=4)
+
+    assert ev.seed_report()["crossover"]["value"] == expected
+    assert ev._controls["control/crossover"] == expected
+
+
+def test_number_seed_without_range_preserves_measured_value():
+    ev = _build(_number_seed_protocol(ranged=False))
+    ev.start(skip_warmup=False)
+    _run(ev, value=1.25, n_chunks=4)
+
+    assert ev.seed_report()["crossover"]["value"] == 1.25
+    assert ev._controls["control/crossover"] == 1.25
 
 
 EXPRPOS_SEED = '''protocol "exprpos_seed" {

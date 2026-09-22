@@ -820,10 +820,9 @@ class Evaluator:
                 latch.status = "insufficient_samples"
                 self._seed_failed_mute = True
                 continue
-            value = float(st["value"])
+            value = self._apply_control(latch.control_name, float(st["value"]))
             latch.value = value
             latch.status = "seeded"
-            self._apply_control(latch.control_name, value)   # NOT set_control -> no self-disarm
             # Refresh this chunk's control broadcast cache so expression-position
             # control_refs (e.g. `"env" / thr_uv` as a bare operand, not an impl
             # param slot) read the freshly seeded value THIS chunk too — matching
@@ -1497,18 +1496,29 @@ class Evaluator:
             }
         return out
 
-    def _apply_control(self, name: str, value: float) -> None:
+    def _clamp_control_value(self, name: str, value: float) -> float:
+        """Clamp a numeric control value to its declared range."""
+        control = self.ir.controls[name]
+        if isinstance(control.range_low, IRNumberLit):
+            value = max(float(_to_python_value(control.range_low)), value)
+        if isinstance(control.range_high, IRNumberLit):
+            value = min(float(_to_python_value(control.range_high)), value)
+        return value
+
+    def _apply_control(self, name: str, value: float) -> float:
         """Forward a control value to its dependent impls WITHOUT the disarm
         hook. Used by both `set_control` and the seed latch's fire path (the
         seed must never disarm itself)."""
         target = f"control/{name}"
         if target not in self._controls:
             raise KeyError(f"no control named {name!r}")
-        self._controls[target] = float(value)
+        value = self._clamp_control_value(name, float(value))
+        self._controls[target] = value
         for impl in self._control_deps.get(target, []):
             updater = getattr(impl, "update_control", None)
             if updater is not None:
-                updater(target, float(value))
+                updater(target, value)
+        return value
 
     # -- Helpers ----------------------------------------------------------
 
