@@ -82,3 +82,25 @@ fn seed_stream_is_bit_exact_across_backends() {
 fn seed_exprpos_stream_is_bit_exact_across_backends() {
     run_seed_parity("seed_exprpos");
 }
+
+#[test]
+fn ranged_seed_matches_python_boundary_vectors() {
+    let source = std::fs::read_to_string("tests/fixtures/seed_run.ir.json").unwrap();
+    let mut json: serde_json::Value = serde_json::from_str(&source).unwrap();
+    json["controls"]["thr_uv"]["range_low"] =
+        serde_json::json!({"node": "number", "value": 0.5});
+    json["controls"]["thr_uv"]["range_high"] =
+        serde_json::json!({"node": "number", "value": 1.0});
+    let protocol: Protocol = serde_json::from_value(json).unwrap();
+
+    // These are the same authored vectors asserted through the Python
+    // evaluator in tests/test_eval_seed.py.
+    for (measured, python_applied) in [(0.25, 0.5), (0.75, 0.75), (1.25, 1.0)] {
+        let mut ev = Evaluator::new(&protocol, 256.0, &["Cz".to_string()]);
+        ev.start(false);
+        for _ in 0..4 {
+            ev.step_chunk_events(&vec![vec![measured]; 256]);
+        }
+        assert_eq!(ev.seed_report()["thr_uv"].value, Some(python_applied));
+    }
+}

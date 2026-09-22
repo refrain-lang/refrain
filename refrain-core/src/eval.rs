@@ -763,6 +763,8 @@ struct SeedLatch {
     /// `None` when it is a literal `number` (use `target_pct_const`).
     target_pct_cell: Option<ControlCell>,
     target_pct_const: f64,
+    range_low: Option<f64>,
+    range_high: Option<f64>,
     window_samples: u64,
     buffer: Percentile,
     armed: bool,
@@ -1052,6 +1054,14 @@ impl Evaluator {
                 from_entity: seed.from.clone(),
                 target_pct_cell,
                 target_pct_const,
+                range_low: match &decl.range_low {
+                    Some(Expr::Number { value }) => Some(*value),
+                    _ => None,
+                },
+                range_high: match &decl.range_high {
+                    Some(Expr::Number { value }) => Some(*value),
+                    _ => None,
+                },
                 window_samples: seed.window_samples as u64,
                 buffer: Percentile::new(target_pct_const, seed.window_samples),
                 armed: true,
@@ -1695,7 +1705,13 @@ impl Evaluator {
                 any_failed = true; // set self.seed_failed after the loop
                 continue;
             }
-            let value = latch.buffer.value_at(pct);
+            let mut value = latch.buffer.value_at(pct);
+            if let Some(low) = latch.range_low {
+                value = value.max(low);
+            }
+            if let Some(high) = latch.range_high {
+                value = value.min(high);
+            }
             latch.value = Some(value);
             latch.status = SeedStatus::Seeded;
             writes.push((latch.control_name.clone(), value));

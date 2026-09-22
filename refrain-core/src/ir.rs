@@ -73,12 +73,15 @@ pub fn check_ir_version(p: &Protocol) -> Result<(), String> {
     ))
 }
 
-/// A `controls.<name>` declaration. Only the canonical name and the optional
-/// baseline-seed rule are needed by the runtime; the rest of the block
-/// (default/range/label) is authoring metadata serde ignores.
+/// A `controls.<name>` declaration. The numeric range is retained so a
+/// baseline seed can be clamped before it is applied and reported.
 #[derive(Debug, Deserialize)]
 pub struct ControlDecl {
     pub canonical_name: String,
+    #[serde(default)]
+    pub range_low: Option<Expr>,
+    #[serde(default)]
+    pub range_high: Option<Expr>,
     #[serde(default)]
     pub seed: Option<ControlSeed>,
 }
