@@ -36,6 +36,7 @@ follow-up.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, replace
 
 from . import ast as A
@@ -466,8 +467,82 @@ class _Resolver:
         return (lo, hi)
 
     def _validate_autopilot_trace(self, protocol):
-        """Task 8 fills this in."""
+        """Cross-reference checks that need the whole protocol (spec §3.7)."""
+        policies = {n: c.autopilot for n, c in protocol.controls.items()
+                    if c.autopilot is not None}
+        ap = protocol.autopilot
+        if ap is None and not policies:
+            return protocol
+        from .advisor_trace import trace_protocol  # noqa: PLC0415 (import cycle via ir_json)
+        from .ir_json import ir_to_json_obj  # noqa: PLC0415
+        tr = trace_protocol(ir_to_json_obj(protocol))
+        judgeable = bool(tr["bundles"]) and protocol.reward.combine != "weighted"
+        if not judgeable and (policies or (ap is not None and ap.reward_target is not None)):
+            loc = ap.loc if ap is not None else next(iter(policies.values())).loc
+            raise ResolveError(
+                "autopilot needs a reward condition to judge: this protocol's reward has no "
+                "`event = dwell(...)` condition (or uses a weighted composite), so "
+                "`reward_target` and control policies cannot apply", loc=loc)
+        by_name = {e["name"]: e for b in tr["bundles"].values() for e in b["checks"]
+                   if e["name"] is not None}
+        guarded = self._ast_inhibit_controls()
+        fixed: dict[str, str] = {}
+        for name, p in policies.items():
+            e = by_name.get(p.fixes)
+            if e is None:
+                raise ResolveError(
+                    f"control {name!r}.autopilot.fixes = {p.fixes!r}, but no reward check has "
+                    'that name (name checks with `as "..."`)', loc=p.loc)
+            if name not in e["controls"]:
+                raise ResolveError(
+                    f"control {name!r} claims to fix check {p.fixes!r}, but it does not feed that "
+                    "check in this configuration; if it only matters in one mode, add "
+                    '`only_when` (e.g. `only_when = threshold_style == "baseline"`)', loc=p.loc)
+            if e["knob"] == name and e["higher_is"] != p.higher_is:
+                raise ResolveError(
+                    f"control {name!r}.autopilot.higher_is = {p.higher_is!r}, but raising "
+                    f"{name!r} makes check {p.fixes!r} {e['higher_is']}", loc=p.loc)
+            if p.apply == "auto" and name in guarded:
+                raise ResolveError(
+                    f"control {name!r} feeds a guard (inhibit), so autopilot may only suggest "
+                    'changes to it: use `apply = "suggest"`', loc=p.loc)
+            if p.fixes in fixed:
+                raise ResolveError(
+                    f"controls {fixed[p.fixes]!r} and {name!r} both fix check {p.fixes!r}; "
+                    "one control per check (use `only_when` to split them by mode)", loc=p.loc)
+            fixed[p.fixes] = name
         return protocol
+
+    def _ast_inhibit_controls(self) -> set[str]:
+        """Controls reachable from any inhibit across EVERY mode branch — walks the
+        composed AST before mode folding, following derive/threshold names."""
+        decls = {(s.keyword, s.name): s for s in self.file.protocol.body
+                 if isinstance(s, A.NamedDecl) and s.keyword in ("derive", "threshold", "inhibit")}
+        found: set[str] = set()
+        seen: set[tuple[str, str]] = set()
+
+        def walk(node) -> None:
+            if isinstance(node, A.NameRef):
+                if node.name in self.controls:
+                    found.add(node.name)
+            elif isinstance(node, A.StringLit):
+                for kw in ("derive", "threshold"):
+                    key = (kw, node.value)
+                    if key in decls and key not in seen:
+                        seen.add(key)
+                        walk(decls[key].body)
+            elif isinstance(node, tuple):
+                for x in node:
+                    walk(x)
+            elif isinstance(node, A.Node):
+                for f in dataclasses.fields(node):
+                    if f.name != "loc":
+                        walk(getattr(node, f.name))
+
+        for (kw, _n), d in decls.items():
+            if kw == "inhibit":
+                walk(d.body)
+        return found
 
     # -- Hoisting -----------------------------------------------------------
 

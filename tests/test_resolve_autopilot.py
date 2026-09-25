@@ -243,3 +243,52 @@ def test_only_when_errors(cond, needle):
 
 def test_policy_without_block_is_an_error():
     assert "autopilot { }" in _err(ap(autopilot=""))
+
+
+# --- cross-reference checks ---------------------------------------------
+
+def test_full_policy_protocol_compiles_both_modes():
+    assert not compile_to_ir_json(ap()).errors
+    assert not compile_to_ir_json(ap(), bindings={"threshold_style": "baseline"}).errors
+
+
+def test_fixes_unknown_check():                                              # V1
+    assert "'nope'" in _err(ap(xover_ap=XOVER_AP.replace('"crossover"', '"nope"')))
+
+
+def test_fixes_a_check_the_knob_does_not_feed():                            # V2
+    assert "does not feed" in _err(ap(xover_ap=XOVER_AP.replace('"crossover"', '"theta"'),
+                                      t_pct_ap=""))
+
+
+def test_missing_only_when_on_mode_dependent_knob():                        # V2 via folding
+    msg = _err(ap(t_uv_ap=T_UV_AP.replace('; only_when = threshold_style == "baseline"', "")))
+    assert "does not feed" in msg and "only_when" in msg
+
+
+def test_declared_direction_contradicts_trace():                            # V3
+    msg = _err(ap(xover_ap=XOVER_AP.replace('"harder"', '"easier"')))
+    assert "harder" in msg and "xover" in msg
+
+
+def test_auto_on_a_guard_knob_is_rejected_in_any_branch():                  # V4
+    auto_t_pct = T_PCT_AP.replace('"suggest"', '"auto"')
+    assert "guard" in _err(ap(t_pct_ap=auto_t_pct, emg_thr="t_pct"))
+    branchy = 'threshold_style == "baseline" ? t_pct : emg_pct'
+    assert "guard" in _err(ap(t_pct_ap=auto_t_pct, emg_thr=branchy))   # folded away, still refused
+
+
+def test_two_knobs_one_check():                                             # V7
+    k2 = 'k2 = number { default = 1.0; range = (0.5, 2.0); live_tunable = true; ' \
+         'autopilot = fixed_step { fixes = "crossover"; step = 0.1; higher_is = "harder"; apply = "suggest" } }'
+    msg = _err(ap(xover_thr="xover * k2", extra_controls=k2))
+    assert "both fix" in msg
+
+
+def test_policy_on_protocol_without_reward_condition():                     # V16
+    from tests._seed_fixtures import NON_SEEDING
+    src = NON_SEEDING.replace(
+        "session {",
+        'autopilot { evidence = "experimental"; citation = "x"; rationale = "y"; '
+        "reward_target = (40%, 60%) }\n  session {")
+    assert "reward condition" in _err(src)
