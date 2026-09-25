@@ -200,6 +200,31 @@ def test_not_live_tunable_is_rejected():
     assert "live_tunable" in _err(src)
 
 
+def test_not_live_tunable_is_rejected_even_when_only_when_is_inactive():
+    # Eligibility depends only on the control's own declaration, not on
+    # whether `only_when` happens to be true for the binding being compiled.
+    # Here the binding is the default "adaptive", so `only_when = ... ==
+    # "baseline"` would make the policy inactive -- but the control still
+    # isn't live_tunable, so this must still be rejected.
+    src = ap(xover_ap=XOVER_AP.replace(
+        "round_to = 0.01 }", 'round_to = 0.01; only_when = threshold_style == "baseline" }',
+    )).replace(
+        "xover  = number  { default = 0.60; range = (0.5, 1.0); live_tunable = true;",
+        "xover  = number  { default = 0.60; range = (0.5, 1.0);",
+    )
+    assert "live_tunable" in _err(src)
+
+
+def test_ineligible_kind_is_rejected_even_when_only_when_is_inactive():
+    # Same principle for control kind: a `duration` control can never carry
+    # an autopilot policy, regardless of whether `only_when` is active under
+    # the default "adaptive" binding.
+    extra = ('hold = duration { default = 1 s; range = (0.5 s, 5 s); live_tunable = true; '
+             'autopilot = fixed_step { fixes = "theta"; step = 0.1; higher_is = "harder"; '
+             'apply = "suggest"; only_when = threshold_style == "baseline" } }')
+    assert "duration" in _err(ap(extra_controls=extra))
+
+
 def test_mode_control_policy_is_rejected():
     src = ap().replace('threshold_style = mode { choices = ["adaptive", "baseline"]; default = "adaptive" }',
                        'threshold_style = mode { choices = ["adaptive", "baseline"]; default = "adaptive"; '

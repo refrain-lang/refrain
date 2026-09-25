@@ -335,8 +335,6 @@ class _Resolver:
             extra = set(f) - _AP_COMMON_FIELDS - _AP_STRATEGY_FIELDS[pend.strategy]
             if extra:
                 raise ResolveError(f"{what}: unexpected field(s) {sorted(extra)}", loc=pend.loc)
-            if "only_when" in f and not self._ap_only_when(what, f["only_when"]):
-                continue                          # not this mode: the policy does not exist
             if ctrl.type_kind not in _AP_KINDS:
                 raise ResolveError(
                     f"control {name!r} is a {ctrl.type_kind!r} control; autopilot can only "
@@ -348,6 +346,8 @@ class _Resolver:
             if not isinstance(ctrl.default, IRNumberLit):
                 raise ResolveError(f"control {name!r} needs a numeric `default` for autopilot",
                                    loc=pend.loc)
+            if "only_when" in f and not self._ap_only_when(what, f["only_when"]):
+                continue                          # not this mode: the policy does not exist
             apply = self._ap_choice(f, "apply", ("auto", "suggest"), what, pend.loc)
             if pend.strategy == "rebaseline" and apply == "auto":
                 raise ResolveError(
