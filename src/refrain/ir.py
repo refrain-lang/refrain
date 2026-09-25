@@ -257,6 +257,7 @@ class IRReward:
     event: IRExpr | None
     combine: str = "all"    # "all" | "any" | "weighted"
     components: tuple = ()   # tuple[IRRewardComponent, ...]
+    check_names: tuple = ()  # tuple[str | None, ...], aligned with dwell condition indices
     loc: Loc | None = None
 
 
@@ -270,6 +271,65 @@ class IRControlSeed:
     from_entity: str        # canonical source, e.g. "derive/env"
     window_ms: float        # trailing window, rate-independent; baked to samples at emit time
     target_pct: IRExpr      # a `number` node or a `percent` control_ref
+    loc: Loc | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class IRControlAutopilot:
+    """A control's autopilot policy (SPEC §4.9.5): how the advisor may nudge it."""
+
+    strategy: str                     # "fixed_step" | "proportional_step" | "rebaseline"
+    fixes: str                        # the named reward check it addresses
+    higher_is: str                    # "harder" | "easier"
+    apply: str                        # "auto" | "suggest"
+    limits: tuple[float, float]       # autopilot bounds, knob units
+    round_to: float | None = None
+    say: str | None = None
+    between_moves_ms: float | None = None
+    step: float | None = None         # fixed: knob units; proportional: fraction (0.10)
+    from_entity: str | None = None    # rebaseline: "derive/<name>"
+    window_ms: float | None = None    # rebaseline
+    percentile: float | None = None   # rebaseline, 1..99
+    citations: tuple[str, ...] = ()
+    loc: Loc | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class IRGuard:
+    """`<inhibit> = guard { max; say }` inside `autopilot { }`."""
+
+    inhibit: str
+    max_frac: float                   # declared as a percent, stored as 0..1
+    say: str | None
+    loc: Loc | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class IRLimiter:
+    """`<check> = limiter { say }`: message when that check limits and no knob fixes it."""
+
+    check: str
+    say: str
+    loc: Loc | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class IRAutopilot:
+    """The protocol-wide `autopilot { }` section (SPEC §4.12). Absent settings
+    are None and resolved to built-in defaults by the advisor at runtime."""
+
+    evidence: str
+    citations: tuple[str, ...]
+    rationale: str
+    reviewed: str | None = None
+    reward_target: tuple[float, float] | None = None   # fractions, 0..1
+    phases: tuple[str, ...] | None = None
+    watch_ms: float | None = None
+    between_moves_ms: float | None = None
+    equipment_settle_ms: float | None = None
+    tighten_first: tuple[str, ...] = ()
+    guards: tuple[IRGuard, ...] = ()
+    limiters: tuple[IRLimiter, ...] = ()
     loc: Loc | None = None
 
 
@@ -298,6 +358,7 @@ class IRControl:
     choices: tuple = ()                  # mode only: tuple of allowed string choices
     default_mode: str | None = None      # mode only: the default choice
     seed: IRControlSeed | None = None    # baseline-seed rule, or None
+    autopilot: IRControlAutopilot | None = None   # autopilot policy, or None
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,12 +439,14 @@ class IRProtocol:
     amp_profile: AmpProfile | None
     blocks: dict[str, IRBlock] = field(default_factory=dict)
     reward_bundles: dict[str, IRReward] = field(default_factory=dict)
+    autopilot: IRAutopilot | None = None
     loc: Loc | None = None
 
 
 __all__ = [
     "IRArg",
     "IRArray",
+    "IRAutopilot",
     "IRBinaryOp",
     "IRBlock",
     "IRBlockExpr",
@@ -391,13 +454,16 @@ __all__ = [
     "IRCall",
     "IRConditional",
     "IRControl",
+    "IRControlAutopilot",
     "IRControlRef",
     "IRControlSeed",
     "IRCustom",
     "IRDerive",
     "IRExpr",
+    "IRGuard",
     "IRInhibit",
     "IRInput",
+    "IRLimiter",
     "IRMeta",
     "IRNode",
     "IRNumberLit",
