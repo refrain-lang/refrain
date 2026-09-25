@@ -54,6 +54,7 @@ from .ir import (
     IRCall,
     IRConditional,
     IRControl,
+    IRControlAutopilot,
     IRControlRef,
     IRControlSeed,
     IRCustom,
@@ -106,6 +107,25 @@ _AP_SETTINGS = frozenset({
     "evidence", "citation", "rationale", "reviewed", "reward_target", "phases",
     "watch", "between_moves", "equipment_settle", "tighten_first",
 })
+
+# Per-control `autopilot = <strategy> { ... }` policies (SPEC §4.9.5).
+_AP_KINDS = ("number", "percent", "voltage", "frequency")
+_AP_COMMON_FIELDS = frozenset({
+    "fixes", "higher_is", "apply", "limits", "round_to", "say", "between_moves",
+    "only_when", "citation",
+})
+_AP_STRATEGY_FIELDS = {
+    "fixed_step": frozenset({"step"}),
+    "proportional_step": frozenset({"step"}),
+    "rebaseline": frozenset({"from", "window", "percentile"}),
+}
+_AP_KNOB_UNITS = {
+    "number": ((None,), "a plain number"),
+    "percent": ((None, "%"), "a plain number or %"),
+    "voltage": (("uV",), "uV"),
+    "frequency": (("Hz",), "Hz"),
+}
+_DEFAULT_WATCH_MS = 120_000.0
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +321,149 @@ class _Resolver:
         return self._validate_autopilot_trace(protocol)
 
     def _resolve_control_autopilots(self, autopilot_ir) -> None:
-        """Task 5 fills this in."""
+        """Validate each control's `autopilot = <strategy> { ... }` and attach it."""
+        watch_ms = (autopilot_ir.watch_ms if autopilot_ir and autopilot_ir.watch_ms
+                    else _DEFAULT_WATCH_MS)
+        for name, pend in self._pending_control_ap.items():
+            ctrl = self.controls[name]
+            f = pend.fields
+            what = f"control {name!r}.autopilot"
+            if pend.strategy not in _AP_STRATEGY_FIELDS:
+                raise ResolveError(
+                    f"{what}: unknown strategy {pend.strategy!r} "
+                    "(use fixed_step, proportional_step or rebaseline)", loc=pend.loc)
+            extra = set(f) - _AP_COMMON_FIELDS - _AP_STRATEGY_FIELDS[pend.strategy]
+            if extra:
+                raise ResolveError(f"{what}: unexpected field(s) {sorted(extra)}", loc=pend.loc)
+            if "only_when" in f and not self._ap_only_when(what, f["only_when"]):
+                continue                          # not this mode: the policy does not exist
+            if ctrl.type_kind not in _AP_KINDS:
+                raise ResolveError(
+                    f"control {name!r} is a {ctrl.type_kind!r} control; autopilot can only "
+                    "adjust number, percent, voltage or frequency controls", loc=pend.loc)
+            if not ctrl.live_tunable:
+                raise ResolveError(
+                    f"control {name!r} is not live_tunable, so autopilot cannot change it "
+                    "mid-session", loc=pend.loc)
+            if not isinstance(ctrl.default, IRNumberLit):
+                raise ResolveError(f"control {name!r} needs a numeric `default` for autopilot",
+                                   loc=pend.loc)
+            apply = self._ap_choice(f, "apply", ("auto", "suggest"), what, pend.loc)
+            if pend.strategy == "rebaseline" and apply == "auto":
+                raise ResolveError(
+                    f"{what}: a rebaseline policy is always suggest-only; "
+                    'use `apply = "suggest"`', loc=pend.loc)
+            step = from_entity = window_ms = percentile = None
+            if pend.strategy == "fixed_step":
+                step = self._ap_knob_value(ctrl, f.get("step"), f"{what}.step", pend.loc)
+                if step <= 0:
+                    raise ResolveError(f"{what}.step must be greater than zero", loc=pend.loc)
+            elif pend.strategy == "proportional_step":
+                if f.get("step") is None:
+                    raise ResolveError(f"{what} needs `step` (a percent, e.g. `10%`)", loc=pend.loc)
+                step = self._ap_percent(f["step"], f"{what}.step")
+            else:
+                src = f.get("from")
+                if not isinstance(src, A.StringLit) or src.value not in self.derives:
+                    raise ResolveError(f"{what}.from must be a quoted derive name", loc=pend.loc)
+                d = self.derives[src.value]
+                if d.stream_type.dimensions != ctrl.dims:
+                    raise ResolveError(
+                        f"{what}.from = {src.value!r} is not in {name!r}'s units", loc=pend.loc)
+                from_entity = d.canonical_name
+                if "window" not in f:
+                    raise ResolveError(f"{what} needs `window`", loc=pend.loc)
+                window_ms = self._ap_duration_ms(f["window"], f"{what}.window")
+                if window_ms > watch_ms:
+                    raise ResolveError(
+                        f"{what}.window ({window_ms / 1000:g} s) is longer than autopilot.watch "
+                        f"({watch_ms / 1000:g} s)", loc=pend.loc)
+                pv = f.get("percentile")
+                if not isinstance(pv, A.NumberLit) or pv.unit is not None or not 1 <= pv.value <= 99:
+                    raise ResolveError(f"{what}.percentile must be a number from 1 to 99",
+                                       loc=pend.loc)
+                percentile = pv.value
+            round_to = None
+            if "round_to" in f:
+                round_to = self._ap_knob_value(ctrl, f["round_to"], f"{what}.round_to", pend.loc)
+                if round_to <= 0:
+                    raise ResolveError(f"{what}.round_to must be greater than zero", loc=pend.loc)
+            say = f.get("say")
+            if say is not None and not isinstance(say, A.StringLit):
+                raise ResolveError(f"{what}.say must be a string", loc=say.loc)
+            pol = IRControlAutopilot(
+                strategy=pend.strategy,
+                fixes=self._ap_req_string(f, "fixes", what, pend.loc),
+                higher_is=self._ap_choice(f, "higher_is", ("harder", "easier"), what, pend.loc),
+                apply=apply,
+                limits=self._ap_limits(name, ctrl, f.get("limits"), what, pend.loc),
+                round_to=round_to,
+                say=say.value if say is not None else None,
+                between_moves_ms=(self._ap_duration_ms(f["between_moves"], f"{what}.between_moves")
+                                  if "between_moves" in f else None),
+                step=step, from_entity=from_entity, window_ms=window_ms, percentile=percentile,
+                citations=(self._ap_citations(f["citation"], f"{what}.citation", pend.loc)
+                           if "citation" in f else ()),
+                loc=pend.loc,
+            )
+            self.controls[name] = replace(ctrl, autopilot=pol)
+
+    def _ap_only_when(self, what, expr) -> bool:
+        if not (isinstance(expr, A.BinaryOp) and expr.op in ("==", "!=")):
+            raise ResolveError(
+                f"{what}.only_when must compare a mode control to a string, e.g. "
+                '`threshold_style == "baseline"`', loc=expr.loc)
+        pair = self._mode_ref_and_literal(expr.left, expr.right)
+        if pair is None:
+            raise ResolveError(
+                f"{what}.only_when must compare a mode control to a string, e.g. "
+                '`threshold_style == "baseline"`', loc=expr.loc)
+        mode_name, literal = pair
+        choices = self.controls[mode_name].choices
+        if literal not in choices:
+            raise ResolveError(
+                f"{what}.only_when: {literal!r} is not a choice of {mode_name!r} {list(choices)}",
+                loc=expr.loc)
+        return bool(self._eval_mode_condition(expr))
+
+    def _ap_req_string(self, f, key, what, loc) -> str:
+        v = f.get(key)
+        if not isinstance(v, A.StringLit) or not v.value:
+            raise ResolveError(f"{what} needs `{key} = \"...\"`", loc=loc)
+        return v.value
+
+    def _ap_choice(self, f, key, choices, what, loc) -> str:
+        v = self._ap_req_string(f, key, what, loc)
+        if v not in choices:
+            raise ResolveError(f"{what}.{key} must be one of {list(choices)}, got {v!r}", loc=loc)
+        return v
+
+    def _ap_knob_value(self, ctrl, e, what, loc) -> float:
+        units, want = _AP_KNOB_UNITS[ctrl.type_kind]
+        if not isinstance(e, A.NumberLit) or e.unit not in units:
+            raise ResolveError(f"{what} must be in the control's units ({want})",
+                               loc=getattr(e, "loc", None) or loc)
+        return float(e.value)
+
+    def _ap_limits(self, name, ctrl, v, what, loc) -> tuple[float, float]:
+        rng = None
+        if isinstance(ctrl.range_low, IRNumberLit) and isinstance(ctrl.range_high, IRNumberLit):
+            rng = (float(ctrl.range_low.value), float(ctrl.range_high.value))
+        if v is None:
+            if rng is None:
+                raise ResolveError(f"{what} needs `limits` because {name!r} has no range", loc=loc)
+            return rng
+        if not isinstance(v, A.Tuple) or len(v.elements) != 2:
+            raise ResolveError(f"{what}.limits must be a pair like `(0.5, 1.0)`", loc=v.loc)
+        lo = self._ap_knob_value(ctrl, v.elements[0], f"{what}.limits", loc)
+        hi = self._ap_knob_value(ctrl, v.elements[1], f"{what}.limits", loc)
+        if lo >= hi:
+            raise ResolveError(f"{what}.limits: the low end must be below the high end", loc=v.loc)
+        if rng is not None and (lo < rng[0] or hi > rng[1]):
+            raise ResolveError(
+                f"{what}.limits ({lo:g}, {hi:g}) must lie inside {name!r}'s range "
+                f"({rng[0]:g}, {rng[1]:g})", loc=v.loc)
+        return (lo, hi)
 
     def _validate_autopilot_trace(self, protocol):
         """Task 8 fills this in."""
@@ -1074,6 +1236,19 @@ class _Resolver:
         kind = block.name or ""
         dims = _control_kind_dims(kind, block.loc)
         fields = self._assignments_dict(block.body)
+
+        if "autopilot" in fields:
+            ap_ast = fields["autopilot"]
+            if kind in ("placement", "mode"):
+                raise ResolveError(
+                    f"control {name!r} is a {kind!r} control; autopilot can only adjust "
+                    "number, percent, voltage or frequency controls", loc=ap_ast.loc)
+            if not isinstance(ap_ast, A.BlockExpr) or ap_ast.name is None:
+                raise ResolveError(
+                    f"control {name!r}.autopilot must be a typed block "
+                    "(e.g. `autopilot = fixed_step { ... }`)", loc=ap_ast.loc)
+            self._pending_control_ap[name] = _PendingControlAutopilot(
+                strategy=ap_ast.name, fields=self._assignments_dict(ap_ast.body), loc=ap_ast.loc)
 
         if kind == "placement":
             return self._resolve_placement_control(name, fields, block.loc)

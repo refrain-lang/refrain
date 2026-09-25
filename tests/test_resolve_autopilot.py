@@ -9,7 +9,7 @@ from refrain import parse
 from refrain.compile_json import compile_to_ir_json
 from refrain.fanout import _reject_check_labels
 from refrain.resolver import ResolveError, resolve
-from tests._autopilot_fixtures import ap, plain
+from tests._autopilot_fixtures import ap, plain, T_PCT_AP, T_UV_AP, XOVER_AP
 
 
 def _ir(src, **bindings):
@@ -132,3 +132,89 @@ def test_child_block_replaces_and_amend_merges():
     child_amend = 'protocol "c" extends "base" { amend autopilot { watch = 1 min } }'
     ir = resolve(parse(child_amend), parent_loader=_dict_loader({"base": parent}))
     assert ir.autopilot.watch_ms == 60000.0 and ir.autopilot.evidence == "expert_opinion"
+
+
+# --- per-control policies -------------------------------------------------
+
+def test_policies_resolve_adaptive():
+    ir = _ir(ap())
+    x = ir.controls["xover"].autopilot
+    assert (x.strategy, x.fixes, x.higher_is, x.apply) == ("fixed_step", "crossover", "harder", "auto")
+    assert x.limits == (0.5, 1.0) and x.step == 0.05 and x.round_to == 0.01
+    assert ir.controls["t_pct"].autopilot.limits == (15.0, 40.0)
+    assert ir.controls["t_uv"].autopilot is None          # only_when baseline -> dropped
+
+
+def test_policies_resolve_baseline():
+    ir = _ir(ap(), threshold_style="baseline")
+    assert ir.controls["t_pct"].autopilot is None
+    p = ir.controls["t_uv"].autopilot
+    assert p.strategy == "proportional_step" and p.step == 0.10 and p.round_to == 0.1
+
+
+def test_limits_default_to_range():
+    ir = _ir(ap(xover_ap=XOVER_AP.replace("limits = (0.5, 1.0); ", "")))
+    assert ir.controls["xover"].autopilot.limits == (0.5, 1.0)
+
+
+def test_rebaseline_resolves():
+    pol = ('autopilot = rebaseline { fixes = "theta"; from = "t_env"; window = 10 s; '
+           'percentile = 60; higher_is = "harder"; apply = "suggest"; '
+           'only_when = threshold_style == "baseline" }')
+    p = _ir(ap(t_uv_ap=pol), threshold_style="baseline").controls["t_uv"].autopilot
+    assert (p.from_entity, p.window_ms, p.percentile) == ("derive/t_env", 10000.0, 60.0)
+
+
+@pytest.mark.parametrize("override, needle", [
+    ({"xover_ap": XOVER_AP.replace("fixed_step", "wobble")}, "wobble"),
+    ({"xover_ap": XOVER_AP.replace('"auto"', '"sometimes"')}, "apply"),
+    ({"xover_ap": XOVER_AP.replace('"harder"', '"tougher"')}, "higher_is"),
+    ({"xover_ap": XOVER_AP.replace("limits = (0.5, 1.0)", "limits = (0.4, 1.0)")}, "range"),
+    ({"xover_ap": XOVER_AP.replace("limits = (0.5, 1.0)", "limits = (0.9, 0.6)")}, "limits"),
+    ({"xover_ap": XOVER_AP.replace("step = 0.05", "step = 0")}, "step"),
+    ({"xover_ap": XOVER_AP.replace("step = 0.05", "step = 0.05 uV")}, "units"),
+    ({"xover_ap": XOVER_AP.replace("fixed_step", "proportional_step")}, "percent"),
+    ({"xover_ap": XOVER_AP.replace("round_to = 0.01", "round_to = 0.01; colour = 1")}, "colour"),
+])
+def test_policy_field_errors(override, needle):
+    assert needle in _err(ap(**override))
+
+
+def test_rebaseline_cannot_be_auto():
+    pol = ('autopilot = rebaseline { fixes = "theta"; from = "t_env"; window = 10 s; '
+           'percentile = 60; higher_is = "harder"; apply = "auto"; '
+           'only_when = threshold_style == "baseline" }')
+    assert "suggest" in _err(ap(t_uv_ap=pol), threshold_style="baseline")
+
+
+def test_rebaseline_window_must_fit_watch():
+    pol = ('autopilot = rebaseline { fixes = "theta"; from = "t_env"; window = 30 s; '
+           'percentile = 60; higher_is = "harder"; apply = "suggest"; '
+           'only_when = threshold_style == "baseline" }')
+    assert "watch" in _err(ap(t_uv_ap=pol), threshold_style="baseline")
+
+
+def test_not_live_tunable_is_rejected():
+    src = ap().replace("xover  = number  { default = 0.60; range = (0.5, 1.0); live_tunable = true;",
+                       "xover  = number  { default = 0.60; range = (0.5, 1.0);")
+    assert "live_tunable" in _err(src)
+
+
+def test_mode_control_policy_is_rejected():
+    src = ap().replace('threshold_style = mode { choices = ["adaptive", "baseline"]; default = "adaptive" }',
+                       'threshold_style = mode { choices = ["adaptive", "baseline"]; default = "adaptive"; '
+                       'autopilot = fixed_step { fixes = "theta"; step = 1; higher_is = "harder"; apply = "suggest" } }')
+    assert "mode" in _err(src)
+
+
+@pytest.mark.parametrize("cond, needle", [
+    ('t_pct == "adaptive"', "mode"),
+    ('threshold_style == "sometimes"', "sometimes"),
+    ('threshold_style', "compare"),
+])
+def test_only_when_errors(cond, needle):
+    assert needle in _err(ap(t_pct_ap=T_PCT_AP.replace('threshold_style == "adaptive"', cond)))
+
+
+def test_policy_without_block_is_an_error():
+    assert "autopilot { }" in _err(ap(autopilot=""))
