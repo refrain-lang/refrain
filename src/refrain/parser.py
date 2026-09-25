@@ -296,6 +296,10 @@ class _AstBuilder(Transformer):
     def array(self, meta, items):
         return A.Array(elements=tuple(items), loc=_loc(meta))
 
+    def array_elem(self, meta, items):
+        # Only reached when `as "<label>"` is present (the rule is `?`-inlined).
+        return A.Labeled(expr=items[0], label=items[1].value, loc=_loc(meta))
+
     def tuple(self, meta, items):
         return A.Tuple(elements=tuple(items), loc=_loc(meta))
 

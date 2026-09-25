@@ -123,6 +123,8 @@ def _emit_expr(expr: A.Expr) -> str:
     if isinstance(expr, A.Call):
         args = ", ".join(_emit_arg(a) for a in expr.args)
         return f"{expr.callee}({args})"
+    if isinstance(expr, A.Labeled):
+        return f'{_emit_expr(expr.expr)} as "{_escape(expr.label)}"'
     if isinstance(expr, A.Array):
         elts = ", ".join(_emit_expr(e) for e in expr.elements)
         return f"[{elts}]"
