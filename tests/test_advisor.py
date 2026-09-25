@@ -104,6 +104,16 @@ def test_guard_holds_with_its_message():
     assert a["message"] == "Muscle artifact. (emg guard active 20% of training time)."
 
 
+def test_guard_with_no_say_uses_the_default_message():
+    """A guard with no `say` skips the generic lead-in sentence entirely —
+    the message is just the fact, not "Frequent X guard activity. (...)"."""
+    adv = make(ap(autopilot=AUTOPILOT_BLOCK.replace(' say = "Muscle artifact."', '')))
+    run(adv, [(True, True)] * 16)
+    a = run(adv, [(True, True)] * 4, muted=True)
+    assert (a["state"], a["reason"]) == ("hold", "guard")
+    assert a["message"] == "emg guard active 20% of training time."
+
+
 def test_stale_clean_time_drops_out():
     """Review Focus #2: 1 clean chunk in every 8 never adds up to 20 s of
     evidence, because clean time older than 2 x watch (40 s) is dropped."""
@@ -143,7 +153,9 @@ def test_observing_when_protocol_has_no_reward_condition():
     adv = make(NON_SEEDING)
     for _ in range(120):
         adv.feed(facts(checks=(), name="run"))
-    assert adv.advice()["reason"] == "observing"
+    a = adv.advice()
+    assert a["reason"] == "observing"
+    assert a["message"] == "Observing: this protocol has no reward condition to judge."
 
 
 # --- decisions (§4.4 steps 7-11, §4.5) -------------------------------------
@@ -159,8 +171,8 @@ def test_too_strict_lowers_the_crossover_target():
     assert (c["name"], c["current"], c["proposed"], c["direction"], c["auto_allowed"]) == (
         "xover", 0.6, 0.55, "easier", True)
     assert a["eligible_at_s"] == a["t_s"] == 20.0
-    assert adv.drain_events() == [{"t_s": 20.0, "kind": "suggested", "id": "adv-0001",
-                                   "reason": "too_strict", "control": "xover",
+    assert adv.drain_events() == [{"advisor_version": "1", "t_s": 20.0, "kind": "suggested",
+                                   "id": "adv-0001", "reason": "too_strict", "control": "xover",
                                    "from": 0.6, "to": 0.55}]
 
 
@@ -209,6 +221,21 @@ def test_manual_value_outside_limits_never_proposes_wrong_direction():
     assert a["message"].endswith("Crossover target is already at its easiest allowed value (0.45).")
 
 
+def test_at_limit_hardest_when_all_tighten_first_knobs_are_maxed():
+    """Both tighten_first knobs (crossover -> xover, theta -> t_pct) are
+    already at their hardest value, so the fallback picks the best-passing
+    check and reports it stuck at the top of its range."""
+    adv = make()
+    adv.note_control("xover", 1.0, "seed")
+    adv.note_control("t_pct", 40.0, "seed")
+    a = run(adv, EASY)
+    assert (a["state"], a["reason"]) == ("hold", "at_limit")
+    assert (a["control"]["name"], a["control"]["proposed"], a["control"]["strategy"]) == (
+        "t_pct", None, "fixed_step")
+    assert a["message"] == ("Reward met 100% of clean time (target 10-35%). "
+                            "t_pct is already at its hardest allowed value (40.00%).")
+
+
 def test_proportional_step_in_baseline_mode():
     a = run(make(threshold_style="baseline"), [(i < 1, True) for i in range(20)])
     c = a["control"]
@@ -225,6 +252,23 @@ def test_rebaseline_proposes_signal_percentile():
     assert (a["control"]["strategy"], a["control"]["proposed"]) == ("rebaseline", 5.0)
 
 
+def test_rebaseline_wrong_direction_holds_without_a_proposal():
+    """The signal sits above the current threshold, so re-baselining to its
+    percentile would raise the threshold — but the reward is too strict and
+    needs it lowered. There is no direction that helps, so hold at_limit
+    instead of proposing a value that moves the wrong way."""
+    pol = ('autopilot = rebaseline { fixes = "theta"; from = "t_env"; window = 10 s; '
+           'percentile = 60; higher_is = "harder"; apply = "suggest"; '
+           'only_when = threshold_style == "baseline" }')
+    adv = make(ap(t_uv_ap=pol), threshold_style="baseline")
+    a = run(adv, [(i < 1, True) for i in range(20)], t_env=20.0)
+    assert (a["state"], a["reason"]) == ("hold", "at_limit")
+    assert (a["control"]["name"], a["control"]["proposed"], a["control"]["strategy"]) == (
+        "t_uv", None, "rebaseline")
+    assert a["message"] == ("Reward met 5% of clean time (target 10-35%). "
+                            "Re-baselining t_uv would not make reward easier right now.")
+
+
 def test_hint_when_protocol_has_no_policies():
     adv = make(plain(theta_as=' as "theta"', xover_as=' as "crossover"'))
     a = run(adv, strict(k=120, hits=6))
@@ -232,6 +276,18 @@ def test_hint_when_protocol_has_no_policies():
     assert a["message"] == ("Reward met 5% of clean time (target 50-75%). The limiter is crossover. "
                             "Consider easing Crossover target (lower is easier).")
     assert a["control"]["proposed"] is None and a["control"]["auto_allowed"] is False
+
+
+def test_hint_dismissed_then_holds_for_cooldown():
+    adv = make(plain(theta_as=' as "theta"', xover_as=' as "crossover"'))
+    a = run(adv, strict(k=120, hits=6))
+    ev = adv.dismiss(a["id"])
+    assert ev["kind"] == "dismissed" and ev["control"] == "xover"
+    b = run(adv, [(True, False)])
+    assert (b["state"], b["level"], b["reason"], b["id"]) == ("hold", "hint", "cooldown", None)
+    assert b["message"] == ("Reward met 4% of clean time (target 50-75%). The limiter is crossover. "
+                            "Hint dismissed; holding for 2:59.")
+    assert b["eligible_at_s"] == 300.0
 
 
 def test_no_hint_for_a_knob_that_feeds_a_guard():
@@ -248,8 +304,8 @@ def test_apply_then_cooldown_then_next_step():
     a = run(adv, strict())
     control, value, ev = adv.apply(a["id"], "autopilot")
     assert (control, value) == ("xover", 0.55)
-    assert ev == {"t_s": 20.0, "kind": "applied", "id": "adv-0001", "control": "xover",
-                  "from": 0.6, "to": 0.55, "by": "autopilot"}
+    assert ev == {"advisor_version": "1", "t_s": 20.0, "kind": "applied", "id": "adv-0001",
+                  "control": "xover", "from": 0.6, "to": 0.55, "by": "autopilot"}
     assert adv.advice()["reason"] == "collecting"
     a = run(adv, strict())
     assert (a["reason"], a["eligible_at_s"]) == ("cooldown", 50.0)
@@ -309,6 +365,28 @@ def test_manual_change_supersedes_and_restarts():
     assert adv.advice()["reason"] == "collecting"
 
 
+def test_note_control_seed_restarts_window_silently():
+    """A seeded value (the evaluator applying a control's own `seed` policy)
+    changes the value and restarts the evidence window like a manual change,
+    but — unlike "manual" — raises no `changed_manually` audit event."""
+    adv = make()
+    run(adv, [(True, True)] * 10)
+    assert adv.advice()["evidence"]["clean_s"] == 10.0
+    adv.drain_events()
+    adv.note_control("xover", 0.7, "seed")
+    assert adv.drain_events() == []
+    assert adv.values["xover"] == 0.7
+    a = adv.advice()
+    assert a["reason"] == "collecting" and a["evidence"] is None
+
+
+def test_note_control_rejects_a_bad_source():
+    adv = make()
+    with pytest.raises(ValueError, match="source must be 'manual' or 'seed'"):
+        adv.note_control("xover", 0.7, "robot")
+    assert adv.values["xover"] == 0.6
+
+
 def test_guard_hold_blocks_a_standing_suggestion():
     adv = make()
     run(adv, strict())
@@ -323,6 +401,15 @@ def test_policy_description():
                                "rationale": "Test rationale", "reviewed": None}
     assert p["controls"]["xover"]["apply"] == "auto" and p["watch_s"] == 20.0
     assert p["guards"]["emg"] == {"max": 0.15, "say": "Muscle artifact."}
+
+
+def test_rebaseline_sources_lists_canonical_derive_names():
+    pol = ('autopilot = rebaseline { fixes = "theta"; from = "t_env"; window = 10 s; '
+           'percentile = 60; higher_is = "harder"; apply = "suggest"; '
+           'only_when = threshold_style == "baseline" }')
+    adv = make(ap(t_uv_ap=pol), threshold_style="baseline")
+    assert adv.rebaseline_sources() == ["derive/t_env"]
+    assert make().rebaseline_sources() == []
 
 
 def test_facts_from_json_expands_compact_fields():

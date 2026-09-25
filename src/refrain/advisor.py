@@ -381,6 +381,8 @@ class Advisor:
         return ev
 
     def note_control(self, control: str, value: float, source: str) -> None:
+        if source not in ("manual", "seed"):
+            raise ValueError(f"source must be 'manual' or 'seed', got {source!r}")
         frm = self.values.get(control)
         self.values[control] = float(value)
         if control not in self.cfg.relevant:
@@ -548,11 +550,13 @@ class Advisor:
                 if r > mx and (worst is None or r > ev.guard_rates[worst]):
                     worst = g
             if worst is not None:
-                say = self.cfg.guards[worst][1] or f"Frequent {worst} guard activity."
-                return self._result(
-                    "hold", "guard",
-                    f"{say} ({worst} guard active {pct(ev.guard_rates[worst])}% of training time).",
-                    evidence=evd), None
+                say = self.cfg.guards[worst][1]
+                rate_pct = pct(ev.guard_rates[worst])
+                if say is not None:
+                    msg = f"{say} ({worst} guard active {rate_pct}% of training time)."
+                else:
+                    msg = f"{worst} guard active {rate_pct}% of training time."
+                return self._result("hold", "guard", msg, evidence=evd), None
         clean = ev.n_clean if ev is not None else 0
         if clean < self.cfg.watch:
             return self._result(
@@ -671,11 +675,14 @@ class Advisor:
         proposed = self._propose(p, need)
         ctl = self._control_dict(p, cur, proposed, need)
         if proposed is None:
-            edge = "easiest" if need == "easier" else "hardest"
+            if p.strategy == "rebaseline":
+                msg = f"{head} Re-baselining {p.label} would not make reward {need} right now."
+            else:
+                edge = "easiest" if need == "easier" else "hardest"
+                msg = (f"{head} {p.label} is already at its {edge} allowed value "
+                       f"({fmt_value(cur, p.decimals, p.units)}).")
             return self._result(
-                "hold", "at_limit",
-                f"{head} {p.label} is already at its {edge} allowed value "
-                f"({fmt_value(cur, p.decimals, p.units)}).",
+                "hold", "at_limit", msg,
                 level="policy", limiter=limiter, control=ctl, evidence=evd), None
         eligible = self._eligible_at(p, need)
         if eligible is not None and self.now < eligible:
@@ -722,7 +729,8 @@ class Advisor:
     # ---- lifecycle ----
 
     def _emit(self, kind: str, **fields: Any) -> dict:
-        ev = {"t_s": r6(self.now / self.sr), "kind": kind, **fields}
+        ev = {"advisor_version": ADVISOR_VERSION, "t_s": r6(self.now / self.sr),
+              "kind": kind, **fields}
         self.events.append(ev)
         return ev
 
