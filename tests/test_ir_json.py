@@ -361,6 +361,7 @@ def test_v01_emission_byte_identical_for_examples():
             "othmer_ilf_cz_pz.refrain",            # needs a library loader (extends)
             "dyadic_alpha_coherence_pz.refrain",   # two-participant layout (Pz_A/Pz_B), not on Q21
             "staged_beta_alpha.refrain",           # staged protocol: blocks/bundles => v0.2 by design
+            "alpha_theta_autopilot.refrain",       # a 0.4 protocol by design; Task 19 adds it
         }:
             continue
         ir = resolve(parse_file(path), _AMP)
@@ -369,6 +370,20 @@ def test_v01_emission_byte_identical_for_examples():
         assert set(obj["reward"]) == {"continuous", "event"}, path.name
         errors = list(validator.iter_errors(obj))
         assert not errors, f"{path.name}: {[e.message for e in errors]}"
+
+
+def test_existing_examples_gain_no_autopilot_keys():
+    """Review Focus #4: no existing example emits any new key or changes IR
+    version (the byte-identical guarantee follows: new keys are the only
+    emitter change, and they are omitted when unused)."""
+    for path in sorted(EXAMPLES.glob("*.refrain")):
+        if path.name in {"othmer_ilf_cz_pz.refrain", "dyadic_alpha_coherence_pz.refrain",
+                         "alpha_theta_autopilot.refrain"}:
+            continue
+        obj = ir_to_json_obj(resolve(parse_file(path), _AMP))
+        text = json.dumps(obj)
+        assert '"autopilot"' not in text and '"check_names"' not in text, path.name
+        assert obj["refrain_ir_version"] in ("0.1", "0.2", "0.3"), path.name
 
 
 # ---------------------------------------------------------------------------
