@@ -21,6 +21,7 @@ IR-JSON schema and the Rust core are unchanged.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Iterator
 from typing import Any
 
@@ -39,6 +40,28 @@ _PER_BAND_KEYWORDS = ("derive", "threshold", "inhibit")
 # The bare NameRef an author uses in `bandpass(band: bands)` to mark the band
 # axis (analogous to a set-placement control name in a montage channel slot).
 _BAND_PLACEHOLDER = "bands"
+
+
+def _reject_check_labels(file_ast: A.File, what: str) -> None:
+    """Named reward checks (`as "<name>"`) are not supported together with
+    fan-out yet: replication would duplicate or rename the checks."""
+
+    def walk(node) -> None:
+        if isinstance(node, A.Labeled):
+            raise ResolveError(
+                f'named reward checks (`as "{node.label}"`) cannot be combined with '
+                f"{what} fan-out yet",
+                loc=node.loc,
+            )
+        if isinstance(node, tuple):
+            for x in node:
+                walk(x)
+        elif isinstance(node, A.Node):
+            for f in dataclasses.fields(node):
+                if f.name != "loc":
+                    walk(getattr(node, f.name))
+
+    walk(file_ast)
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +87,7 @@ def fan_out(file_ast: A.File, bindings: dict[str, Any], *, amp: Any = None) -> A
     set_names = _find_set_placements(proto)
     if not set_names:
         return file_ast  # no set placement → single-site path, unchanged
+    _reject_check_labels(file_ast, "per-site")
     if len(set_names) > 1:
         raise ResolveError(
             "more than one set placement is not supported (v1 replicates a single set): "
@@ -137,6 +161,7 @@ def band_fan_out(file_ast: A.File) -> A.File:
         # `bands` declared but never referenced via `bandpass(band: bands)`;
         # leave the AST alone (the resolver validates the bands block).
         return file_ast
+    _reject_check_labels(file_ast, "band")
 
     entity_names = {name for (_kw, name) in decls.keys()}
     refs = {

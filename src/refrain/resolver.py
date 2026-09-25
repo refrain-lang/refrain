@@ -1733,6 +1733,49 @@ class _Resolver:
 
     # -- Reward -------------------------------------------------------------
 
+    def _strip_check_labels(self, event_ast):
+        """Remove `as "<name>"` from a reward dwell's all_of/any_of list.
+
+        Returns the label-free AST (resolved exactly as before) and the names
+        aligned with the condition indices the evaluator exposes as
+        `reward/condition[i]` (None for an unnamed check; `()` if none named)."""
+        if not (isinstance(event_ast, A.Call) and event_ast.callee == "dwell"):
+            return event_ast, ()
+        names: tuple = ()
+        new_args = []
+        for i, arg in enumerate(event_ast.args):
+            is_condition = arg.name == "condition" or (arg.name is None and i == 0)
+            cond = arg.value
+            if not (
+                is_condition
+                and isinstance(cond, A.Call)
+                and cond.callee in ("all_of", "any_of")
+                and cond.args
+                and isinstance(cond.args[0].value, A.Array)
+            ):
+                new_args.append(arg)
+                continue
+            arr = cond.args[0].value
+            seen: set[str] = set()
+            for el in arr.elements:
+                if isinstance(el, A.Labeled):
+                    if el.label in seen:
+                        raise ResolveError(
+                            f"reward check name {el.label!r} is used twice", loc=el.loc)
+                    seen.add(el.label)
+            if seen:
+                names = tuple(el.label if isinstance(el, A.Labeled) else None
+                              for el in arr.elements)
+            bare = A.Array(
+                elements=tuple(el.expr if isinstance(el, A.Labeled) else el
+                               for el in arr.elements),
+                loc=arr.loc,
+            )
+            first = A.Arg(name=cond.args[0].name, value=bare, loc=cond.args[0].loc)
+            new_cond = A.Call(callee=cond.callee, args=(first,) + cond.args[1:], loc=cond.loc)
+            new_args.append(A.Arg(name=arg.name, value=new_cond, loc=arg.loc))
+        return A.Call(callee=event_ast.callee, args=tuple(new_args), loc=event_ast.loc), names
+
     def _resolve_reward_bundle(self, decl: A.NamedDecl) -> IRReward:
         """Resolve a named, block-selectable reward bundle:
         `reward "<name>" { continuous?, event? }`. Distinguished from a
@@ -1752,10 +1795,14 @@ class _Resolver:
                 f'reward "{decl.name}" bundle must declare `continuous`, `event`, or both',
                 loc=decl.loc,
             )
+        check_names: tuple = ()
+        if event is not None:
+            event, check_names = self._strip_check_labels(event)
         cont_ir = self._resolve_stream_expr(cont) if cont is not None else None
         event_ir = self._resolve_stream_expr(event) if event is not None else None
         return IRReward(
-            continuous=cont_ir, event=event_ir, combine="all", components=(), loc=decl.loc
+            continuous=cont_ir, event=event_ir, combine="all", components=(),
+            check_names=check_names, loc=decl.loc,
         )
 
     def _resolve_reward(self) -> None:
@@ -1817,6 +1864,9 @@ class _Resolver:
             continuous=None, event=None, combine=combine, components=components,
             loc=self.reward_ast.loc,
         )
+        check_names: tuple = ()
+        if event_expr is not None:
+            event_expr, check_names = self._strip_check_labels(event_expr)
         cont_ir = self._resolve_stream_expr(cont_expr) if cont_expr is not None else None
         event_ir = self._resolve_stream_expr(event_expr) if event_expr is not None else None
         if event_ir is not None and _expr_stream_type(event_ir) != EVENT_STREAM:
@@ -1826,7 +1876,7 @@ class _Resolver:
             )
         self.reward_ir = IRReward(
             continuous=cont_ir, event=event_ir, combine=combine,
-            components=components, loc=self.reward_ast.loc,
+            components=components, check_names=check_names, loc=self.reward_ast.loc,
         )
 
     def _check_positive_weight(self, components: tuple) -> None:
@@ -1972,6 +2022,12 @@ class _Resolver:
 
         Used for meta fields, control defaults, range bounds, etc.
         """
+        if isinstance(expr, A.Labeled):
+            raise ResolveError(
+                f'`as "{expr.label}"` names a reward check and is only allowed on an '
+                "element of a reward dwell's all_of([...])/any_of([...]) list",
+                loc=expr.loc,
+            )
         if isinstance(expr, A.NumberLit):
             return IRNumberLit(value=expr.value, dims=unit_dims(expr.unit), unit=expr.unit, loc=expr.loc)
         if isinstance(expr, A.StringLit):
@@ -2020,6 +2076,12 @@ class _Resolver:
         positions but produces a type error if a stream was expected).
         """
         expr = self._fold_mode_conditionals(expr)
+        if isinstance(expr, A.Labeled):
+            raise ResolveError(
+                f'`as "{expr.label}"` names a reward check and is only allowed on an '
+                "element of a reward dwell's all_of([...])/any_of([...]) list",
+                loc=expr.loc,
+            )
         if isinstance(expr, A.NumberLit):
             return IRNumberLit(value=expr.value, dims=unit_dims(expr.unit), unit=expr.unit, loc=expr.loc)
         if isinstance(expr, A.BoolLit):
