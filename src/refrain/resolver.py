@@ -46,6 +46,7 @@ from .compose import ComposeError, ParentLoader, compose
 from .ir import (
     IRArg,
     IRArray,
+    IRAutopilot,
     IRBinaryOp,
     IRBlock,
     IRBlockExpr,
@@ -58,8 +59,10 @@ from .ir import (
     IRCustom,
     IRDerive,
     IRExpr,
+    IRGuard,
     IRInhibit,
     IRInput,
+    IRLimiter,
     IRMeta,
     IRNumberLit,
     IRPhase,
@@ -97,6 +100,14 @@ from .types_ import (
 _AMP_ALLOWED_FIELDS: tuple[str, ...] = ("reference",)
 
 
+# The protocol-wide `autopilot { }` section (SPEC §4.12).
+_EVIDENCE_LEVELS = ("published", "clinical_consensus", "expert_opinion", "experimental")
+_AP_SETTINGS = frozenset({
+    "evidence", "citation", "rationale", "reviewed", "reward_target", "phases",
+    "watch", "between_moves", "equipment_settle", "tighten_first",
+})
+
+
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
@@ -126,6 +137,13 @@ class _PendingSeed:
     window_ms: float
     target_pct_ast: "A.Expr"
     loc: "Loc | None"
+
+
+@dataclass(frozen=True)
+class _PendingControlAutopilot:
+    strategy: str          # the block kind: fixed_step | proportional_step | rebaseline
+    fields: dict           # raw AST fields of the block
+    loc: Loc | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +185,7 @@ class _Resolver:
         self.groups: dict[str, tuple[str, ...]] = {}
         self.bands_ast: A.SectionBlock | None = None
         self.bands: dict[str, tuple[float, float]] = {}
+        self.autopilot_ast: A.SectionBlock | None = None
 
         # Resolved named entities (filled in source order).
         self.inputs: dict[str, IRInput] = {}
@@ -199,6 +218,11 @@ class _Resolver:
         # and validated/baked in a post-pass (Task 6) once derives and
         # session phases are resolved.
         self._pending_seeds: dict[str, _PendingSeed] = {}
+
+        # Pending per-control autopilot policy blocks, captured during
+        # control resolution; Task 5 resolves them once the protocol-wide
+        # `autopilot { }` section is available.
+        self._pending_control_ap: dict[str, _PendingControlAutopilot] = {}
 
     # -- Top-level entry ----------------------------------------------------
 
@@ -245,9 +269,11 @@ class _Resolver:
         session_ir = self._resolve_session()
         self._validate_staging(session_ir)
         self._resolve_control_seeds(session_ir)
+        autopilot_ir = self._resolve_autopilot(session_ir)
+        self._resolve_control_autopilots(autopilot_ir)
         meta_ir = self._resolve_meta()
 
-        return IRProtocol(
+        protocol = IRProtocol(
             name=proto.name,
             extends=None,
             meta=meta_ir,
@@ -269,8 +295,17 @@ class _Resolver:
             blocks=dict(self._blocks),
             reward_bundles=dict(self._reward_bundles),
             amp_profile=self.amp,
+            autopilot=autopilot_ir,
             loc=proto.loc,
         )
+        return self._validate_autopilot_trace(protocol)
+
+    def _resolve_control_autopilots(self, autopilot_ir) -> None:
+        """Task 5 fills this in."""
+
+    def _validate_autopilot_trace(self, protocol):
+        """Task 8 fills this in."""
+        return protocol
 
     # -- Hoisting -----------------------------------------------------------
 
@@ -287,6 +322,7 @@ class _Resolver:
                     "session": "session_ast",
                     "groups": "groups_ast",
                     "bands": "bands_ast",
+                    "autopilot": "autopilot_ast",
                 }.get(stmt.keyword)
                 if attr is None:
                     raise ResolveError(
@@ -1245,6 +1281,183 @@ class _Resolver:
             f"control {name!r}.seed.target_pct must be a number or a percent control",
             loc=getattr(target_pct, "loc", None),
         )
+
+    # -- Autopilot ------------------------------------------------------
+
+    def _all_check_names(self) -> set[str]:
+        rewards = [self.reward_ir, *self._reward_bundles.values()]
+        return {n for r in rewards if r is not None for n in r.check_names if n is not None}
+
+    def _resolve_autopilot(self, session_ir) -> IRAutopilot | None:
+        """The protocol-wide `autopilot { }` section (SPEC §4.12)."""
+        if self.autopilot_ast is None:
+            if self._pending_control_ap:
+                name, pend = next(iter(self._pending_control_ap.items()))
+                raise ResolveError(
+                    f"control {name!r} declares an autopilot policy, but the protocol has no "
+                    "`autopilot { }` block; add one with evidence, citation and rationale",
+                    loc=pend.loc,
+                )
+            return None
+        loc = self.autopilot_ast.loc
+        settings: dict[str, A.Expr] = {}
+        guards: list[IRGuard] = []
+        limiters: list[IRLimiter] = []
+        for stmt in self.autopilot_ast.body:
+            if not isinstance(stmt, A.Assignment):
+                raise ResolveError("autopilot accepts only `name = value` entries", loc=stmt.loc)
+            v = stmt.value
+            if isinstance(v, A.BlockExpr) and v.name in ("guard", "limiter"):
+                if stmt.target in _AP_SETTINGS:
+                    raise ResolveError(
+                        f"autopilot entry {stmt.target!r} has the same name as a setting",
+                        loc=stmt.loc)
+                if v.name == "guard":
+                    guards.append(self._ap_guard(stmt.target, v))
+                else:
+                    limiters.append(self._ap_limiter(stmt.target, v))
+                continue
+            if stmt.target not in _AP_SETTINGS:
+                raise ResolveError(f"unknown autopilot setting {stmt.target!r}", loc=stmt.loc)
+            settings[stmt.target] = v
+
+        evidence = self._ap_string(settings, "evidence", loc, required=True)
+        if evidence not in _EVIDENCE_LEVELS:
+            raise ResolveError(
+                f"autopilot.evidence must be one of {list(_EVIDENCE_LEVELS)}, got {evidence!r}",
+                loc=settings["evidence"].loc)
+        checks = self._all_check_names()
+        tighten = (self._ap_string_list(settings["tighten_first"], "autopilot.tighten_first")
+                   if "tighten_first" in settings else ())
+        for name in tighten:
+            if name not in checks:
+                raise ResolveError(
+                    f"autopilot.tighten_first names {name!r}, which is not a named reward check "
+                    '(name checks with `as "..."`)', loc=settings["tighten_first"].loc)
+        for lim in limiters:
+            if lim.check not in checks:
+                raise ResolveError(
+                    f"autopilot limiter {lim.check!r} does not name a reward check "
+                    '(name checks with `as "..."`)', loc=lim.loc)
+        return IRAutopilot(
+            evidence=evidence,
+            citations=self._ap_citations(settings.get("citation"), "autopilot.citation", loc),
+            rationale=self._ap_string(settings, "rationale", loc, required=True),
+            reviewed=self._ap_string(settings, "reviewed", loc, required=False),
+            reward_target=(self._ap_percent_pair(settings["reward_target"], "autopilot.reward_target")
+                           if "reward_target" in settings else None),
+            phases=self._ap_phases(settings["phases"], session_ir) if "phases" in settings else None,
+            watch_ms=self._ap_duration(settings, "watch"),
+            between_moves_ms=self._ap_duration(settings, "between_moves"),
+            equipment_settle_ms=self._ap_duration(settings, "equipment_settle"),
+            tighten_first=tighten,
+            guards=tuple(guards),
+            limiters=tuple(limiters),
+            loc=loc,
+        )
+
+    def _ap_string(self, settings, key, loc, *, required):
+        v = settings.get(key)
+        if v is None:
+            if required:
+                raise ResolveError(f"autopilot needs `{key}`", loc=loc)
+            return None
+        if not isinstance(v, A.StringLit) or not v.value.strip():
+            raise ResolveError(f"autopilot.{key} must be a non-empty string", loc=v.loc)
+        return v.value
+
+    def _ap_citations(self, v, what, loc, *, required=True):
+        if v is None:
+            if required:
+                raise ResolveError(f"{what} is required: cite where these numbers come from",
+                                   loc=loc)
+            return ()
+        items = v.elements if isinstance(v, A.Array) else (v,)
+        out = []
+        for e in items:
+            if not isinstance(e, A.StringLit) or not e.value.strip():
+                raise ResolveError(f"{what} must be a string or a list of strings", loc=e.loc)
+            out.append(e.value)
+        if not out:
+            raise ResolveError(f"{what} must name at least one source", loc=v.loc)
+        return tuple(out)
+
+    def _ap_percent(self, e, what) -> float:
+        if not isinstance(e, A.NumberLit) or e.unit != "%":
+            raise ResolveError(f"{what} must be a percent like `15%`", loc=e.loc)
+        if not 0 < e.value < 100:
+            raise ResolveError(f"{what} must be between 0% and 100%", loc=e.loc)
+        return e.value / 100.0
+
+    def _ap_percent_pair(self, v, what) -> tuple[float, float]:
+        if not isinstance(v, A.Tuple) or len(v.elements) != 2:
+            raise ResolveError(f"{what} must be a pair like `(50%, 75%)`", loc=v.loc)
+        lo = self._ap_percent(v.elements[0], what)
+        hi = self._ap_percent(v.elements[1], what)
+        if lo >= hi:
+            raise ResolveError(f"{what}: the low end must be below the high end", loc=v.loc)
+        return (lo, hi)
+
+    def _ap_duration_ms(self, v, what) -> float:
+        if not isinstance(v, A.NumberLit) or v.unit not in ("ms", "s", "min"):
+            raise ResolveError(f"{what} must be a duration like `2 min`", loc=v.loc)
+        ms = _to_milliseconds(v)
+        if ms <= 0:
+            raise ResolveError(f"{what} must be longer than zero", loc=v.loc)
+        return ms
+
+    def _ap_duration(self, settings, key) -> float | None:
+        return self._ap_duration_ms(settings[key], f"autopilot.{key}") if key in settings else None
+
+    def _ap_string_list(self, v, what) -> tuple[str, ...]:
+        if not isinstance(v, A.Array):
+            raise ResolveError(f"{what} must be a list of quoted names", loc=v.loc)
+        out = []
+        for e in v.elements:
+            if not isinstance(e, A.StringLit):
+                raise ResolveError(f"{what} must be a list of quoted names", loc=e.loc)
+            out.append(e.value)
+        return tuple(out)
+
+    def _ap_phases(self, v, session_ir) -> tuple[str, ...]:
+        names = self._ap_string_list(v, "autopilot.phases")
+        by_name = {p.name: p for p in session_ir.phases}
+        for n in names:
+            p = by_name.get(n)
+            if p is None:
+                raise ResolveError(
+                    f"autopilot.phases names {n!r}, which is not a session phase", loc=v.loc)
+            if p.output_muted:
+                raise ResolveError(
+                    f"autopilot.phases names {n!r}, whose output is muted; advice never runs "
+                    "in a muted phase", loc=v.loc)
+        return names
+
+    def _ap_guard(self, name, block) -> IRGuard:
+        f = self._assignments_dict(block.body)
+        if name not in self.inhibits:
+            raise ResolveError(
+                f"autopilot guard {name!r} does not name a declared inhibit", loc=block.loc)
+        extra = set(f) - {"max", "say"}
+        if extra:
+            raise ResolveError(
+                f"autopilot guard {name!r}: unexpected field(s) {sorted(extra)}", loc=block.loc)
+        if "max" not in f:
+            raise ResolveError(f"autopilot guard {name!r} needs `max` (e.g. `max = 15%`)",
+                               loc=block.loc)
+        say = f.get("say")
+        if say is not None and not isinstance(say, A.StringLit):
+            raise ResolveError(f"autopilot guard {name!r}.say must be a string", loc=say.loc)
+        return IRGuard(inhibit=name, max_frac=self._ap_percent(f["max"], f"guard {name!r}.max"),
+                       say=say.value if say is not None else None, loc=block.loc)
+
+    def _ap_limiter(self, name, block) -> IRLimiter:
+        f = self._assignments_dict(block.body)
+        say = f.get("say")
+        if set(f) != {"say"} or not isinstance(say, A.StringLit):
+            raise ResolveError(f"autopilot limiter {name!r} takes exactly `say = \"...\"`",
+                               loc=block.loc)
+        return IRLimiter(check=name, say=say.value, loc=block.loc)
 
     def _resolve_placement_control(self, name: str, fields: dict, loc) -> IRControl:
         """Parse and validate a `placement { ... }` control block."""
