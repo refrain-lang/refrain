@@ -1201,7 +1201,9 @@ advisor sees every control mutation, whichever path made it (§7.10.6).
 Time is counted in **session sample time** (samples processed ÷ sample rate),
 never wall-clock time, and no randomness is used anywhere in the procedure.
 Window edges fall on chunk boundaries, so identical chunk sequences fed to
-both engines produce byte-identical advice.
+both engines produce the same advice values (§7.10.7's rounding rules make
+this exact, once compared as parsed numbers rather than raw JSON bytes —
+Python and Rust format floats differently).
 
 #### 7.10.2 Evidence window
 
@@ -1226,7 +1228,7 @@ both engines produce byte-identical advice.
 inhibit changes — by manual `set_control`, by `apply_advice`, or by a
 baseline seed firing — when the host calls `mark_equipment_change()`, or when
 a new phase in `phases` begins. A manual `set_control` on such a control also
-starts the `between_moves` cooldown (§7.10.3 step 10, §7.10.6), exactly as an
+starts the `between_moves` cooldown (§7.10.3 step 11, §7.10.6), exactly as an
 applied advice does — the advisor treats "the clinician just moved this knob
 by hand" the same as "autopilot just moved it" for cooldown purposes.
 

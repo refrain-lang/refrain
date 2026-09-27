@@ -117,8 +117,10 @@ for chunk in amp_chunks():
 ```
 
 With `backend="rust"` every call delegates to the Rust core the same way
-`seed_report()` does; results and events are byte-for-byte identical JSON
-once parsed. The uniffi surface gained one error variant,
+`seed_report()` does; results and events are identical once parsed as JSON
+values (numbers compared as `f64` — Python and Rust print floats
+differently, so parity is checked on parsed values, not raw bytes). The
+uniffi surface gained one error variant,
 `RefrainError.Advice { message }`, mirroring `apply_advice`/`dismiss_advice`
 raising `AdviceError` on the Python/PyO3 side — mobile consumers need to
 regenerate bindings to pick it up.

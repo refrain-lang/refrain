@@ -529,7 +529,7 @@ author reserved for a clinician's judgement.
 ```python
 evaluator.advice() -> dict
 evaluator.apply_advice(advice_id: str, by: str = "clinician") -> dict
-evaluator.dismiss_advice(advice_id: str) -> None
+evaluator.dismiss_advice(advice_id: str) -> dict
 evaluator.mark_equipment_change() -> None
 evaluator.drain_advice_events() -> list[dict]
 evaluator.autopilot_policy() -> dict
@@ -547,7 +547,8 @@ evaluator.autopilot_policy() -> dict
   `applied` event dict.
 - **`dismiss_advice(id)`** — logs a `dismissed` event and suppresses that
   same knob-and-direction move for `between_moves`. Raises `AdviceError` on
-  an id that isn't the current `adjust`/`hint` result.
+  an id that isn't the current `adjust`/`hint` result. Returns the
+  `dismissed` event dict.
 - **`mark_equipment_change()`** — logs an `equipment_change` event, restarts
   the evidence window, and starts the `equipment_settle` hold. Call this
   whenever your UI lets a clinician adjust the amp or electrodes mid-session.
@@ -626,7 +627,7 @@ to the current state is `null`, never omitted, so a host never needs a
 | `t_s` | number | Session sample time (seconds) this result was computed at. |
 | `limiter` | object \| null | `{ "check": <name or "check N">, "pass_rate": <0..1> }`, present from decision step 8 onward (once a limiting check has been selected). |
 | `control` | object \| null | Present for `hint` and `adjust`. For a `hint`, `proposed`, `round_to`, and `strategy` are `null` and `auto_allowed` is `false` — see below. |
-| `evidence` | object \| null | Present once an evidence window exists (`collecting` onward). `reward_rate`/`target`/`checks` are `null` for a protocol with no reward condition (`reason: "observing"`). |
+| `evidence` | object \| null | Present once an evidence window exists (`collecting` onward). For a protocol with no reward condition (`reason: "observing"`), `reward_rate` is `null`; `target` is still the `[low, high]` pair and `checks` is `{}` (empty, not null). |
 | `eligible_at_s` | number \| null | When a currently-blocked knob becomes eligible again (`cooldown`), or the current time for a fresh `adjust`/`reversal`. |
 
 `control`, when present:
@@ -669,9 +670,10 @@ weighted-composite reward) — it is a normal hold, not an error.
 ### Backends
 
 With `backend="rust"`, every one of the six calls delegates to the Rust core
-the same way `seed_report()` does, and results/events are byte-for-byte
-identical JSON (`json.dumps(..., sort_keys=True, separators=(",", ":"))` on
-the Python side) once parsed — see `docs/SPEC.md` §7.10.7 for the rounding
+the same way `seed_report()` does, and results/events are identical once
+parsed as JSON values (numbers compared as `f64` — Python and Rust print
+floats differently, so parity is checked on parsed values, not raw bytes)
+— see `docs/SPEC.md` §7.10.7 for the rounding
 rules that make the two engines agree exactly.
 
 ---
