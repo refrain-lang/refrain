@@ -194,3 +194,35 @@ fn accepts_ir_with_no_version_tag() {
     assert!(p.refrain_ir_version.is_none());
     refrain_core::ir::check_ir_version(&p).expect("untagged must pass the gate");
 }
+
+#[test]
+fn v04_autopilot_fields_deserialize() {
+    let doc = serde_json::json!({
+        "refrain_ir_version": "0.4",
+        "sample_rate_hz": 256.0, "channels": ["Cz"], "inputs": {}, "derives": {},
+        "reward": {"continuous": null, "event": null, "check_names": ["theta", null]},
+        "controls": {"xover": {
+            "canonical_name": "control/xover", "type_kind": "number", "label": "X",
+            "live_tunable": true,
+            "default": {"node": "number", "value": 0.6},
+            "autopilot": {"strategy": "fixed_step", "fixes": "crossover", "higher_is": "harder",
+                          "apply": "auto", "limits": [0.5, 1.0], "round_to": 0.01,
+                          "decimals": 2, "step": 0.05, "citation": []}
+        }},
+        "autopilot": {"evidence": "expert_opinion", "citation": ["x"], "rationale": "y",
+                      "reward_target": [0.1, 0.35], "watch_samples": 5120,
+                      "guards": {"emg": {"max": 0.15, "say": null}}, "tighten_first": ["crossover"]},
+        "output": {}, "topological_order": []
+    });
+    let p: refrain_core::ir::Protocol = serde_json::from_value(doc).unwrap();
+    refrain_core::ir::check_ir_version(&p).unwrap();
+    assert_eq!(p.reward.as_ref().unwrap().check_names, vec![Some("theta".to_string()), None]);
+    let c = &p.controls["xover"];
+    assert_eq!(c.type_kind, "number");
+    assert!(c.live_tunable);
+    let pol = c.autopilot.as_ref().unwrap();
+    assert_eq!((pol.step, pol.decimals), (Some(0.05), 2));
+    let ap = p.autopilot.as_ref().unwrap();
+    assert_eq!(ap.watch_samples, Some(5120));
+    assert_eq!(ap.guards["emg"].max, 0.15);
+}
