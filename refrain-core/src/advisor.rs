@@ -664,17 +664,17 @@ impl Advisor {
 
     pub fn apply(&mut self, advice_id: &str, by: &str) -> Result<(String, f64, Value), String> {
         if by != "clinician" && by != "autopilot" {
-            return Err(format!("by must be 'clinician' or 'autopilot', got {by:?}"));
+            return Err(format!("by must be 'clinician' or 'autopilot', got '{by}'"));
         }
         let res = self.current.clone();
         if res["id"].as_str() != Some(advice_id) || res["state"] != "adjust" {
-            return Err(format!("advice {advice_id:?} is not the current suggestion"));
+            return Err(format!("advice '{advice_id}' is not the current suggestion"));
         }
         let ctl = &res["control"];
         let control = ctl["name"].as_str().unwrap().to_string();
         if by == "autopilot" && !ctl["auto_allowed"].as_bool().unwrap() {
             return Err(format!(
-                "advice {advice_id:?} changes {control:?}, which this protocol allows only as a suggestion"
+                "advice '{advice_id}' changes '{control}', which this protocol allows only as a suggestion"
             ));
         }
         let to = ctl["proposed"].as_f64().unwrap();
@@ -706,7 +706,7 @@ impl Advisor {
         let res = self.current.clone();
         let state = res["state"].as_str().unwrap_or("");
         if res["id"].as_str() != Some(advice_id) || (state != "adjust" && state != "hint") {
-            return Err(format!("advice {advice_id:?} is not the current suggestion"));
+            return Err(format!("advice '{advice_id}' is not the current suggestion"));
         }
         let name = res["control"]["name"].as_str().unwrap().to_string();
         let direction = res["control"]["direction"].as_str().unwrap().to_string();
@@ -725,7 +725,7 @@ impl Advisor {
     /// invalid source must leave `self.values` and everything else untouched.
     pub fn note_control(&mut self, control: &str, value: f64, source: &str) -> Result<(), String> {
         if source != "manual" && source != "seed" {
-            return Err(format!("source must be 'manual' or 'seed', got {source:?}"));
+            return Err(format!("source must be 'manual' or 'seed', got '{source}'"));
         }
         let frm = self.values.get(control).copied();
         self.values.insert(control.to_string(), value);
@@ -848,16 +848,21 @@ impl Advisor {
                 buf.drain(..drop);
             }
         }
-        let horizon = self.now.saturating_sub(2 * self.cfg.watch);
-        self.buckets.retain(|b| b.end > horizon);
+        // Python: `horizon = self.now - 2 * self.cfg.watch` (signed, can go
+        // negative) then `b.end > horizon`. Samples are u64 here, so the
+        // subtraction is moved to the other side to avoid underflow instead
+        // of clamping the horizon at 0 (which would silently drop buckets
+        // Python still keeps, e.g. a zero-length chunk fed at time 0).
+        self.buckets.retain(|b| b.end + 2 * self.cfg.watch > self.now);
     }
 
     fn evidence(&self) -> Option<Evidence> {
-        let horizon = self.now.saturating_sub(2 * self.cfg.watch);
+        // Same non-underflowing rewrite as `ingest`: `b.end <= self.now - 2 *
+        // self.cfg.watch` becomes `b.end + 2 * self.cfg.watch <= self.now`.
         let mut sel: Vec<&Bucket> = Vec::new();
         let mut clean = 0u64;
         for b in self.buckets.iter().rev() {
-            if b.end <= horizon {
+            if b.end + 2 * self.cfg.watch <= self.now {
                 break;
             }
             sel.push(b);
@@ -1021,7 +1026,12 @@ impl Advisor {
             pct(rate), p.label, fmt_value(cur, p.decimals, &p.units), fmt_value(prev, p.decimals, &p.units));
         let ctl = self.control_dict(p, cur, Some(prev), back);
         let res = self.result("adjust", "reversal", msg, "policy", Value::Null, ctl, evd.clone(), Some(self.now));
-        Some((res, Some(format!("adjust|reversal|{control}|{back}|{prev:?}"))))
+        // Normalise -0.0 to 0.0 before formatting: Python compares the float
+        // inside a tuple key with `==` (where 0.0 == -0.0), so the standing
+        // suggestion must not change identity just because r6() produced a
+        // negative zero.
+        let key_val = prev + 0.0;
+        Some((res, Some(format!("adjust|reversal|{control}|{back}|{key_val:?}"))))
     }
 
     fn pick_check(&self, ev: &Evidence, need: &str) -> usize {
@@ -1144,7 +1154,10 @@ impl Advisor {
         let reason = if need == "easier" { "too_strict" } else { "too_easy" };
         let msg = format!("{head} The limiter is {label}. {verb} {} {} -> {}.", p.label,
                           fmt_value(cur, p.decimals, &p.units), fmt_value(proposed, p.decimals, &p.units));
-        let key = format!("adjust|{reason}|{}|{need}|{proposed:?}", p.control);
+        // See the same normalisation in `reversal_step`: avoid -0.0 changing
+        // the standing suggestion's identity.
+        let key_val = proposed + 0.0;
+        let key = format!("adjust|{reason}|{}|{need}|{key_val:?}", p.control);
         (self.result("adjust", reason, msg, "policy", limiter, ctl, evd, Some(self.now)), Some(key))
     }
 
@@ -1308,11 +1321,34 @@ mod tests {
         // An invalid source is rejected, and rejected *before* any state changes.
         assert_eq!(
             adv.note_control("k", 1.5, "bogus"),
-            Err("source must be 'manual' or 'seed', got \"bogus\"".to_string())
+            Err("source must be 'manual' or 'seed', got 'bogus'".to_string())
         );
         assert_eq!(adv.values.get("k"), Some(&1.0));
         // A valid source is accepted and does update the value.
         assert!(adv.note_control("k", 1.5, "manual").is_ok());
         assert_eq!(adv.values.get("k"), Some(&1.5));
+    }
+
+    #[test]
+    fn zero_length_chunk_at_time_zero_still_has_evidence() {
+        // Regression for a horizon-underflow bug: Python computes
+        // `horizon = self.now - 2 * self.cfg.watch` as a signed int (goes
+        // negative here), so `b.end (0) > horizon (-40)` keeps the bucket and
+        // `_evidence()` returns a non-null evidence dict. A naive Rust port
+        // using `self.now.saturating_sub(...)` clamps the horizon at 0, so
+        // `b.end (0) > horizon (0)` is false and the bucket (and therefore
+        // the evidence) is dropped. Verified against a real run of the
+        // committed src/refrain/advisor.py with the equivalent ChunkFacts:
+        // `advice()["evidence"]` is not None there either.
+        let mut adv = Advisor::new(&proto(), 10.0);
+        let empty: Vec<bool> = vec![];
+        adv.feed(&ChunkFacts {
+            n: 0, running: true, phase_index: -1, phase_name: None,
+            output_muted: false, clock_frozen: false, bundle: None,
+            muted: &empty, inhibits: vec![], checks: vec![empty.as_slice()], events: &empty,
+            derive_samples: vec![],
+        });
+        let a = adv.advice();
+        assert!(!a["evidence"].is_null(), "{a}");
     }
 }
