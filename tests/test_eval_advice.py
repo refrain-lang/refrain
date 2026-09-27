@@ -133,3 +133,46 @@ def test_guards_only_count_the_active_blocks_inhibits(backend):
     a = ev.advice()
     assert a["reason"] != "guard"
     assert a["evidence"]["guards"] == {"blink": 0.0, "emg": 0.0}
+
+
+def test_rust_backend_apply_dismiss_and_equipment_round_trip():
+    """A successful apply_advice and dismiss_advice, then an equipment change,
+    on both backends over the same real session: every return value, advice
+    result, audit event and control value must match."""
+    pytest.importorskip("refrain_core", reason="refrain_core wheel not installed")
+    from pathlib import Path
+
+    from refrain import parse_file
+    ir = resolve(parse_file(Path(__file__).resolve().parents[1]
+                            / "bench" / "protocols" / "autopilot_staged.refrain"))
+    engines = {}
+    for backend in ("python", "rust"):
+        engines[backend] = Evaluator.live(ir, sample_rate_hz=SR, channel_names=("Cz",),
+                                          backend=backend)
+        engines[backend].start(skip_warmup=False)
+    py, rs = engines["python"], engines["rust"]
+    n = 256 * 50
+    t = np.arange(n) / SR
+    rng = np.random.default_rng(7)
+    x = (np.sin(2 * np.pi * 6 * t) * (1 + 0.8 * np.sin(2 * np.pi * t / 20))
+         + 0.6 * np.sin(2 * np.pi * 10 * t) + 0.05 * rng.standard_normal(n))
+    did = set()
+    for i in range(0, n, 256):
+        chunk = x[i:i + 256].reshape(-1, 1)
+        py.step_chunk(chunk)
+        rs.step_chunk(chunk)
+        a = py.advice()
+        assert rs.advice() == a
+        if a["state"] == "adjust" and "apply" not in did:
+            applied = py.apply_advice(a["id"], by="clinician")
+            assert rs.apply_advice(a["id"], by="clinician") == applied
+            assert applied["kind"] == "applied" and applied["to"] == a["control"]["proposed"]
+            did.add("apply")
+        elif a["state"] == "adjust" and "apply" in did and "dismiss" not in did:
+            assert rs.dismiss_advice(a["id"]) == py.dismiss_advice(a["id"])
+            did.add("dismiss")
+            py.mark_equipment_change()
+            rs.mark_equipment_change()
+        assert rs.advice() == py.advice()
+        assert rs.drain_advice_events() == py.drain_advice_events()
+    assert did == {"apply", "dismiss"}
