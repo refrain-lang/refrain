@@ -14,8 +14,8 @@ See `docs/IR-JSON.md` for the schema.
 
 from __future__ import annotations
 
+import decimal
 import json
-import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -427,10 +427,12 @@ def _samples(ms: float | None, ctx: _EmitCtx) -> int | None:
 
 
 def _decimals(round_to: float | None) -> int:
-    """Digits after the point for displaying a knob snapped to `round_to`."""
+    """Digits after the point for displaying a knob snapped to `round_to`,
+    read from round_to's decimal representation (0.25 -> 2, 0.1 -> 1, 5 -> 0)."""
     if round_to is None:
         return 2
-    return max(0, math.ceil(-math.log10(round_to) - 1e-9))
+    exponent = decimal.Decimal(repr(float(round_to))).normalize().as_tuple().exponent
+    return max(0, -int(exponent))
 
 
 def _emit_autopilot(ap: IRAutopilot, ctx: _EmitCtx) -> dict:
