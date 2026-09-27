@@ -324,6 +324,24 @@ def test_reversal_after_a_bad_tightening_bypasses_cooldown():
                             "Return Crossover target 0.65 -> 0.60.")
 
 
+def test_reversal_clears_once_a_later_window_is_back_in_band():
+    """A fired reversal is not permanent: when a later full evidence window
+    lands inside the target band, the reversal is dropped and the normal
+    decision (here: on track) takes over."""
+    adv = make()
+    a = run(adv, EASY)
+    adv.apply(a["id"], "clinician")                  # 0.60 -> 0.65
+    a = run(adv, strict(hits=0))
+    assert a["reason"] == "reversal"
+    adv.drain_events()
+    a = run(adv, [(True, True)] * 2)                  # window 2/20 = 10%: in band
+    assert (a["state"], a["reason"], a["id"]) == ("hold", "on_track", None)
+    assert adv.reversal is None
+    assert [e["kind"] for e in adv.drain_events()] == ["superseded"]
+    a = run(adv, strict(k=20, hits=0))               # worse again: no reversal left
+    assert a["reason"] == "too_strict"
+
+
 def test_apply_stale_id_is_refused_and_value_unchanged():
     """Review Focus #3."""
     adv = make()
@@ -378,6 +396,30 @@ def test_note_control_seed_restarts_window_silently():
     assert adv.values["xover"] == 0.7
     a = adv.advice()
     assert a["reason"] == "collecting" and a["evidence"] is None
+
+
+def test_note_control_with_an_unchanged_value_is_a_no_op():
+    """Writing the value a control already has changes nothing: no audit
+    event, no window restart, no cooldown, the standing suggestion survives."""
+    adv = make()
+    a = run(adv, strict())
+    adv.drain_events()
+    for source in ("manual", "seed"):
+        adv.note_control("xover", 0.6, source)
+        assert adv.drain_events() == []
+        b = adv.advice()
+        assert (b["id"], b["reason"]) == (a["id"], "too_strict")
+        assert b["evidence"]["clean_s"] == 20.0
+    assert adv.last_move_at is None
+
+
+def test_note_control_unchanged_value_keeps_a_pending_reversal():
+    adv = make()
+    a = run(adv, EASY)
+    adv.apply(a["id"], "clinician")                  # 0.60 -> 0.65
+    adv.note_control("xover", 0.65, "manual")
+    a = run(adv, strict(hits=0))
+    assert a["reason"] == "reversal"
 
 
 def test_note_control_rejects_a_bad_source():

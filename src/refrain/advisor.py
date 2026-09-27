@@ -384,6 +384,8 @@ class Advisor:
         if source not in ("manual", "seed"):
             raise ValueError(f"source must be 'manual' or 'seed', got {source!r}")
         frm = self.values.get(control)
+        if frm is not None and abs(float(value) - frm) <= 1e-12:
+            return  # no-op write: no event, no restart, no cooldown
         self.values[control] = float(value)
         if control not in self.cfg.relevant:
             return
@@ -581,9 +583,9 @@ class Advisor:
         r = self.reversal
         if r is None:
             return None
+        lo, hi = self.cfg.target
         if not r["checked"]:
             r["checked"] = True
-            lo, hi = self.cfg.target
             worse = ((r["direction"] == "harder" and rate < lo)
                      or (r["direction"] == "easier" and rate > hi))
             if not worse:
@@ -591,6 +593,9 @@ class Advisor:
                 return None
             r["fire"] = True
         if not r["fire"]:
+            return None
+        if lo <= rate <= hi:
+            self.reversal = None  # a later window is back in band: drop it
             return None
         p = self.cfg.knobs[r["control"]]
         cur = self.values[p.control]

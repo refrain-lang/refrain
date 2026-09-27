@@ -72,4 +72,16 @@ SCENARIOS = {
     # dismissed: the only way to reach the "superseded" event kind, which
     # none of the other scripted scenarios produce.
     "superseded_by_ontrack": (ap(), {}, strict(hits=1) + strict(hits=4)),
+    # Writing a control's current value is a no-op for both sources: no
+    # event, no window restart, no cooldown, the standing id survives; and
+    # after an apply, re-writing the applied value leaves the pending
+    # reversal check armed.
+    "noop_write": (ap(), {}, strict() + op("note", control="xover", value=0.6, source="manual")
+                   + op("note", control="xover", value=0.6, source="seed") + strict(k=2)
+                   + op("apply", id="adv-0001", by="clinician")
+                   + op("note", control="xover", value=0.55, source="manual")
+                   + feed(k=3) + EASY),
+    # A fired reversal clears once a later full window is back in band.
+    "reversal_clears": (ap(), {}, EASY + op("apply", id="adv-0001", by="clinician")
+                        + strict(hits=0) + feed(k=2) + strict(hits=0)),
 }

@@ -728,6 +728,9 @@ impl Advisor {
             return Err(format!("source must be 'manual' or 'seed', got '{source}'"));
         }
         let frm = self.values.get(control).copied();
+        if frm.is_some_and(|old| (value - old).abs() <= 1e-12) {
+            return Ok(()); // no-op write: no event, no restart, no cooldown
+        }
         self.values.insert(control.to_string(), value);
         if !self.cfg.relevant.contains(control) {
             return Ok(());
@@ -1014,6 +1017,10 @@ impl Advisor {
             r.fire = true;
         }
         if !r.fire {
+            return None;
+        }
+        if lo <= rate && rate <= hi {
+            self.reversal = None; // a later window is back in band: drop it
             return None;
         }
         let (control, from, direction) = (r.control.clone(), r.from, r.direction.clone());
