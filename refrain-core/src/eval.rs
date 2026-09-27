@@ -12,6 +12,9 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use serde_json::Value;
+
+use crate::advisor::{Advisor, ChunkFacts};
 use crate::dsp::{
     control_cell, smooth_alpha_from_tau_ms, AutoRange, Autocorr, Bandpower, Biquad, Coherence,
     ControlCell,
@@ -563,7 +566,7 @@ fn step_reward_event(
     re: &mut RewardEvent,
     env: &HashMap<String, Val>,
     n: usize,
-) -> (Vec<bool>, Vec<bool>, Vec<bool>) {
+) -> (Vec<bool>, Vec<bool>, Vec<bool>, Vec<Vec<bool>>) {
     let mut sub_streams: Vec<Vec<bool>> = Vec::with_capacity(re.sub_conditions.len());
     let mut sub_lasts: Vec<bool> = Vec::with_capacity(re.sub_conditions.len());
     for sub in re.sub_conditions.iter_mut() {
@@ -578,7 +581,7 @@ fn step_reward_event(
         })
         .collect();
     let (events, holds) = re.dwell.step(&condition);
-    (events, holds, sub_lasts)
+    (events, holds, sub_lasts, sub_streams)
 }
 
 // --- Evaluator ------------------------------------------------------------
@@ -866,6 +869,10 @@ pub struct Evaluator {
     /// Set for the rest of the session once any latch fails closed
     /// (insufficient warmup samples) — mutes output regardless of phase.
     seed_failed: bool,
+    /// Protocol autopilot advisor (SPEC §7.10), fed once per chunk from
+    /// `eval_chunk`. Inert (always `not_training_phase`/`observing`-style
+    /// holds) for protocols with no `autopilot` declarations.
+    advisor: Advisor,
 }
 
 /// One compiled v0.2 reward component: the bare `name` (tap/stream key), its
@@ -1097,6 +1104,7 @@ impl Evaluator {
                 .collect(),
             seed_latches,
             seed_failed: false,
+            advisor: Advisor::new(p, sample_rate_hz),
         }
     }
 
@@ -1190,7 +1198,12 @@ impl Evaluator {
                 latch.status = SeedStatus::DisarmedByHost;
             }
         }
-        self.apply_control_value(name, value)
+        self.apply_control_value(name, value)?;
+        // "manual" is a fixed literal at this call site (a host-initiated
+        // change), never anything else, so `note_control`'s `Result` (which
+        // only errs for a source other than "manual"/"seed") can't fail here.
+        self.advisor.note_control(name, value, "manual").expect("fixed source");
+        Ok(())
     }
 
     /// Forward a control value to its bound stages. Extracted out of
@@ -1430,11 +1443,21 @@ impl Evaluator {
         // chunk regardless of warmup so gate/threshold state stays current
         // (only event *emission* is warmup-suppressed). Empty → all-false.
         let mut muted = vec![false; n];
+        let mut adv_inhibits: Vec<(String, Vec<bool>)> = Vec::new();
+        let mut adv_checks: Vec<Vec<bool>> = Vec::new();
+        let mut adv_events: Vec<bool> = vec![false; n];
         for ih in self.inhibits.iter_mut() {
             let metric = ih.metric.eval(&env, n).into_f();
             let thresh = ih.threshold.eval(&metric);
             let active: Vec<bool> =
                 metric.iter().zip(&thresh).map(|(m, t)| m > t).collect();
+            let bare_name = ih
+                .canonical_name
+                .split_once('/')
+                .map(|(_, s)| s)
+                .unwrap_or(ih.canonical_name.as_str())
+                .to_string();
+            adv_inhibits.push((bare_name, active.clone()));
             // `inhibit/<name>` tap: last-sample active boolean.
             if let Some(&last) = active.last() {
                 taps.insert(ih.canonical_name.clone(), bool_f(last));
@@ -1555,6 +1578,8 @@ impl Evaluator {
             if let Some(&last) = holds.last() {
                 taps.insert("reward/event.holds".to_string(), bool_f(last));
             }
+            adv_checks = sub_streams.clone();
+            adv_events = events.clone();
             env.insert("reward.event".to_string(), Val::B(events));
             env.insert("reward.event.holds".to_string(), Val::B(holds));
         }
@@ -1573,7 +1598,7 @@ impl Evaluator {
                 }
             }
             if let Some(re) = bundle.event.as_mut() {
-                let (events, holds, sub_lasts) = step_reward_event(re, &env, n);
+                let (events, holds, sub_lasts, sub_streams) = step_reward_event(re, &env, n);
                 if is_active {
                     for (i, &last) in sub_lasts.iter().enumerate() {
                         taps.insert(format!("reward/condition[{i}]"), bool_f(last));
@@ -1582,6 +1607,8 @@ impl Evaluator {
                     if let Some(&last) = holds.last() {
                         taps.insert("reward/event.holds".to_string(), bool_f(last));
                     }
+                    adv_checks = sub_streams.clone();
+                    adv_events = events.clone();
                     env.insert("reward.event".to_string(), Val::B(events));
                     env.insert("reward.event.holds".to_string(), Val::B(holds));
                 }
@@ -1637,6 +1664,42 @@ impl Evaluator {
             "phase/output_muted".to_string(),
             bool_f(self.phases.get(self.phase_index).map(|p| p.output_muted).unwrap_or(false)),
         );
+
+        // Feed the autopilot advisor (SPEC §7.10) once per chunk, mirroring
+        // `_process_chunk`'s `self._advisor.feed(ChunkFacts(...))` call:
+        // `running`/`output_muted`/`clock_frozen` reflect this chunk's
+        // lifecycle state, `checks`/`events` come from whichever reward is
+        // active (default reward, or the active block's bundle), and
+        // `inhibits` carries every inhibit's per-sample active vector
+        // (unfiltered by the active block).
+        let sources = self.advisor.rebaseline_sources();
+        let derive_samples: Vec<(&str, &[f64])> = sources
+            .iter()
+            .filter_map(|canon| {
+                let bare = canon.split_once('/').map(|(_, s)| s).unwrap_or(canon.as_str());
+                match env.get(bare) {
+                    Some(Val::F(f)) => Some((canon.as_str(), f.as_slice())),
+                    _ => None,
+                }
+            })
+            .collect();
+        let phase_name: Option<String> = self.phases.get(self.phase_index).map(|p| p.name.clone());
+        let phase_index = if phase_name.is_some() { self.phase_index as i64 } else { -1 };
+        let facts = ChunkFacts {
+            n,
+            running: self.state == State::Run,
+            phase_index,
+            phase_name: phase_name.as_deref(),
+            output_muted: mutes_output,
+            clock_frozen: self.clock_frozen,
+            bundle: active_bundle.as_deref(),
+            muted: &muted,
+            inhibits: adv_inhibits.iter().map(|(k, v)| (k.as_str(), v.as_slice())).collect(),
+            checks: adv_checks.iter().map(|v| v.as_slice()).collect(),
+            events: &adv_events,
+            derive_samples,
+        };
+        self.advisor.feed(&facts);
 
         self.last_taps = taps;
         // Capture the phase snapshot at the SAME point as the taps, reflecting
@@ -1705,6 +1768,10 @@ impl Evaluator {
         }
         for (name, value) in writes {
             let _ = self.apply_control_value(&name, value); // NOT set_control -> no self-disarm
+            // "seed" is a fixed literal here (a baseline-seed write, never
+            // anything else), so `note_control`'s `Result` (which only errs
+            // for a source other than "manual"/"seed") can't fail.
+            self.advisor.note_control(&name, value, "seed").expect("fixed source");
         }
     }
 
@@ -1728,6 +1795,34 @@ impl Evaluator {
             );
         }
         out
+    }
+
+    /// Current autopilot advice (spec §5.2).
+    pub fn advice(&self) -> Value {
+        self.advisor.advice()
+    }
+
+    /// Apply the current `adjust` advice; refuses a stale id or a forbidden auto-apply.
+    pub fn apply_advice(&mut self, advice_id: &str, by: &str) -> Result<Value, String> {
+        let (control, value, event) = self.advisor.apply(advice_id, by)?;
+        self.apply_control_value(&control, value)?;
+        Ok(event)
+    }
+
+    pub fn dismiss_advice(&mut self, advice_id: &str) -> Result<Value, String> {
+        self.advisor.dismiss(advice_id)
+    }
+
+    pub fn mark_equipment_change(&mut self) {
+        self.advisor.mark_equipment_change();
+    }
+
+    pub fn drain_advice_events(&mut self) -> Vec<Value> {
+        self.advisor.drain_events()
+    }
+
+    pub fn autopilot_policy(&self) -> Value {
+        self.advisor.policy()
     }
 
     /// Clinician-observation snapshot from the most recent `step_chunk` /
