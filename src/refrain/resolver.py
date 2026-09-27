@@ -231,6 +231,9 @@ class _Resolver:
 
         # Named reward bundles (block-selectable, contain continuous/event).
         self._reward_bundles: dict[str, IRReward] = {}
+        # Check name -> the reward that declared it: names are unique across
+        # the whole protocol (`fixes`, `limiter`, `tighten_first` use the name alone).
+        self._check_name_owner: dict[str, str] = {}
 
         # Named block declarations (staged-protocol feature).
         self._blocks: dict[str, IRBlock] = {}
@@ -502,6 +505,13 @@ class _Resolver:
                 raise ResolveError(
                     f"control {name!r}.autopilot.higher_is = {p.higher_is!r}, but raising "
                     f"{name!r} makes check {p.fixes!r} {e['higher_is']}", loc=p.loc)
+            if p.apply == "auto" and e["knob"] != name:
+                raise ResolveError(
+                    f"control {name!r}.autopilot: autopilot cannot tell which way changing "
+                    f"{name!r} moves check {p.fixes!r} (the check does not compare its signal "
+                    f"directly against {name!r}), so it cannot verify higher_is = "
+                    f"{p.higher_is!r}; autopilot may only suggest changes to it: use "
+                    '`apply = "suggest"`', loc=p.loc)
             if p.apply == "auto" and name in guarded:
                 raise ResolveError(
                     f"control {name!r} feeds a guard (inhibit), so autopilot may only suggest "
@@ -1553,9 +1563,14 @@ class _Resolver:
         settings: dict[str, A.Expr] = {}
         guards: list[IRGuard] = []
         limiters: list[IRLimiter] = []
+        declared: set[str] = set()
         for stmt in self.autopilot_ast.body:
             if not isinstance(stmt, A.Assignment):
                 raise ResolveError("autopilot accepts only `name = value` entries", loc=stmt.loc)
+            if stmt.target in declared:
+                raise ResolveError(
+                    f"autopilot declares {stmt.target!r} twice; keep only one", loc=stmt.loc)
+            declared.add(stmt.target)
             v = stmt.value
             if isinstance(v, A.BlockExpr) and v.name in ("guard", "limiter"):
                 if stmt.target in _AP_SETTINGS:
@@ -2196,7 +2211,7 @@ class _Resolver:
 
     # -- Reward -------------------------------------------------------------
 
-    def _strip_check_labels(self, event_ast):
+    def _strip_check_labels(self, event_ast, owner: str = "the reward"):
         """Remove `as "<name>"` from a reward dwell's all_of/any_of list.
 
         Returns the label-free AST (resolved exactly as before) and the names
@@ -2222,10 +2237,22 @@ class _Resolver:
             seen: set[str] = set()
             for el in arr.elements:
                 if isinstance(el, A.Labeled):
+                    if not el.label.strip():
+                        raise ResolveError(
+                            f"a reward check in {owner} has an empty name; write a name "
+                            'inside the quotes (e.g. `as "theta"`) or drop the `as`', loc=el.loc)
                     if el.label in seen:
                         raise ResolveError(
                             f"reward check name {el.label!r} is used twice", loc=el.loc)
+                    prev = self._check_name_owner.get(el.label)
+                    if prev is not None and prev != owner:
+                        raise ResolveError(
+                            f"reward check name {el.label!r} is reused: {prev} already has a "
+                            f"check with that name, and {owner} uses it again; check names "
+                            "must be unique across the whole protocol", loc=el.loc)
                     seen.add(el.label)
+            for label in seen:
+                self._check_name_owner[label] = owner
             if seen:
                 names = tuple(el.label if isinstance(el, A.Labeled) else None
                               for el in arr.elements)
@@ -2260,7 +2287,7 @@ class _Resolver:
             )
         check_names: tuple = ()
         if event is not None:
-            event, check_names = self._strip_check_labels(event)
+            event, check_names = self._strip_check_labels(event, f'reward "{decl.name}"')
         cont_ir = self._resolve_stream_expr(cont) if cont is not None else None
         event_ir = self._resolve_stream_expr(event) if event is not None else None
         return IRReward(
@@ -2329,7 +2356,7 @@ class _Resolver:
         )
         check_names: tuple = ()
         if event_expr is not None:
-            event_expr, check_names = self._strip_check_labels(event_expr)
+            event_expr, check_names = self._strip_check_labels(event_expr, "the top-level reward")
         cont_ir = self._resolve_stream_expr(cont_expr) if cont_expr is not None else None
         event_ir = self._resolve_stream_expr(event_expr) if event_expr is not None else None
         if event_ir is not None and _expr_stream_type(event_ir) != EVENT_STREAM:

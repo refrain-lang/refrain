@@ -281,7 +281,8 @@ def test_auto_on_a_guard_knob_is_rejected_in_any_branch():                  # V4
 def test_two_knobs_one_check():                                             # V7
     k2 = 'k2 = number { default = 1.0; range = (0.5, 2.0); live_tunable = true; ' \
          'autopilot = fixed_step { fixes = "crossover"; step = 0.1; higher_is = "harder"; apply = "suggest" } }'
-    msg = _err(ap(xover_thr="xover * k2", extra_controls=k2))
+    suggest = XOVER_AP.replace('"auto"', '"suggest"')   # `xover * k2` is untraceable: no auto
+    msg = _err(ap(xover_thr="xover * k2", extra_controls=k2, xover_ap=suggest))
     assert "both fix" in msg
 
 
@@ -292,3 +293,85 @@ def test_policy_on_protocol_without_reward_condition():                     # V1
         'autopilot { evidence = "experimental"; citation = "x"; rationale = "y"; '
         "reward_target = (40%, 60%) }\n  session {")
     assert "reward condition" in _err(src)
+
+
+def test_auto_needs_a_traceable_direction():                                # untraceable + auto
+    # `xover * 1.0` hides which way xover moves the check, so the declared
+    # higher_is cannot be verified: automatic moves are refused...
+    msg = _err(ap(xover_thr="xover * 1.0"))
+    assert "'xover'" in msg and "only suggest" in msg and 'apply = "suggest"' in msg
+    # ...and suggest-only compiles.
+    suggest = XOVER_AP.replace('"auto"', '"suggest"')
+    assert not compile_to_ir_json(ap(xover_thr="xover * 1.0", xover_ap=suggest)).errors
+
+
+# --- protocol-wide check names ---------------------------------------------
+
+STAGED = '''protocol "s" {
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = passthrough() }
+  derive "t_env" { from = "raw"; pipeline = [ magnitude() ] }
+  derive "a_env" { from = "raw"; pipeline = [ magnitude() ] }
+  reward "r1" { event = dwell(condition: all_of([above("t_env", k1) as "theta"%(extra1)s]), duration: 500 ms) }
+  reward "r2" { event = dwell(condition: all_of([above("a_env", k2) as %(name2)s]), duration: 500 ms) }
+  output { audio_chime = reward.event }
+  block "b1" { reward = "r1"; output = ["audio_chime"] }
+  block "b2" { reward = "r2"; output = ["audio_chime"] }
+  controls {
+    k1 = number { default = 1.0; range = (0.1, 5.0); live_tunable = true }
+    k2 = number { default = 1.0; range = (0.1, 5.0); live_tunable = true }
+  }
+  session { phases = [
+    phase { name = "p1"; duration = 5 s; block = "b1" },
+    phase { name = "p2"; duration = 5 s; block = "b2" },
+  ] }
+}'''
+
+
+def _staged(name2='"alpha"', extra1=""):
+    return STAGED % {"name2": name2, "extra1": extra1}
+
+
+def test_check_name_reused_across_rewards_is_an_error():
+    msg = _err(_staged(name2='"theta"'))
+    assert "'theta'" in msg and "reused" in msg
+
+
+def test_check_name_reused_with_top_level_reward_is_an_error():
+    src = _staged().replace(
+        "output {", 'reward { event = dwell(condition: all_of([above("t_env", k1) as "alpha"]), '
+                    "duration: 500 ms) }\n  output {")
+    msg = _err(src)
+    assert "'alpha'" in msg and "reused" in msg
+
+
+def test_empty_check_name_is_an_error():
+    msg = _err(_staged(name2='""'))
+    assert "empty" in msg
+
+
+def test_staged_check_names_are_emitted_per_bundle():
+    from refrain.ir_json import ir_to_json_obj
+    obj = ir_to_json_obj(_ir(_staged()))
+    assert obj["reward_bundles"]["r1"]["check_names"] == ["theta"]
+    assert obj["reward_bundles"]["r2"]["check_names"] == ["alpha"]
+
+
+# --- duplicate autopilot keys ----------------------------------------------
+
+def test_duplicate_autopilot_setting_is_an_error():
+    msg = _err(ap().replace("watch            = 20 s", "watch = 20 s\n    watch = 30 s"))
+    assert "'watch'" in msg and "twice" in msg
+
+
+def test_duplicate_autopilot_guard_is_an_error():
+    msg = _err(ap().replace('emg = guard { max = 15%; say = "Muscle artifact." }',
+                            'emg = guard { max = 15% }\n    emg = guard { max = 20% }'))
+    assert "'emg'" in msg and "twice" in msg
+
+
+def test_duplicate_autopilot_limiter_is_an_error():
+    msg = _err(ap().replace(
+        'emg = guard { max = 15%; say = "Muscle artifact." }',
+        'theta = limiter { say = "a" }\n    theta = limiter { say = "b" }'))
+    assert "'theta'" in msg and "twice" in msg
