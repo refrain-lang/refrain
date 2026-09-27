@@ -81,14 +81,12 @@ reward {
   Anywhere else is a compile error (rule V15).
 - A dwell with a single (non-list) condition can still be named — wrap it in a
   one-element `all_of`: `all_of([<condition> as "x"])`.
-- Names must be unique within the reward bundle they are declared in.
-  Top-level `reward { }` and each named, block-selectable `reward "<name>" {
-  }` bundle (staged protocols) are separate bundles with their own naming.
-  Because `fixes`, `tighten_first` and `limiter` entries address a check by
-  bare name with no bundle qualifier, reusing a name across two different
-  bundles in the same protocol is confusing even though the compiler does not
-  currently flag it across bundles — give every check in a protocol a
-  distinct name as a matter of style.
+- Names must be unique across the whole protocol, not just within one
+  reward. Because `fixes`, `tighten_first` and `limiter` entries address a
+  check by bare name with no bundle qualifier, the compiler refuses a name
+  that is reused in the top-level `reward { }` and a named `reward "<name>" {
+  }` bundle, or in two bundles (rule V15). An empty name (`as ""`) is refused
+  too.
 - Names are front-end metadata only: they change no IR expression node and no
   tap key. `reward/condition[i]` still means the same thing it always did.
 - **Unnamed checks are not an error.** Advice simply refers to them as
@@ -249,9 +247,11 @@ disabled" — a protocol that fails any rule does not compile at all.
 | V12 | `guard`/`limiter` entry names, or a `tighten_first` name, that doesn't match a declared inhibit or check | A typo here would silently disable a safety message | Fix the name, or declare the check/inhibit it should have referred to |
 | V13 | A control policy with no top-level `autopilot { }` block at all; or a block missing `evidence`, `citation`, or `rationale`; or `evidence` outside the closed set | No unsourced policy — every automated suggestion must be traceable to a reason | Add the block with all three provenance fields, using one of the four `evidence` levels |
 | V14 | `reward_target` malformed, or outside (0%, 100%); any duration ≤ 0 | Scale/range error | Fix the pair or the duration |
-| V15 | `as "<name>"` anywhere other than an element of a reward dwell's `all_of`/`any_of` list; the same name used twice in one bundle | `as` only means "name this reward check" in that one position | Move the label, or rename the duplicate |
+| V15 | `as "<name>"` anywhere other than an element of a reward dwell's `all_of`/`any_of` list; an empty name; the same name used twice anywhere in the protocol, even in two different reward bundles | `as` only means "name this reward check" in that one position, and `fixes`/`limiter`/`tighten_first` find a check by its name alone | Move the label, or give every check its own name |
 | V16 | `reward_target` or a knob policy on a protocol with no `event = dwell(...)` reward condition, or one using a weighted composite reward | There's no per-sample condition for autopilot to judge the pass rate of | Remove the policy, or add a dwell-based reward condition |
 | V17 | `only_when` that isn't `<mode control> == "<choice>"` (or `!=`), or that names a choice the mode doesn't declare | `only_when` only understands a direct comparison against one of the mode's own choices | Rewrite as `<mode> == "<choice>"`/`!=`, using a choice the mode actually declares |
+| V18 | `apply = "auto"` on a knob the compiler can't trace to its check, e.g. `above("ratio", xover * 1.0)` or a threshold built from two knobs | V3 can only check `higher_is` when the check compares its signal directly against the knob. If the direction can't be verified and happens to be wrong, automatic moves would walk the knob to its limit | Use `apply = "suggest"`, or rewrite the check so it compares against the knob directly |
+| V19 | The same setting, `guard` or `limiter` entry written twice inside `autopilot { }` | One of the two would silently win | Keep one |
 
 The two most common mistakes in practice: **forgetting `only_when` on a
 mode-dependent knob** (it fails V2, since the knob only feeds its check in

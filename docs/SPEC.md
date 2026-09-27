@@ -406,9 +406,11 @@ reward {
 
 - `as` is legal only on an element of a reward dwell condition list; anywhere
   else is a `ResolveError` (§6.7 V15).
-- Names must be unique within the bundle they are declared in. Top-level
-  `reward { }` and each named, block-selectable `reward "<name>" { }` bundle
-  (staged protocols) are independent naming scopes.
+- Names must be unique across the whole protocol: a name used in the
+  top-level `reward { }` or in one named, block-selectable `reward "<name>" { }`
+  bundle (staged protocols) cannot be used again in any other, because
+  `fixes`, `limiter` and `tighten_first` address a check by name alone. An
+  empty name (`as ""`) is rejected (§6.7 V15).
 - Naming a check changes no expression node and no tap key —
   `reward/condition[i]` is unaffected; names are recorded separately as
   `reward.check_names`, a list aligned with the condition indices (`None` for
@@ -1001,9 +1003,11 @@ Checks specific to named reward checks (§4.7), the `autopilot` block (§4.12), 
 | V12 | `guard` entry names no inhibit; `limiter` entry or `tighten_first` names no check; `phases` names an unknown or output-muted phase | Typos cannot silently disable a safety check. |
 | V13 | Knob policies present with no `autopilot` block; `autopilot` block missing `evidence`, `citation`, or `rationale`; `evidence` outside the closed set | No unsourced policy. |
 | V14 | `reward_target` malformed or outside (0%, 100%); durations ≤ 0 | |
-| V15 | `as "<name>"` outside a reward dwell condition list; the same name used twice within one reward bundle | |
+| V15 | `as "<name>"` outside a reward dwell condition list; an empty name; the same name used twice anywhere in the protocol (within one bundle or across bundles) | `fixes`, `limiter` and `tighten_first` refer to a check by name alone. |
 | V16 | `autopilot` targets or knob policies on a protocol with no reward condition, or one using a weighted composite reward | There is no per-sample condition for autopilot to judge. |
 | V17 | `only_when` that is not `<mode control> == "<choice>"` / `!=`, or names a choice the mode does not declare | |
+| V18 | `apply = "auto"` on a knob the tracer cannot follow to the check it `fixes` (the check does not compare its signal directly against this control — e.g. `above(S, k * 1.0)`, or two knobs in one threshold) | V3 can only verify `higher_is` when the trace is unambiguous. An unverified direction may be wrong, and an automatic move in the wrong direction would walk the knob to its limit before anyone looks. Such a knob may only suggest (`apply = "suggest"`). |
+| V19 | The same setting, `guard` or `limiter` entry declared twice inside one `autopilot { }` block | One of them would silently win. |
 
 ---
 
@@ -1240,10 +1244,10 @@ Evaluated after every chunk; the first step that applies decides the result.
 |---|---|---|
 | 1 | Current sample not in training | `hold` / `not_training_phase` |
 | 2 | Within `equipment_settle` of the last equipment change | `hold` / `equipment_settling` (with remaining time) |
-| 3 | Some inhibit's active share of in-training samples in the window exceeds its guard `max` (the worst one is reported) | `hold` / `guard`, with that guard's message (below) |
+| 3 | Some inhibit's active share of in-training samples in the window exceeds its guard `max` (the worst one is reported). Only inhibits that can mute output count: when the active block declares a non-empty inhibit set, only those; otherwise every inhibit | `hold` / `guard`, with that guard's message (below) |
 | 4 | Clean time in the window is less than `watch` | `collecting` / `collecting`, with progress |
 | 5 | The protocol has no reward condition to judge (a continuous-only reward, or a weighted-composite reward) | `hold` / `observing` |
-| 6 | The last change made through `apply_advice` went toward *harder* and reward rate is now below `low`, or toward *easier* and reward rate is now above `high`; evaluated once, on the first full window after that change | `adjust` / `reversal` — propose the pre-change value; bypasses `between_moves` |
+| 6 | The last change made through `apply_advice` went toward *harder* and reward rate is now below `low`, or toward *easier* and reward rate is now above `high`; evaluated once, on the first full window after that change | `adjust` / `reversal` — propose the pre-change value; bypasses `between_moves`. Once fired it stands until applied or dismissed, or until a later full window's reward rate is back inside the target band, which drops it and lets the normal decision take over |
 | 7 | `low ≤ reward rate ≤ high` | `hold` / `on_track` |
 | 8 | Select the limiting check (§7.10.4) | — |
 | 9 | No surviving policy fixes that check | `hold` / `no_knob` (with the `limiter` entry's message, if any), or `hint` (§7.10.5) when the protocol declares no knob policies at all and the trace is unambiguous |
@@ -1299,7 +1303,8 @@ A hint is emitted only when exactly one live-tunable knob of an eligible kind
 and the knob feeds no inhibit. The hint names the knob, its label, and the
 direction ("lower is easier") — never a proposed value. The same trace backs
 compile-time rule V3 (§6.7): a declared `higher_is` that contradicts this
-trace is refused.
+trace is refused. When the trace is ambiguous, `higher_is` cannot be checked,
+so rule V18 limits that knob to `apply = "suggest"`.
 
 The tracer is a small, table-driven function implemented identically in both
 engines (`src/refrain/advisor_trace.py`, the `trace` section of
@@ -1321,7 +1326,7 @@ advice does not flicker chunk to chunk.
 | `blocked` | advisor | A standing id is replaced by a hold at steps 1–3 (carries the hold reason). |
 | `applied` | `apply_advice` | With `by: "clinician"` or `by: "autopilot"`, and the from/to values. |
 | `dismissed` | `dismiss_advice` | |
-| `changed_manually` | `set_control` | Knob, from, to — only for a control that feeds a reward check or an inhibit. |
+| `changed_manually` | `set_control` | Knob, from, to — only for a control that feeds a reward check or an inhibit. Writing the value a control already has is a no-op: no event, no window restart, no cooldown. |
 | `equipment_change` | `mark_equipment_change` | |
 
 Routine `collecting` and `on_track` results are not events; only transitions

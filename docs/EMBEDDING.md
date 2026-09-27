@@ -539,9 +539,11 @@ evaluator.autopilot_policy() -> dict
   session has started; it is computed as a side effect of `step_chunk`, so
   this call is a pure read.
 - **`apply_advice(id, by="clinician")`** — applies the current `adjust`
-  result's proposed value through the normal `set_control` path, logs an
-  `applied` event, restarts the evidence window, and arms the one-shot
-  reversal check. Raises `AdviceError` if `id` is not the current `adjust`
+  result's proposed value through the engine's internal control-update path,
+  logs an `applied` event, restarts the evidence window, and arms the
+  one-shot reversal check. It does **not** go through `set_control`: it logs
+  no `changed_manually` event and does not disarm a pending baseline seed
+  on that control. Raises `AdviceError` if `id` is not the current `adjust`
   id, or if `by="autopilot"` and the protocol only allows this change as a
   suggestion (`advice()["control"]["auto_allowed"]` is `False`). Returns the
   `applied` event dict.
@@ -627,7 +629,7 @@ to the current state is `null`, never omitted, so a host never needs a
 | `t_s` | number | Session sample time (seconds) this result was computed at. |
 | `limiter` | object \| null | `{ "check": <name or "check N">, "pass_rate": <0..1> }`, present from decision step 8 onward (once a limiting check has been selected). |
 | `control` | object \| null | Present for `hint` and `adjust`. For a `hint`, `proposed`, `round_to`, and `strategy` are `null` and `auto_allowed` is `false` — see below. |
-| `evidence` | object \| null | Present once an evidence window exists (`collecting` onward). For a protocol with no reward condition (`reason: "observing"`), `reward_rate` is `null`; `target` is still the `[low, high]` pair and `checks` is `{}` (empty, not null). |
+| `evidence` | object \| null | Present once an evidence window exists. It can be `null` while `collecting` right after the window restarts (a new training phase, an applied or manual change, an equipment change) until the next chunk arrives. For a protocol with no reward condition (`reason: "observing"`), `reward_rate` is `null`; `target` is still the `[low, high]` pair and `checks` is `{}` (empty, not null). |
 | `eligible_at_s` | number \| null | When a currently-blocked knob becomes eligible again (`cooldown`), or the current time for a fresh `adjust`/`reversal`. |
 
 `control`, when present:
@@ -642,7 +644,7 @@ to the current state is `null`, never omitted, so a host never needs a
 | `proposed` | number \| null | The proposed value; `null` for a hint or when no move is possible (`at_limit`). |
 | `direction` | string | `"harder"` or `"easier"`. |
 | `strategy` | string \| null | `"fixed_step"` \| `"proportional_step"` \| `"rebaseline"`; `null` for a hint. |
-| `auto_allowed` | boolean | Whether `apply_advice(id, by="autopilot")` would succeed right now. Always `false` for a hint and for a `rebaseline` proposal. |
+| `auto_allowed` | boolean | Whether the protocol allows this knob to be changed automatically (`apply = "auto"`, and not a `rebaseline` proposal). It describes the policy, not the moment: it is also `true` on an `at_limit` or `cooldown` hold, where `apply_advice` still refuses because the result is not an `adjust`. Always `false` for a hint and for a `rebaseline` proposal. |
 
 ### Reason codes
 
@@ -664,7 +666,7 @@ weighted-composite reward) — it is a normal hold, not an error.
 | `blocked` | advisor | `id`, `reason` — a standing id was replaced by a hold. |
 | `applied` | `apply_advice` | `id`, `control`, `from`, `to`, `by` (`"clinician"` or `"autopilot"`). |
 | `dismissed` | `dismiss_advice` | `id`, `control`. |
-| `changed_manually` | `set_control` | `control`, `from`, `to` — only for a control that feeds a reward check or an inhibit; `set_control` on any other control logs nothing. |
+| `changed_manually` | `set_control` | `control`, `from`, `to` — only for a control that feeds a reward check or an inhibit; `set_control` on any other control logs nothing, and writing the value a control already has changes nothing (no event, no window restart, no cooldown). |
 | `equipment_change` | `mark_equipment_change` | — |
 
 ### Backends

@@ -253,7 +253,7 @@ emits nothing for that control):
 | `apply` | string | `"auto"` \| `"suggest"`. |
 | `limits` | `[number, number]` | In the knob's own units. |
 | `round_to` | number \| null | In the knob's own units. |
-| `decimals` | integer ≥ 0 | Digits after the decimal point to display a value snapped to `round_to` — `2` when `round_to` is null (the display default), otherwise derived from it (e.g. `round_to: 0.1` → `decimals: 1`). Computed once at emit time so every consumer displays the same precision without reimplementing the formula. |
+| `decimals` | integer ≥ 0 | Digits after the decimal point to display a value snapped to `round_to` — `2` when `round_to` is null (the display default), otherwise the number of digits after the point in `round_to` as written in decimal (`0.1` → `1`, `0.25` and `0.05` → `2`, `1` and `5` → `0`). Computed once at emit time so every consumer displays the same precision without reimplementing the formula. |
 | `say` | string \| null | |
 | `between_moves_samples` | integer ≥ 1, or null | A per-knob override of the protocol-wide `between_moves_samples`, baked the same way; `null` means "use the protocol-wide value (or its default)." |
 | `step` | number \| null | Knob units for `fixed_step`; a fraction (0..1, not a percent) for `proportional_step`; `null` for `rebaseline`. |
