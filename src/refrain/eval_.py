@@ -1157,6 +1157,11 @@ class Evaluator:
         # accessors (advice(), autopilot_policy(), ...), so this runs
         # unconditionally alongside tap capture, not inside it.
         if self._advisor is not None:
+            # Guards see exactly the inhibits the mute gate counts: the active
+            # block's set when it declares a non-empty one, every inhibit
+            # otherwise (mirrors `_compute_muted`).
+            guard_set = (set(active_block.inhibits)
+                         if (active_block is not None and active_block.inhibits) else None)
             self._advisor.feed(ChunkFacts(
                 n=actual_chunk_size,
                 running=self._state == "run",
@@ -1166,7 +1171,8 @@ class Evaluator:
                 clock_frozen=bool(self._clock_frozen),
                 bundle=active_bundle,
                 muted=muted,
-                inhibits={k.split("/", 1)[1]: v for k, v in inhibit_active.items()},
+                inhibits={k.split("/", 1)[1]: v for k, v in inhibit_active.items()
+                          if guard_set is None or k.split("/", 1)[1] in guard_set},
                 checks=list(reward_sub_chunks),
                 events=(reward_event.events if reward_event is not None
                         else np.zeros(actual_chunk_size, dtype=bool)),

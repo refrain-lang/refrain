@@ -102,3 +102,34 @@ def test_rust_backend_advice_matches_python():
     assert rs.autopilot_policy() == py.autopilot_policy()
     with pytest.raises(AdviceError):
         rs.apply_advice("adv-9999")
+
+
+# A second inhibit that fires almost all the time, left out of the block the
+# training phases run: it does not mute output, so it must not hold advice
+# as a guard either.
+_BLOCKED_OUT = ap(emg_thr="100").replace(
+    "output { audio_chime = reward.event }",
+    '''inhibit "blink" {
+    metric    = bandpower(input: "raw", band: (1 Hz, 4 Hz), window: 100 ms)
+    threshold = percentile(target_pct: 1, window: 2 min)
+    action    = mute(release: 200 ms)
+  }
+  output { audio_chime = reward.event }
+  block "focus" { inhibit = ["emg"] }''').replace(
+    'phase { name = "train1"; duration = 300 s }',
+    'phase { name = "train1"; duration = 300 s; block = "focus" }').replace(
+    'phase { name = "train2"; duration = 300 s }',
+    'phase { name = "train2"; duration = 300 s; block = "focus" }')
+
+
+@pytest.mark.parametrize("backend", ["python", "rust"])
+def test_guards_only_count_the_active_blocks_inhibits(backend):
+    if backend == "rust":
+        pytest.importorskip("refrain_core", reason="refrain_core wheel not installed")
+    ev = _live(_BLOCKED_OUT, backend)
+    rng = np.random.default_rng(3)
+    for _ in range(35):
+        ev.step_chunk(rng.normal(0.0, 5.0, size=(256, 1)))
+    a = ev.advice()
+    assert a["reason"] != "guard"
+    assert a["evidence"]["guards"] == {"blink": 0.0, "emg": 0.0}

@@ -1457,7 +1457,6 @@ impl Evaluator {
                 .map(|(_, s)| s)
                 .unwrap_or(ih.canonical_name.as_str())
                 .to_string();
-            adv_inhibits.push((bare_name, active.clone()));
             // `inhibit/<name>` tap: last-sample active boolean.
             if let Some(&last) = active.last() {
                 taps.insert(ih.canonical_name.clone(), bool_f(last));
@@ -1474,6 +1473,11 @@ impl Evaluator {
                     .unwrap_or(ih.canonical_name.as_str());
                 inhibit_filter.as_ref().map_or(true, |f| f.contains(short))
             };
+            // Advisor guards see exactly the inhibits the mute gate counts
+            // (mirrors the `guard_set` filter in `_process_chunk`).
+            if allowed {
+                adv_inhibits.push((bare_name, active.clone()));
+            }
             // flag actions (`gate == None`) contribute nothing to `muted`.
             if allowed {
                 if let Some(gate) = ih.gate.as_mut() {
