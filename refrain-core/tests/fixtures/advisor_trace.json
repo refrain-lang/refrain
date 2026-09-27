@@ -1,0 +1,225 @@
+{
+ "advisor_ap.ir.json": {
+  "bundles": {
+   "": {
+    "combine": "all",
+    "checks": [
+     {
+      "name": "theta",
+      "knob": "t_pct",
+      "higher_is": "harder",
+      "controls": [
+       "t_pct"
+      ]
+     },
+     {
+      "name": "crossover",
+      "knob": "xover",
+      "higher_is": "harder",
+      "controls": [
+       "xover"
+      ]
+     }
+    ]
+   }
+  },
+  "check_controls": [
+   "t_pct",
+   "xover"
+  ],
+  "inhibit_controls": []
+ },
+ "composite_smr_theta.ir.json": {
+  "bundles": {
+   "": {
+    "combine": "all",
+    "checks": [
+     {
+      "name": null,
+      "knob": null,
+      "higher_is": null,
+      "controls": []
+     }
+    ]
+   }
+  },
+  "check_controls": [],
+  "inhibit_controls": []
+ },
+ "micro_01_passthrough.ir.json": {
+  "bundles": {},
+  "check_controls": [],
+  "inhibit_controls": []
+ },
+ "micro_02_bandpass.ir.json": {
+  "bundles": {},
+  "check_controls": [],
+  "inhibit_controls": []
+ },
+ "micro_03_envelope.ir.json": {
+  "bundles": {},
+  "check_controls": [],
+  "inhibit_controls": []
+ },
+ "micro_04_threshold.ir.json": {
+  "bundles": {},
+  "check_controls": [],
+  "inhibit_controls": []
+ },
+ "micro_05_reward.ir.json": {
+  "bundles": {
+   "": {
+    "combine": "all",
+    "checks": [
+     {
+      "name": null,
+      "knob": null,
+      "higher_is": null,
+      "controls": []
+     },
+     {
+      "name": null,
+      "knob": null,
+      "higher_is": null,
+      "controls": []
+     }
+    ]
+   }
+  },
+  "check_controls": [],
+  "inhibit_controls": []
+ },
+ "micro_06_coherence.ir.json": {
+  "bundles": {},
+  "check_controls": [],
+  "inhibit_controls": []
+ },
+ "micro_07_ilf.ir.json": {
+  "bundles": {
+   "": {
+    "combine": "all",
+    "checks": [
+     {
+      "name": null,
+      "knob": null,
+      "higher_is": null,
+      "controls": []
+     }
+    ]
+   }
+  },
+  "check_controls": [],
+  "inhibit_controls": []
+ },
+ "micro_08_bandpower.ir.json": {
+  "bundles": {
+   "": {
+    "combine": "all",
+    "checks": [
+     {
+      "name": null,
+      "knob": null,
+      "higher_is": null,
+      "controls": []
+     }
+    ]
+   }
+  },
+  "check_controls": [],
+  "inhibit_controls": []
+ },
+ "micro_09_inhibit.ir.json": {
+  "bundles": {},
+  "check_controls": [],
+  "inhibit_controls": []
+ },
+ "micro_10_autocorr.ir.json": {
+  "bundles": {},
+  "check_controls": [],
+  "inhibit_controls": []
+ },
+ "micro_11_control_expr.ir.json": {
+  "bundles": {},
+  "check_controls": [],
+  "inhibit_controls": []
+ },
+ "micro_12_control_param_slots.ir.json": {
+  "bundles": {
+   "": {
+    "combine": "all",
+    "checks": [
+     {
+      "name": null,
+      "knob": null,
+      "higher_is": null,
+      "controls": [
+       "in_high",
+       "in_low"
+      ]
+     }
+    ]
+   }
+  },
+  "check_controls": [
+   "in_high",
+   "in_low"
+  ],
+  "inhibit_controls": []
+ },
+ "micro_passthrough_identity.ir.json": {
+  "bundles": {},
+  "check_controls": [],
+  "inhibit_controls": []
+ },
+ "realistic_smr.ir.json": {
+  "bundles": {
+   "": {
+    "combine": "all",
+    "checks": [
+     {
+      "name": null,
+      "knob": "smr_target_pct",
+      "higher_is": "harder",
+      "controls": [
+       "smr_target_pct"
+      ]
+     },
+     {
+      "name": null,
+      "knob": "theta_target_pct",
+      "higher_is": "easier",
+      "controls": [
+       "theta_target_pct"
+      ]
+     },
+     {
+      "name": null,
+      "knob": null,
+      "higher_is": null,
+      "controls": []
+     }
+    ]
+   }
+  },
+  "check_controls": [
+   "smr_target_pct",
+   "theta_target_pct"
+  ],
+  "inhibit_controls": []
+ },
+ "seed_exprpos.ir.json": {
+  "bundles": {},
+  "check_controls": [],
+  "inhibit_controls": []
+ },
+ "seed_run.ir.json": {
+  "bundles": {},
+  "check_controls": [],
+  "inhibit_controls": []
+ },
+ "seed_smr_baseline.ir.json": {
+  "bundles": {},
+  "check_controls": [],
+  "inhibit_controls": []
+ }
+}

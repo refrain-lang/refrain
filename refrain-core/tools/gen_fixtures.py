@@ -14,6 +14,7 @@ the worktree venv:  ./.venv/bin/python refrain-core/tools/gen_fixtures.py
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +25,10 @@ from refrain.eval_ import Evaluator
 from refrain.ir_json import ir_to_json_obj
 from refrain.parser import parse_file
 from refrain.resolver import resolve
+
+# Let `_gen_advisor_fixtures()` import its sibling `advisor_scenarios` module,
+# which lives in this same tools/ directory rather than on the package path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 REPO = Path(__file__).resolve().parents[2]
 FIX = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
@@ -246,6 +251,51 @@ def generate(
         _generate_setcontrol(ir)
 
 
+def _gen_advisor_fixtures() -> None:
+    """Python-reference outputs the Rust advisor must reproduce (advisor_parity.rs)."""
+    from refrain import parse
+    from refrain.resolver import resolve
+    from refrain.advisor import AdviceError, Advisor, facts_from_json
+    from refrain.advisor_trace import trace_protocol
+    from tests._autopilot_fixtures import ap
+    from advisor_scenarios import SCENARIOS  # same directory as this script
+
+    sr = 256.0
+    scenarios = {}
+    for name, (src, bindings, ops) in SCENARIOS.items():
+        ir = ir_to_json_obj(resolve(parse(src), bindings=bindings or None), sample_rate_hz=sr)
+        adv = Advisor(ir, sr)
+        steps = []
+        for o in ops:
+            result, error = None, False
+            try:
+                if o["op"] == "feed":
+                    adv.feed(facts_from_json(o))
+                elif o["op"] == "apply":
+                    result = adv.apply(o["id"], o["by"])[2]
+                elif o["op"] == "dismiss":
+                    result = adv.dismiss(o["id"])
+                elif o["op"] == "note":
+                    adv.note_control(o["control"], o["value"], o["source"])
+                elif o["op"] == "equipment":
+                    adv.mark_equipment_change()
+            except (AdviceError, ValueError):
+                error = True
+            steps.append({"op": o, "result": result, "error": error,
+                          "advice": adv.advice(), "events": adv.drain_events()})
+        scenarios[name] = {"ir": ir, "sample_rate_hz": sr, "steps": steps}
+    (FIX / "advisor_scenarios.json").write_text(json.dumps(scenarios) + "\n")
+
+    traces = {}
+    for path in sorted(FIX.glob("*.ir.json")):
+        traces[path.name] = trace_protocol(json.loads(path.read_text()))
+    ap_ir = ir_to_json_obj(resolve(parse(ap(emg_thr="100"))), sample_rate_hz=sr)
+    (FIX / "advisor_ap.ir.json").write_text(json.dumps(ap_ir, indent=2) + "\n")
+    traces["advisor_ap.ir.json"] = trace_protocol(ap_ir)
+    (FIX / "advisor_trace.json").write_text(json.dumps(traces, indent=1) + "\n")
+    print(f"advisor: scenarios={len(scenarios)} written; traces={len(traces)} written")
+
+
 if __name__ == "__main__":
     FIX.mkdir(parents=True, exist_ok=True)
     # realistic_smr now covered: its percentile thresholds use control-ref
@@ -296,3 +346,7 @@ if __name__ == "__main__":
         signal=np.full((N_SAMPLES, 1), 5.0),
         amp=None,
     )
+    # Advisor parity fixtures (advisor_parity.rs): tracer output over every
+    # protocol fixture just generated above, plus the scripted advisor
+    # scenarios in advisor_scenarios.py.
+    _gen_advisor_fixtures()
