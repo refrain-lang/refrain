@@ -179,19 +179,44 @@ Already partway neutral (it has a `modality` field). This is the one real
 
 ### 4.2 Axis B — neutralize the distributed content (intended-use)
 
-The strong form of the reframe. Recommended mapping (dial back per §8 if you want
-to retain clinical provenance for researchers):
+The strong form of the reframe. **DECIDED 2026-09-27 — hybrid neutralization**
+(§8 #4): strip what makes a *claim* (indication-goals, medical-claim comments),
+but **keep** the `evidence` tier + citations, reframed as honest *provenance*
+about the technique — because "this approach is established in the literature" is
+a statement about the technique's standing, not a therapeutic claim about the
+software, and it's genuinely useful to researchers.
 
-| Clinical vector, today | Neutral form |
+| Clinical vector, today | Decided neutral form |
 |---|---|
-| `goals` diagnosis names — `adhd_attention`, `calm_anxiety`, `mood_regulation`, `trauma_recovery` | wellness-outcome names — `focus_attention`, `calm_stress`, `mood_balance`; **drop `trauma_recovery`** (fold to `resilience`/`calm`) |
-| `goals` already-neutral — `sensorimotor_sleep`, `alertness_performance`, `flow_connectivity`, `deep_meditative` | keep (maybe `sensorimotor_sleep` → `sleep_quality`) |
-| new modality goals | `hrv_coherence`, `stress_downregulation`, `relaxation_arousal`, `interoception` |
-| `evidence` = *"clinical-literature support"* (`established`/`probable`/`exploratory`) | reframe meaning to *"how established the signal-training **approach** is"* (prior art), **not** clinical efficacy. Keep tiers; strip "clinical" from the label. Consider renaming the field to `maturity`/`provenance` |
-| `citation` framed as efficacy evidence | keep — but frame as **origin / prior art**, neutral provenance, not proof of outcome |
-| titles/summaries — *"Sharpen attention", "Lift mood"* | already general-wellness in tone — **good, this is the target register**; keep |
-| file **comments** — *"the depression FAA protocol", "for mood / approach-motivation"* | strip clinical/indication phrasing; describe the **signal training**, not an indication |
-| `indication` / `population` / `safety_monitoring` fields (referenced in host-app-guide) | drop from the distributed contract, or make clearly optional/host-side; a neutral library doesn't ship indications |
+| `goals` diagnosis names — `adhd_attention`, `calm_anxiety`, `mood_regulation`, `trauma_recovery` | wellness names per the §4.2.1 vocabulary — `focus_attention`, `calm_stress`, `mood_balance`; **drop `trauma_recovery`** (retag its protocols to `calm_stress`/`mood_balance`) |
+| `goals` already-neutral — `sensorimotor_sleep`, `alertness_performance`, `flow_connectivity`, `deep_meditative` | keep; rename `sensorimotor_sleep` → `sleep_quality` |
+| new modality goals | add `interoception` (HRV/GSR/respiration-native). **`hrv_coherence` is a technique, not a goal — folded into `calm_stress`**, discoverable via `bands`/`modality`/family + search |
+| `evidence` (`established`/`probable`/`exploratory`) | **KEEP** (hybrid). Reframe its *meaning* from "clinical-literature support" to "how established the signal-training **approach** is" (prior art). Strip "clinical" from labels/docs; the tier stays |
+| `citation` | **KEEP** — frame as **origin / prior art / provenance**, not proof of outcome |
+| titles/summaries — *"Sharpen attention", "Lift mood"* | already general-wellness in tone — **good, the target register**; keep |
+| file **comments** — *"the depression FAA protocol", "for mood / approach-motivation"* | **strip** clinical/indication phrasing; describe the **signal training**, not an indication |
+| `indication` / `population` / `safety_monitoring` fields (referenced in host-app-guide) | **drop** from the distributed contract (host-side if needed); a neutral library ships no indications |
+
+#### 4.2.1 Final `goals` vocabulary — APPROVED 2026-09-27
+
+Eight buckets: wellness-framed, no diagnoses, multi-membership, modality-spanning.
+These are the picker's top-level groups.
+
+| Goal id | Label | From | Covers / modalities |
+|---|---|---|---|
+| `focus_attention` | Focus & attention | ← `adhd_attention` | EEG theta-beta, SMR |
+| `calm_stress` | Calm & stress relief | ← `calm_anxiety` (+ coherence, relaxation) | **EEG** alpha↑, **HRV** coherence, **GSR** arousal↓, **temp** warming — flagship cross-modality bucket |
+| `sleep_quality` | Sleep quality | ← `sensorimotor_sleep` | EEG SMR |
+| `alertness_performance` | Alertness & performance | keep | EEG, HRV |
+| `mood_balance` | Mood & balance | ← `mood_regulation` | EEG frontal asymmetry |
+| `flow_connectivity` | Flow & connectivity | keep | EEG coherence |
+| `deep_meditative` | Deep meditative states | keep | EEG alpha-theta |
+| `interoception` | Body awareness | **new** | HRV, GSR, respiration |
+
+Corpus remap (so nothing orphans): `theta_beta_*` → `focus_attention`;
+`faa_f3f4` (`mood_regulation`+`trauma_recovery`) → `mood_balance`; `hrv_resonance`
+(`calm_anxiety`+`flow_connectivity`) → `calm_stress`+`flow_connectivity`; all
+others by the table. Unknown/user values still bucket to "Other."
 
 The FAA protocol is the sharpest example: today `goals = ["mood_regulation",
 "trauma_recovery"]` with a "depression protocol" comment. Neutralized: `goals =
@@ -359,6 +384,19 @@ Order matters only where a downstream repo reads an upstream contract.
 
 Steps 1–2 can proceed immediately; 3 waits on 2; 4 waits on 2–3.
 
+**Two phases, explicitly staged:**
+
+- **Phase 1 — the reframe (now):** steps 1–5 above. This is *framing + vocabulary
+  + schema*. It makes the platform, language, library, and editor
+  biosignal-neutral and general-wellness-framed. It does **not** add any new
+  sensor. EEG and HRV (Polar H10, already supported) keep working throughout.
+- **Phase 2 — actual new-modality support (later, once Phase 1 is done):**
+  building GSR / temperature / EMG capture is **deferred** until the reframe
+  lands. The groundwork exists (the `passthrough()` + low-Fs envelope path, the
+  neutral schema, the modality tag), so the framing is ready for these signals —
+  but the recorder-side sensor integration is a separate, later effort (see the
+  §11 hardware appendix). Decision: **reframe first, wire up GSR/temp/EMG after.**
+
 ---
 
 ## 8. Open decisions (need James)
@@ -370,18 +408,13 @@ Steps 1–2 can proceed immediately; 3 waits on 2; 4 waits on 2–3.
 3. **Modality vocabulary to ship now** — which signals get first-class enum
    values in `protocol-meta.schema.json` (proposed: eeg, ecg, hrv, gsr, emg,
    temp)?
-4. **How far to neutralize the distributed content (§4.2)** — the key positioning
-   call. Maximal (recommended, per your directive): wellness-reframe all
-   diagnosis-flavored `goals`, drop `trauma_recovery`, strip "clinical" from
-   `evidence`, reframe citations as provenance, drop `indication`/`population`.
-   Dial-back option: keep the clinical `evidence` tier + citations as-is (retains
-   research credibility) but still drop diagnosis-flavored goals and
-   medical-claim comments. Confirm the depth.
-5. **`goals` vocabulary** — confirm the neutralized set + non-EEG additions
-   (proposed keep/rename: `focus_attention`, `calm_stress`, `mood_balance`,
-   `sleep_quality`, `alertness_performance`, `flow_connectivity`,
-   `deep_meditative`; new: `hrv_coherence`, `stress_downregulation`,
-   `relaxation_arousal`, `interoception`; drop: `trauma_recovery`).
+4. **How far to neutralize the distributed content (§4.2)** — ✅ **DECIDED
+   2026-09-27: hybrid.** Strip indication-goals and medical-claim comments; keep
+   the `evidence` tier + citations reframed as technique provenance. See §4.2.
+5. **`goals` vocabulary** — ✅ **DECIDED 2026-09-27: the 8-bucket set in §4.2.1**
+   (`focus_attention`, `calm_stress`, `sleep_quality`, `alertness_performance`,
+   `mood_balance`, `flow_connectivity`, `deep_meditative`, `interoception`);
+   `hrv_coherence` folded into `calm_stress`; `trauma_recovery` dropped.
 6. **Editor package/CSS rename** — drop the `nf-` connotation now, or leave it?
    (cosmetic; free in the clean-slate window)
 7. **This doc's home** — keep in public `refrain`, or move to a private repo
@@ -404,8 +437,62 @@ private repo before the branch merges. Flagged so the choice is deliberate.
 
 Broaden the *platform*; keep *Refrain* a bounded training-paradigm DSL. In the
 language it's ~90% narrative, ~10% naming, ~0% semantics — but the **distributed
-protocol library** is the real content work: make it maximally neutral on *both*
-axes (biosignal, not EEG-only; general-wellness, not clinical) so what people
-pick up carries no diagnostic or therapeutic claim. Do the breaking schema +
+protocol library** is the real content work: neutralize it on *both* axes —
+biosignal (not EEG-only) and general-wellness (hybrid: strip indication claims,
+keep technique provenance) — so what people pick up carries no diagnostic or
+therapeutic claim. Actual GSR/temp/EMG sensor support is Phase 2, after the
+reframe. Do the breaking schema +
 vocabulary bits now while there are no external consumers. Evolve the editor —
 don't fork it.
+
+---
+
+## 11. Appendix — candidate hardware for new modalities (Phase 2)
+
+**Deferred to Phase 2 (§7): build GSR / temperature / EMG capture once the reframe
+lands.** This appendix is the shortlist to work from when we get there, not a
+commitment to build now. Researched 2026-09; verify prices at purchase time.
+
+### Integration substrate
+
+The practical unit of "supporting a sensor" is the data stream, not the price.
+**Lab Streaming Layer (LSL)** is the common substrate — EmotiBit, OpenBCI, and
+BITalino all emit LSL; a single-channel LSL stream at low sample rate is exactly
+the `passthrough()` shape HRV already proved. **Open recorder-side question:** the
+Polar H10 (already supported) — is its ingest **direct BLE or via an LSL bridge?**
+If bespoke BLE, standardizing the recorder's source layer on **LSL** before adding
+EmotiBit/BITalino makes every future sensor a stream-mapping exercise rather than a
+new driver. Resolve this first in Phase 2.
+
+### Already supported
+
+- **Polar H10** (~$90) — HRV / raw R–R intervals over BLE. **In use today.** Its
+  ingest path is the template for other single-channel, low-rate non-EEG signals.
+
+### Shortlist (GSR / temp / EMG)
+
+- **EmotiBit** (~$499–549; US buyers via the **OpenBCI shop** — EmotiBit's own
+  store doesn't ship to the US) — **top pick.** One open wearable gives **GSR +
+  skin temperature** (plus PPG/IMU we don't strictly need since Polar covers HRV).
+  Streams LSL/OSC/TCP. Closes two of the three remaining modalities in one buy.
+  - **Case:** the board ships bare (no enclosure). Print the free official
+    **"strap-and-go" case** from the [EmotiBit_Cases repo](https://github.com/EmotiBit/EmotiBit_Cases);
+    it holds electrodes to skin, which matters for clean EDA. The
+    Essentials/All-in-One *bundle* includes the electronics (Adafruit Feather,
+    LiPo battery, microSD + reader, cable) but **not** a case.
+  - *James is buying one to validate the non-EEG path.*
+- **BITalino (PLUX)** — Plugged Kit ~$295; individual **EDA / EMG / ECG / EEG**
+  sensors ~$75 each. Modular, open, documented API. The route if we'd rather add
+  GSR and EMG as discrete cheap sensors than commit to EmotiBit's form factor.
+- **OpenBCI Ganglion / Cyton** (~$500–950) — analog biosensing; differential
+  inputs do **EMG/ECG**, same ecosystem as EmotiBit's US distributor, LSL support.
+  For one board spanning EEG + EMG + ECG.
+- **Mindfield eSense Skin Response / Temperature** (~$100 / ~$60) — *consumer*
+  biofeedback devices; app-locked data path, weaker for our own integration.
+  Relevant mainly as "devices users may already own."
+- **Grove GSR** (~$12 + ESP32) — bench prototype only; hobby-grade, DIY firmware.
+
+**Recommended Phase-2 starting point:** EmotiBit (GSR + temp) on top of the
+existing Polar H10 (HRV) covers the essay's non-EEG modalities with two open,
+LSL-friendly devices before spending on anything research-grade (e.g. Shimmer3
+GSR+, ~$500+, only if clinical-grade EDA validation is later needed).
