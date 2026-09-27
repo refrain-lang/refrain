@@ -1,0 +1,66 @@
+// Second whole-session parity bench for the autopilot advisor: a staged
+// protocol whose two blocks select reward bundles with named checks, a knob
+// seeded from warmup, a rebaseline (suggest-only) policy, and short phases
+// and windows so a 60 s run exercises collecting, holds and adjustments in
+// both engines. The generator also makes one scripted set_control. Not a
+// clinical protocol.
+protocol "autopilot_staged" {
+  meta { version = "1.0.0"; evidence = "clinical"; description = "staged autopilot parity bench" }
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = passthrough() }
+  derive "t_env" { from = "raw"; pipeline = [ magnitude(), smooth(tau: 200 ms) ] }
+  derive "a_env" { from = "raw"; pipeline = [ magnitude(), smooth(tau: 2000 ms) ] }
+  derive "ratio" { formula = "t_env" / "a_env" }
+  threshold "t_abs" { signal = "t_env"; type = absolute(value: t_uv) }
+  threshold "a_abs" { signal = "a_env"; type = absolute(value: a_uv) }
+  inhibit "emg" {
+    metric    = bandpower(input: "raw", band: (50 Hz, 100 Hz), window: 100 ms)
+    threshold = percentile(target_pct: emg_pct, window: 30 s)
+    action    = mute(release: 200 ms)
+  }
+  reward "theta_reward" {
+    event = dwell(condition: all_of([
+      above("t_env", "t_abs") as "theta",
+      above("ratio", xover) as "crossover",
+    ]), duration: 250 ms)
+  }
+  reward "alpha_reward" {
+    event = dwell(condition: all_of([above("a_env", "a_abs") as "alpha"]), duration: 250 ms)
+  }
+  output { audio_chime = reward.event }
+  block "theta_up" { reward = "theta_reward"; output = ["audio_chime"] }
+  block "alpha_up" { reward = "alpha_reward"; output = ["audio_chime"] }
+  controls {
+    t_uv = voltage {
+      default = 1 uV; range = (0.05 uV, 50 uV); live_tunable = true; label = "Theta threshold"
+      seed = percentile { from = "t_env"; window = 3 s; target_pct = 50 }
+      autopilot = proportional_step { fixes = "theta"; step = 10%; higher_is = "harder"; apply = "auto"; round_to = 0.01 uV }
+    }
+    a_uv = voltage {
+      default = 0.1 uV; range = (0.05 uV, 50 uV); live_tunable = true; label = "Alpha threshold"
+      autopilot = rebaseline { fixes = "alpha"; from = "a_env"; window = 4 s; percentile = 70; higher_is = "harder"; apply = "suggest" }
+    }
+    xover = number {
+      default = 0.60; range = (0.5, 1.5); live_tunable = true; label = "Crossover target"
+      autopilot = fixed_step { fixes = "crossover"; step = 0.05; higher_is = "harder"; apply = "auto"; round_to = 0.01 }
+    }
+    emg_pct = percent { default = 95; range = (50, 99); live_tunable = true }
+  }
+  autopilot {
+    evidence = "experimental"
+    citation = "Parity bench (not clinical)"
+    rationale = "Short windows so a 60 s staged run exercises the advisor end to end."
+    reward_target = (20%, 40%)
+    watch = 6 s
+    between_moves = 8 s
+    equipment_settle = 3 s
+    tighten_first = ["crossover", "theta"]
+    emg = guard { max = 30%; say = "Muscle." }
+  }
+  session { phases = [
+    phase { name = "warmup"; duration = 4 s;  output_muted = true },
+    phase { name = "theta";  duration = 26 s; block = "theta_up" },
+    phase { name = "rest";   duration = 3 s;  output_muted = true },
+    phase { name = "alpha";  duration = 30 s; block = "alpha_up" },
+  ] }
+}

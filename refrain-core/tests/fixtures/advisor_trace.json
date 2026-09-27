@@ -61,6 +61,52 @@
    "emg_pct"
   ]
  },
+ "autopilot_staged.ir.json": {
+  "bundles": {
+   "alpha_reward": {
+    "combine": "all",
+    "checks": [
+     {
+      "name": "alpha",
+      "knob": "a_uv",
+      "higher_is": "harder",
+      "controls": [
+       "a_uv"
+      ]
+     }
+    ]
+   },
+   "theta_reward": {
+    "combine": "all",
+    "checks": [
+     {
+      "name": "theta",
+      "knob": "t_uv",
+      "higher_is": "harder",
+      "controls": [
+       "t_uv"
+      ]
+     },
+     {
+      "name": "crossover",
+      "knob": "xover",
+      "higher_is": "harder",
+      "controls": [
+       "xover"
+      ]
+     }
+    ]
+   }
+  },
+  "check_controls": [
+   "a_uv",
+   "t_uv",
+   "xover"
+  ],
+  "inhibit_controls": [
+   "emg_pct"
+  ]
+ },
  "composite_smr_theta.ir.json": {
   "bundles": {
    "": {

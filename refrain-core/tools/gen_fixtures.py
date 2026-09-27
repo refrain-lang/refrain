@@ -296,9 +296,15 @@ def _gen_advisor_fixtures() -> None:
     print(f"advisor: scenarios={len(scenarios)} written; traces={len(traces)} written")
 
 
-def _gen_advice_session(stem: str = "autopilot_alpha_theta") -> None:
+def _gen_advice_session(stem: str = "autopilot_alpha_theta", *, seconds: int = 80,
+                        set_control: dict | None = None) -> None:
     """One real session through the Python evaluator, auto-applying whatever
-    the protocol permits; the Rust test replays it and must match."""
+    the protocol permits; the Rust test replays it and must match.
+
+    `set_control` ({"chunk": i, "control": name, "value": v}) scripts one
+    manual `set_control` right after chunk i's advice was read and handled;
+    it is written into the fixture so the Rust replay makes the same call at
+    the same point."""
     from refrain import parse_file
     from refrain.eval_ import Evaluator
     from refrain.ir_json import ir_to_json_obj
@@ -308,7 +314,7 @@ def _gen_advice_session(stem: str = "autopilot_alpha_theta") -> None:
     ir = resolve(parse_file(REPO / "bench" / "protocols" / f"{stem}.refrain"))
     (FIX / f"{stem}.ir.json").write_text(
         json.dumps(ir_to_json_obj(ir, sample_rate_hz=sr), indent=2) + "\n")
-    n = int(sr) * 80
+    n = int(sr) * seconds
     t = np.arange(n) / sr
     rng = np.random.default_rng(7)
     x = (np.sin(2 * np.pi * 6 * t) * (1 + 0.8 * np.sin(2 * np.pi * t / 20))
@@ -322,9 +328,11 @@ def _gen_advice_session(stem: str = "autopilot_alpha_theta") -> None:
         applied = None
         if a["state"] == "adjust" and a["control"]["auto_allowed"]:
             applied = ev.apply_advice(a["id"], by="autopilot")
+        if set_control is not None and i // chunk == set_control["chunk"]:
+            ev.set_control(set_control["control"], set_control["value"])
         steps.append({"advice": a, "applied": applied, "events": ev.drain_advice_events()})
     out = {"sample_rate_hz": sr, "channels": ["Cz"], "chunk_size": chunk,
-           "input": [[float(v)] for v in x], "steps": steps}
+           "set_control": set_control, "input": [[float(v)] for v in x], "steps": steps}
     (FIX / f"{stem}.advice.json").write_text(json.dumps(out) + "\n")
 
 
@@ -386,3 +394,8 @@ if __name__ == "__main__":
     # a real DSP run through the Python evaluator, auto-applying advice, that
     # the Rust engine must replay chunk-for-chunk.
     _gen_advice_session()
+    # Second whole-session fixture: staged blocks selecting named-check reward
+    # bundles, a seeded knob, a rebaseline policy and one scripted manual
+    # set_control (advisor_parity.rs::staged_session_matches_python).
+    _gen_advice_session("autopilot_staged", seconds=60,
+                        set_control={"chunk": 20, "control": "xover", "value": 0.7})
