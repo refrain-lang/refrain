@@ -268,6 +268,37 @@ impl RustEvaluator {
         }
         Ok(out)
     }
+
+    /// `eval_.Evaluator.advice` — JSON text (the Python wrapper parses it).
+    fn advice(&self) -> String {
+        self.inner.advice().to_string()
+    }
+
+    fn apply_advice(&mut self, advice_id: &str, by: &str) -> PyResult<String> {
+        self.inner
+            .apply_advice(advice_id, by)
+            .map(|v| v.to_string())
+            .map_err(pyo3::exceptions::PyValueError::new_err)
+    }
+
+    fn dismiss_advice(&mut self, advice_id: &str) -> PyResult<String> {
+        self.inner
+            .dismiss_advice(advice_id)
+            .map(|v| v.to_string())
+            .map_err(pyo3::exceptions::PyValueError::new_err)
+    }
+
+    fn mark_equipment_change(&mut self) {
+        self.inner.mark_equipment_change()
+    }
+
+    fn drain_advice_events(&mut self) -> String {
+        serde_json::Value::Array(self.inner.drain_advice_events()).to_string()
+    }
+
+    fn autopilot_policy(&self) -> String {
+        self.inner.autopilot_policy().to_string()
+    }
 }
 
 #[pymodule]

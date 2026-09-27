@@ -30,7 +30,7 @@ from typing import Any
 import numpy as np
 
 from . import primitive_impls as impls
-from .advisor import Advisor, ChunkFacts
+from .advisor import Advisor, AdviceError, ChunkFacts
 from .ir import (
     IRArray,
     IRBinaryOp,
@@ -1536,25 +1536,44 @@ class Evaluator:
 
     def advice(self) -> dict:
         """The current structured advice (collecting / hold / hint / adjust)."""
+        if self._rust is not None:
+            return json.loads(self._rust.advice())
         return self._require_advisor().advice()
 
     def apply_advice(self, advice_id: str, by: str = "clinician") -> dict:
         """Apply the current `adjust` advice. `by="autopilot"` is refused when
         the protocol allows that change only as a suggestion."""
+        if self._rust is not None:
+            try:
+                return json.loads(self._rust.apply_advice(advice_id, by))
+            except ValueError as exc:
+                raise AdviceError(str(exc)) from None
         control, value, event = self._require_advisor().apply(advice_id, by)
         self._apply_control(control, value)
         return event
 
     def dismiss_advice(self, advice_id: str) -> dict:
+        if self._rust is not None:
+            try:
+                return json.loads(self._rust.dismiss_advice(advice_id))
+            except ValueError as exc:
+                raise AdviceError(str(exc)) from None
         return self._require_advisor().dismiss(advice_id)
 
     def mark_equipment_change(self) -> None:
+        if self._rust is not None:
+            self._rust.mark_equipment_change()
+            return
         self._require_advisor().mark_equipment_change()
 
     def drain_advice_events(self) -> list[dict]:
+        if self._rust is not None:
+            return json.loads(self._rust.drain_advice_events())
         return self._require_advisor().drain_events()
 
     def autopilot_policy(self) -> dict:
+        if self._rust is not None:
+            return json.loads(self._rust.autopilot_policy())
         return self._require_advisor().policy()
 
     def _apply_control(self, name: str, value: float) -> None:

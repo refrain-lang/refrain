@@ -25,6 +25,9 @@ pub enum RefrainError {
     /// `set_control` was called with a name that is not a declared control
     /// (mirrors the Python evaluator raising `KeyError`).
     UnknownControl { message: String },
+    /// An advice operation (`apply_advice`/`dismiss_advice`) failed — mirrors
+    /// the Python evaluator raising `AdviceError`.
+    Advice { message: String },
 }
 
 impl std::fmt::Display for RefrainError {
@@ -36,6 +39,7 @@ impl std::fmt::Display for RefrainError {
             RefrainError::UnknownControl { message } => {
                 write!(f, "set_control: {message}")
             }
+            RefrainError::Advice { message } => write!(f, "advice: {message}"),
         }
     }
 }
@@ -230,6 +234,35 @@ impl RefrainCore {
             .into_iter()
             .map(|(k, e)| (k, e.into()))
             .collect()
+    }
+
+    /// Current autopilot advice as JSON (spec §5.2).
+    pub fn advice(&self) -> String {
+        self.inner.lock().unwrap().advice().to_string()
+    }
+
+    pub fn apply_advice(&self, advice_id: String, by: String) -> Result<String, RefrainError> {
+        self.inner.lock().unwrap().apply_advice(&advice_id, &by)
+            .map(|v| v.to_string())
+            .map_err(|message| RefrainError::Advice { message })
+    }
+
+    pub fn dismiss_advice(&self, advice_id: String) -> Result<String, RefrainError> {
+        self.inner.lock().unwrap().dismiss_advice(&advice_id)
+            .map(|v| v.to_string())
+            .map_err(|message| RefrainError::Advice { message })
+    }
+
+    pub fn mark_equipment_change(&self) {
+        self.inner.lock().unwrap().mark_equipment_change()
+    }
+
+    pub fn drain_advice_events(&self) -> String {
+        serde_json::Value::Array(self.inner.lock().unwrap().drain_advice_events()).to_string()
+    }
+
+    pub fn autopilot_policy(&self) -> String {
+        self.inner.lock().unwrap().autopilot_policy().to_string()
     }
 }
 

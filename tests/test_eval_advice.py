@@ -85,3 +85,20 @@ def test_plain_protocol_gets_observations():
     _chunks(ev, 12)
     a = ev.advice()
     assert a["reason"] == "collecting" and a["evidence"]["required_s"] == 120.0
+
+
+def test_rust_backend_advice_matches_python():
+    """Review Focus #5."""
+    pytest.importorskip("refrain_core", reason="refrain_core wheel not installed")
+    src = ap(emg_thr="100")
+    py, rs = _live(src, "python"), _live(src, "rust")
+    rng = np.random.default_rng(3)
+    for _ in range(40):
+        chunk = rng.normal(0.0, 5.0, size=(256, 1))
+        py.step_chunk(chunk)
+        rs.step_chunk(chunk)
+        assert rs.advice() == py.advice()
+        assert rs.drain_advice_events() == py.drain_advice_events()
+    assert rs.autopilot_policy() == py.autopilot_policy()
+    with pytest.raises(AdviceError):
+        rs.apply_advice("adv-9999")

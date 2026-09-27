@@ -736,6 +736,18 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -753,11 +765,23 @@ internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
     fun uniffi_refrain_core_checksum_method_refraincore_advance_phase(
 ): Short
+fun uniffi_refrain_core_checksum_method_refraincore_advice(
+): Short
+fun uniffi_refrain_core_checksum_method_refraincore_apply_advice(
+): Short
+fun uniffi_refrain_core_checksum_method_refraincore_autopilot_policy(
+): Short
 fun uniffi_refrain_core_checksum_method_refraincore_current_phase(
+): Short
+fun uniffi_refrain_core_checksum_method_refraincore_dismiss_advice(
+): Short
+fun uniffi_refrain_core_checksum_method_refraincore_drain_advice_events(
 ): Short
 fun uniffi_refrain_core_checksum_method_refraincore_hold(
 ): Short
 fun uniffi_refrain_core_checksum_method_refraincore_last_taps(
+): Short
+fun uniffi_refrain_core_checksum_method_refraincore_mark_equipment_change(
 ): Short
 fun uniffi_refrain_core_checksum_method_refraincore_seed_report(
 ): Short
@@ -830,12 +854,24 @@ fun uniffi_refrain_core_fn_constructor_refraincore_new(`irJson`: RustBuffer.ByVa
 ): Pointer
 fun uniffi_refrain_core_fn_method_refraincore_advance_phase(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
+fun uniffi_refrain_core_fn_method_refraincore_advice(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_refrain_core_fn_method_refraincore_apply_advice(`ptr`: Pointer,`adviceId`: RustBuffer.ByValue,`by`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_refrain_core_fn_method_refraincore_autopilot_policy(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_refrain_core_fn_method_refraincore_current_phase(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_refrain_core_fn_method_refraincore_dismiss_advice(`ptr`: Pointer,`adviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_refrain_core_fn_method_refraincore_drain_advice_events(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_refrain_core_fn_method_refraincore_hold(`ptr`: Pointer,`held`: Byte,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
 fun uniffi_refrain_core_fn_method_refraincore_last_taps(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_refrain_core_fn_method_refraincore_mark_equipment_change(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_refrain_core_fn_method_refraincore_seed_report(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_refrain_core_fn_method_refraincore_set_clock_frozen(`ptr`: Pointer,`frozen`: Byte,uniffi_out_err: UniffiRustCallStatus, 
@@ -977,13 +1013,31 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_refrain_core_checksum_method_refraincore_advance_phase() != 31310.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_refrain_core_checksum_method_refraincore_advice() != 48784.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_refrain_core_checksum_method_refraincore_apply_advice() != 2385.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_refrain_core_checksum_method_refraincore_autopilot_policy() != 11153.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_refrain_core_checksum_method_refraincore_current_phase() != 36666.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_refrain_core_checksum_method_refraincore_dismiss_advice() != 43173.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_refrain_core_checksum_method_refraincore_drain_advice_events() != 11371.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_refrain_core_checksum_method_refraincore_hold() != 38295.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_refrain_core_checksum_method_refraincore_last_taps() != 62853.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_refrain_core_checksum_method_refraincore_mark_equipment_change() != 54873.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_refrain_core_checksum_method_refraincore_seed_report() != 3631.toShort()) {
@@ -1437,10 +1491,23 @@ public interface RefrainCoreInterface {
     fun `advancePhase`(): kotlin.Boolean
     
     /**
+     * Current autopilot advice as JSON (spec §5.2).
+     */
+    fun `advice`(): kotlin.String
+    
+    fun `applyAdvice`(`adviceId`: kotlin.String, `by`: kotlin.String): kotlin.String
+    
+    fun `autopilotPolicy`(): kotlin.String
+    
+    /**
      * `eval::Evaluator::current_phase`: snapshot of the phase the most recent
      * chunk ran under (aligned with the taps).
      */
     fun `currentPhase`(): PhaseInfo
+    
+    fun `dismissAdvice`(`adviceId`: kotlin.String): kotlin.String
+    
+    fun `drainAdviceEvents`(): kotlin.String
     
     /**
      * `eval::Evaluator::hold`: extend a `timed_with_floor` phase past its floor
@@ -1456,6 +1523,8 @@ public interface RefrainCoreInterface {
      * to a Swift `[String: Double]` / Kotlin `Map`.)
      */
     fun `lastTaps`(): Map<kotlin.String, kotlin.Double>
+    
+    fun `markEquipmentChange`()
     
     /**
      * `eval::Evaluator::seed_report`: per-control baseline-seed outcome
@@ -1620,6 +1689,46 @@ open class RefrainCore: Disposable, AutoCloseable, RefrainCoreInterface
 
     
     /**
+     * Current autopilot advice as JSON (spec §5.2).
+     */override fun `advice`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_refrain_core_fn_method_refraincore_advice(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(RefrainException::class)override fun `applyAdvice`(`adviceId`: kotlin.String, `by`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(RefrainException) { _status ->
+    UniffiLib.INSTANCE.uniffi_refrain_core_fn_method_refraincore_apply_advice(
+        it, FfiConverterString.lower(`adviceId`),FfiConverterString.lower(`by`),_status)
+}
+    }
+    )
+    }
+    
+
+    override fun `autopilotPolicy`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_refrain_core_fn_method_refraincore_autopilot_policy(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * `eval::Evaluator::current_phase`: snapshot of the phase the most recent
      * chunk ran under (aligned with the taps).
      */override fun `currentPhase`(): PhaseInfo {
@@ -1627,6 +1736,31 @@ open class RefrainCore: Disposable, AutoCloseable, RefrainCoreInterface
     callWithPointer {
     uniffiRustCall() { _status ->
     UniffiLib.INSTANCE.uniffi_refrain_core_fn_method_refraincore_current_phase(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(RefrainException::class)override fun `dismissAdvice`(`adviceId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(RefrainException) { _status ->
+    UniffiLib.INSTANCE.uniffi_refrain_core_fn_method_refraincore_dismiss_advice(
+        it, FfiConverterString.lower(`adviceId`),_status)
+}
+    }
+    )
+    }
+    
+
+    override fun `drainAdviceEvents`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_refrain_core_fn_method_refraincore_drain_advice_events(
         it, _status)
 }
     }
@@ -1667,6 +1801,17 @@ open class RefrainCore: Disposable, AutoCloseable, RefrainCoreInterface
     }
     )
     }
+    
+
+    override fun `markEquipmentChange`()
+        = 
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_refrain_core_fn_method_refraincore_mark_equipment_change(
+        it, _status)
+}
+    }
+    
     
 
     
@@ -2000,6 +2145,18 @@ sealed class RefrainException: kotlin.Exception() {
             get() = "message=${ `message` }"
     }
     
+    /**
+     * An advice operation (`apply_advice`/`dismiss_advice`) failed — mirrors
+     * the Python evaluator raising `AdviceError`.
+     */
+    class Advice(
+        
+        val `message`: kotlin.String
+        ) : RefrainException() {
+        override val message
+            get() = "message=${ `message` }"
+    }
+    
 
     companion object ErrorHandler : UniffiRustCallStatusErrorHandler<RefrainException> {
         override fun lift(error_buf: RustBuffer.ByValue): RefrainException = FfiConverterTypeRefrainError.lift(error_buf)
@@ -2022,6 +2179,9 @@ public object FfiConverterTypeRefrainError : FfiConverterRustBuffer<RefrainExcep
             2 -> RefrainException.UnknownControl(
                 FfiConverterString.read(buf),
                 )
+            3 -> RefrainException.Advice(
+                FfiConverterString.read(buf),
+                )
             else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
         }
     }
@@ -2038,6 +2198,11 @@ public object FfiConverterTypeRefrainError : FfiConverterRustBuffer<RefrainExcep
                 4UL
                 + FfiConverterString.allocationSize(value.`message`)
             )
+            is RefrainException.Advice -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`message`)
+            )
         }
     }
 
@@ -2050,6 +2215,11 @@ public object FfiConverterTypeRefrainError : FfiConverterRustBuffer<RefrainExcep
             }
             is RefrainException.UnknownControl -> {
                 buf.putInt(2)
+                FfiConverterString.write(value.`message`, buf)
+                Unit
+            }
+            is RefrainException.Advice -> {
+                buf.putInt(3)
                 FfiConverterString.write(value.`message`, buf)
                 Unit
             }
