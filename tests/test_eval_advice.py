@@ -1,0 +1,87 @@
+# Copyright 2026 Refrain Language Authors.
+# Licensed under the Apache License, Version 2.0 (see LICENSE).
+"""Evaluator host API for autopilot advice (SPEC §5)."""
+
+import numpy as np
+import pytest
+
+from refrain import parse
+from refrain.resolver import resolve
+from refrain.advisor import AdviceError
+from refrain.eval_ import Evaluator
+from tests._autopilot_fixtures import ap, plain
+
+SR = 256.0
+
+
+def _live(src, backend="python", **bindings):
+    ir = resolve(parse(src), bindings=bindings or None)
+    ev = Evaluator.live(ir, sample_rate_hz=SR, channel_names=("Cz",), backend=backend)
+    ev.start(skip_warmup=False)
+    return ev
+
+
+def _chunks(ev, n, value=1.0):
+    for _ in range(n):
+        ev.step_chunk(np.full((256, 1), value, dtype=np.float64))
+
+
+def test_advice_before_and_during_settle():
+    ev = _live(ap(emg_thr="100"))
+    assert ev.advice()["reason"] == "not_training_phase"
+    _chunks(ev, 5)                                   # inside the 10 s muted settle
+    assert ev.advice()["reason"] == "not_training_phase"
+
+
+def test_training_phase_collects_then_judges():
+    ev = _live(ap(emg_thr="100"))
+    _chunks(ev, 12)                                  # 10 s settle + 2 s training
+    a = ev.advice()
+    assert a["reason"] == "collecting" and a["evidence"]["clean_s"] == 2.0
+    _chunks(ev, 20)
+    # Constant input: ratio == 1.0 > xover 0.6 always; t_env == its own
+    # percentile, so theta (strictly above) rarely passes -> too strict on theta.
+    a = ev.advice()
+    assert a["state"] in ("adjust", "hold") and a["evidence"]["clean_s"] >= 20.0
+
+
+def test_set_control_is_a_manual_change():
+    ev = _live(ap(emg_thr="100"))
+    _chunks(ev, 15)
+    ev.drain_advice_events()
+    ev.set_control("xover", 0.7)
+    kinds = [e["kind"] for e in ev.drain_advice_events()]
+    assert kinds[0] == "changed_manually"
+    assert ev.advice()["reason"] == "collecting"
+
+
+def test_apply_advice_changes_the_control():
+    ev = _live(ap(emg_thr="100"))
+    _chunks(ev, 12)
+    adv = ev._advisor
+    adv.values["xover"] = 0.6
+    # Force a known adjust through the advisor, then apply via the Evaluator.
+    from tests.test_advisor import facts, strict
+    for checks in strict():
+        adv.feed(facts(checks=checks))
+    a = ev.advice()
+    assert a["state"] == "adjust" and a["control"]["name"] == "xover"
+    event = ev.apply_advice(a["id"], by="autopilot")
+    assert event["kind"] == "applied" and ev._controls["control/xover"] == 0.55
+    with pytest.raises(AdviceError):
+        ev.apply_advice(a["id"])
+
+
+def test_equipment_change_and_policy():
+    ev = _live(ap(emg_thr="100"))
+    _chunks(ev, 12)
+    ev.mark_equipment_change()
+    assert ev.advice()["reason"] == "equipment_settling"
+    assert ev.autopilot_policy()["controls"]["xover"]["apply"] == "auto"
+
+
+def test_plain_protocol_gets_observations():
+    ev = _live(plain(emg_thr="100"))
+    _chunks(ev, 12)
+    a = ev.advice()
+    assert a["reason"] == "collecting" and a["evidence"]["required_s"] == 120.0
