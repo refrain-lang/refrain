@@ -296,6 +296,38 @@ def _gen_advisor_fixtures() -> None:
     print(f"advisor: scenarios={len(scenarios)} written; traces={len(traces)} written")
 
 
+def _gen_advice_session(stem: str = "autopilot_alpha_theta") -> None:
+    """One real session through the Python evaluator, auto-applying whatever
+    the protocol permits; the Rust test replays it and must match."""
+    from refrain import parse_file
+    from refrain.eval_ import Evaluator
+    from refrain.ir_json import ir_to_json_obj
+    from refrain.resolver import resolve
+
+    sr, chunk = 256.0, 256
+    ir = resolve(parse_file(REPO / "bench" / "protocols" / f"{stem}.refrain"))
+    (FIX / f"{stem}.ir.json").write_text(
+        json.dumps(ir_to_json_obj(ir, sample_rate_hz=sr), indent=2) + "\n")
+    n = int(sr) * 80
+    t = np.arange(n) / sr
+    rng = np.random.default_rng(7)
+    x = (np.sin(2 * np.pi * 6 * t) * (1 + 0.8 * np.sin(2 * np.pi * t / 20))
+         + 0.6 * np.sin(2 * np.pi * 10 * t) + 0.05 * rng.standard_normal(n))
+    ev = Evaluator.live(ir, sample_rate_hz=sr, channel_names=("Cz",), backend="python")
+    ev.start(skip_warmup=False)
+    steps = []
+    for i in range(0, n, chunk):
+        ev.step_chunk(x[i:i + chunk].reshape(-1, 1))
+        a = ev.advice()
+        applied = None
+        if a["state"] == "adjust" and a["control"]["auto_allowed"]:
+            applied = ev.apply_advice(a["id"], by="autopilot")
+        steps.append({"advice": a, "applied": applied, "events": ev.drain_advice_events()})
+    out = {"sample_rate_hz": sr, "channels": ["Cz"], "chunk_size": chunk,
+           "input": [[float(v)] for v in x], "steps": steps}
+    (FIX / f"{stem}.advice.json").write_text(json.dumps(out) + "\n")
+
+
 if __name__ == "__main__":
     FIX.mkdir(parents=True, exist_ok=True)
     # realistic_smr now covered: its percentile thresholds use control-ref
@@ -350,3 +382,7 @@ if __name__ == "__main__":
     # protocol fixture just generated above, plus the scripted advisor
     # scenarios in advisor_scenarios.py.
     _gen_advisor_fixtures()
+    # Whole-session advice parity (advisor_parity.rs::whole_session_matches_python):
+    # a real DSP run through the Python evaluator, auto-applying advice, that
+    # the Rust engine must replay chunk-for-chunk.
+    _gen_advice_session()

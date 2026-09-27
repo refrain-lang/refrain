@@ -29,6 +29,38 @@
   ],
   "inhibit_controls": []
  },
+ "autopilot_alpha_theta.ir.json": {
+  "bundles": {
+   "": {
+    "combine": "all",
+    "checks": [
+     {
+      "name": "theta",
+      "knob": "t_pct",
+      "higher_is": "harder",
+      "controls": [
+       "t_pct"
+      ]
+     },
+     {
+      "name": "crossover",
+      "knob": "xover",
+      "higher_is": "harder",
+      "controls": [
+       "xover"
+      ]
+     }
+    ]
+   }
+  },
+  "check_controls": [
+   "t_pct",
+   "xover"
+  ],
+  "inhibit_controls": [
+   "emg_pct"
+  ]
+ },
  "composite_smr_theta.ir.json": {
   "bundles": {
    "": {

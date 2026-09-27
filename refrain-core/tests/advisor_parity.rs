@@ -86,3 +86,28 @@ fn scenarios_match_python() {
         }
     }
 }
+
+#[test]
+fn whole_session_matches_python() {
+    use refrain_core::eval::Evaluator;
+    let fx = fixture("autopilot_alpha_theta.advice.json");
+    let p: Protocol = serde_json::from_value(fixture("autopilot_alpha_theta.ir.json")).unwrap();
+    let sr = fx["sample_rate_hz"].as_f64().unwrap();
+    let chunk = fx["chunk_size"].as_u64().unwrap() as usize;
+    let input: Vec<Vec<f64>> = fx["input"].as_array().unwrap().iter()
+        .map(|r| r.as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect())
+        .collect();
+    let mut ev = Evaluator::new(&p, sr, &["Cz".to_string()]);
+    ev.start(false);
+    for (i, (rows, step)) in input.chunks(chunk).zip(fx["steps"].as_array().unwrap()).enumerate() {
+        ev.step_chunk_events(rows);
+        let a = ev.advice();
+        same(&a, &step["advice"], &format!("chunk{i}.advice"));
+        let mut applied = Value::Null;
+        if a["state"] == "adjust" && a["control"]["auto_allowed"] == true {
+            applied = ev.apply_advice(a["id"].as_str().unwrap(), "autopilot").unwrap();
+        }
+        same(&applied, &step["applied"], &format!("chunk{i}.applied"));
+        same(&Value::Array(ev.drain_advice_events()), &step["events"], &format!("chunk{i}.events"));
+    }
+}
