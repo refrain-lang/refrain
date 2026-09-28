@@ -560,7 +560,7 @@ same rules. Protocols without the new keys keep a byte-identical hash.
 |---|---|
 | Every protocol in this repo and `refrain-protocols` | Compiles unchanged, same hash, manual only. Observations available once a host calls `advice()`. |
 | Protocols with unnamed checks | Advice says `check 0`, `check 1` until names are added (a minor protocol version bump; the hash changes). |
-| New `examples/alpha_theta_autopilot.refrain` | Copy of production `refrain-protocols/protocols/eeg/alpha_theta.refrain` v1.3.0 with named checks and the full policy. Test fixture and worked example. Header notes the 10–35% band came from the recorder's held-reward measure and must be re-confirmed on real sessions under the instantaneous measure. |
+| New `examples/alpha_theta_autopilot.refrain` | Copy of production `refrain-protocols/protocols/eeg/alpha_theta.refrain` v1.3.0 with named checks and the full policy, plus one further deviation: the montage reference is the literal `"linked_ears"` instead of `amp.reference`, so the example resolves without an amp profile like every other example. Test fixture and worked example. Header notes the 10–35% band came from the recorder's held-reward measure and must be re-confirmed on real sessions under the instantaneous measure. |
 | `refrain-protocols` | Follow-up change after v0.22.0 is released: alpha/theta gains names + policy; SMR and siblings gain names (and optionally `limiter` messages). |
 | Recorder | Replaces `nf/guidance.py` with `advice()`; nf-coach's name-guessing retires once the recorder and portal consume `advice()`. Old session files keep their old guidance events readable. Recorder repo work. |
 | Companion | Needs a Rust core ≥ v0.22.0 to load any 0.4 protocol. |

@@ -299,7 +299,10 @@ or any autopilot number is a protocol change like any other — bump
 
 `examples/alpha_theta_autopilot.refrain` is the reference: a copy of the
 production `alpha_theta` protocol with two named checks and a full policy
-added. Its `autopilot { }` block:
+added. It also pins the montage reference to the literal `"linked_ears"`
+instead of `amp.reference`, so the example resolves without an amp profile,
+like every other example — the only other deviation from production. Its
+`autopilot { }` block:
 
 ```
 autopilot {

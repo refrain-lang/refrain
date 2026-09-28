@@ -1,7 +1,10 @@
 // Alpha/theta crossover WITH AUTOPILOT — worked example for
 // docs/AUTOPILOT-AUTHORING.md. Identical to refrain-protocols'
 // protocols/eeg/alpha_theta.refrain v1.3.0 except: the two reward checks are
-// named, and an `autopilot { }` block plus three control policies are added.
+// named, an `autopilot { }` block plus three control policies are added, and
+// the montage reference is the literal "linked_ears" instead of
+// `amp.reference` — the only other deviation from production — so the
+// example resolves without an amp profile, like every other example.
 //
 // The 10-35% reward target was carried over from the recorder's guidance
 // engine, which measured the one-second HELD reward. The advisor measures the
@@ -57,7 +60,8 @@
 //     artifact in the eyes-closed, reclined posture is the dominant noise
 //     source for THIS protocol on any amp, not just BrainBit.
 //
-// Amp-portable: reads amp.reference instead of a hardcoded reference.
+// Amp-portable in production (reads amp.reference); this example pins the
+// literal "linked_ears" reference instead — see the deviation note above.
 //
 // meta.advanced_controls keeps threshold style, theta reward rate, and the
 // crossover target visible; everything else is behind "Advanced".
@@ -101,7 +105,7 @@ protocol "alpha_theta_autopilot" {
 
 
   input "raw" {
-    montage = referential(active: site, reference: amp.reference)
+    montage = referential(active: site, reference: "linked_ears")
   }
 
   derive "delta_envelope" {
