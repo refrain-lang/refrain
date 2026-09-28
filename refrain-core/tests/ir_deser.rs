@@ -209,7 +209,7 @@ fn v04_autopilot_fields_deserialize() {
                           "apply": "auto", "limits": [0.5, 1.0], "round_to": 0.01,
                           "decimals": 2, "step": 0.05, "citation": []}
         }},
-        "autopilot": {"evidence": "expert_opinion", "citation": ["x"], "rationale": "y",
+        "autopilot": {"evidence": "exploratory", "citation": ["x"], "rationale": "y",
                       "reward_target": [0.1, 0.35], "watch_samples": 5120,
                       "guards": {"emg": {"max": 0.15, "say": null}}, "tighten_first": ["crossover"]},
         "output": {}, "topological_order": []

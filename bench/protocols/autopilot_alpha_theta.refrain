@@ -33,7 +33,7 @@ protocol "autopilot_alpha_theta" {
     emg_pct = percent { default = 95; range = (50, 99); live_tunable = true }
   }
   autopilot {
-    evidence = "experimental"
+    evidence = "exploratory"
     citation = "Parity bench (not clinical)"
     rationale = "Short windows so an 80 s run exercises every advisor state."
     reward_target = (20%, 40%)

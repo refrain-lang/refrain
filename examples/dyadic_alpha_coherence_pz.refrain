@@ -24,8 +24,8 @@ protocol "dyadic_alpha_coherence_pz" {
   // ---- Metadata (CRED-nf bookkeeping; no runtime effect) -------------------
   meta {
     version     = "1.0.0"
-    // "experimental": inter-brain / hyperscanning NF is not clinically
-    // established. Reserve "clinical" for validated protocols.
+    // "exploratory": inter-brain / hyperscanning training has no long
+    // track record in prior art.
     evidence    = "exploratory"
     description = "Inter-brain alpha (10 Hz) coherence uptraining at Pz between two participants"
     author      = "Bay Area Peak Performance"

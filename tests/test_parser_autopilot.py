@@ -11,7 +11,7 @@ SRC = '''protocol "p" {
     event = dwell(condition: all_of([above("a", "b") as "theta", above("c", k)]), duration: 1 s)
   }
   autopilot {
-    evidence = "expert_opinion"
+    evidence = "exploratory"
     watch = 2 min
     emg = guard { max = 15%; say = "Muscle." }
   }
@@ -37,7 +37,7 @@ def test_labeled_array_element_parses():
 def test_autopilot_section_parses():
     body = _section(parse(SRC).protocol, "autopilot").body
     entries = {s.target: s.value for s in body}
-    assert entries["evidence"] == A.StringLit("expert_opinion")
+    assert entries["evidence"] == A.StringLit("exploratory")
     assert entries["watch"] == A.NumberLit(2.0, "min")
     assert isinstance(entries["emg"], A.BlockExpr) and entries["emg"].name == "guard"
 

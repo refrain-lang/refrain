@@ -59,4 +59,4 @@ def test_runs_and_advises():
         ev.step_chunk(rng.normal(0, 10, size=(256, 3)))
     a = ev.advice()
     assert a["reason"] in ("collecting", "guard")
-    assert ev.autopilot_policy()["provenance"]["evidence"] == "expert_opinion"
+    assert ev.autopilot_policy()["provenance"]["evidence"] == "exploratory"

@@ -103,7 +103,8 @@ _AMP_ALLOWED_FIELDS: tuple[str, ...] = ("reference",)
 
 
 # The protocol-wide `autopilot { }` section (SPEC §4.12).
-_EVIDENCE_LEVELS = ("published", "clinical_consensus", "expert_opinion", "experimental")
+# Same tiers as protocol `meta.evidence` in the reference protocol library.
+_EVIDENCE_LEVELS = ("established", "probable", "exploratory")
 _AP_SETTINGS = frozenset({
     "evidence", "citation", "rationale", "reviewed", "reward_target", "phases",
     "watch", "between_moves", "equipment_settle", "tighten_first",

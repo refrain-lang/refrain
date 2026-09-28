@@ -158,7 +158,7 @@ depending on how often the condition flickers around the dwell boundary. We
 shipped the number as-is with a header comment saying so, but we can't
 re-confirm it ourselves — that needs real recorded sessions run under the
 instantaneous measure. Please treat the band as provisional
-(`evidence = "expert_opinion"` already says as much) until someone checks it
+(`evidence = "exploratory"` already says as much) until someone checks it
 against your session logs.
 
 ## 6. Follow-up in `refrain-protocols`

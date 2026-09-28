@@ -50,7 +50,7 @@ AP = '''protocol "ap_demo" {
 }'''
 
 AUTOPILOT_BLOCK = '''autopilot {
-    evidence         = "expert_opinion"
+    evidence         = "exploratory"
     citation         = "Test policy"
     rationale        = "Test rationale"
     reward_target    = (10%, 35%)

@@ -439,7 +439,7 @@ def test_guard_hold_blocks_a_standing_suggestion():
 
 def test_policy_description():
     p = make().policy()
-    assert p["provenance"] == {"evidence": "expert_opinion", "citation": ["Test policy"],
+    assert p["provenance"] == {"evidence": "exploratory", "citation": ["Test policy"],
                                "rationale": "Test rationale", "reviewed": None}
     assert p["controls"]["xover"]["apply"] == "auto" and p["watch_s"] == 20.0
     assert p["guards"]["emg"] == {"max": 0.15, "say": "Muscle artifact."}

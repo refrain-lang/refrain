@@ -849,7 +849,7 @@ Protocol-wide settings for the autopilot advisor (§7.10): when advice runs, wha
 ```refrain
 autopilot {
   // provenance — required whenever the block exists
-  evidence  = "expert_opinion"
+  evidence  = "exploratory"
   citation  = "Peak Mind practice team (2026). Adapted from Peniston & Kulkosky 1989 practice."
   rationale = "Crossover is rare by nature; a 50-75% target would drive the ratio target to its floor."
   reviewed  = "J. Croall, 2026-09-24"          // optional
@@ -875,7 +875,7 @@ autopilot {
 
 | Field | Type | Meaning |
 |---|---|---|
-| `evidence` | string, **required** | `published` \| `clinical_consensus` \| `expert_opinion` \| `experimental`. A closed set, unlike free-text `meta.evidence`. |
+| `evidence` | string, **required** | `established` \| `probable` \| `exploratory` — the same tiers as `meta.evidence` in the reference protocol library (how established the approach behind the numbers is in prior art; provenance, not an outcome claim). A closed set the compiler checks, unlike `meta.evidence`. |
 | `citation` | string or array of strings, **required** | Source(s) for the numbers. |
 | `rationale` | string, **required** | One or two sentences on why these numbers. |
 | `reviewed` | string, optional | Who reviewed it and when. |

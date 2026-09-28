@@ -1282,7 +1282,7 @@ mod tests {
                 "autopilot": {"strategy": "fixed_step", "fixes": "a", "higher_is": "harder",
                     "apply": "auto", "limits": [0.5, 2.0], "round_to": 0.1, "decimals": 1,
                     "step": 0.1, "citation": []}}},
-            "autopilot": {"evidence": "experimental", "citation": ["t"], "rationale": "r",
+            "autopilot": {"evidence": "exploratory", "citation": ["t"], "rationale": "r",
                 "reward_target": [0.4, 0.6], "watch_samples": 20},
             "output": {}, "topological_order": []
         })).unwrap()

@@ -335,7 +335,7 @@ protocol "alpha_theta_autopilot" {
   // small steps; guards are never loosened automatically (the compiler refuses
   // `apply = "auto"` on any knob that feeds an inhibit).
   autopilot {
-    evidence      = "expert_opinion"
+    evidence      = "exploratory"
     citation      = [
       "Peniston & Kulkosky 1989, 1991 (protocol)",
       "Peak Mind clinical team 2026: step sizes and target band adapted from Coherence Recorder guidance v1",

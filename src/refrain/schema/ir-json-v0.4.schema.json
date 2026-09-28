@@ -136,10 +136,9 @@
       "properties": {
         "evidence": {
           "enum": [
-            "published",
-            "clinical_consensus",
-            "expert_opinion",
-            "experimental"
+            "established",
+            "probable",
+            "exploratory"
           ]
         },
         "citation": {

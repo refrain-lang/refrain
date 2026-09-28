@@ -59,7 +59,7 @@ def test_fanout_rejects_labels():
 
 def test_autopilot_section_resolves():
     a = _ir(ap()).autopilot
-    assert a.evidence == "expert_opinion"
+    assert a.evidence == "exploratory"
     assert a.citations == ("Test policy",)
     assert a.reward_target == (0.10, 0.35)
     assert a.phases == ("train1", "train2")
@@ -78,7 +78,7 @@ def test_citation_list_is_accepted():
 
 
 @pytest.mark.parametrize("line, needle", [
-    ('evidence         = "expert_opinion"', "evidence"),
+    ('evidence         = "exploratory"', "evidence"),
     ('citation         = "Test policy"', "citation"),
     ('rationale        = "Test rationale"', "rationale"),
 ])
@@ -87,8 +87,10 @@ def test_provenance_is_required(line, needle):
 
 
 def test_evidence_must_be_a_known_level():
-    msg = _err(ap().replace('"expert_opinion"', '"demo"'))
-    assert "evidence" in msg and "expert_opinion" in msg
+    msg = _err(ap().replace('"exploratory"', '"demo"'))
+    assert "evidence" in msg
+    for tier in ("established", "probable", "exploratory"):
+        assert tier in msg
 
 
 @pytest.mark.parametrize("target", ["(35%, 10%)", "(10, 35)", "(0%, 50%)", "(10%)"])
@@ -125,13 +127,13 @@ from tests.test_compose import _dict_loader
 
 def test_child_block_replaces_and_amend_merges():
     parent = ap()
-    child_replace = ('protocol "c" extends "base" { autopilot { evidence = "published"; '
+    child_replace = ('protocol "c" extends "base" { autopilot { evidence = "established"; '
                      'citation = "C"; rationale = "R" } }')
     ir = resolve(parse(child_replace), parent_loader=_dict_loader({"base": parent}))
-    assert ir.autopilot.evidence == "published" and ir.autopilot.watch_ms is None
+    assert ir.autopilot.evidence == "established" and ir.autopilot.watch_ms is None
     child_amend = 'protocol "c" extends "base" { amend autopilot { watch = 1 min } }'
     ir = resolve(parse(child_amend), parent_loader=_dict_loader({"base": parent}))
-    assert ir.autopilot.watch_ms == 60000.0 and ir.autopilot.evidence == "expert_opinion"
+    assert ir.autopilot.watch_ms == 60000.0 and ir.autopilot.evidence == "exploratory"
 
 
 # --- per-control policies -------------------------------------------------
@@ -290,7 +292,7 @@ def test_policy_on_protocol_without_reward_condition():                     # V1
     from tests._seed_fixtures import NON_SEEDING
     src = NON_SEEDING.replace(
         "session {",
-        'autopilot { evidence = "experimental"; citation = "x"; rationale = "y"; '
+        'autopilot { evidence = "exploratory"; citation = "x"; rationale = "y"; '
         "reward_target = (40%, 60%) }\n  session {")
     assert "reward condition" in _err(src)
 

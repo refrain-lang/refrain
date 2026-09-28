@@ -180,7 +180,7 @@ and stays at whatever version its other features already put it at.
 
 ```json
 "autopilot": {
-  "evidence": "expert_opinion",
+  "evidence": "exploratory",
   "citation": [
     "Peniston & Kulkosky 1989, 1991 (protocol)",
     "Peak Mind practice team 2026: step sizes and target band adapted from Coherence Recorder guidance v1"
@@ -203,7 +203,7 @@ and stays at whatever version its other features already put it at.
 
 | Field | JSON type | Meaning |
 |---|---|---|
-| `evidence` | string (closed enum) | `"published"` \| `"clinical_consensus"` \| `"expert_opinion"` \| `"experimental"`. |
+| `evidence` | string (closed enum) | `"established"` \| `"probable"` \| `"exploratory"` — the protocol library's `meta.evidence` tiers. |
 | `citation` | array of string, non-empty | Always emitted as an array, even when the source declared a single string. |
 | `rationale` | string | |
 | `reviewed` | string \| null | |

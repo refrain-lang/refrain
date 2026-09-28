@@ -12,7 +12,7 @@ def test_new_fields_default_to_absent():
 
 def test_autopilot_shapes_construct():
     ap = IRAutopilot(
-        evidence="expert_opinion", citations=("x",), rationale="y",
+        evidence="exploratory", citations=("x",), rationale="y",
         guards=(IRGuard(inhibit="emg", max_frac=0.15, say=None),),
         limiters=(IRLimiter(check="hb", say="coach"),),
     )

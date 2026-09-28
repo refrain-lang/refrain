@@ -106,7 +106,7 @@ required the moment the block exists at all:
 
 ```refrain
 autopilot {
-  evidence  = "expert_opinion"
+  evidence  = "exploratory"
   citation  = "Peak Mind clinical team (2026). Adapted from Peniston & Kulkosky 1989 practice."
   rationale = "Crossover is rare by nature; a 50-75% target would drive the ratio target to its floor."
   reviewed  = "J. Croall, 2026-09-24"          // optional
@@ -125,7 +125,7 @@ autopilot {
 
 | Field | Type | Meaning |
 |---|---|---|
-| `evidence` | string, **required** | One of `published`, `clinical_consensus`, `expert_opinion`, `experimental` — a closed set (§7 below). |
+| `evidence` | string, **required** | One of `established`, `probable`, `exploratory` — a closed set (§7 below). |
 | `citation` | string or list of strings, **required** | Source(s) for the numbers below. |
 | `rationale` | string, **required** | One or two sentences on why these numbers were chosen. |
 | `reviewed` | string, optional | Who reviewed the policy and when. |
@@ -263,14 +263,17 @@ from an ordinary reward knob.
 Every `autopilot { }` block requires `evidence`, `citation`, and `rationale`
 — there is no unsourced autopilot policy.
 
-**The `evidence` scale:**
+**The `evidence` scale** — the same three tiers as protocol `meta.evidence`
+in the reference protocol library, applied to the autopilot numbers:
 
 | Level | What qualifies |
 |---|---|
-| `published` | The numbers come from a peer-reviewed source, cited in `citation`. |
-| `clinical_consensus` | A written team protocol or guideline, not necessarily published. |
-| `expert_opinion` | An experienced clinician's judgement, not formally written up elsewhere. |
-| `experimental` | Untested numbers. Legal to ship — hosts should visibly label advice from an `experimental` policy so a clinician can weigh it accordingly. |
+| `established` | The approach behind these numbers has a long track record in the literature, cited in `citation`. |
+| `probable` | Some prior-art support — a published source or a written practice guideline — but not a long track record. |
+| `exploratory` | A practitioner's judgement or untested starting points. Legal to ship — hosts should visibly label advice from an `exploratory` policy so a practitioner can weigh it accordingly. |
+
+Like `meta.evidence`, this is provenance — where the numbers come from — not a
+claim about what they will do for anyone.
 
 **`citation`** is one string or a list of strings. Cite the protocol's clinical
 origin *and* the source of the autopilot numbers *separately* — they are
@@ -306,7 +309,7 @@ like every other example — the only other deviation from production. Its
 
 ```
 autopilot {
-  evidence      = "expert_opinion"
+  evidence      = "exploratory"
   citation      = [
     "Peniston & Kulkosky 1989, 1991 (protocol)",
     "Peak Mind clinical team 2026: step sizes and target band adapted from Coherence Recorder guidance v1",
@@ -322,7 +325,7 @@ autopilot {
 }
 ```
 
-Line by line: `expert_opinion` because the target band (10–35%) was carried
+Line by line: `exploratory` because the target band (10–35%) was carried
 over and adapted from Coherence Recorder's own guidance engine rather than
 published outright; two citations, because the *protocol* traces to Peniston
 & Kulkosky but the *autopilot numbers* trace to the recorder team. Advice

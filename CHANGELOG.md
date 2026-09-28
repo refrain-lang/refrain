@@ -10,8 +10,9 @@ bumps are additive; major bumps may break compatibility.
 ### Added
 - **Protocol-declared autopilot.** A protocol can now name its reward checks
   (`above(...) as "crossover"`), declare an `autopilot { }` block (target
-  reward band, phases, evidence window, cadence, guard ceilings, provenance)
-  and give each tunable control a policy (`fixed_step`, `proportional_step`,
+  reward band, phases, evidence window, cadence, guard ceilings, provenance
+  — `evidence` uses the protocol library's `established` / `probable` /
+  `exploratory` tiers) and give each tunable control a policy (`fixed_step`, `proportional_step`,
   `rebaseline`; direction, limits, auto vs suggest). The compiler refuses
   unsafe or ambiguous policies at compile time: a knob that cannot affect the
   check it claims to fix, a reversed direction, or auto-adjusting a guard is
