@@ -517,7 +517,7 @@ git push -u origin worktree-biosignal-reframe
 
 - [ ] **Step 4: Open the PR**
 
-Target `claude/biosignal-platform-framing-8gk0it` (the branch the approved proposal lives on), not `main`. Title: `docs: reframe Refrain as a biosignal training-paradigm language`. Body must state: no language, IR-JSON, or embedding-API change; links to `docs/proposals/2026-07-23-biosignal-platform-reframe.md` §3.
+Target `main`. Title: `docs: reframe Refrain as a biosignal training-paradigm language`. Body must state: no language, IR-JSON, or embedding-API change, and cite §3 of the reframe proposal (held internally). *Historical note: this originally said to target `claude/biosignal-platform-framing-8gk0it`. That branch predates v0.21.0, its diff would revert that release, and it is obsolete — the shipped PR targeted `main`.*
 
 ---
 
