@@ -26,10 +26,9 @@ protocol "dyadic_alpha_coherence_pz" {
     version     = "1.0.0"
     // "experimental": inter-brain / hyperscanning NF is not clinically
     // established. Reserve "clinical" for validated protocols.
-    evidence    = "experimental"
+    evidence    = "exploratory"
     description = "Inter-brain alpha (10 Hz) coherence uptraining at Pz between two participants"
     author      = "Bay Area Peak Performance"
-    indication  = "dyadic regulation / social synchrony (research)"
   }
 
   // ---- Hardware the protocol needs (checked against the amp at load) -------
@@ -42,7 +41,7 @@ protocol "dyadic_alpha_coherence_pz" {
     channels    = ["Pz_A", "Pz_B"]
   }
 
-  // ---- Clinician-tunable controls ------------------------------------------
+  // ---- Practitioner-tunable controls ------------------------------------------
   controls {
     // The operant threshold target, adjustable LIVE mid-session via
     // set_control("coh_target_pct", ...). 70 => reward when coherence sits in

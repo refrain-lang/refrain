@@ -17,7 +17,6 @@ protocol "othmer_ilf_cz_pz_v1" extends "library/othmer/ilf_base@1" {
 
   amend meta {
     description       = "Othmer ILF training, Cz-Pz midline (attention focus)"
-    indication        = "attention_focus"
   }
 
   amend requires {

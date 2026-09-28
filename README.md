@@ -1,14 +1,14 @@
 # Refrain
 
-*An open description language for clinical neurofeedback protocols.*
+*An open description language for biosignal training paradigms.*
 
 [![tests](https://github.com/refrain-lang/refrain/actions/workflows/test.yml/badge.svg)](https://github.com/refrain-lang/refrain/actions/workflows/test.yml)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 
-**Status:** v0.1.0 — reference implementation shipped end-to-end (parser, resolver, evaluator, embedding API). Pre-clinical validation. See [CHANGELOG.md](CHANGELOG.md).
+**Status:** v0.1.0 — reference implementation shipped end-to-end (parser, resolver, evaluator, embedding API). Pre-validation — see the positioning note below. See [CHANGELOG.md](CHANGELOG.md).
 
-A Refrain file (`.refrain`) describes a complete clinical neurofeedback protocol — required hardware, channel montage, signal-processing pipeline, threshold logic, inhibit gates, reward expression, output bindings, and clinician-tunable controls — at a level of precision a runtime can execute directly and a peer reviewer can audit directly.
+A Refrain file (`.refrain`) describes a complete biosignal training protocol — EEG neurofeedback, HRV coherence, GSR or temperature biofeedback — covering required hardware, signal-source binding, signal-processing pipeline, threshold logic, inhibit gates, reward expression, output bindings, and practitioner-tunable controls, at a level of precision a runtime can execute directly and a peer reviewer can audit directly.
 
 ```refrain
 protocol "hello_smr" {
@@ -55,7 +55,7 @@ protocol "hello_smr" {
 
 ## Why
 
-Clinical neurofeedback has a documented reproducibility problem driven by protocol heterogeneity across studies and proprietary closed-source software. The CRED-nf reporting checklist (Ros et al., *Brain*, 2020) describes in prose what a NF protocol must contain. Refrain makes that description executable: a single text file that's the protocol, the paper supplement, and the runnable artifact.
+Biosignal training has a documented reproducibility problem driven by protocol heterogeneity across studies and proprietary closed-source software. In EEG neurofeedback the CRED-nf reporting checklist (Ros et al., *Brain*, 2020) describes in prose what a protocol must contain; HRV biofeedback has its own reporting norms (Lehrer & Gevirtz). Refrain makes either description executable: a single text file that's the protocol, the paper supplement, and the runnable artifact. CRED-nf is one supported reporting standard, not the reason Refrain exists.
 
 See [`docs/CONCEPT.md`](docs/CONCEPT.md) for the full motivation and field context.
 
@@ -112,11 +112,11 @@ Specified but not yet implemented:
 
 - **Research mode** (CRED-nf-grade allocation concealment): chunk-transformer abstraction, three first-class sham types, sealed allocation via libsodium `crypto_box_seal`, `meta.sham_strategies` whitelist. Contract documented in [`docs/RESEARCH-MODE.md`](docs/RESEARCH-MODE.md) and [`SPEC §7.9`](docs/SPEC.md); reference implementation tracked for the next phase.
 
-## Clinical-use disclaimer
+## Positioning and intended use
 
-**Refrain is research software, not a medical device.** It has not been cleared by the FDA, CE-marked, or approved by any regulatory authority for clinical use. The Apache-2.0 license disclaims all warranties; any clinical use is at the user's own risk and subject to applicable law, institutional policy, and IRB requirements.
+**Refrain is research and general-wellness software. It is not a medical device.** It has not been cleared by the FDA, CE-marked, or approved by any regulatory authority, and it makes no diagnostic or therapeutic claim. The Apache-2.0 license disclaims all warranties; use is at your own risk and subject to applicable law, institutional policy, and — for research use — IRB requirements.
 
-The reference implementation has not been validated against any specific clinical outcome. Validation is the responsibility of the host application and the clinical investigator running the protocol. Refrain captures *what a protocol computes*; it does not guarantee that the protocol is appropriate for any given patient or indication.
+The reference implementation has not been validated against any specific outcome. Validation is the responsibility of the host application and whoever runs the protocol. Refrain captures *what a protocol computes*; it does not assert that any protocol is appropriate for any given person or purpose.
 
 ## Contributing
 

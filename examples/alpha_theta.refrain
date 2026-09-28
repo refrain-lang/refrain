@@ -3,7 +3,7 @@
 // Eyes-closed protocol training the alpha/theta crossover state.
 // Reward is continuous audio modulation tied to theta amplitude,
 // with a discrete event chime on alpha-to-theta crossover.
-// Patient is reclined, eyes closed; clinician observes phenomenology.
+// Person is reclined, eyes closed; practitioner observes phenomenology.
 //
 // Strawman example for Refrain v0.0. Not yet executable.
 
@@ -11,15 +11,11 @@ protocol "alpha_theta_pz_v1" {
 
   meta {
     version          = "1.0.0"
-    evidence         = "clinical"
+    evidence         = "established"
     description      = "Alpha-theta training (Peniston) at Pz, linked-ears reference"
     author           = "Peak Mind"
     citation         = "Peniston E.G. & Kulkosky P.J. (1989). Alpha-Theta Brainwave Training and Beta-Endorphin Levels in Alcoholics. Alcoholism: Clinical & Experimental Research, 13(2), 271-279."
-    population       = "adults_18_plus"
-    indication       = "trauma_recovery_addiction_creative_state"
     control_ref      = "library/alpha_theta/sham@1.0"
-    safety_monitoring = ["pre_session_check", "post_session_debrief"]
-    outcome_measures = ["BDI-II", "PCL-5", "subjective_state_report"]
   }
 
   requires {

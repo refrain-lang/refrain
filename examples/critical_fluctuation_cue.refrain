@@ -20,13 +20,10 @@ protocol "critical_fluctuation_cue_v1" {
 
   meta {
     version           = "0.1.0"
-    evidence          = "demo"
+    evidence          = "exploratory"
     description       = "Dynamical neurofeedback: cue on critical fluctuations (early-warning signals) across bands, at any site(s)"
     author            = "Bay Area Peak Performance"
     citation          = "Scheffer et al. 2009 Nature 461:53-59; Maturana et al. 2020 Nat Commun 11:2172; Yang et al. 2012 J Neurosci 32:1061"
-    population         = "adults_18_plus"
-    indication         = "self_regulation_wellness"
-    safety_monitoring  = ["pre_session_check", "intra_session_clinician_observation"]
   }
 
   requires {

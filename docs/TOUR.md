@@ -1,7 +1,7 @@
 # Refrain by Example — A Tour
 
 **Status:** strawman draft (v0.0r1)
-**Audience:** clinicians, researchers, and engineers new to Refrain
+**Audience:** practitioners, researchers, and engineers new to Refrain
 **Companion docs:** [`SPEC.md`](./SPEC.md), [`PRIMITIVES.md`](./PRIMITIVES.md), [`examples/`](./examples/)
 
 This tour introduces Refrain by example. We start with the smallest possible protocol that does something useful, add features as we go, and finish with a complete Othmer ILF protocol that exercises most of the language.
@@ -65,11 +65,11 @@ That's a complete protocol. It says:
 3. Compute the SMR-band envelope (12–15 Hz, smoothed).
 4. Track an adaptive threshold at the 70th percentile over two minutes.
 5. The reward (continuous) is a sigmoid of how far the SMR envelope sits above its threshold.
-6. Patient hears audio whose gain follows the reward.
+6. The person hears audio whose gain follows the reward.
 
-The patient: hears louder audio when their SMR is above their personal recent baseline. The clinician: needs to do nothing — the threshold tracks the patient automatically.
+The person: hears louder audio when their SMR is above their personal recent baseline. The practitioner: needs to do nothing — the threshold tracks the person automatically.
 
-This is enough to be a real protocol. Let's add what's missing for clinical use.
+This is enough to be a real protocol. Let's add what's missing for real-world use.
 
 ---
 
@@ -95,7 +95,7 @@ inhibit "high_beta" {
 
 Now the *output* is muted (zero) whenever EMG exceeds its 95th-percentile baseline, or whenever high-beta exceeds 8 µV absolute. The 200 ms release prevents flicker — once an inhibit fires, output stays muted for at least 200 ms after the metric returns to acceptable.
 
-Inhibits modify what reaches the patient via output bindings. They don't modify `reward.continuous` or `reward.event` directly — meaning if you have downstream logic that consumes reward, it sees the unmodified value. This matters for protocols where reward is itself an input to further computation.
+Inhibits modify what reaches the person via output bindings. They don't modify `reward.continuous` or `reward.event` directly — meaning if you have downstream logic that consumes reward, it sees the unmodified value. This matters for protocols where reward is itself an input to further computation.
 
 ---
 
@@ -129,7 +129,7 @@ output {
 
 `reward.event` here represents the rising-edge event that fires when the condition has been satisfied for at least 250 ms. `reward.event.holds` is a continuous boolean that's true for as long as the condition currently holds. The output binding chooses how to use them:
 
-- **chime** on the discrete event (the patient hears a brief tone each time they cross into a sustained criterion-met state)
+- **chime** on the discrete event (the person hears a brief tone each time they cross into a sustained criterion-met state)
 - **gated continuous gain** during the holds-true window (graded reward only when the operant condition is currently being met)
 
 If you wanted ungated continuous reward (graded all the time, regardless of condition), you'd just write `audio_gain = reward.continuous`. The gating choice is per-protocol, made visible in the output block.
@@ -169,7 +169,7 @@ input "ilf" {
 
 ### 4.3 The bandpass / differentiate / rectify pipeline
 
-This is the heart of ILF. We bandpass narrowly around the ORF (Optimal Reinforcement Frequency, the per-patient knob), differentiate to capture state changes, rectify so any change counts as reward:
+This is the heart of ILF. We bandpass narrowly around the ORF (Optimal Reinforcement Frequency, the per-person knob), differentiate to capture state changes, rectify so any change counts as reward:
 
 ```refrain
 derive "band" {
@@ -183,7 +183,7 @@ derive "band" {
 }
 ```
 
-Notice `orf` — that's not yet defined. It's a clinician-tunable control (declared below). The bandpass's center frequency is whatever the clinician has dialed in for this session.
+Notice `orf` — that's not yet defined. It's a practitioner-tunable control (declared below). The bandpass's center frequency is whatever the practitioner has dialed in for this session.
 
 ### 4.4 Auto-ranging
 
@@ -224,11 +224,11 @@ output {
 }
 ```
 
-The audio has a base level (0.2) so the patient never hears silence; the video and ambient effects modulate over their full range.
+The audio has a base level (0.2) so the person never hears silence; the video and ambient effects modulate over their full range.
 
-### 4.7 Controls — the clinician's knob
+### 4.7 Controls — the practitioner's knob
 
-ORF is the single most important parameter and the clinician adjusts it live during the session:
+ORF is the single most important parameter and the practitioner adjusts it live during the session:
 
 ```refrain
 controls {
@@ -242,7 +242,7 @@ controls {
 }
 ```
 
-`live_tunable = true` means the clinician can change ORF mid-session via the runtime's control API. The bandpass coefficients in §4.3 will recompute lazily; state is preserved (warm-restart by default). `log = true` means the GUI should present a logarithmic slider — appropriate when the range spans four decades.
+`live_tunable = true` means the practitioner can change ORF mid-session via the runtime's control API. The bandpass coefficients in §4.3 will recompute lazily; state is preserved (warm-restart by default). `log = true` means the GUI should present a logarithmic slider — appropriate when the range spans four decades.
 
 ### 4.8 Inhibits — light-touch artifact gating
 
@@ -305,7 +305,7 @@ protocol "stricter_emg_variant" extends "library/othmer/ilf_base@1.2" {
 }
 ```
 
-`amend` is the cleanest way to express "I want this protocol with one parameter different." Most clinical variants are 5-10 line files of this shape.
+`amend` is the cleanest way to express "I want this protocol with one parameter different." Most real-world variants are 5-10 line files of this shape.
 
 ### 5.2 Removing parent declarations
 
@@ -324,15 +324,15 @@ protocol "no_inhibits_research_variant" extends "library/smr_cz@1.0" {
 }
 ```
 
-This is rare in clinical use but useful for research where you want to study what the unmodified signal does.
+This is rare in routine use but useful for research where you want to study what the unmodified signal does.
 
 ### 5.3 Safety guards with `final`
 
-Parent protocols can mark declarations as un-overridable using `final = true`. Children cannot amend, remove, or replace `final` declarations. This is useful for clinical safety guards:
+Parent protocols can mark declarations as un-overridable using `final = true`. Children cannot amend, remove, or replace `final` declarations. This is useful for safety guards:
 
 ```refrain
-// In library/clinical_base@1.0
-protocol "clinical_base" {
+// In library/safety_base@1.0
+protocol "safety_base" {
   // ...
   inhibit "safety_emg" {
     metric    = bandpower(input: "raw", band: (50 Hz, 100 Hz), window: 100 ms)
@@ -343,7 +343,7 @@ protocol "clinical_base" {
 }
 ```
 
-Any protocol extending `clinical_base@1.0` will inherit `safety_emg` and cannot override or remove it. Children can still add additional inhibits.
+Any protocol extending `safety_base@1.0` will inherit `safety_emg` and cannot override or remove it. Children can still add additional inhibits.
 
 ---
 
@@ -516,4 +516,4 @@ This is the load-bearing reason to use Refrain. CRED-nf compliance becomes a too
 - **Read the formal reference.** [`SPEC.md`](./SPEC.md) defines the language precisely.
 - **Read the rationale.** [`CONCEPT.md`](./CONCEPT.md) explains why Refrain exists and what we're hoping it changes about the field.
 
-If you find a feature missing, a syntax that feels wrong, or a clinical pattern that doesn't fit — that's the most valuable feedback at this stage. The strawman exists to be argued with.
+If you find a feature missing, a syntax that feels wrong, or a training pattern that doesn't fit — that's the most valuable feedback at this stage. The strawman exists to be argued with.

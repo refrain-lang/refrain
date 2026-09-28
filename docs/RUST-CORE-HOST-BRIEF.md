@@ -28,9 +28,9 @@ integration that don't fit this app's grain.
 
 ## What the Refrain Rust core is
 
-Refrain is a declarative description language for clinical neurofeedback
-protocols (a `.refrain` file = hardware montage, DSP pipeline, threshold logic,
-reward/inhibit expressions, output bindings, clinician controls, session
+Refrain is a declarative description language for biosignal training
+paradigms (a `.refrain` file = hardware montage, DSP pipeline, threshold logic,
+reward/inhibit expressions, output bindings, practitioner controls, session
 phases). Protocols are authored/compiled OFF-DEVICE by the Refrain Python
 front-end into a portable wire format called **IR-JSON** (the protocol, fully
 resolved and type-checked, with filter coefficients pre-baked). 
@@ -50,11 +50,11 @@ What the core does:
 - Return timestamped feedback events (e.g. `audio_chime` discrete, `audio_gain`
   analog [0,1]) for the app to render
 - Expose internal computed values (envelope traces, threshold lines, dwell
-  sub-conditions, pre/post-gating reward) for clinician observation
+  sub-conditions, pre/post-gating reward) for practitioner observation
 
 What the core explicitly does NOT do (these are the APP's job):
 - Acquire EEG (BLE/headset SDK/LSL — platform-specific, stays host-side)
-- Render patient-facing audio/video/haptics/ambient effects
+- Render person-facing audio/video/haptics/ambient effects
 - Manage session UI, scheduling, storage, or any clinical-product surface
 - Author or compile `.refrain` files (that happens off-device; the app ships
   pre-compiled IR-JSON assets)
@@ -97,7 +97,7 @@ for e in events {
     }
 }
 
-// Clinician adjusts a knob:
+// Practitioner adjusts a knob:
 core.setControl(name: "smr_target_pct", value: 65.0)
 
 // End of session:
@@ -140,7 +140,7 @@ Save it where this app keeps design docs. Cover:
    and how do you guarantee the bundled rate matches the device's actual stream
    rate? (One asset per supported rate? Resample host-side to a single baked
    rate?) This is the #1 correctness trap — design it explicitly. Note: if a
-   protocol uses parameterized `placement` (clinician-chosen sites), that
+   protocol uses parameterized `placement` (practitioner-chosen sites), that
    binding is resolved **off-device** in the Python front-end (the build that
    emits IR-JSON) — the core only ever loads a fully site-bound IR-JSON. So
    either bundle one pre-bound asset per site configuration, or run the front-end
@@ -148,11 +148,11 @@ Save it where this app keeps design docs. Cover:
    placement.
 4. **Channel mapping.** How do you map the headset's electrode layout to the
    `channelNames` you pass, including reference electrodes? How do you surface a
-   placement mismatch to the clinician?
-5. **Patient feedback design.** For each output channel a protocol declares
-   (`audio_chime` event, `audio_gain` value, …): what patient experience, what
+   placement mismatch to the practitioner?
+5. **Person feedback design.** For each output channel a protocol declares
+   (`audio_chime` event, `audio_gain` value, …): what person experience, what
    minimal renderer proves it works, what's v1 vs stretch?
-6. **Clinician workflow.** Protocol selection, placement confirmation,
+6. **Practitioner workflow.** Protocol selection, placement confirmation,
    start/stop, warmup display, live values to show (envelope, threshold, recent
    events — via the core's taps), live-tunable controls UI.
 7. **Error handling.** Headset disconnect mid-session; dropped/late samples
