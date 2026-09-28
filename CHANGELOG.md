@@ -22,9 +22,15 @@ bumps are additive; major bumps may break compatibility.
 - CRED-nf is described as one supported reporting standard rather than the
   language's reason for existing.
 - Docs refer to a **practitioner** and to **the person training**, replacing
-  "clinician" and "patient" throughout the living user-facing set.
-- `tests/test_framing.py` pins the retired category phrases so the old framing
-  cannot quietly return.
+  "clinician" and "patient" across README, CONCEPT, SPEC, TOUR, PRIMITIVES,
+  EMBEDDING, IR-JSON, the Rust-core host brief, and the package docstring.
+- **`examples/`** no longer declare `indication`, `population`,
+  `safety_monitoring`, or `outcome_measures`, matching what the reference
+  protocol library distributes. Their `evidence` values now use the library's
+  tiers. Citations keep their real paper titles — provenance is honest.
+- `tests/test_framing.py` pins the retired category phrases *and* the retired
+  role words across the living user-facing set, so neither can quietly return
+  and no two docs can disagree about the same contract.
 
 ## [0.21.0] — 2026-07-26
 

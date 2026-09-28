@@ -28,8 +28,14 @@ LIVING_DOCS = [
     "docs/PRIMITIVES.md",
     "docs/EMBEDDING.md",
     "docs/IR-JSON.md",
+    "docs/RUST-CORE-HOST-BRIEF.md",
     "CONTRIBUTING.md",
 ]
+
+# Role words. The general-wellness envelope has practitioners, and the person
+# training is a person -- these are swept across the same living set so the
+# normative spec and the host-facing docs cannot disagree about one contract.
+RETIRED_ROLE_WORDS = ["clinician", "patient"]
 
 # Phrases that name the OLD category. Substring match, case-insensitive.
 # These are phrases, not single words: "clinical" alone is legitimate in
@@ -48,6 +54,17 @@ def test_no_retired_category_phrases(rel):
         assert phrase.lower() not in text, (
             f"{rel}: retired category phrase {phrase!r} — Refrain describes "
             f"biosignal training paradigms, not specifically clinical NF."
+        )
+
+
+@pytest.mark.parametrize("rel", LIVING_DOCS)
+def test_no_retired_role_words(rel):
+    text = (ROOT / rel).read_text(encoding="utf-8").lower()
+    for word in RETIRED_ROLE_WORDS:
+        assert word not in text, (
+            f"{rel}: {word!r} — living docs say 'practitioner' and 'the person "
+            f"training'. Leaving one doc on the old vocabulary makes the spec "
+            f"and the host-facing docs disagree about the same contract."
         )
 
 

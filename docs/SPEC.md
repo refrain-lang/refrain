@@ -994,7 +994,7 @@ See `docs/RESEARCH-MODE.md` for the full cryptographic protocol, per-sham-type c
 
 ## 8. CRED-nf mapping
 
-Every CRED-nf checklist item maps to a Refrain field. A complete protocol generates a CRED-nf-compliant supplement table via `refrain export cred-nf`.
+Every CRED-nf checklist item about what the protocol *computes* maps to a Refrain field; the two items about who a study enrolled are host-side (see the table). A complete protocol generates a CRED-nf-compliant supplement table via `refrain export cred-nf`.
 
 | CRED-nf item | Refrain location |
 |---|---|

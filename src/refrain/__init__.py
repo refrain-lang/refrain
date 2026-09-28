@@ -3,7 +3,7 @@
 """Refrain — an open description language for biosignal training paradigms.
 
 A `.refrain` file declares a hardware montage, DSP pipeline, threshold logic,
-reward/inhibit expressions, output bindings, clinician controls, and session
+reward/inhibit expressions, output bindings, practitioner controls, and session
 phases. This Python reference implementation parses a protocol, resolves it
 against an amplifier profile into a typed IR (`refrain.resolver.resolve`), runs
 it live or offline (`refrain.eval_.Evaluator`), and emits portable IR-JSON for

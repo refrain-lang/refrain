@@ -41,7 +41,7 @@ But CRED-nf is a checklist for *reporting in prose*. It tells authors what to de
 
 Most clinical NF runs on closed-source software: Cygnet (Bee Medic), BrainMaster, Neuroguide, Neurofield's clinical suite, and others. These are competent commercial products with decades of clinical use. They are also, from a research-replicability standpoint, sealed. A practitioner picks a "preset" inside a GUI; the preset corresponds to a specific configuration of filters, thresholds, mappings, and inhibits that exists as an opaque data structure in the vendor's binary. Researchers cannot inspect the preset; they cannot diff it against a similar one; they cannot publish it as a supplement.
 
-The consequence is that "Othmer ILF at T3-T4" — to take a real example — is a name for a clinical practice, but the actual protocol that a given clinician runs on a given day depends on a vendor binary, a clinician's tuning history, a session's parameter trajectory, and convention. None of this is captured in a way that survives the session.
+The consequence is that "Othmer ILF at T3-T4" — to take a real example — is a name for a clinical practice, but the actual protocol that a given practitioner runs on a given day depends on a vendor binary, a practitioner's tuning history, a session's parameter trajectory, and convention. None of this is captured in a way that survives the session.
 
 For a field hoping to mature into evidence-based clinical practice, this is a structural problem, not a procedural one. No amount of better reporting in prose closes the gap. The protocol *itself* needs to be a portable, inspectable, reproducible artifact.
 
@@ -49,7 +49,7 @@ For a field hoping to mature into evidence-based clinical practice, this is a st
 
 The JAMA Psychiatry result is the cleanest example: the treatment effect, restricted to studies using consistent protocols, becomes detectable. Across the broader field of NF research — for ADHD, PTSD, anxiety, performance enhancement, neurorehabilitation — meta-analyses repeatedly report high heterogeneity that "complicates interpretation." Heterogeneity is the language journals use to say "we cannot tell whether this works because every study did it differently."
 
-The cost is also paid by clinicians who want to base their practice on evidence; by patients trying to compare treatments; by insurers deciding whether to reimburse; by regulators considering software-as-medical-device classifications. All of them face the same underlying problem: the protocol is not a thing they can point at.
+The cost is also paid by practitioners who want to base their practice on evidence; by people trying to compare treatments; by insurers deciding whether to reimburse; by regulators considering software-as-medical-device classifications. All of them face the same underlying problem: the protocol is not a thing they can point at.
 
 ---
 
@@ -69,7 +69,7 @@ A practitioner who reads a recent paper and wants to try a small variant writes 
 
 A practitioner moving between practices no longer has to relearn a vendor's GUI; they bring their library of protocol files with them. Vendors compete on the quality of their runtime, the polish of their user-facing experience, and the strength of their normative databases — not on lock-in to opaque preset libraries.
 
-The core move is small but consequential: **the protocol becomes the artifact.** Not a paragraph in a paper; not a row in a vendor database; not lore in a clinician's head. A text file. Versioned. Diffable. Citable. Executable.
+The core move is small but consequential: **the protocol becomes the artifact.** Not a paragraph in a paper; not a row in a vendor database; not lore in a practitioner's head. A text file. Versioned. Diffable. Citable. Executable.
 
 This vision is not novel. It is the same move several adjacent fields have already made.
 
