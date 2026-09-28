@@ -8,9 +8,12 @@
 
 **Tech Stack:** Python 3.12, pytest, jsonschema, the `refrain` parser (pinned at `v0.21.0` in `refrain-protocols` CI), Markdown.
 
-**Spec:** `docs/proposals/2026-07-23-biosignal-platform-reframe.md`. Sections §3 (workstream 1) and §4 (workstream 2). Decisions §8 #4 (hybrid neutralization) and §8 #5 (the eight-bucket goals vocabulary) are locked.
+**Spec:** the cross-repo biosignal-platform reframe proposal, sections §3 (workstream 1) and §4 (workstream 2). Its decisions §8 #4 (hybrid neutralization) and §8 #5 (the eight-bucket goals vocabulary) are locked, and this plan restates both in full below — the Global Constraints and the eight goal buckets are reproduced here verbatim, so this plan is self-contained for anyone implementing it.
 
-> The proposal lands on `main` via its own branch, `claude/biosignal-platform-framing-8gk0it`. This branch was rebased onto `main` for merge ordering, so until that branch merges the path above resolves only there.
+> The proposal itself is held internally rather than in this repo: it sets out
+> regulatory positioning and commercial facts that are strategy rather than
+> engineering. Nothing in it is needed to execute this plan, and nothing here
+> depends on reading it.
 
 ## Workspaces
 
