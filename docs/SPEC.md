@@ -1332,7 +1332,7 @@ advice does not flicker chunk to chunk.
 | `suggested` | advisor | A new id is first emitted. |
 | `superseded` | advisor | A standing id is replaced by a different result at decision steps 4–12, or by a manual control change. |
 | `blocked` | advisor | A standing id is replaced by a hold at steps 1–3 (carries the hold reason). |
-| `applied` | `apply_advice` | With `by: "clinician"` or `by: "autopilot"`, and the from/to values. |
+| `applied` | `apply_advice` | With `by: "practitioner"` or `by: "autopilot"`, and the from/to values. |
 | `dismissed` | `dismiss_advice` | |
 | `changed_manually` | `set_control` | Knob, from, to — only for a control that feeds a reward check or an inhibit. Writing the value a control already has is a no-op: no event, no window restart, no cooldown. |
 | `equipment_change` | `mark_equipment_change` | |

@@ -31,5 +31,5 @@ fn advice_follows_the_session() {
     ev.mark_equipment_change();
     assert_eq!(ev.advice()["reason"], "equipment_settling");
     assert_eq!(ev.autopilot_policy()["controls"]["xover"]["apply"], "auto");
-    assert!(ev.apply_advice("adv-0001", "clinician").is_err());
+    assert!(ev.apply_advice("adv-0001", "practitioner").is_err());
 }

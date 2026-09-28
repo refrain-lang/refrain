@@ -663,8 +663,8 @@ impl Advisor {
     }
 
     pub fn apply(&mut self, advice_id: &str, by: &str) -> Result<(String, f64, Value), String> {
-        if by != "clinician" && by != "autopilot" {
-            return Err(format!("by must be 'clinician' or 'autopilot', got '{by}'"));
+        if by != "practitioner" && by != "autopilot" {
+            return Err(format!("by must be 'practitioner' or 'autopilot', got '{by}'"));
         }
         let res = self.current.clone();
         if res["id"].as_str() != Some(advice_id) || res["state"] != "adjust" {

@@ -528,7 +528,7 @@ author reserved for a practitioner's judgement.
 
 ```python
 evaluator.advice() -> dict
-evaluator.apply_advice(advice_id: str, by: str = "clinician") -> dict
+evaluator.apply_advice(advice_id: str, by: str = "practitioner") -> dict
 evaluator.dismiss_advice(advice_id: str) -> dict
 evaluator.mark_equipment_change() -> None
 evaluator.drain_advice_events() -> list[dict]
@@ -538,7 +538,7 @@ evaluator.autopilot_policy() -> dict
 - **`advice()`** — the current result (shape below). Always present once the
   session has started; it is computed as a side effect of `step_chunk`, so
   this call is a pure read.
-- **`apply_advice(id, by="clinician")`** — applies the current `adjust`
+- **`apply_advice(id, by="practitioner")`** — applies the current `adjust`
   result's proposed value through the engine's internal control-update path,
   logs an `applied` event, restarts the evidence window, and arms the
   one-shot reversal check. It does **not** go through `set_control`: it logs
@@ -664,7 +664,7 @@ weighted-composite reward) — it is a normal hold, not an error.
 | `suggested` | advisor | `id`, `reason`, `control`, and (for `adjust`) `from`/`to`. |
 | `superseded` | advisor | `id`, `reason` — a standing id was replaced by a different result, or by a manual control change. |
 | `blocked` | advisor | `id`, `reason` — a standing id was replaced by a hold. |
-| `applied` | `apply_advice` | `id`, `control`, `from`, `to`, `by` (`"clinician"` or `"autopilot"`). |
+| `applied` | `apply_advice` | `id`, `control`, `from`, `to`, `by` (`"practitioner"` or `"autopilot"`). |
 | `dismissed` | `dismiss_advice` | `id`, `control`. |
 | `changed_manually` | `set_control` | `control`, `from`, `to` — only for a control that feeds a reward check or an inhibit; `set_control` on any other control logs nothing, and writing the value a control already has changes nothing (no event, no window restart, no cooldown). |
 | `equipment_change` | `mark_equipment_change` | — |

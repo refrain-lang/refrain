@@ -339,8 +339,8 @@ class Advisor:
         self._evaluate()
 
     def apply(self, advice_id: str, by: str) -> tuple[str, float, dict]:
-        if by not in ("clinician", "autopilot"):
-            raise ValueError(f"by must be 'clinician' or 'autopilot', got {by!r}")
+        if by not in ("practitioner", "autopilot"):
+            raise ValueError(f"by must be 'practitioner' or 'autopilot', got {by!r}")
         res = self.current
         if res["id"] != advice_id or res["state"] != "adjust":
             raise AdviceError(f"advice {advice_id!r} is not the current suggestion")

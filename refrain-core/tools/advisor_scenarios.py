@@ -35,12 +35,12 @@ def op(kind, **kw):
 SCENARIOS = {
     "too_strict_apply_cooldown": (ap(), {}, strict() + op("apply", id="adv-0001", by="autopilot")
                                   + strict() + strict(10, 1)),
-    "too_easy_reversal": (ap(), {}, EASY + op("apply", id="adv-0001", by="clinician")
+    "too_easy_reversal": (ap(), {}, EASY + op("apply", id="adv-0001", by="practitioner")
                           + strict(hits=0)),
     "fallback_and_refusals": (ap(), {}, op("note", control="xover", value=1.0, source="seed")
                               + EASY + op("apply", id="adv-0001", by="autopilot")
-                              + op("apply", id="adv-0001", by="clinician")
-                              + op("apply", id="adv-0009", by="clinician")),
+                              + op("apply", id="adv-0001", by="practitioner")
+                              + op("apply", id="adv-0009", by="practitioner")),
     "manual_outside_limits": (ap(), {}, op("note", control="xover", value=0.45, source="manual")
                               + strict()),
     "guard_block_and_equipment": (ap(), {}, strict() + feed((True, False), muted=True, k=5)
@@ -78,10 +78,10 @@ SCENARIOS = {
     # reversal check armed.
     "noop_write": (ap(), {}, strict() + op("note", control="xover", value=0.6, source="manual")
                    + op("note", control="xover", value=0.6, source="seed") + strict(k=2)
-                   + op("apply", id="adv-0001", by="clinician")
+                   + op("apply", id="adv-0001", by="practitioner")
                    + op("note", control="xover", value=0.55, source="manual")
                    + feed(k=3) + EASY),
     # A fired reversal clears once a later full window is back in band.
-    "reversal_clears": (ap(), {}, EASY + op("apply", id="adv-0001", by="clinician")
+    "reversal_clears": (ap(), {}, EASY + op("apply", id="adv-0001", by="practitioner")
                         + strict(hits=0) + feed(k=2) + strict(hits=0)),
 }

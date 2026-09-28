@@ -1546,7 +1546,7 @@ class Evaluator:
             return json.loads(self._rust.advice())
         return self._require_advisor().advice()
 
-    def apply_advice(self, advice_id: str, by: str = "clinician") -> dict:
+    def apply_advice(self, advice_id: str, by: str = "practitioner") -> dict:
         """Apply the current `adjust` advice. `by="autopilot"` is refused when
         the protocol allows that change only as a suggestion."""
         if self._rust is not None:

@@ -212,7 +212,7 @@ def test_limiter_message_is_used():
 
 
 def test_manual_value_outside_limits_never_proposes_wrong_direction():
-    """Review Focus #1: the clinician set 0.45 (below the 0.5 limit). Easing
+    """Review Focus #1: the practitioner set 0.45 (below the 0.5 limit). Easing
     means lowering; clamping would raise it to 0.5, the wrong way — hold."""
     adv = make()
     adv.note_control("xover", 0.45, "manual")
@@ -317,7 +317,7 @@ def test_apply_then_cooldown_then_next_step():
 def test_reversal_after_a_bad_tightening_bypasses_cooldown():
     adv = make()
     a = run(adv, EASY)
-    adv.apply(a["id"], "clinician")                  # 0.60 -> 0.65
+    adv.apply(a["id"], "practitioner")               # 0.60 -> 0.65
     a = run(adv, strict(hits=0))                      # reward collapses to 0%
     assert (a["state"], a["reason"], a["control"]["proposed"]) == ("adjust", "reversal", 0.6)
     assert a["message"] == ("The last change made reward worse (0% of clean time). "
@@ -330,7 +330,7 @@ def test_reversal_clears_once_a_later_window_is_back_in_band():
     decision (here: on track) takes over."""
     adv = make()
     a = run(adv, EASY)
-    adv.apply(a["id"], "clinician")                  # 0.60 -> 0.65
+    adv.apply(a["id"], "practitioner")               # 0.60 -> 0.65
     a = run(adv, strict(hits=0))
     assert a["reason"] == "reversal"
     adv.drain_events()
@@ -350,7 +350,7 @@ def test_apply_stale_id_is_refused_and_value_unchanged():
         adv.apply("adv-9999", "autopilot")
     adv.dismiss(a["id"])
     with pytest.raises(AdviceError):
-        adv.apply(a["id"], "clinician")
+        adv.apply(a["id"], "practitioner")
     assert adv.values["xover"] == 0.6
 
 
@@ -360,7 +360,7 @@ def test_autopilot_cannot_apply_a_suggest_only_change():
     a = run(adv, EASY)                                   # t_pct, suggest-only
     with pytest.raises(AdviceError, match="suggestion"):
         adv.apply(a["id"], "autopilot")
-    assert adv.apply(a["id"], "clinician")[1] == 20.0
+    assert adv.apply(a["id"], "practitioner")[1] == 20.0
     with pytest.raises(ValueError):
         adv.apply("adv-0001", "robot")
 
@@ -416,7 +416,7 @@ def test_note_control_with_an_unchanged_value_is_a_no_op():
 def test_note_control_unchanged_value_keeps_a_pending_reversal():
     adv = make()
     a = run(adv, EASY)
-    adv.apply(a["id"], "clinician")                  # 0.60 -> 0.65
+    adv.apply(a["id"], "practitioner")               # 0.60 -> 0.65
     adv.note_control("xover", 0.65, "manual")
     a = run(adv, strict(hits=0))
     assert a["reason"] == "reversal"

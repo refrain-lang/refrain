@@ -95,7 +95,7 @@ audit-event kinds):
 
 ```python
 evaluator.advice() -> dict
-evaluator.apply_advice(advice_id, by="clinician") -> dict
+evaluator.apply_advice(advice_id, by="practitioner") -> dict
 evaluator.dismiss_advice(advice_id) -> None
 evaluator.mark_equipment_change() -> None
 evaluator.drain_advice_events() -> list[dict]

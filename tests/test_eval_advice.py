@@ -164,8 +164,8 @@ def test_rust_backend_apply_dismiss_and_equipment_round_trip():
         a = py.advice()
         assert rs.advice() == a
         if a["state"] == "adjust" and "apply" not in did:
-            applied = py.apply_advice(a["id"], by="clinician")
-            assert rs.apply_advice(a["id"], by="clinician") == applied
+            applied = py.apply_advice(a["id"], by="practitioner")
+            assert rs.apply_advice(a["id"], by="practitioner") == applied
             assert applied["kind"] == "applied" and applied["to"] == a["control"]["proposed"]
             did.add("apply")
         elif a["state"] == "adjust" and "apply" in did and "dismiss" not in did:
