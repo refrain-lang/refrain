@@ -833,7 +833,7 @@
     "inhibit/emg"
   ],
   "autopilot": {
-    "evidence": "experimental",
+    "evidence": "exploratory",
     "citation": [
       "Parity bench (not clinical)"
     ],

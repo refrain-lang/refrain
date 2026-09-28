@@ -810,7 +810,7 @@
     "inhibit/emg"
   ],
   "autopilot": {
-    "evidence": "expert_opinion",
+    "evidence": "exploratory",
     "citation": [
       "Test policy"
     ],
