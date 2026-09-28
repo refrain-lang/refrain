@@ -5,6 +5,27 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [Unreleased]
+
+### Changed
+- **Framing.** Refrain is described as a language for *biosignal training
+  paradigms* rather than specifically clinical neurofeedback. EEG
+  neurofeedback remains the most developed worked example. No language,
+  IR-JSON, or embedding-API change — every existing `.refrain` file and its
+  compiled IR keeps running unchanged.
+- **Positioning.** The clinical-use disclaimer is now a general-wellness and
+  research positioning statement: not a medical device, no diagnostic or
+  therapeutic claim.
+- **`montage`** is documented as one kind of signal-source binding.
+  `passthrough()` is the identity binding for single-channel non-EEG sources.
+  The keyword itself is unchanged.
+- CRED-nf is described as one supported reporting standard rather than the
+  language's reason for existing.
+- Docs refer to a **practitioner** and to **the person training**, replacing
+  "clinician" and "patient" throughout the living user-facing set.
+- `tests/test_framing.py` pins the retired category phrases so the old framing
+  cannot quietly return.
+
 ## [0.21.0] — 2026-07-26
 
 ### Added
