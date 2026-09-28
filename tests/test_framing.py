@@ -29,6 +29,8 @@ LIVING_DOCS = [
     "docs/EMBEDDING.md",
     "docs/IR-JSON.md",
     "docs/RUST-CORE-HOST-BRIEF.md",
+    "docs/AUTOPILOT-AUTHORING.md",
+    "docs/autopilot-feature-request-response.md",
     "CONTRIBUTING.md",
 ]
 

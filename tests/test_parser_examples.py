@@ -14,7 +14,12 @@ from refrain import parse, parse_file, unparse
 
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 
-EXAMPLES = ["smr_cz.refrain", "othmer_ilf_t3t4.refrain", "alpha_theta.refrain"]
+EXAMPLES = [
+    "smr_cz.refrain",
+    "othmer_ilf_t3t4.refrain",
+    "alpha_theta.refrain",
+    "alpha_theta_autopilot.refrain",
+]
 
 
 @pytest.mark.parametrize("name", EXAMPLES)

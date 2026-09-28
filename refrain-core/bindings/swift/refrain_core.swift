@@ -545,10 +545,23 @@ public protocol RefrainCoreProtocol: AnyObject, Sendable {
     func advancePhase()  -> Bool
     
     /**
+     * Current autopilot advice as JSON (spec §5.2).
+     */
+    func advice()  -> String
+    
+    func applyAdvice(adviceId: String, by: String) throws  -> String
+    
+    func autopilotPolicy()  -> String
+    
+    /**
      * `eval::Evaluator::current_phase`: snapshot of the phase the most recent
      * chunk ran under (aligned with the taps).
      */
     func currentPhase()  -> PhaseInfo
+    
+    func dismissAdvice(adviceId: String) throws  -> String
+    
+    func drainAdviceEvents()  -> String
     
     /**
      * `eval::Evaluator::hold`: extend a `timed_with_floor` phase past its floor
@@ -564,6 +577,8 @@ public protocol RefrainCoreProtocol: AnyObject, Sendable {
      * to a Swift `[String: Double]` / Kotlin `Map`.)
      */
     func lastTaps()  -> [String: Double]
+    
+    func markEquipmentChange() 
     
     /**
      * `eval::Evaluator::seed_report`: per-control baseline-seed outcome
@@ -693,12 +708,53 @@ open func advancePhase() -> Bool  {
 }
     
     /**
+     * Current autopilot advice as JSON (spec §5.2).
+     */
+open func advice() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_refrain_core_fn_method_refraincore_advice(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+open func applyAdvice(adviceId: String, by: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeRefrainError_lift) {
+    uniffi_refrain_core_fn_method_refraincore_apply_advice(self.uniffiClonePointer(),
+        FfiConverterString.lower(adviceId),
+        FfiConverterString.lower(by),$0
+    )
+})
+}
+    
+open func autopilotPolicy() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_refrain_core_fn_method_refraincore_autopilot_policy(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
      * `eval::Evaluator::current_phase`: snapshot of the phase the most recent
      * chunk ran under (aligned with the taps).
      */
 open func currentPhase() -> PhaseInfo  {
     return try!  FfiConverterTypePhaseInfo_lift(try! rustCall() {
     uniffi_refrain_core_fn_method_refraincore_current_phase(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+open func dismissAdvice(adviceId: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeRefrainError_lift) {
+    uniffi_refrain_core_fn_method_refraincore_dismiss_advice(self.uniffiClonePointer(),
+        FfiConverterString.lower(adviceId),$0
+    )
+})
+}
+    
+open func drainAdviceEvents() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_refrain_core_fn_method_refraincore_drain_advice_events(self.uniffiClonePointer(),$0
     )
 })
 }
@@ -727,6 +783,12 @@ open func lastTaps() -> [String: Double]  {
     uniffi_refrain_core_fn_method_refraincore_last_taps(self.uniffiClonePointer(),$0
     )
 })
+}
+    
+open func markEquipmentChange()  {try! rustCall() {
+    uniffi_refrain_core_fn_method_refraincore_mark_equipment_change(self.uniffiClonePointer(),$0
+    )
+}
 }
     
     /**
@@ -1207,6 +1269,12 @@ public enum RefrainError: Swift.Error {
      */
     case UnknownControl(message: String
     )
+    /**
+     * An advice operation (`apply_advice`/`dismiss_advice`) failed — mirrors
+     * the Python evaluator raising `AdviceError`.
+     */
+    case Advice(message: String
+    )
 }
 
 
@@ -1229,6 +1297,9 @@ public struct FfiConverterTypeRefrainError: FfiConverterRustBuffer {
         case 2: return .UnknownControl(
             message: try FfiConverterString.read(from: &buf)
             )
+        case 3: return .Advice(
+            message: try FfiConverterString.read(from: &buf)
+            )
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -1248,6 +1319,11 @@ public struct FfiConverterTypeRefrainError: FfiConverterRustBuffer {
         
         case let .UnknownControl(message):
             writeInt(&buf, Int32(2))
+            FfiConverterString.write(message, into: &buf)
+            
+        
+        case let .Advice(message):
+            writeInt(&buf, Int32(3))
             FfiConverterString.write(message, into: &buf)
             
         }
@@ -1477,13 +1553,31 @@ private let initializationResult: InitializationResult = {
     if (uniffi_refrain_core_checksum_method_refraincore_advance_phase() != 31310) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_refrain_core_checksum_method_refraincore_advice() != 48784) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_refrain_core_checksum_method_refraincore_apply_advice() != 2385) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_refrain_core_checksum_method_refraincore_autopilot_policy() != 11153) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_refrain_core_checksum_method_refraincore_current_phase() != 36666) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_refrain_core_checksum_method_refraincore_dismiss_advice() != 43173) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_refrain_core_checksum_method_refraincore_drain_advice_events() != 11371) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_refrain_core_checksum_method_refraincore_hold() != 38295) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_refrain_core_checksum_method_refraincore_last_taps() != 62853) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_refrain_core_checksum_method_refraincore_mark_equipment_change() != 54873) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_refrain_core_checksum_method_refraincore_seed_report() != 3631) {

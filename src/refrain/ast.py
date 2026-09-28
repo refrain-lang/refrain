@@ -226,6 +226,18 @@ class Array(Expr):
 
 
 @dataclass(frozen=True, slots=True)
+class Labeled(Expr):
+    """`<expr> as "<label>"` — an array element carrying a name (SPEC §4.7.1).
+
+    Only legal as an element of a reward dwell's `all_of([...])`/`any_of([...])`
+    list; the resolver strips it and records the label in the reward's
+    `check_names`. Never reaches IR."""
+
+    expr: Expr
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
 class Tuple(Expr):
     """`(a, b)` — fixed-shape positional grouping. Always >= 2 elements;
     `(a)` is a parenthesised expression and parses to whatever `a` parses to."""
@@ -295,6 +307,7 @@ __all__ = [
     "Call",
     "Arg",
     "Array",
+    "Labeled",
     "Tuple",
     "BlockExpr",
     "BinaryOp",

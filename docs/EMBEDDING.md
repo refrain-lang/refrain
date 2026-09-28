@@ -504,6 +504,182 @@ per-entity values.
 
 ---
 
+## Autopilot advice
+
+Every session, whether or not its protocol declares an `autopilot { }`
+block (`docs/SPEC.md` §4.12) or any per-control policy (§4.9.5), carries a
+second built-in advisor alongside the reward/output pipeline. It watches the
+same per-chunk facts the evaluator already computes and, after every chunk,
+produces one structured piece of advice: hold, keep collecting evidence, hint
+at a direction, or propose a concrete change to one control. See
+`docs/AUTOPILOT-AUTHORING.md` for how to write a policy and `docs/SPEC.md`
+§7.10 for the full decision procedure this section is the host-facing view
+of.
+
+**Who does what.** Refrain never changes a control on its own — it only ever
+proposes. Turning autopilot *on* for a session, and deciding whether an
+`adjust` result should be applied automatically or left for the practitioner to
+approve, are both host decisions. `apply_advice(id, by="autopilot")` is the
+one enforcement point: it refuses to apply any change the protocol declared
+suggest-only, so a host cannot accidentally auto-apply something the protocol
+author reserved for a practitioner's judgement.
+
+### The six calls
+
+```python
+evaluator.advice() -> dict
+evaluator.apply_advice(advice_id: str, by: str = "practitioner") -> dict
+evaluator.dismiss_advice(advice_id: str) -> dict
+evaluator.mark_equipment_change() -> None
+evaluator.drain_advice_events() -> list[dict]
+evaluator.autopilot_policy() -> dict
+```
+
+- **`advice()`** — the current result (shape below). Always present once the
+  session has started; it is computed as a side effect of `step_chunk`, so
+  this call is a pure read.
+- **`apply_advice(id, by="practitioner")`** — applies the current `adjust`
+  result's proposed value through the engine's internal control-update path,
+  logs an `applied` event, restarts the evidence window, and arms the
+  one-shot reversal check. It does **not** go through `set_control`: it logs
+  no `changed_manually` event and does not disarm a pending baseline seed
+  on that control. Raises `AdviceError` if `id` is not the current `adjust`
+  id, or if `by="autopilot"` and the protocol only allows this change as a
+  suggestion (`advice()["control"]["auto_allowed"]` is `False`). Returns the
+  `applied` event dict.
+- **`dismiss_advice(id)`** — logs a `dismissed` event and suppresses that
+  same knob-and-direction move for `between_moves`. Raises `AdviceError` on
+  an id that isn't the current `adjust`/`hint` result. Returns the
+  `dismissed` event dict.
+- **`mark_equipment_change()`** — logs an `equipment_change` event, restarts
+  the evidence window, and starts the `equipment_settle` hold. Call this
+  whenever your UI lets a practitioner adjust the amp or electrodes mid-session.
+- **`drain_advice_events()`** — every audit event since the last drain, in
+  order. Persist these with the session record; routine `collecting` and
+  `on_track` results are not events, only transitions are.
+- **`autopilot_policy()`** — the effective policy as data: `advisor_version`,
+  every setting with its default filled in, guards, limiters, and each
+  knob's policy (units, limits, step, strategy, direction, `apply`, label,
+  citation), plus the block's provenance. Use this to render a session setup
+  screen or header — it needs no chunks fed yet.
+
+`AdviceError` (raised by `apply_advice`/`dismiss_advice`) is exported from
+the top-level `refrain` package alongside `Evaluator`.
+
+### A recorder-shaped loop
+
+```python
+for chunk in amp_chunks():
+    events = ev.step_chunk(chunk)
+    a = ev.advice()
+    ui.show_advice(a)                              # every chunk: collecting / hold / hint / adjust
+    if a["state"] == "adjust" and session.autopilot_on and a["control"]["auto_allowed"]:
+        ev.apply_advice(a["id"], by="autopilot")
+    audit.extend(ev.drain_advice_events())          # persist with the session record
+```
+
+`session.autopilot_on` is the host's own per-session enable switch and its
+persisted audit trail — Refrain does not have an opinion on either; it only
+ever tells you what it would do and lets `apply_advice` refuse what the
+protocol forbids.
+
+### The `advice()` shape
+
+```json
+{
+  "advisor_version": "1",
+  "id": "adv-0007",
+  "state": "adjust",
+  "level": "policy",
+  "reason": "too_strict",
+  "message": "Reward met 6% of clean time (target 10-35%). The limiter is crossover. Lower Crossover target 0.75 -> 0.70.",
+  "t_s": 1312.5,
+  "limiter": { "check": "crossover", "pass_rate": 0.08 },
+  "control": {
+    "name": "crossover_target", "label": "Crossover target",
+    "units": "", "round_to": 0.01,
+    "current": 0.75, "proposed": 0.70,
+    "direction": "easier", "strategy": "fixed_step",
+    "auto_allowed": true
+  },
+  "evidence": {
+    "window_start_s": 1180.0, "window_end_s": 1312.5,
+    "clean_s": 120.0, "required_s": 120.0,
+    "reward_rate": 0.06, "target": [0.10, 0.35],
+    "checks": { "theta": 0.84, "crossover": 0.08 },
+    "guards": { "delta": 0.03, "emg": 0.07 },
+    "chimes_per_min": 0.5
+  },
+  "eligible_at_s": 1312.5
+}
+```
+
+Every key listed here is present on every call — a field that doesn't apply
+to the current state is `null`, never omitted, so a host never needs a
+`.get()`-with-default or a key-existence check.
+
+| Key | Type | Meaning |
+|---|---|---|
+| `advisor_version` | string | Which built-in defaults and decision rules produced this result (currently `"1"`); independent of the protocol's own `meta.version`. |
+| `id` | string \| null | `adv-NNNN`, present for `hint` and `adjust`; stable across chunks while the knob, direction, and proposed value are unchanged, so the UI doesn't flicker. |
+| `state` | string | `collecting` \| `hold` \| `hint` \| `adjust`. |
+| `level` | string | `observation` \| `hint` \| `policy` — a UI affordance: style/gate `policy`-level results more prominently than plain observations. |
+| `reason` | string | See "Reason codes" below. |
+| `message` | string | English-language fallback. Hosts style or translate by `reason`; `message` is always safe to show as-is. |
+| `t_s` | number | Session sample time (seconds) this result was computed at. |
+| `limiter` | object \| null | `{ "check": <name or "check N">, "pass_rate": <0..1> }`, present from decision step 8 onward (once a limiting check has been selected). |
+| `control` | object \| null | Present for `hint` and `adjust`. For a `hint`, `proposed`, `round_to`, and `strategy` are `null` and `auto_allowed` is `false` — see below. |
+| `evidence` | object \| null | Present once an evidence window exists. It can be `null` while `collecting` right after the window restarts (a new training phase, an applied or manual change, an equipment change) until the next chunk arrives. For a protocol with no reward condition (`reason: "observing"`), `reward_rate` is `null`; `target` is still the `[low, high]` pair and `checks` is `{}` (empty, not null). |
+| `eligible_at_s` | number \| null | When a currently-blocked knob becomes eligible again (`cooldown`), or the current time for a fresh `adjust`/`reversal`. |
+
+`control`, when present:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `name` | string | Bare control name (`set_control`'s first argument). |
+| `label` | string | Display name — the policy's `say`, else the control's `label`, else its bare name. |
+| `units` | string | `""`, `"%"`, `"uV"`, or `"Hz"`. |
+| `round_to` | number \| null | The knob's snapping precision, for display formatting. `null` for a hint. |
+| `current` | number | The control's current value. |
+| `proposed` | number \| null | The proposed value; `null` for a hint or when no move is possible (`at_limit`). |
+| `direction` | string | `"harder"` or `"easier"`. |
+| `strategy` | string \| null | `"fixed_step"` \| `"proportional_step"` \| `"rebaseline"`; `null` for a hint. |
+| `auto_allowed` | boolean | Whether the protocol allows this knob to be changed automatically (`apply = "auto"`, and not a `rebaseline` proposal). It describes the policy, not the moment: it is also `true` on an `at_limit` or `cooldown` hold, where `apply_advice` still refuses because the result is not an `adjust`. Always `false` for a hint and for a `rebaseline` proposal. |
+
+### Reason codes
+
+`not_training_phase`, `equipment_settling`, `guard`, `collecting`,
+`observing`, `on_track`, `no_knob`, `at_limit`, `cooldown`, `too_strict`,
+`too_easy`, `reversal`. `observing` means the protocol has no reward
+condition for the advisor to judge (a continuous-only reward, or a
+weighted-composite reward) — it is a normal hold, not an error.
+
+### Audit events
+
+`drain_advice_events()` returns these, each carrying `advisor_version` and
+`t_s`:
+
+| `kind` | Emitted by | Fields |
+|---|---|---|
+| `suggested` | advisor | `id`, `reason`, `control`, and (for `adjust`) `from`/`to`. |
+| `superseded` | advisor | `id`, `reason` — a standing id was replaced by a different result, or by a manual control change. |
+| `blocked` | advisor | `id`, `reason` — a standing id was replaced by a hold. |
+| `applied` | `apply_advice` | `id`, `control`, `from`, `to`, `by` (`"practitioner"` or `"autopilot"`). |
+| `dismissed` | `dismiss_advice` | `id`, `control`. |
+| `changed_manually` | `set_control` | `control`, `from`, `to` — only for a control that feeds a reward check or an inhibit; `set_control` on any other control logs nothing, and writing the value a control already has changes nothing (no event, no window restart, no cooldown). |
+| `equipment_change` | `mark_equipment_change` | — |
+
+### Backends
+
+With `backend="rust"`, every one of the six calls delegates to the Rust core
+the same way `seed_report()` does, and results/events are identical once
+parsed as JSON values (numbers compared as `f64` — Python and Rust print
+floats differently, so parity is checked on parsed values, not raw bytes)
+— see `docs/SPEC.md` §7.10.7 for the rounding
+rules that make the two engines agree exactly.
+
+---
+
 ## Channel-order and montage notes
 
 When you call `Evaluator.live(channel_names=(...))`, those names define

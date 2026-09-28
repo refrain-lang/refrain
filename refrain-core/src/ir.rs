@@ -50,6 +50,9 @@ pub struct Protocol {
     /// "0.1".
     #[serde(default)]
     pub refrain_ir_version: Option<String>,
+    /// Protocol-wide autopilot settings (IR-JSON 0.4). Absent ⇒ built-in defaults.
+    #[serde(default)]
+    pub autopilot: Option<AutopilotDecl>,
 }
 
 /// IR-JSON schema versions this core can honour. SPEC 9.3: a document tagged
@@ -57,7 +60,7 @@ pub struct Protocol {
 /// misinterpreted. This crate has no `deny_unknown_fields`, so an unknown field
 /// is invisible to serde — without this gate, a newer protocol would run with
 /// its new semantics dropped and no signal to anyone.
-pub const SUPPORTED_IR_VERSIONS: &[&str] = &["0.1", "0.2", "0.3"];
+pub const SUPPORTED_IR_VERSIONS: &[&str] = &["0.1", "0.2", "0.3", "0.4"];
 
 /// Refuse a document tagged with an unsupported schema version. Untagged
 /// documents predate versioning and are treated as "0.1".
@@ -81,6 +84,17 @@ pub struct ControlDecl {
     pub canonical_name: String,
     #[serde(default)]
     pub seed: Option<ControlSeed>,
+    #[serde(default)]
+    pub type_kind: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub live_tunable: bool,
+    #[serde(default)]
+    pub default: Option<Expr>,
+    /// Autopilot policy (IR-JSON 0.4).
+    #[serde(default)]
+    pub autopilot: Option<ControlAutopilot>,
 }
 
 /// A control's baseline-seed rule (`_emit_seed`). `target_pct` reuses the
@@ -91,6 +105,77 @@ pub struct ControlSeed {
     pub from: String,
     pub window_samples: usize,
     pub target_pct: Expr,
+}
+
+/// `autopilot { }` (spec §6.2). Durations are pre-baked to samples.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AutopilotDecl {
+    pub evidence: String,
+    #[serde(default)]
+    pub citation: Vec<String>,
+    pub rationale: String,
+    #[serde(default)]
+    pub reviewed: Option<String>,
+    #[serde(default)]
+    pub reward_target: Option<Vec<f64>>,
+    #[serde(default)]
+    pub phases: Option<Vec<String>>,
+    #[serde(default)]
+    pub watch_samples: Option<u64>,
+    #[serde(default)]
+    pub between_moves_samples: Option<u64>,
+    #[serde(default)]
+    pub equipment_settle_samples: Option<u64>,
+    #[serde(default)]
+    pub tighten_first: Vec<String>,
+    #[serde(default)]
+    pub guards: BTreeMap<String, GuardDecl>,
+    #[serde(default)]
+    pub limiters: BTreeMap<String, LimiterDecl>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct GuardDecl {
+    pub max: f64,
+    #[serde(default)]
+    pub say: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct LimiterDecl {
+    pub say: String,
+}
+
+fn default_decimals() -> usize {
+    2
+}
+
+/// A control's autopilot policy (spec §3.4).
+#[derive(Debug, Deserialize, Clone)]
+pub struct ControlAutopilot {
+    pub strategy: String,
+    pub fixes: String,
+    pub higher_is: String,
+    pub apply: String,
+    pub limits: Vec<f64>,
+    #[serde(default)]
+    pub round_to: Option<f64>,
+    #[serde(default = "default_decimals")]
+    pub decimals: usize,
+    #[serde(default)]
+    pub say: Option<String>,
+    #[serde(default)]
+    pub between_moves_samples: Option<u64>,
+    #[serde(default)]
+    pub step: Option<f64>,
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub window_samples: Option<u64>,
+    #[serde(default)]
+    pub percentile: Option<f64>,
+    #[serde(default)]
+    pub citation: Vec<String>,
 }
 
 /// Session timeline (`_emit_session`): an ordered list of phases. The first
@@ -177,6 +262,10 @@ pub struct Reward {
     pub combine: String,
     #[serde(default)]
     pub components: Vec<RewardComponent>,
+    /// Names of the dwell's sub-conditions (IR-JSON 0.4), aligned with
+    /// `reward/condition[i]`; empty when no check is named.
+    #[serde(default)]
+    pub check_names: Vec<Option<String>>,
 }
 
 fn default_combine() -> String {

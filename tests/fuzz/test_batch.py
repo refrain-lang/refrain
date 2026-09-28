@@ -45,28 +45,43 @@ def test_batch_exit_zero_when_only_skips(tmp_path, capsys):
 
 def test_batch_aggregates_multiple_paths(tmp_path, capsys):
     # --library examples (not examples/library) for othmer_ilf_cz_pz resolution.
-    # total 31 = bench/protocols 22 (13 Inc0 + 4 Inc1 fixtures + the metamorphic
-    # tier's micro_multi_leaf_control_absolute skip fixture + the expression-
-    # position control_ref regression fixture micro_11_control_expr (skipped as
-    # "reward.event has no all_of/any_of condition" since it only declares
-    # `continuous`) + Task 3's param-slot control_ref regression
-    # fixture micro_12_control_param_slots, which now also wires a control_ref
-    # into `inside(low:/high:)` inside a `dwell(...)` reward.event and so is
-    # skipped instead as "unrecognized condition expr IRCall" — the same
-    # reason micro_07_ilf/micro_08_bandpower are skipped, since the fuzzer's
-    # condition surface only understands all_of/any_of/above/below, not a bare
-    # `inside(...)` — plus the two baseline-seeding fixtures seed_smr_baseline
-    # and seed_exprpos, both skipped as "reward.event has no all_of/any_of
-    # condition" since they declare only a `continuous` sigmoid reward)
-    # + examples 9.
+    # total 34 = bench/protocols 24 (the previous 22 — 13 Inc0 + 4 Inc1 fixtures
+    # + the metamorphic tier's micro_multi_leaf_control_absolute skip fixture +
+    # the expression-position control_ref regression fixture
+    # micro_11_control_expr (skipped as "reward.event has no all_of/any_of
+    # condition" since it only declares `continuous`) + Task 3's param-slot
+    # control_ref regression fixture micro_12_control_param_slots, which now
+    # also wires a control_ref into `inside(low:/high:)` inside a `dwell(...)`
+    # reward.event and so is skipped instead as "unrecognized condition expr
+    # IRCall" — the same reason micro_07_ilf/micro_08_bandpower are skipped,
+    # since the fuzzer's condition surface only understands
+    # all_of/any_of/above/below, not a bare `inside(...)` — plus the two
+    # baseline-seeding fixtures seed_smr_baseline and seed_exprpos, both
+    # skipped as "reward.event has no all_of/any_of condition" since they
+    # declare only a `continuous` sigmoid reward — plus the two whole-session
+    # autopilot parity benches this project's protocol-autopilot work added:
+    # autopilot_alpha_theta.refrain skips as "non-bandpass (coherence) reward
+    # signal" because its t_env/a_env derives are a bare magnitude()/smooth()
+    # with no bandpass stage, and autopilot_staged.refrain skips as
+    # "reward.event has no all_of/any_of condition" because its two rewards
+    # ("theta_reward"/"alpha_reward") are block-scoped — selected per `block`,
+    # not by one top-level `reward { }` — so the resolved `ir.reward.event`
+    # is None) + examples 10 (the previous 9 plus the worked
+    # alpha_theta_autopilot.refrain example, which skips as "unclassified
+    # ('IRControlRef' object has no attribute 'value')" because its
+    # delta/alpha/theta band edges are paired frequency controls
+    # (`bandpass(band: (delta_lo_hz, delta_hi_hz), ...)`) and the fuzzer's
+    # `_band_from_call` only reads a literal `band: (lo Hz, hi Hz)` tuple —
+    # a real, still-open gap in the fuzzer's surface builder, not fixed here).
     # fuzzed 8 = Inc0's 4 + Inc1's micro_single_above/below/center_bandwidth +
     # Task 6's micro_single_pct (percentile single-leaf no longer skips — it
     # now fuzzes under the metamorphic tier instead of the old calibrated-
-    # oracle skip).
+    # oracle skip). All three new autopilot fixtures skip, so none add to
+    # this count.
     rc = main(["fuzz", "bench/protocols", "examples",
                "--library", "examples", "--max-scenarios", "2"])
     out = "".join(capsys.readouterr())
-    assert "coverage: fuzzed 8 / total 31" in out
+    assert "coverage: fuzzed 8 / total 34" in out
     # Inc1 splits the old generic "single-condition reward" skip into specific,
     # feature-mapped reasons (so the breakdown maps to later increments); the
     # multi-leaf control-absolute fixture adds its own feature-mapped skip.

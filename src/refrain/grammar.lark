@@ -49,7 +49,7 @@ block: "{" statement* "}"
           | assignment
 
 section_block: SECTION_KW block
-SECTION_KW: "meta" | "requires" | "reward" | "output" | "controls" | "session" | "groups" | "bands"
+SECTION_KW: "meta" | "requires" | "reward" | "output" | "controls" | "session" | "groups" | "bands" | "autopilot"
 
 named_decl: DECL_KW string_lit block
 DECL_KW: "reward" | "input" | "derive" | "threshold" | "inhibit" | "custom" | "block"
@@ -97,7 +97,10 @@ arg_list: arg ("," arg)* ","?
 ?arg: named_arg | expression
 named_arg: NAME ":" expression
 
-array: "[" (expression ("," expression)* ","?)? "]"
+array: "[" (array_elem ("," array_elem)* ","?)? "]"
+// `expr as "name"` names a reward check (SPEC §4.7.1). `?` inlines the plain
+// case so unlabeled elements keep their exact old tree shape.
+?array_elem: expression ("as" string_lit)?
 
 // Tuple requires 2+ elements; `(a)` is paren_expr, `(a, b)` is tuple.
 tuple: "(" expression ("," expression)+ ","? ")"

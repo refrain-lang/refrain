@@ -14,15 +14,16 @@ without depending on the Python parser or SciPy.
 |---|---|
 | Baseline version | `"0.1"` (emitted when a protocol uses no composite, staging, or seeding features) |
 | Source constant | `IR_JSON_VERSION = "0.1"` in `src/refrain/ir_json.py` |
-| Schemas | `src/refrain/schema/ir-json-v0.1.schema.json`, `ir-json-v0.2.schema.json`, `ir-json-v0.3.schema.json` |
+| Schemas | `src/refrain/schema/ir-json-v0.1.schema.json`, `ir-json-v0.2.schema.json`, `ir-json-v0.3.schema.json`, `ir-json-v0.4.schema.json` |
 
 The emitter tags the wire object with the lowest version whose fields it
 actually used, not a single fixed constant: `"0.1"` for most protocols,
-rising to `"0.2"` for staged/composite-reward protocols and `"0.3"` for a
-protocol with a control baseline-seed rule (§3.1 below; schema at
-`src/refrain/schema/ir-json-v0.3.schema.json`). Each version's schema is a
+rising to `"0.2"` for staged/composite-reward protocols, `"0.3"` for a
+protocol with a control baseline-seed rule (§3.1 below), and `"0.4"` for a
+protocol using autopilot or named reward checks (§3.2 below; schema at
+`src/refrain/schema/ir-json-v0.4.schema.json`). Each version's schema is a
 superset of the previous one's fields. This document otherwise describes the
-`"0.1"` shape; §3.1 covers the `"0.3"` addition.
+`"0.1"` shape; §3.1 and §3.2 cover the `"0.3"` and `"0.4"` additions.
 
 ### Compatibility policy
 
@@ -107,7 +108,7 @@ present in the serialized output (verified against `realistic_smr.ir.json`):
 
 | Key | JSON type | Meaning |
 |---|---|---|
-| `refrain_ir_version` | `"0.1"` or `"0.2"` (string) | Wire-format version. Emitted by `_protocol_ir_version()` (src/refrain/ir_json.py:56) as the lowest version that represents the protocol (`"0.2"` for composite/staging features, else `"0.1"`). Runtimes accept `SUPPORTED_IR_VERSIONS`: `"0.1"`, `"0.2"`. |
+| `refrain_ir_version` | `"0.1"` \| `"0.2"` \| `"0.3"` \| `"0.4"` (string) | Wire-format version. Emitted by `_protocol_ir_version()` (`src/refrain/ir_json.py`) as the lowest version that represents the protocol: `"0.4"` for autopilot/named-check features, else `"0.3"` for a control baseline-seed rule, else `"0.2"` for composite/staging features, else `"0.1"`. Runtimes accept `SUPPORTED_IR_VERSIONS`: `"0.1"`, `"0.2"`, `"0.3"`, `"0.4"`. |
 | `name` | `string \| null` | Protocol name (`smr_cz_v1`, etc.). |
 | `extends` | `string \| null` | Parent protocol name, if any. |
 | `sample_rate_hz` | number | Baked runtime sample rate (host choice, ≥ `requires.sample_rate_min_hz`). |
@@ -164,6 +165,127 @@ protocol with no seeded controls never emits it and stays at `"0.1"` /
 | `target_pct` | `Expr` (§4) | The percentile to measure — either a `number` node or a `control_ref` node targeting a sibling `percent`-kind control. |
 
 A consumer that understands `"0.3"` measures `from`'s samples into a buffer of `window_samples` during warmup, and at the warmup→run boundary writes the `target_pct` percentile of that buffer into the control once, then holds it. A consumer that only understands `"0.1"`/`"0.2"` never sees a `"0.3"`-tagged document at all — SPEC §9.3's version gate refuses it at load, since silently ignoring `seed` would run the control unbaselined instead of failing loudly.
+
+### 3.2 Autopilot (v0.4)
+
+Three keys, each present only when the source protocol actually uses the
+corresponding feature (the wire format's omit-when-unused idiom): a top-level
+`autopilot` object (from `autopilot { }`, `docs/SPEC.md` §4.12), an
+`autopilot` object inside a `controls.<name>` entry (from that control's
+`autopilot = <strategy> { ... }` field, §4.9.5), and `check_names` inside a
+`reward` (or `reward_bundles.<name>`) object (from naming checks with
+`as "..."`, §4.7). A protocol using **any** of the three is tagged
+`refrain_ir_version: "0.4"`; a protocol using none of them never emits them
+and stays at whatever version its other features already put it at.
+
+```json
+"autopilot": {
+  "evidence": "exploratory",
+  "citation": [
+    "Peniston & Kulkosky 1989, 1991 (protocol)",
+    "Peak Mind practice team 2026: step sizes and target band adapted from Coherence Recorder guidance v1"
+  ],
+  "rationale": "Crossover is rare by nature; a 50-75% target would drive the ratio target to its floor. Tighten crossover first, one 0.05 step at a time.",
+  "reviewed": null,
+  "reward_target": [0.1, 0.35],
+  "phases": ["deep1", "deep2"],
+  "watch_samples": 30720,
+  "between_moves_samples": 46080,
+  "equipment_settle_samples": null,
+  "tighten_first": ["crossover", "theta"],
+  "guards": {
+    "delta": { "max": 0.15, "say": "Slow activity rising; may be drifting toward sleep. Check alertness." },
+    "emg":   { "max": 0.15, "say": "Muscle artifact; check jaw/neck tension or the electrode." }
+  },
+  "limiters": {}
+}
+```
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `evidence` | string (closed enum) | `"established"` \| `"probable"` \| `"exploratory"` — the protocol library's `meta.evidence` tiers. |
+| `citation` | array of string, non-empty | Always emitted as an array, even when the source declared a single string. |
+| `rationale` | string | |
+| `reviewed` | string \| null | |
+| `reward_target` | `[number, number]` \| null | Fractions (0..1), not percents — `10%` in the source becomes `0.1` on the wire. |
+| `phases` | array of string \| null | `null` means "use the built-in default" (every non-muted phase), not "no phases". |
+| `watch_samples`, `between_moves_samples`, `equipment_settle_samples` | integer ≥ 1, or null | Durations baked to samples **at this document's `sample_rate_hz`**, the same rebaking discipline as `seed`'s `window_samples`. `null` means "use the engine's built-in default in real time," which is itself baked to samples against whatever rate the engine runs at — not a wire-carried number. |
+| `tighten_first` | array of string | Empty array, not null, when the source omitted it. |
+| `guards` | object, keyed by inhibit name | One entry per *declared* inhibit that has an explicit `guard { }` entry — an inhibit with no entry (using the built-in 15%/no-message default) has no key here at all; the advisor fills the default at runtime. |
+| `limiters` | object, keyed by check name | One entry per declared `limiter { }` entry. `{}` when none are declared. |
+
+A control's `autopilot` object (present only on a control that declared the
+field and survived any `only_when` filtering — a dropped `only_when` branch
+emits nothing for that control):
+
+```json
+"controls": {
+  "crossover_target": {
+    "canonical_name": "control/crossover_target",
+    "type_kind": "number",
+    "default": { "node": "number", "value": 0.6 },
+    "live_tunable": true,
+    "autopilot": {
+      "strategy": "fixed_step",
+      "fixes": "crossover",
+      "higher_is": "harder",
+      "apply": "auto",
+      "limits": [0.5, 1.0],
+      "round_to": 0.01,
+      "decimals": 2,
+      "say": "Crossover target",
+      "between_moves_samples": null,
+      "step": 0.05,
+      "from": null,
+      "window_samples": null,
+      "percentile": null,
+      "citation": []
+    }
+  }
+}
+```
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `strategy` | string (closed enum) | `"fixed_step"` \| `"proportional_step"` \| `"rebaseline"` — the block kind. |
+| `fixes` | string | The named reward check this knob addresses. |
+| `higher_is` | string | `"harder"` \| `"easier"`. |
+| `apply` | string | `"auto"` \| `"suggest"`. |
+| `limits` | `[number, number]` | In the knob's own units. |
+| `round_to` | number \| null | In the knob's own units. |
+| `decimals` | integer ≥ 0 | Digits after the decimal point to display a value snapped to `round_to` — `2` when `round_to` is null (the display default), otherwise the number of digits after the point in `round_to` as written in decimal (`0.1` → `1`, `0.25` and `0.05` → `2`, `1` and `5` → `0`). Computed once at emit time so every consumer displays the same precision without reimplementing the formula. |
+| `say` | string \| null | |
+| `between_moves_samples` | integer ≥ 1, or null | A per-knob override of the protocol-wide `between_moves_samples`, baked the same way; `null` means "use the protocol-wide value (or its default)." |
+| `step` | number \| null | Knob units for `fixed_step`; a fraction (0..1, not a percent) for `proportional_step`; `null` for `rebaseline`. |
+| `from` | string \| null | `rebaseline` only: canonical derive name (e.g. `"derive/theta_envelope"`). |
+| `window_samples` | integer ≥ 1, or null | `rebaseline` only, baked the same way as `seed.window_samples`. |
+| `percentile` | number \| null | `rebaseline` only, 1–99. |
+| `citation` | array of string | A source specific to this knob, distinct from the block-level `autopilot.citation`; empty array when the knob declares none of its own. |
+
+`reward.check_names` (and identically, `reward_bundles.<name>.check_names`):
+an array aligned with the dwell's condition indices — the same indices
+`reward/condition[i]` (§7.8 of `SPEC.md`) already exposes — `null` for an
+unnamed element, omitted entirely (not `[]`) when no element in the bundle is
+named:
+
+```json
+"reward": {
+  "event": { "...": "..." },
+  "check_names": ["theta", "crossover"]
+}
+```
+
+**Version gate.** `_protocol_ir_version()` returns `"0.4"` iff the protocol
+declares a top-level `autopilot` object, any control's `autopilot` object, or
+any `check_names` (top-level or in a reward bundle). `SUPPORTED_IR_VERSIONS`
+in `refrain-core/src/ir.rs` includes `"0.4"`. A runtime built without
+autopilot support refuses a `"0.4"`-tagged document at load (SPEC §9.3),
+exactly as an older runtime refuses `"0.3"` — silently ignoring these fields
+would run the protocol with no advisor at all rather than failing loudly.
+
+A protocol using none of the three features keeps a byte-identical IR-JSON,
+`content_hash`, and `refrain_ir_version` to what it emitted before autopilot
+existed.
 
 ---
 

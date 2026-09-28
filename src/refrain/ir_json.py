@@ -14,6 +14,7 @@ See `docs/IR-JSON.md` for the schema.
 
 from __future__ import annotations
 
+import decimal
 import json
 from dataclasses import dataclass
 
@@ -22,12 +23,14 @@ import numpy as np
 from .eval_ import _classify_call, _substitute_controls, control_defaults
 from .ir import (
     IRArray,
+    IRAutopilot,
     IRBinaryOp,
     IRBlockExpr,
     IRBoolLit,
     IRCall,
     IRConditional,
     IRControl,
+    IRControlAutopilot,
     IRControlRef,
     IRControlSeed,
     IRDerive,
@@ -128,8 +131,16 @@ def _protocol_ir_version(ir: IRProtocol) -> str:
     staged-protocol features (blocks / named reward bundles) emits v0.1
     (byte-identical to the pre-v0.2 emitter); anything using the v0.2
     composite or staging features emits v0.2; a control with a baseline-seed
-    rule (the newest feature) emits v0.3.
+    rule emits v0.3; a protocol using autopilot (protocol-wide or per-control)
+    or named reward checks (the newest features) emits v0.4.
     """
+    if (
+        ir.autopilot is not None
+        or any(c.autopilot is not None for c in ir.controls.values())
+        or ir.reward.check_names
+        or any(rb.check_names for rb in ir.reward_bundles.values())
+    ):
+        return "0.4"
     if any(c.seed is not None for c in ir.controls.values()):
         return "0.3"
     if (
@@ -395,6 +406,8 @@ def _emit_reward(r: IRReward, ctx: _EmitCtx, version: str) -> dict:
         }
         for c in r.components
     ]
+    if r.check_names:
+        base["check_names"] = list(r.check_names)
     return base
 
 
@@ -404,6 +417,57 @@ def _emit_seed(seed: IRControlSeed, ctx: _EmitCtx) -> dict:
         "from": seed.from_entity,
         "window_samples": max(1, int(round(seed.window_ms / 1000.0 * ctx.sample_rate_hz))),
         "target_pct": _emit_expr(seed.target_pct, ctx),
+    }
+
+
+def _samples(ms: float | None, ctx: _EmitCtx) -> int | None:
+    if ms is None:
+        return None
+    return max(1, int(round(ms / 1000.0 * ctx.sample_rate_hz)))
+
+
+def _decimals(round_to: float | None) -> int:
+    """Digits after the point for displaying a knob snapped to `round_to`,
+    read from round_to's decimal representation (0.25 -> 2, 0.1 -> 1, 5 -> 0)."""
+    if round_to is None:
+        return 2
+    exponent = decimal.Decimal(repr(float(round_to))).normalize().as_tuple().exponent
+    return max(0, -int(exponent))
+
+
+def _emit_autopilot(ap: IRAutopilot, ctx: _EmitCtx) -> dict:
+    return {
+        "evidence": ap.evidence,
+        "citation": list(ap.citations),
+        "rationale": ap.rationale,
+        "reviewed": ap.reviewed,
+        "reward_target": list(ap.reward_target) if ap.reward_target is not None else None,
+        "phases": list(ap.phases) if ap.phases is not None else None,
+        "watch_samples": _samples(ap.watch_ms, ctx),
+        "between_moves_samples": _samples(ap.between_moves_ms, ctx),
+        "equipment_settle_samples": _samples(ap.equipment_settle_ms, ctx),
+        "tighten_first": list(ap.tighten_first),
+        "guards": {g.inhibit: {"max": g.max_frac, "say": g.say} for g in ap.guards},
+        "limiters": {lim.check: {"say": lim.say} for lim in ap.limiters},
+    }
+
+
+def _emit_control_autopilot(p: IRControlAutopilot, ctx: _EmitCtx) -> dict:
+    return {
+        "strategy": p.strategy,
+        "fixes": p.fixes,
+        "higher_is": p.higher_is,
+        "apply": p.apply,
+        "limits": [p.limits[0], p.limits[1]],
+        "round_to": p.round_to,
+        "decimals": _decimals(p.round_to),
+        "say": p.say,
+        "between_moves_samples": _samples(p.between_moves_ms, ctx),
+        "step": p.step,
+        "from": p.from_entity,
+        "window_samples": _samples(p.window_ms, ctx),
+        "percentile": p.percentile,
+        "citation": list(p.citations),
     }
 
 
@@ -422,6 +486,8 @@ def _emit_control(c: IRControl, ctx: _EmitCtx) -> dict:
     }
     if c.seed is not None:
         out["seed"] = _emit_seed(c.seed, ctx)
+    if c.autopilot is not None:
+        out["autopilot"] = _emit_control_autopilot(c.autopilot, ctx)
     return out
 
 
@@ -485,7 +551,7 @@ def ir_to_json_obj(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> di
         controls=control_defaults(ir),
     )
     version = _protocol_ir_version(ir)
-    return {
+    obj = {
         "refrain_ir_version": version,
         "name": ir.name,
         "extends": ir.extends,
@@ -511,6 +577,9 @@ def ir_to_json_obj(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> di
         },
         "topological_order": list(ir.topological_order),
     }
+    if ir.autopilot is not None:
+        obj["autopilot"] = _emit_autopilot(ir.autopilot, ctx)
+    return obj
 
 
 def ir_to_json(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> str:

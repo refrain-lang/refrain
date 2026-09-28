@@ -1,0 +1,861 @@
+{
+  "refrain_ir_version": "0.4",
+  "name": "autopilot_alpha_theta",
+  "extends": null,
+  "sample_rate_hz": 256.0,
+  "channels": [
+    "Cz"
+  ],
+  "requires": {
+    "coupling": null,
+    "sample_rate_min_hz": 256,
+    "sample_rate_chosen_hz": 256,
+    "channels": [
+      "Cz"
+    ],
+    "impedance": "not_required",
+    "markers": "not_required"
+  },
+  "meta": {
+    "version": {
+      "node": "string",
+      "value": "1.0.0"
+    },
+    "evidence": {
+      "node": "string",
+      "value": "exploratory"
+    },
+    "description": {
+      "node": "string",
+      "value": "autopilot parity bench"
+    }
+  },
+  "inputs": {
+    "raw": {
+      "canonical_name": "input/raw",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "montage": {
+        "node": "call",
+        "callee": "passthrough",
+        "args": [],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        }
+      }
+    }
+  },
+  "derives": {
+    "t_env": {
+      "canonical_name": "derive/t_env",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "expression": {
+        "node": "call",
+        "callee": "smooth",
+        "args": [
+          {
+            "name": null,
+            "value": {
+              "node": "call",
+              "callee": "magnitude",
+              "args": [
+                {
+                  "name": null,
+                  "value": {
+                    "node": "stream_ref",
+                    "target": "input/raw",
+                    "stream_type": {
+                      "value_kind": "scalar",
+                      "dimensions": {
+                        "time": 0,
+                        "voltage": 1
+                      },
+                      "vector_size": null
+                    }
+                  }
+                }
+              ],
+              "stream_type": {
+                "value_kind": "scalar",
+                "dimensions": {
+                  "time": 0,
+                  "voltage": 1
+                },
+                "vector_size": null
+              }
+            }
+          },
+          {
+            "name": "tau",
+            "value": {
+              "node": "number",
+              "value": 200.0,
+              "dims": {
+                "time": 1,
+                "voltage": 0
+              },
+              "unit": "ms"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        },
+        "coeffs": {
+          "alpha": 0.019341750860461415
+        }
+      },
+      "upstream": [
+        "input/raw"
+      ]
+    },
+    "a_env": {
+      "canonical_name": "derive/a_env",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "expression": {
+        "node": "call",
+        "callee": "smooth",
+        "args": [
+          {
+            "name": null,
+            "value": {
+              "node": "call",
+              "callee": "magnitude",
+              "args": [
+                {
+                  "name": null,
+                  "value": {
+                    "node": "stream_ref",
+                    "target": "input/raw",
+                    "stream_type": {
+                      "value_kind": "scalar",
+                      "dimensions": {
+                        "time": 0,
+                        "voltage": 1
+                      },
+                      "vector_size": null
+                    }
+                  }
+                }
+              ],
+              "stream_type": {
+                "value_kind": "scalar",
+                "dimensions": {
+                  "time": 0,
+                  "voltage": 1
+                },
+                "vector_size": null
+              }
+            }
+          },
+          {
+            "name": "tau",
+            "value": {
+              "node": "number",
+              "value": 2000.0,
+              "dims": {
+                "time": 1,
+                "voltage": 0
+              },
+              "unit": "ms"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        },
+        "coeffs": {
+          "alpha": 0.0019512188925244756
+        }
+      },
+      "upstream": [
+        "input/raw"
+      ]
+    },
+    "ratio": {
+      "canonical_name": "derive/ratio",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      },
+      "expression": {
+        "node": "binop",
+        "op": "/",
+        "left": {
+          "node": "stream_ref",
+          "target": "derive/t_env",
+          "stream_type": {
+            "value_kind": "scalar",
+            "dimensions": {
+              "time": 0,
+              "voltage": 1
+            },
+            "vector_size": null
+          }
+        },
+        "right": {
+          "node": "stream_ref",
+          "target": "derive/a_env",
+          "stream_type": {
+            "value_kind": "scalar",
+            "dimensions": {
+              "time": 0,
+              "voltage": 1
+            },
+            "vector_size": null
+          }
+        },
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 0
+          },
+          "vector_size": null
+        }
+      },
+      "upstream": [
+        "derive/a_env",
+        "derive/t_env"
+      ]
+    }
+  },
+  "thresholds": {
+    "t_t": {
+      "canonical_name": "threshold/t_t",
+      "signal": "derive/t_env",
+      "threshold_call": {
+        "node": "call",
+        "callee": "percentile",
+        "args": [
+          {
+            "name": "target_pct",
+            "value": {
+              "node": "control_ref",
+              "target": "control/t_pct",
+              "default": 15.0,
+              "dims": {
+                "time": 0,
+                "voltage": 0
+              }
+            }
+          },
+          {
+            "name": "window",
+            "value": {
+              "node": "number",
+              "value": 30.0,
+              "dims": {
+                "time": 1,
+                "voltage": 0
+              },
+              "unit": "s"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        },
+        "coeffs": {
+          "window_samples": 7680
+        }
+      },
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "live_tunable": true
+    }
+  },
+  "inhibits": {
+    "emg": {
+      "canonical_name": "inhibit/emg",
+      "metric": {
+        "node": "call",
+        "callee": "bandpower",
+        "args": [
+          {
+            "name": "input",
+            "value": {
+              "node": "stream_ref",
+              "target": "input/raw",
+              "stream_type": {
+                "value_kind": "scalar",
+                "dimensions": {
+                  "time": 0,
+                  "voltage": 1
+                },
+                "vector_size": null
+              }
+            }
+          },
+          {
+            "name": "band",
+            "value": {
+              "node": "tuple",
+              "elements": [
+                {
+                  "node": "number",
+                  "value": 50.0,
+                  "dims": {
+                    "time": -1,
+                    "voltage": 0
+                  },
+                  "unit": "Hz"
+                },
+                {
+                  "node": "number",
+                  "value": 100.0,
+                  "dims": {
+                    "time": -1,
+                    "voltage": 0
+                  },
+                  "unit": "Hz"
+                }
+              ]
+            }
+          },
+          {
+            "name": "window",
+            "value": {
+              "node": "number",
+              "value": 100.0,
+              "dims": {
+                "time": 1,
+                "voltage": 0
+              },
+              "unit": "ms"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 2
+          },
+          "vector_size": null
+        },
+        "coeffs": {
+          "sos": [
+            [
+              0.04321755847044346,
+              -0.08643511694088692,
+              0.04321755847044346,
+              1.0,
+              -0.031991330203778715,
+              0.21603740406045052
+            ],
+            [
+              1.0,
+              2.0,
+              1.0,
+              1.0,
+              0.8019803166220538,
+              0.3221256580393822
+            ],
+            [
+              1.0,
+              -2.0,
+              1.0,
+              1.0,
+              -0.5074808804876136,
+              0.6376437740644977
+            ],
+            [
+              1.0,
+              2.0,
+              1.0,
+              1.0,
+              1.321502340349066,
+              0.7374799860492764
+            ]
+          ],
+          "window_samples": 26
+        }
+      },
+      "threshold": {
+        "node": "call",
+        "callee": "percentile",
+        "args": [
+          {
+            "name": "target_pct",
+            "value": {
+              "node": "control_ref",
+              "target": "control/emg_pct",
+              "default": 95.0,
+              "dims": {
+                "time": 0,
+                "voltage": 0
+              }
+            }
+          },
+          {
+            "name": "window",
+            "value": {
+              "node": "number",
+              "value": 30.0,
+              "dims": {
+                "time": 1,
+                "voltage": 0
+              },
+              "unit": "s"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        },
+        "coeffs": {
+          "window_samples": 7680
+        }
+      },
+      "action_kind": "mute",
+      "action_release_ms": 200.0,
+      "final": false
+    }
+  },
+  "reward": {
+    "continuous": null,
+    "event": {
+      "node": "call",
+      "callee": "dwell",
+      "args": [
+        {
+          "name": "condition",
+          "value": {
+            "node": "call",
+            "callee": "all_of",
+            "args": [
+              {
+                "name": null,
+                "value": {
+                  "node": "array",
+                  "elements": [
+                    {
+                      "node": "call",
+                      "callee": "above",
+                      "args": [
+                        {
+                          "name": null,
+                          "value": {
+                            "node": "stream_ref",
+                            "target": "derive/t_env",
+                            "stream_type": {
+                              "value_kind": "scalar",
+                              "dimensions": {
+                                "time": 0,
+                                "voltage": 1
+                              },
+                              "vector_size": null
+                            }
+                          }
+                        },
+                        {
+                          "name": null,
+                          "value": {
+                            "node": "threshold_ref",
+                            "target": "threshold/t_t",
+                            "stream_type": {
+                              "value_kind": "scalar",
+                              "dimensions": {
+                                "time": 0,
+                                "voltage": 1
+                              },
+                              "vector_size": null
+                            }
+                          }
+                        }
+                      ],
+                      "stream_type": {
+                        "value_kind": "boolean",
+                        "dimensions": {
+                          "time": 0,
+                          "voltage": 0
+                        },
+                        "vector_size": null
+                      }
+                    },
+                    {
+                      "node": "call",
+                      "callee": "above",
+                      "args": [
+                        {
+                          "name": null,
+                          "value": {
+                            "node": "stream_ref",
+                            "target": "derive/ratio",
+                            "stream_type": {
+                              "value_kind": "scalar",
+                              "dimensions": {
+                                "time": 0,
+                                "voltage": 0
+                              },
+                              "vector_size": null
+                            }
+                          }
+                        },
+                        {
+                          "name": null,
+                          "value": {
+                            "node": "control_ref",
+                            "target": "control/xover",
+                            "default": 0.6,
+                            "dims": {
+                              "time": 0,
+                              "voltage": 0
+                            }
+                          }
+                        }
+                      ],
+                      "stream_type": {
+                        "value_kind": "boolean",
+                        "dimensions": {
+                          "time": 0,
+                          "voltage": 0
+                        },
+                        "vector_size": null
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "stream_type": {
+              "value_kind": "boolean",
+              "dimensions": {
+                "time": 0,
+                "voltage": 0
+              },
+              "vector_size": null
+            }
+          }
+        },
+        {
+          "name": "duration",
+          "value": {
+            "node": "number",
+            "value": 250.0,
+            "dims": {
+              "time": 1,
+              "voltage": 0
+            },
+            "unit": "ms"
+          }
+        }
+      ],
+      "stream_type": {
+        "value_kind": "event",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      },
+      "coeffs": {
+        "dwell_samples": 64
+      }
+    },
+    "combine": "all",
+    "components": [],
+    "check_names": [
+      "theta",
+      "crossover"
+    ]
+  },
+  "output": {
+    "audio_chime": {
+      "node": "reward_field",
+      "field_path": "event",
+      "stream_type": {
+        "value_kind": "event",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      }
+    }
+  },
+  "controls": {
+    "t_pct": {
+      "canonical_name": "control/t_pct",
+      "type_kind": "percent",
+      "dims": {
+        "time": 0,
+        "voltage": 0
+      },
+      "default": {
+        "node": "number",
+        "value": 15.0,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_low": {
+        "node": "number",
+        "value": 15.0,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_high": {
+        "node": "number",
+        "value": 70.0,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "log_scale": false,
+      "label": null,
+      "live_tunable": true,
+      "tune_strategy": null,
+      "autopilot": {
+        "strategy": "fixed_step",
+        "fixes": "theta",
+        "higher_is": "harder",
+        "apply": "auto",
+        "limits": [
+          15.0,
+          60.0
+        ],
+        "round_to": null,
+        "decimals": 2,
+        "say": null,
+        "between_moves_samples": null,
+        "step": 5.0,
+        "from": null,
+        "window_samples": null,
+        "percentile": null,
+        "citation": []
+      }
+    },
+    "xover": {
+      "canonical_name": "control/xover",
+      "type_kind": "number",
+      "dims": {
+        "time": 0,
+        "voltage": 0
+      },
+      "default": {
+        "node": "number",
+        "value": 0.6,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_low": {
+        "node": "number",
+        "value": 0.5,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_high": {
+        "node": "number",
+        "value": 1.5,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "log_scale": false,
+      "label": "Crossover target",
+      "live_tunable": true,
+      "tune_strategy": null,
+      "autopilot": {
+        "strategy": "fixed_step",
+        "fixes": "crossover",
+        "higher_is": "harder",
+        "apply": "auto",
+        "limits": [
+          0.5,
+          1.5
+        ],
+        "round_to": 0.01,
+        "decimals": 2,
+        "say": null,
+        "between_moves_samples": null,
+        "step": 0.05,
+        "from": null,
+        "window_samples": null,
+        "percentile": null,
+        "citation": []
+      }
+    },
+    "emg_pct": {
+      "canonical_name": "control/emg_pct",
+      "type_kind": "percent",
+      "dims": {
+        "time": 0,
+        "voltage": 0
+      },
+      "default": {
+        "node": "number",
+        "value": 95.0,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_low": {
+        "node": "number",
+        "value": 50.0,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "range_high": {
+        "node": "number",
+        "value": 99.0,
+        "dims": {
+          "time": 0,
+          "voltage": 0
+        },
+        "unit": null
+      },
+      "log_scale": false,
+      "label": null,
+      "live_tunable": true,
+      "tune_strategy": null
+    }
+  },
+  "session": {
+    "phases": [
+      {
+        "name": "settle",
+        "duration_ms": 5000.0,
+        "output_muted": true,
+        "mode": "timed",
+        "block": null
+      },
+      {
+        "name": "train1",
+        "duration_ms": 35000.0,
+        "output_muted": false,
+        "mode": "timed",
+        "block": null
+      },
+      {
+        "name": "rest",
+        "duration_ms": 5000.0,
+        "output_muted": true,
+        "mode": "timed",
+        "block": null
+      },
+      {
+        "name": "train2",
+        "duration_ms": 35000.0,
+        "output_muted": false,
+        "mode": "timed",
+        "block": null
+      }
+    ]
+  },
+  "blocks": {},
+  "reward_bundles": {},
+  "topological_order": [
+    "control/t_pct",
+    "control/xover",
+    "control/emg_pct",
+    "input/raw",
+    "derive/t_env",
+    "derive/a_env",
+    "derive/ratio",
+    "threshold/t_t",
+    "inhibit/emg"
+  ],
+  "autopilot": {
+    "evidence": "exploratory",
+    "citation": [
+      "Parity bench (not clinical)"
+    ],
+    "rationale": "Short windows so an 80 s run exercises every advisor state.",
+    "reviewed": null,
+    "reward_target": [
+      0.2,
+      0.4
+    ],
+    "phases": null,
+    "watch_samples": 2048,
+    "between_moves_samples": 2560,
+    "equipment_settle_samples": 768,
+    "tighten_first": [
+      "crossover"
+    ],
+    "guards": {
+      "emg": {
+        "max": 0.3,
+        "say": "Muscle."
+      }
+    },
+    "limiters": {}
+  }
+}

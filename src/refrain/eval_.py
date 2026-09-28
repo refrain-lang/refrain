@@ -30,6 +30,7 @@ from typing import Any
 import numpy as np
 
 from . import primitive_impls as impls
+from .advisor import Advisor, AdviceError, ChunkFacts
 from .ir import (
     IRArray,
     IRBinaryOp,
@@ -372,6 +373,9 @@ class Evaluator:
         # Python latches are simply never stepped — the Rust evaluator owns
         # its own latches — so no backend guard is needed here.
         self._build_seed_latches()
+        # Autopilot advisor (SPEC §7.10, §5): built from the same IR-JSON the
+        # Rust core loads, so both engines start from identical configuration.
+        self._advisor, self._advisor_error = _build_advisor(self.ir, self.sample_rate_hz)
         # Seed adaptive tracker state from a prior session (Ask 2). Opt-in;
         # None => today's cold start (bit-identical). Applied after the
         # pipeline exists so the stateful impls are constructed.
@@ -824,6 +828,8 @@ class Evaluator:
             latch.value = value
             latch.status = "seeded"
             self._apply_control(latch.control_name, value)   # NOT set_control -> no self-disarm
+            if self._advisor is not None:
+                self._advisor.note_control(latch.control_name, latch.value, "seed")
             # Refresh this chunk's control broadcast cache so expression-position
             # control_refs (e.g. `"env" / thr_uv` as a bare operand, not an impl
             # param slot) read the freshly seeded value THIS chunk too — matching
@@ -1145,6 +1151,34 @@ class Evaluator:
         # Combined inhibit gate — also exposed as the `muted` tap. Inhibits not
         # in the active block's `.inhibits` set do not contribute to the gate.
         muted = self._compute_muted(inhibit_active, actual_chunk_size, active_block)
+
+        # Feed the autopilot advisor what happened this chunk (SPEC §7.10).
+        # Advice is never a tap (global-constraints) — it has its own
+        # accessors (advice(), autopilot_policy(), ...), so this runs
+        # unconditionally alongside tap capture, not inside it.
+        if self._advisor is not None:
+            # Guards see exactly the inhibits the mute gate counts: the active
+            # block's set when it declares a non-empty one, every inhibit
+            # otherwise (mirrors `_compute_muted`).
+            guard_set = (set(active_block.inhibits)
+                         if (active_block is not None and active_block.inhibits) else None)
+            self._advisor.feed(ChunkFacts(
+                n=actual_chunk_size,
+                running=self._state == "run",
+                phase_index=self._phase_index if ph is not None else -1,
+                phase_name=ph.name if ph is not None else None,
+                output_muted=bool(suppress_output),
+                clock_frozen=bool(self._clock_frozen),
+                bundle=active_bundle,
+                muted=muted,
+                inhibits={k.split("/", 1)[1]: v for k, v in inhibit_active.items()
+                          if guard_set is None or k.split("/", 1)[1] in guard_set},
+                checks=list(reward_sub_chunks),
+                events=(reward_event.events if reward_event is not None
+                        else np.zeros(actual_chunk_size, dtype=bool)),
+                derive_samples={s: stream_values[s] for s in self._advisor.rebaseline_sources()
+                                if s in stream_values},
+            ))
 
         # Pre-compute each output binding's gated/clamped values now so
         # we can capture them as `output/<channel>` taps *and* emit
@@ -1477,6 +1511,8 @@ class Evaluator:
             latch.armed = False
             latch.status = "disarmed_by_host"
         self._apply_control(name, value)
+        if self._advisor is not None:
+            self._advisor.note_control(name, float(value), "manual")
 
     def seed_report(self) -> dict:
         """Per-control baseline-seed outcome (§2.7), keyed by bare control name.
@@ -1496,6 +1532,55 @@ class Evaluator:
                 "at_time_s": latch.at_time_s,
             }
         return out
+
+    # --- Autopilot advice (SPEC §5) --------------------------------------
+
+    def _require_advisor(self) -> Advisor:
+        if self._advisor is None:
+            raise RuntimeError(f"autopilot advice is unavailable: {self._advisor_error}")
+        return self._advisor
+
+    def advice(self) -> dict:
+        """The current structured advice (collecting / hold / hint / adjust)."""
+        if self._rust is not None:
+            return json.loads(self._rust.advice())
+        return self._require_advisor().advice()
+
+    def apply_advice(self, advice_id: str, by: str = "practitioner") -> dict:
+        """Apply the current `adjust` advice. `by="autopilot"` is refused when
+        the protocol allows that change only as a suggestion."""
+        if self._rust is not None:
+            try:
+                return json.loads(self._rust.apply_advice(advice_id, by))
+            except ValueError as exc:
+                raise AdviceError(str(exc)) from None
+        control, value, event = self._require_advisor().apply(advice_id, by)
+        self._apply_control(control, value)
+        return event
+
+    def dismiss_advice(self, advice_id: str) -> dict:
+        if self._rust is not None:
+            try:
+                return json.loads(self._rust.dismiss_advice(advice_id))
+            except ValueError as exc:
+                raise AdviceError(str(exc)) from None
+        return self._require_advisor().dismiss(advice_id)
+
+    def mark_equipment_change(self) -> None:
+        if self._rust is not None:
+            self._rust.mark_equipment_change()
+            return
+        self._require_advisor().mark_equipment_change()
+
+    def drain_advice_events(self) -> list[dict]:
+        if self._rust is not None:
+            return json.loads(self._rust.drain_advice_events())
+        return self._require_advisor().drain_events()
+
+    def autopilot_policy(self) -> dict:
+        if self._rust is not None:
+            return json.loads(self._rust.autopilot_policy())
+        return self._require_advisor().policy()
 
     def _apply_control(self, name: str, value: float) -> None:
         """Forward a control value to its dependent impls WITHOUT the disarm
@@ -1876,6 +1961,23 @@ def _scale_to_ms_if_duration(n: IRNumberLit) -> float:
     """For inline arithmetic, return the bare numeric value with no
     unit conversion. (Static-arg conversion lives in `_to_python_value`.)"""
     return float(n.value)
+
+
+# ---------------------------------------------------------------------------
+# Autopilot advisor helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_advisor(ir: IRProtocol, sample_rate_hz: float) -> tuple[Advisor | None, str | None]:
+    """The advisor is built from the same IR-JSON the Rust core loads, so both
+    engines start from identical configuration. A protocol the emitter cannot
+    serialise gets no advisor; advice() then raises with the reason."""
+    from .ir_json import ir_to_json_obj  # lazy: ir_json imports this module
+
+    try:
+        return Advisor(ir_to_json_obj(ir, sample_rate_hz=sample_rate_hz), sample_rate_hz), None
+    except Exception as exc:  # noqa: BLE001 — surfaced by advice(), never swallowed
+        return None, f"{type(exc).__name__}: {exc}"
 
 
 # ---------------------------------------------------------------------------

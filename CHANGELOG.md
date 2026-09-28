@@ -5,7 +5,48 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
-## [Unreleased]
+## [0.22.0] — 2026-09-28
+
+### Added
+- **Protocol-declared autopilot.** A protocol can now name its reward checks
+  (`above(...) as "crossover"`), declare an `autopilot { }` block (target
+  reward band, phases, evidence window, cadence, guard ceilings, provenance
+  — `evidence` uses the protocol library's `established` / `probable` /
+  `exploratory` tiers) and give each tunable control a policy (`fixed_step`, `proportional_step`,
+  `rebaseline`; direction, limits, auto vs suggest). The compiler refuses
+  unsafe or ambiguous policies at compile time: a knob that cannot affect the
+  check it claims to fix, a reversed direction, or auto-adjusting a guard is
+  a `ResolveError`, not a runtime surprise — and check names must be unique
+  **protocol-wide** (not just within one bundle), because `fixes`, `limiter`
+  and `tighten_first` refer to a check by name alone. Both engines run the
+  same deterministic advisor and emit one structured advice result per chunk
+  (`Evaluator.advice()`), with `apply_advice`, `dismiss_advice`,
+  `mark_equipment_change`, `drain_advice_events` and `autopilot_policy`.
+  Protocols without a policy stay manual and receive observations and
+  direction hints. IR-JSON **0.4** (emitted only when the new keys are used —
+  every existing protocol keeps its IR-JSON and hash). Python<->Rust parity is
+  gated over tracer output, scripted scenarios and a whole session. Hosts
+  embedding the advice API should read docs/EMBEDDING.md "Autopilot advice";
+  protocol authors should read docs/AUTOPILOT-AUTHORING.md.
+- **`advisor.rs`** — a Rust port of the Python autopilot advisor
+  (`src/refrain/advisor.py`), mirrored function-for-function: same
+  snake_case names, same order of operations, same message strings byte for
+  byte. Verified against the Python reference over tracer output, scripted
+  scenarios, and a whole staged session. (refrain-core)
+- **New `Evaluator` advice accessors**, exposed over both PyO3 and uniffi:
+  `advice()`, `apply_advice(id, by)`, `dismiss_advice(id)`,
+  `mark_equipment_change()`, `drain_advice_events()`, `autopilot_policy()`.
+  Advice stays off `last_taps()` — the strict tap key-set contract
+  (`taps.rs`) is untouched. (refrain-core)
+- **`RefrainError::Advice { message }`** — a new variant on the uniffi-exposed
+  `RefrainError` enum, returned when `apply_advice`/`dismiss_advice` fails.
+  **This is a uniffi enum change: mobile consumers (Swift/Kotlin) must
+  regenerate their bindings** before picking up this release. (refrain-core)
+- **IR-JSON 0.4 deserialization.** The Rust IR loader accepts the new
+  `autopilot` block, per-control `autopilot` policy, and `reward.check_names`
+  fields; `SUPPORTED_IR_VERSIONS` gains `"0.4"`, so a core built without this
+  change refuses a `"0.4"` document at load instead of silently ignoring
+  fields it doesn't understand. (refrain-core)
 
 ### Changed
 - **Framing.** Refrain is described as a language for *biosignal training

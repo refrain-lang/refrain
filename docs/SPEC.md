@@ -393,6 +393,45 @@ The reward block exposes:
   - direct binding to event-channel outputs (`audio_chime = reward.event`) — emits on rising edges of the underlying condition
   - `.holds` member access (`reward.event.holds`) — `stream<boolean>` indicating whether the dwell condition is currently satisfied
 
+#### Named reward checks
+
+A direct element of the reward dwell's `all_of([...])` / `any_of([...])` list
+(or the single condition of a one-condition dwell, wrapped in a one-element
+`all_of`) may carry a name, for the autopilot advisor (§7.10) to address it
+by:
+
+```refrain
+reward {
+  event = dwell(
+    condition: all_of([
+      above("theta_envelope", "theta_t")           as "theta",
+      above("theta_alpha_ratio", crossover_target) as "crossover",
+    ]),
+    duration: 1000 ms
+  )
+}
+```
+
+- `as` is legal only on an element of a reward dwell condition list; anywhere
+  else is a `ResolveError` (§6.7 V15).
+- Names must be unique across the whole protocol: a name used in the
+  top-level `reward { }` or in one named, block-selectable `reward "<name>" { }`
+  bundle (staged protocols) cannot be used again in any other, because
+  `fixes`, `limiter` and `tighten_first` address a check by name alone. An
+  empty name (`as ""`) is rejected (§6.7 V15).
+- Naming a check changes no expression node and no tap key —
+  `reward/condition[i]` is unaffected; names are recorded separately as
+  `reward.check_names`, a list aligned with the condition indices (`None` for
+  an unnamed element). A protocol with no named checks omits the field
+  entirely.
+- Unnamed checks are addressed in advice as `check 0`, `check 1`, … (0-based,
+  matching `reward/condition[i]`).
+- Named checks cannot yet be combined with band fan-out (`bands { }`, §4.9.3)
+  or per-site fan-out (a `placement { kind = "set" }` montage, §4.9.1) —
+  replication would have to duplicate or rename the checks. The compiler
+  refuses this at resolve time.
+- See `docs/AUTOPILOT-AUTHORING.md` for when and how to use names.
+
 #### Continuous-only (e.g., Othmer ILF)
 
 ```refrain
@@ -716,6 +755,65 @@ controls {
 
 **§9.3 is now enforced.** A runtime that doesn't understand IR-JSON `"0.3"` refuses a seeded protocol at load (§9.3) rather than silently ignoring the `seed` field and running an unbaselined default — the version gate described in §9.3 is implemented, not aspirational, as of this feature.
 
+#### 4.9.5 `autopilot` — per-control policy
+
+A control field, following the `seed` precedent: `autopilot = <strategy> { ... }`, where the strategy is the block kind. Requires a protocol-wide `autopilot { }` block to exist (§4.12) and at least one named reward check (§4.7) for `fixes` to name:
+
+```refrain
+controls {
+  crossover_target = number {
+    default = 0.60; range = (0.5, 1.0); live_tunable = true
+    autopilot = fixed_step {
+      fixes     = "crossover"
+      step      = 0.05
+      higher_is = "harder"
+      limits    = (0.5, 1.0)
+      apply     = "auto"
+      round_to  = 0.01
+      say       = "Crossover target"
+    }
+  }
+
+  theta_threshold_uv = voltage {
+    default = 8.0 uV; range = (2.0 uV, 30.0 uV); live_tunable = true
+    autopilot = proportional_step {
+      fixes     = "theta"
+      step      = 10%
+      higher_is = "harder"
+      apply     = "suggest"
+      round_to  = 0.1 uV
+      only_when = threshold_style == "baseline"
+    }
+  }
+}
+```
+
+**Strategies** (the block kind names which one; eligible control kinds are `number`, `percent`, `voltage`, and `frequency` — not `duration`, and not `mode`/`boolean`/`enum`/`placement`):
+
+| Strategy | Proposed value | Fields specific to it |
+|---|---|---|
+| `fixed_step` | `current ± step` | `step`: in the knob's own units (a bare number for `number`/`percent`; `uV`/`Hz` for `voltage`/`frequency`). |
+| `proportional_step` | `current × (1 ± step)` | `step`: a percent, `0% < step < 100%`. |
+| `rebaseline` | The `percentile` of the last `window` of clean samples of derive `from` | `from` (a declared derive, by bare name), `window` (duration, must fit inside the protocol-wide `watch`), `percentile` (number, 1–99). Always suggest-only — `apply = "auto"` is a `ResolveError`. |
+
+**Fields common to all three strategies:**
+
+| Field | Required | Meaning |
+|---|---|---|
+| `fixes` | yes | The named reward check this knob addresses. |
+| `higher_is` | yes | `"harder"` or `"easier"` — what raising the knob's value does to the named check. Must agree with the direction the resolver traces from the check's own expression (§7.10.5), when that trace is unambiguous. |
+| `apply` | yes | `"auto"` or `"suggest"`. `"auto"` is refused on a knob that feeds any inhibit, in any mode branch, and on a `rebaseline` policy. |
+| `limits` | no | Autopilot's own bounds, which may be narrower than the control's `range`. Defaults to `range`; required if the control declares no `range`. |
+| `round_to` | no | Snap every proposed value to this precision, in the knob's units. |
+| `say` | no | Display name used in advice; defaults to the control's `label`, then its bare name. |
+| `watch`, `between_moves` | no | Per-knob overrides of the protocol-wide values in §4.12. |
+| `only_when` | no | Restricts the policy to one mode branch: a comparison of a `mode` control to one of its own string choices (e.g. `threshold_style == "baseline"`). Mode controls are bound at resolve time (the same folding other mode-dependent expressions use), so `only_when` is evaluated once at compile time — the policy is kept for the binding being compiled and silently dropped, not emitted, when the comparison doesn't hold. It never reaches the IR. |
+| `citation` | no | Per-knob source, when this knob's numbers come from a different source than the block-level `citation`. |
+
+The proposed value is always clamped to `limits` and snapped to `round_to`. If the result equals the current value, the knob is reported "at limit" instead of a no-op move.
+
+See §6.7 for the compiler's full cross-reference validation (V1–V17) and `docs/AUTOPILOT-AUTHORING.md` for a worked, step-by-step guide.
+
 ### 4.10 `session`
 
 Session structure. Phases, durations, breaks, schedule.
@@ -743,6 +841,76 @@ custom "my_phase_metric" {
 ```
 
 The runtime imports the named module's function, validates that its declared signature is honored on first call, and accounts the declared budget against the protocol's resource ceiling.
+
+### 4.12 `autopilot`
+
+Protocol-wide settings for the autopilot advisor (§7.10): when advice runs, what target it judges reward against, and messages for guards and unaddressed limiters. New top-level section keyword, alongside `meta`, `reward`, `controls`, and so on.
+
+```refrain
+autopilot {
+  // provenance — required whenever the block exists
+  evidence  = "exploratory"
+  citation  = "Peak Mind practice team (2026). Adapted from Peniston & Kulkosky 1989 practice."
+  rationale = "Crossover is rare by nature; a 50-75% target would drive the ratio target to its floor."
+  reviewed  = "J. Croall, 2026-09-24"          // optional
+
+  // when and how advice runs — all optional, defaults below
+  reward_target     = (10%, 35%)
+  phases            = ["deep1", "deep2"]
+  watch             = 2 min
+  between_moves     = 3 min
+  equipment_settle  = 60 s
+  tighten_first     = ["crossover", "theta"]
+
+  // guards: hold and explain when an inhibit is active too often
+  delta = guard { max = 15%; say = "Slow activity rising; may be drifting toward sleep. Check alertness." }
+  emg   = guard { max = 15%; say = "Muscle artifact; check jaw/neck tension or the electrode." }
+
+  // a reward check with no knob, or whose knob must not be touched
+  high_beta = limiter { say = "Likely tension; coach relaxation rather than loosening." }
+}
+```
+
+**Settings:**
+
+| Field | Type | Meaning |
+|---|---|---|
+| `evidence` | string, **required** | `established` \| `probable` \| `exploratory` — the same tiers as `meta.evidence` in the reference protocol library (how established the approach behind the numbers is in prior art; provenance, not an outcome claim). A closed set the compiler checks, unlike `meta.evidence`. |
+| `citation` | string or array of strings, **required** | Source(s) for the numbers. |
+| `rationale` | string, **required** | One or two sentences on why these numbers. |
+| `reviewed` | string, optional | Who reviewed it and when. |
+| `reward_target` | pair of percents | Target share of clean training time during which the reward condition is met (§7.10.2). `low < high`, both strictly between 0% and 100%. |
+| `phases` | array of phase names | Phases in which advice may run. Each name must be a declared session phase whose output is not muted. |
+| `watch` | duration | Clean time required before any judgement. |
+| `between_moves` | duration | Minimum time between two applied changes (to any knob). |
+| `equipment_settle` | duration | Hold after the host reports an equipment change. |
+| `tighten_first` | array of check names | Order in which named checks are tightened when reward is above target (§7.10.4). |
+
+**Entries** (distinguished from settings by their block kind; an entry whose name collides with a setting name is a `ResolveError`):
+
+| Entry | Meaning |
+|---|---|
+| `<inhibit> = guard { max; say }` | Ceiling (percent) on that inhibit's active share of training time, and the message shown when exceeded. The name must be a declared inhibit. |
+| `<check> = limiter { say }` | Message used when this check is the limiter and no eligible policy fixes it. The name must be a named reward check. |
+
+**Built-in defaults**, used for any setting the block omits — including protocols with no `autopilot { }` block at all — versioned as `ADVISOR_VERSION = "1"` (`advisor_version` in every advice result and audit event, §7.10):
+
+| Setting | Default | Source |
+|---|---|---|
+| `reward_target` | (50%, 75%) | Coherence Recorder's `nf-coach` sweet-spot band |
+| `phases` | Every session phase whose output is not muted; the whole run if the protocol has no `session` block | — |
+| `watch` | 2 min | Coherence Recorder `guidance.py`'s window |
+| `between_moves` | 3 min | Coherence Recorder `guidance.py`'s suggestion cadence |
+| `equipment_settle` | 60 s | Coherence Recorder `guidance.py`'s equipment freeze |
+| guard `max` (every inhibit, when no `guard` entry names it) | 15% | Coherence Recorder `guidance.py`'s guard ceiling |
+| guard `say` (an entry — or the default — with none) | "`<inhibit>` guard active `<n>`% of training time." | — |
+| `tighten_first` | none: tighten whichever check currently passes most often | — |
+
+Defaults are not part of the protocol and are not in `content_hash`.
+
+**Composition:** `autopilot` is a singleton section, merged like `reward` — a child's block replaces the parent's; `amend autopilot { ... }` overrides individual settings and entries. `remove` does not apply to sections. A control's `autopilot` field merges with the rest of the control at field level, exactly as `seed` does. `final` protects named declarations and controls (§11.4); it does not apply to whole sections, so `final autopilot { ... }` is not supported.
+
+See §4.9.5 for per-control policies, §6.7 for the compiler's cross-reference validation, §7.10 for the decision procedure, and `docs/AUTOPILOT-AUTHORING.md` for a worked, step-by-step guide.
 
 ---
 
@@ -822,6 +990,32 @@ The compiler can optionally check that every CRED-nf-required field has been pop
 ### 6.6 Rate alignment
 
 Cross-stream operations in `formula` derives, reward expressions, and output bindings must have matching stream rates. Mismatch produces an error with a suggested `align_to(...)` call. The compiler does not insert implicit alignment.
+
+### 6.7 Autopilot validation
+
+Checks specific to named reward checks (§4.7), the `autopilot` block (§4.12), and per-control policies (§4.9.5), run on the final, merged protocol (after `extends`, `amend`, mode folding). Every rule is a `ResolveError` naming the offending control or entry and the problem, in plain words; a protocol that fails any rule does not compile — there is no "compiles but autopilot is disabled" fallback.
+
+| # | Rejected | Why |
+|---|---|---|
+| V1 | `fixes` names a check that does not exist | A typo would silently disable the policy. |
+| V2 | The knob does not feed the check it `fixes` (traced through thresholds, derives, and control refs, after mode folding) | A policy may not claim a knob fixes what it cannot affect; also forces `only_when` onto mode-dependent knobs. |
+| V3 | Declared `higher_is` contradicts the traced direction, when the trace is unambiguous (§7.10.5) | Catches a reversed direction. |
+| V4 | `apply = "auto"` on a knob that feeds any inhibit, in any mode branch (checked before folding) | Guards are never loosened automatically. |
+| V5 | A policy on a knob that feeds no reward check (volume-like knobs, band edges) | Enforced by V2: such a knob cannot feed the check it claims to `fixes`. |
+| V6 | `rebaseline` with `apply = "auto"` | Large jumps are always the practitioner's call. |
+| V7 | Two surviving policies `fixes` the same check | One knob per check; mode-exclusive pairs are resolved by `only_when` before this check runs. |
+| V8 | Knob is not `live_tunable`, or its kind is `mode`, `boolean`, `enum`, or `placement` | Cannot be changed mid-session. |
+| V9 | `limits` outside `range`; no `limits` and no `range`; `low ≥ high` | Scale errors. |
+| V10 | `step ≤ 0`; a `fixed_step` step in the wrong units; a `proportional_step` step that isn't a percent, or is `≥ 100%` | Scale errors. |
+| V11 | `rebaseline.from` is not a declared derive; its unit is incompatible with the knob's; `percentile` outside 1–99 | |
+| V12 | `guard` entry names no inhibit; `limiter` entry or `tighten_first` names no check; `phases` names an unknown or output-muted phase | Typos cannot silently disable a safety check. |
+| V13 | Knob policies present with no `autopilot` block; `autopilot` block missing `evidence`, `citation`, or `rationale`; `evidence` outside the closed set | No unsourced policy. |
+| V14 | `reward_target` malformed or outside (0%, 100%); durations ≤ 0 | |
+| V15 | `as "<name>"` outside a reward dwell condition list; an empty name; the same name used twice anywhere in the protocol (within one bundle or across bundles) | `fixes`, `limiter` and `tighten_first` refer to a check by name alone. |
+| V16 | `autopilot` targets or knob policies on a protocol with no reward condition, or one using a weighted composite reward | There is no per-sample condition for autopilot to judge. |
+| V17 | `only_when` that is not `<mode control> == "<choice>"` / `!=`, or names a choice the mode does not declare | |
+| V18 | `apply = "auto"` on a knob the tracer cannot follow to the check it `fixes` (the check does not compare its signal directly against this control — e.g. `above(S, k * 1.0)`, or two knobs in one threshold) | V3 can only verify `higher_is` when the trace is unambiguous. An unverified direction may be wrong, and an automatic move in the wrong direction would walk the knob to its limit before anyone looks. Such a knob may only suggest (`apply = "suggest"`). |
+| V19 | The same setting, `guard` or `limiter` entry declared twice inside one `autopilot { }` block | One of them would silently win. |
 
 ---
 
@@ -989,6 +1183,184 @@ Runtimes claiming research-mode conformance MUST guarantee:
 Constant-time *across* sessions (i.e., resistance to timing attacks aggregated over many runs) is OPTIONAL and host-configurable. See `docs/RESEARCH-MODE.md` for the threat model and the opt-in `strict_constant_time` mode.
 
 See `docs/RESEARCH-MODE.md` for the full cryptographic protocol, per-sham-type constant-time guarantees, sealed-token format spec, and test fixtures. See `docs/EMBEDDING.md` for host-side integration.
+
+### 7.10 Autopilot advisor
+
+Refrain runs a fixed, deterministic decision procedure — the *advisor* — after
+every chunk, turning aggregated per-sample facts into one structured piece of
+advice: hold steady, keep collecting evidence, offer a direction hint, or
+propose a concrete adjustment. It runs identically whether or not the
+protocol declares an `autopilot { }` block (§4.12) or any per-control policy
+(§4.9.5); a protocol with neither still gets observations and, where
+unambiguous, hints, judged against the built-in defaults. The reference
+implementation is `src/refrain/advisor.py`, ported line-for-line (same
+function names, same order of operations, same message strings) by
+`refrain-core/src/advisor.rs`; both are exercised by the same scripted-fact
+tests and a parity check that runs identical inputs through both.
+
+The advisor is a passive observer of the same host actions that already
+exist — `step_chunk`, `set_control`, seed firing — nothing in the host
+integration changes to enable it. See `docs/EMBEDDING.md` "Autopilot advice"
+for the host-facing calls.
+
+#### 7.10.1 Where it runs
+
+The Evaluator owns one advisor instance per session and feeds it aggregated
+facts at the end of every `step_chunk`, the same way it runs the baseline-seed
+latch. A knob change made through `set_control` cannot bypass it — the
+advisor sees every control mutation, whichever path made it (§7.10.6).
+
+Time is counted in **session sample time** (samples processed ÷ sample rate),
+never wall-clock time, and no randomness is used anywhere in the procedure.
+Window edges fall on chunk boundaries, so identical chunk sequences fed to
+both engines produce the same advice values (§7.10.7's rounding rules make
+this exact, once compared as parsed numbers rather than raw JSON bytes —
+Python and Rust format floats differently).
+
+#### 7.10.2 Evidence window
+
+- The window is the most recent `watch` of **clean** samples. A sample is
+  *in training* when its phase is in the advisor's `phases` set, output is
+  not phase-muted, and the session is not held or clock-frozen; it is
+  **clean** when it is in training and no inhibit is active.
+- Clean samples older than `2 × watch` of session time drop out of the
+  window entirely, so evidence cannot be assembled from scraps scattered
+  across a long, guard-interrupted stretch.
+- Guard activity (for the guard check in §7.10.3) is measured over
+  **in-training** samples in the same span — it does not require clean time,
+  since an active guard is exactly what makes a sample unclean.
+- **Reward rate** = clean samples with the reward condition met ÷ clean
+  samples. This is the *instantaneous* condition, not the dwell-held state.
+- **Check pass rate** = clean samples with that check true ÷ clean samples,
+  one per named or unnamed check in the active reward bundle.
+- **Chimes per minute** = reward events in the window ÷ window minutes.
+  Reported for information only; it never drives a decision.
+
+**The window restarts** when any control that feeds a reward check or an
+inhibit changes — by manual `set_control`, by `apply_advice`, or by a
+baseline seed firing — when the host calls `mark_equipment_change()`, or when
+a new phase in `phases` begins. A manual `set_control` on such a control also
+starts the `between_moves` cooldown (§7.10.3 step 11, §7.10.6), exactly as an
+applied advice does — the advisor treats "the practitioner just moved this knob
+by hand" the same as "autopilot just moved it" for cooldown purposes.
+
+#### 7.10.3 Decision steps
+
+Evaluated after every chunk; the first step that applies decides the result.
+
+| # | Condition | Result `state` / `reason` |
+|---|---|---|
+| 1 | Current sample not in training | `hold` / `not_training_phase` |
+| 2 | Within `equipment_settle` of the last equipment change | `hold` / `equipment_settling` (with remaining time) |
+| 3 | Some inhibit's active share of in-training samples in the window exceeds its guard `max` (the worst one is reported). Only inhibits that can mute output count: when the active block declares a non-empty inhibit set, only those; otherwise every inhibit | `hold` / `guard`, with that guard's message (below) |
+| 4 | Clean time in the window is less than `watch` | `collecting` / `collecting`, with progress |
+| 5 | The protocol has no reward condition to judge (a continuous-only reward, or a weighted-composite reward) | `hold` / `observing` |
+| 6 | The last change made through `apply_advice` went toward *harder* and reward rate is now below `low`, or toward *easier* and reward rate is now above `high`; evaluated once, on the first full window after that change | `adjust` / `reversal` — propose the pre-change value; bypasses `between_moves`. Once fired it stands until applied or dismissed, or until a later full window's reward rate is back inside the target band, which drops it and lets the normal decision take over |
+| 7 | `low ≤ reward rate ≤ high` | `hold` / `on_track` |
+| 8 | Select the limiting check (§7.10.4) | — |
+| 9 | No surviving policy fixes that check | `hold` / `no_knob` (with the `limiter` entry's message, if any), or `hint` (§7.10.5) when the protocol declares no knob policies at all and the trace is unambiguous |
+| 10 | The knob is at its limit in the needed direction | `hold` / `at_limit` |
+| 11 | Less than `between_moves` since the last applied (or manual) change, or the same knob and direction was dismissed within `between_moves` | `hold` / `cooldown` (with `eligible_at_s`) |
+| 12 | Otherwise | `adjust` / `too_strict` or `too_easy`, with the proposed value |
+
+A protocol with no knob policies still runs every step; step 6 never fires
+(there is no applied change to reverse), and step 9 yields `hint` or
+`no_knob`. `observing` (step 5) is a reason, not a special case elsewhere in
+the procedure — a continuous-only protocol reports collecting/guard/phase
+holds exactly like any other, it simply never reaches a reward-rate judgement.
+
+**Guard message.** A guard with no `say` reports "`<inhibit>` guard active
+`<n>`% of training time."; a guard with `say = "<text>"` reports "`<text>`
+(`<inhibit>` guard active `<n>`% of training time)."
+
+#### 7.10.4 Which check
+
+- **Too strict** (reward rate below `low`): the check with the **lowest**
+  pass rate, ties broken by declaration order. Autopilot never loosens a
+  different check to compensate — if the limiting check has no knob, it
+  holds and says why.
+- **Too easy** (reward rate above `high`): the first check named in
+  `tighten_first` that has a surviving policy not already at its harder
+  limit; if `tighten_first` is absent or every named check in it is
+  exhausted, the check with the **highest** pass rate.
+
+#### 7.10.5 Direction hints (no policy)
+
+When a protocol declares **no knob policies at all**, the advisor still tells
+a practitioner which way to move a setting, when it can determine that
+unambiguously from the protocol's own expressions — without ever proposing a
+value or allowing automatic application. (An uncovered limiter in a protocol
+that *does* declare some knob policies gets `no_knob` instead, not a hint —
+an author who wrote policies and left one check uncovered made a choice.)
+
+The resolver traces, for each reward check, the single knob that determines
+its threshold and the direction raising that knob moves the check:
+
+| Check shape | Knob position | Higher knob value makes the check… |
+|---|---|---|
+| `above(S, k)`, `k` a control ref | — | harder |
+| `below(S, k)`, `k` a control ref | — | easier |
+| `above(S, "t")`, `t = absolute(value: k)` | | harder |
+| `below(S, "t")`, `t = absolute(value: k)` | | easier |
+| `above(S, "t")`, `t = percentile(target_pct: k, …)` | | harder |
+| `below(S, "t")`, `t = percentile(target_pct: k, …)` | | easier |
+| anything else (knob inside a derive formula, arithmetic on the threshold, more than one knob) | | ambiguous — no hint |
+
+A hint is emitted only when exactly one live-tunable knob of an eligible kind
+(§4.9.5) determines the limiting check's threshold, the trace is unambiguous,
+and the knob feeds no inhibit. The hint names the knob, its label, and the
+direction ("lower is easier") — never a proposed value. The same trace backs
+compile-time rule V3 (§6.7): a declared `higher_is` that contradicts this
+trace is refused. When the trace is ambiguous, `higher_is` cannot be checked,
+so rule V18 limits that knob to `apply = "suggest"`.
+
+The tracer is a small, table-driven function implemented identically in both
+engines (`src/refrain/advisor_trace.py`, the `trace` section of
+`advisor.rs`) and run at load time over the resolved IR alone. It needs no
+new wire field, so hints are available for every existing protocol without
+changing its compiled IR-JSON or `content_hash`.
+
+#### 7.10.6 Recommendation lifecycle
+
+Each `adjust` or `hint` result carries an id — `adv-NNNN`, a per-session
+counter, deterministic and identical across engines. The id is kept
+unchanged while the knob, direction, and proposed value don't change, so
+advice does not flicker chunk to chunk.
+
+| Event `kind` | Emitted by | When |
+|---|---|---|
+| `suggested` | advisor | A new id is first emitted. |
+| `superseded` | advisor | A standing id is replaced by a different result at decision steps 4–12, or by a manual control change. |
+| `blocked` | advisor | A standing id is replaced by a hold at steps 1–3 (carries the hold reason). |
+| `applied` | `apply_advice` | With `by: "practitioner"` or `by: "autopilot"`, and the from/to values. |
+| `dismissed` | `dismiss_advice` | |
+| `changed_manually` | `set_control` | Knob, from, to — only for a control that feeds a reward check or an inhibit. Writing the value a control already has is a no-op: no event, no window restart, no cooldown. |
+| `equipment_change` | `mark_equipment_change` | |
+
+Routine `collecting` and `on_track` results are not events; only transitions
+between results are logged.
+
+#### 7.10.7 Determinism, and advice is not a tap
+
+Every advice result and every audit event carries `advisor_version`
+(currently `"1"`), so a session record shows exactly which built-in defaults
+and decision rules produced it, independent of the protocol's own version.
+
+Numbers are rounded to 6 decimal places before serialization
+(`r6(x) = floor(x·1e6 + 0.5)/1e6`, mirrored for negatives) and percentages are
+shown as `floor(x·100 + 0.5)` — the identical formula in both engines.
+Neither engine uses the host language's built-in `round()`, because Python
+rounds half-to-even and Rust's `round()` does not; using either directly
+would desynchronize the two engines on exact half-way values. Every key of
+the advice result described in `docs/EMBEDDING.md` is always present, with
+`null` where a field does not apply to the current state — hosts never need
+to check for a missing key.
+
+**Advice is not a tap.** `advice()`, `autopilot_policy()`, and
+`drain_advice_events()` are dedicated `Evaluator` accessors, not part of the
+§7.8 tap API — the tap key-set is pinned by an exact-equality parity test,
+and autopilot introduces no new tap keys, the same decision `seed_report()`
+made for baseline seeding.
 
 ---
 
