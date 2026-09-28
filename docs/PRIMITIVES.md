@@ -3,7 +3,7 @@
 **Status:** strawman draft (v0.0r1)
 **Companion docs:** [`SPEC.md`](./SPEC.md), [`TOUR.md`](./TOUR.md)
 
-This document lists the primitives in the Refrain v0.0 standard library, plus the cross-cutting facilities (stream arithmetic, rate alignment, event streams) that protocols use throughout. The library is intentionally small — it covers what's needed to faithfully express SMR/theta-beta, Othmer ILF, alpha-theta, and basic z-score training. Coverage of more advanced clinical NF protocols (source-space NF, network coherence training, phase-based protocols) requires additional primitives slated for v0.1+.
+This document lists the primitives in the Refrain v0.0 standard library, plus the cross-cutting facilities (stream arithmetic, rate alignment, event streams) that protocols use throughout. The library is intentionally small — it covers what's needed to faithfully express SMR/theta-beta, Othmer ILF, alpha-theta, and basic z-score training. Coverage of more advanced EEG neurofeedback protocols (source-space NF, network coherence training, phase-based protocols) requires additional primitives slated for v0.1+.
 
 Each primitive entry follows a consistent shape:
 
@@ -270,9 +270,9 @@ The signature uses `input_a` / `input_b` rather than `channel_a` / `channel_b` b
 
 **Pre-filter or not?** Coherence operates on time-domain signals. You can pass raw referential channels directly (recommended for most NF use cases), or pre-bandpass the streams if you want to isolate a specific frequency before computing coherence. The `band` parameter inside `coherence` is the *analysis* band (which frequencies to average MSC over), not a pre-filter.
 
-`coherence` is the right primitive for *coherence training* — rewarding the patient for increased inter-hemispheric synchrony in a target band. For amplitude-symmetry training (rewarding equal power between channels), use bandpower on each channel and a difference/ratio in the formula derive instead.
+`coherence` is the right primitive for *coherence training* — rewarding the person for increased inter-hemispheric synchrony in a target band. For amplitude-symmetry training (rewarding equal power between channels), use bandpower on each channel and a difference/ratio in the formula derive instead.
 
-> **Out of scope for v0.1:** Phase-locking value (PLV) — a strict phase-alignment measure decoupled from amplitude. Multi-channel coherence reductions (network coherence, weighted average across multiple pairs). Cross-frequency coupling (phase-amplitude coupling, PAC). These may land in v0.2+ as motivated by clinical demand.
+> **Out of scope for v0.1:** Phase-locking value (PLV) — a strict phase-alignment measure decoupled from amplitude. Multi-channel coherence reductions (network coherence, weighted average across multiple pairs). Cross-frequency coupling (phase-amplitude coupling, PAC). These may land in v0.2+ as motivated by demand.
 
 ---
 
@@ -362,7 +362,7 @@ The percentile estimator keeps the full trailing window and calls `numpy.percent
 trackers start cold each session. To carry a user-adaptive ceiling across
 sessions, the host can read the final compact state with
 `Evaluator.export_state()` — `{ "<entity>.auto_range": {low, high, n_eff}, … }` —
-persist it to the patient record, and re-prime the next run with
+persist it to the session record, and re-prime the next run with
 `Evaluator.live(..., seed_state=<prior export>)`. State is a small,
 rate-independent summary (not a raw buffer) and is runtime-only — it does not
 change the protocol IR. See `docs/EMBEDDING.md`.
@@ -535,7 +535,7 @@ Specifies how an inhibit modifies the values delivered to output bindings when a
 - **`freeze(release: ...)`** — hold output at last value; release after `release`.
 - **`flag()`** — emit telemetry only; do not modify output. Used for logging.
 
-Inhibits modify what reaches the patient via output bindings. They do *not* modify `reward.continuous` or `reward.event` directly. Downstream protocol logic that consumes reward sees the unmodified value.
+Inhibits modify what reaches the person via output bindings. They do *not* modify `reward.continuous` or `reward.event` directly. Downstream protocol logic that consumes reward sees the unmodified value.
 
 ---
 
@@ -589,7 +589,7 @@ norms.power_db.lookup(age: int, channel: channel_name, band: band_name)
   -> scalar uV2
 ```
 
-A normative database lookup. The runtime supplies the actual database; the protocol references it abstractly. Open-source recorder ships an interface but no normative data; clinical runtimes ship their licensed norms.
+A normative database lookup. The runtime supplies the actual database; the protocol references it abstractly. Open-source recorder ships an interface but no normative data; commercial runtimes ship their licensed norms.
 
 ### `client`
 
@@ -605,7 +605,7 @@ Session-time values supplied by the recorder UI. Treated as constants within a s
 
 ## Coverage
 
-The v0.0 standard library is sufficient for these clinical protocol families:
+The v0.0 standard library is sufficient for these protocol families:
 
 - **SMR / theta-beta** — fully expressible.
 - **Othmer ILF** — fully expressible.
