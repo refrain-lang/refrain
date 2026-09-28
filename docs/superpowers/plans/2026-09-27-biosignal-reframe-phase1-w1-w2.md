@@ -8,7 +8,9 @@
 
 **Tech Stack:** Python 3.12, pytest, jsonschema, the `refrain` parser (pinned at `v0.21.0` in `refrain-protocols` CI), Markdown.
 
-**Spec:** `docs/proposals/2026-07-23-biosignal-platform-reframe.md` (in the `refrain` repo, branch `claude/biosignal-platform-framing-8gk0it`). Sections §3 (workstream 1) and §4 (workstream 2). Decisions §8 #4 (hybrid neutralization) and §8 #5 (the eight-bucket goals vocabulary) are locked.
+**Spec:** `docs/proposals/2026-07-23-biosignal-platform-reframe.md`. Sections §3 (workstream 1) and §4 (workstream 2). Decisions §8 #4 (hybrid neutralization) and §8 #5 (the eight-bucket goals vocabulary) are locked.
+
+> The proposal lands on `main` via its own branch, `claude/biosignal-platform-framing-8gk0it`. This branch was rebased onto `main` for merge ordering, so until that branch merges the path above resolves only there.
 
 ## Workspaces
 
