@@ -1,8 +1,8 @@
 // Othmer ILF training, T3-T4 bipolar montage.
 //
 // Continuous infra-low frequency neurofeedback per the Othmer protocol.
-// Patient-specific ORF (Optimal Reinforcement Frequency) is the primary
-// clinician control, tuned live during the session. Reward is the
+// Person-specific ORF (Optimal Reinforcement Frequency) is the primary
+// practitioner control, tuned live during the session. Reward is the
 // rectified derivative of the bandpassed slow signal — symmetric, drift-
 // immune, sub-mHz capable.
 //
@@ -12,15 +12,11 @@ protocol "othmer_ilf_t3t4_v1" {
 
   meta {
     version          = "1.0.0"
-    evidence         = "clinical"
+    evidence         = "established"
     description      = "Othmer ILF training, T3-T4 bipolar"
     author           = "Peak Mind"
     citation         = "Othmer S. & Othmer S. (2009). Post Traumatic Stress Disorder—The Neurofeedback Remedy. Biofeedback, 37(1), 24-31."
-    population       = "adults_18_plus"
-    indication       = "regulatory_dysfunction"
     control_ref      = "library/othmer/ilf_sham@1.0"
-    safety_monitoring = ["pre_session_check", "intra_session_clinician_observation"]
-    outcome_measures = ["BAI", "BDI-II", "subjective_arousal_scale"]
   }
 
   requires {

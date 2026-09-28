@@ -12,7 +12,7 @@ This document defines the Refrain language at a level intended to be precise eno
 
 ## 1. Introduction
 
-Refrain is a declarative description language for clinical neurofeedback protocols. A Refrain file describes, in full, what a NF protocol does: required hardware, channel montage, signal-processing pipeline, threshold logic, inhibit gates, reward expression, output bindings, clinician-tunable controls, and session structure.
+Refrain is a declarative description language for biosignal training paradigms. A Refrain file describes, in full, what a training protocol does: required hardware, signal-source binding, signal-processing pipeline, threshold logic, inhibit gates, reward expression, output bindings, practitioner-tunable controls, and session structure. EEG neurofeedback is the most developed worked example; HRV coherence training uses the same structure.
 
 A Refrain runtime parses a protocol file, type-checks it, validates the connected amplifier against its requirements, computes worst-case latency and resource budgets statically, and executes the protocol in real time. The language is hardware-agnostic by design; the runtime adapts.
 
@@ -177,7 +177,7 @@ Metadata. Required fields: `version`, `evidence`, `description`. Optional fields
 ```refrain
 meta {
   version           = "1.0.0"
-  evidence          = "clinical"   // "clinical" | "research" | "experimental"
+  evidence          = "established"   // how established the APPROACH is: "established" | "probable" | "exploratory"
   description       = "Othmer ILF training, T3-T4 bipolar"
   author            = "Peak Mind"
   citation          = "Othmer & Othmer 2009"
@@ -193,9 +193,9 @@ The `meta` block carries all CRED-nf-aligned metadata. See §8.
 
 #### `meta.sham_strategies`
 
-A whitelist of chunk-transformer type names that are *clinically valid* sham conditions for this protocol. Runtimes that support research mode (§7.9) MUST reject host attempts to use a sham type not in this list. An empty list or absent field means **no sham is permitted for this protocol** — strict by default, since sham appropriateness depends on what the protocol is training.
+A whitelist of chunk-transformer type names that are *methodologically valid* sham conditions for this protocol. Runtimes that support research mode (§7.9) MUST reject host attempts to use a sham type not in this list. An empty list or absent field means **no sham is permitted for this protocol** — strict by default, since sham appropriateness depends on what the protocol is training.
 
-Permitted values are runtime-defined; the reference implementation accepts `"time_shifted_self"`, `"phase_scrambled"`, and `"yoked_replay"` (§7.9.2). Protocol authors choose which subset is methodologically appropriate for their clinical training; e.g., `phase_scrambled` is inappropriate for protocols that train phase-coherence features.
+Permitted values are runtime-defined; the reference implementation accepts `"time_shifted_self"`, `"phase_scrambled"`, and `"yoked_replay"` (§7.9.2). Protocol authors choose which subset is methodologically appropriate for the training they describe; e.g., `phase_scrambled` is inappropriate for protocols that train phase-coherence features.
 
 ### 4.2 `requires`
 
@@ -220,7 +220,15 @@ requires { channels = [site] }   // expands to the bound channel at resolve time
 
 ### 4.3 `input`
 
-Named input streams derived from raw amplifier channels.
+Named input streams derived from the hardware's raw channels.
+
+`montage` names one kind of **signal-source binding** — how a named input is
+derived from those channels. `referential(...)`, `bipolar(...)`, and
+`laplacian(...)` are EEG montages in the conventional sense. `passthrough()` is
+the identity binding for a single-channel non-EEG source: an HRV tachogram, a
+skin-conductance level, a temperature trace. The keyword is EEG-flavored for
+historical reasons; the concept is not. Nothing about a `passthrough` input
+requires an EEG amplifier.
 
 ```refrain
 input "ilf" {
@@ -474,7 +482,7 @@ reward {
 
 ### 4.8 `output`
 
-Bindings to patient-facing modulation channels. Each binding is an expression that evaluates per step at the binding's declared rate.
+Bindings to person-facing modulation channels. Each binding is an expression that evaluates per step at the binding's declared rate.
 
 ```refrain
 output {
@@ -489,7 +497,7 @@ Standard output channels: `audio_gain`, `audio_chime`, `video_clarity`, `video_b
 
 ### 4.9 `controls`
 
-Clinician-tunable parameters. Each control declares its type, range, default, and whether it can be mutated mid-session.
+Practitioner-tunable parameters. Each control declares its type, range, default, and whether it can be mutated mid-session.
 
 ```refrain
 controls {
@@ -633,7 +641,7 @@ The fan-out computes the **per-site subgraph** as the transitive closure of deri
 - A `reward.continuous` expression that depends on a per-site replicated stream raises `ResolveError`. Continuous reward over a replicated set requires vector aggregation (Mode 2b, deferred). A continuous reward that depends only on non-replicated streams is permitted.
 - A derive that mixes a per-site stream with a non-replicated one (ambiguous replication boundary) raises `ResolveError`. The per-site subgraph boundary must be unambiguous.
 
-**Canonical naming:** per-site entities are named `<name>@<site>` (e.g., `derive/smr@C3`). These names flow through to `last_taps()` and event keys, enabling per-site state observation in clinician dashboards.
+**Canonical naming:** per-site entities are named `<name>@<site>` (e.g., `derive/smr@C3`). These names flow through to `last_taps()` and event keys, enabling per-site state observation in practitioner dashboards.
 
 **Wire format:** the fan-out-unrolled IR uses only existing IR-JSON node types. The `sites` control is omitted from the wire (resolve-time-only); the emitted IR is shaped identically to a hand-written multi-site protocol. IR-JSON schema version remains `0.1`.
 
@@ -712,7 +720,7 @@ Each entry is `<ident> = (low Hz, high Hz)`: a frequency 2-tuple with `low < hig
 
 #### 4.9.4 `seed` — control baseline seeding
 
-A control field, not a top-level block — unrelated to the band-axis "seed" reference in §4.9.3 above (same word, different feature). `seed` lets a control derive its initial value from the patient's own signal instead of a fixed `default`, the "set the threshold from the first two minutes of baseline" clinical pattern:
+A control field, not a top-level block — unrelated to the band-axis "seed" reference in §4.9.3 above (same word, different feature). `seed` lets a control derive its initial value from the person's own signal instead of a fixed `default`, the "set the threshold from the first two minutes of baseline" pattern:
 
 ```refrain
 controls {
@@ -733,7 +741,7 @@ controls {
 **Fields (`percentile`):**
 - `from` (required): a quoted derive name — the signal the percentile is measured over. Must name a derive declared elsewhere in the protocol.
 - `window` (required): a duration literal (`ms`/`s`/`min`) — the trailing window, in real time, the statistic is measured over. Rate-independent; baked to samples at emit time (below).
-- `target_pct` (required): the percentile to measure — either a number literal or a `control_ref` to a sibling `percent` control (so the clinician can tune *which* percentile seeds the value, not just the value itself).
+- `target_pct` (required): the percentile to measure — either a number literal or a `control_ref` to a sibling `percent` control (so the practitioner can tune *which* percentile seeds the value, not just the value itself).
 
 **Resolve-time guarantees:**
 - **Real derive.** `from` is validated against the resolved derive set; a name that doesn't resolve is a `ResolveError`, not a silent no-op.
@@ -741,7 +749,7 @@ controls {
 - **Warmup fits.** If the protocol's first session phase is a timed, output-muted warmup (not `mode = "open"`), `window` must fit inside that phase's duration. A seed whose window can never fill is refused at compile time, not discovered fail-closed at runtime.
 - **Dead-seed elimination.** If the seeded control is never referenced anywhere in the resolved pipeline (derives, thresholds, inhibits, reward, output), the seed is dropped rather than attached — an unused control's seed rule would just be dead weight on the wire.
 
-**Runtime semantics (informative; full behavior in `docs/EMBEDDING.md`'s `seed_report()` section):** during warmup the engine measures `from`'s samples into a trailing buffer sized to `window`; at the warmup→run edge it computes the `target_pct` percentile of that buffer and writes the control exactly once, then holds. A clinician who calls `set_control` on the seeded control before it fires disarms the seed for the rest of the session instead of racing it. If the buffer can't be filled with finite samples by the run edge, the seed fails closed and the control keeps its declared `default`.
+**Runtime semantics (informative; full behavior in `docs/EMBEDDING.md`'s `seed_report()` section):** during warmup the engine measures `from`'s samples into a trailing buffer sized to `window`; at the warmup→run edge it computes the `target_pct` percentile of that buffer and writes the control exactly once, then holds. A practitioner who calls `set_control` on the seeded control before it fires disarms the seed for the rest of the session instead of racing it. If the buffer can't be filled with finite samples by the run edge, the seed fails closed and the control keeps its declared `default`.
 
 **Wire format.** A seeded control's IR-JSON carries a `seed` object (`statistic`/`from`/`window_samples`/`target_pct`) under `controls.<name>`; `window_samples` is `window` baked to samples **at the emitted `sample_rate_hz`**, not the resolver's chosen rate — the same rebaking discipline as every other rate-dependent coefficient. A protocol using `seed` is tagged `refrain_ir_version: "0.3"`. See `docs/IR-JSON.md`.
 
@@ -842,7 +850,7 @@ Protocol-wide settings for the autopilot advisor (§7.10): when advice runs, wha
 autopilot {
   // provenance — required whenever the block exists
   evidence  = "expert_opinion"
-  citation  = "Peak Mind clinical team (2026). Adapted from Peniston & Kulkosky 1989 practice."
+  citation  = "Peak Mind practice team (2026). Adapted from Peniston & Kulkosky 1989 practice."
   rationale = "Crossover is rare by nature; a 50-75% target would drive the ratio target to its floor."
   reviewed  = "J. Croall, 2026-09-24"          // optional
 
@@ -994,7 +1002,7 @@ Checks specific to named reward checks (§4.7), the `autopilot` block (§4.12), 
 | V3 | Declared `higher_is` contradicts the traced direction, when the trace is unambiguous (§7.10.5) | Catches a reversed direction. |
 | V4 | `apply = "auto"` on a knob that feeds any inhibit, in any mode branch (checked before folding) | Guards are never loosened automatically. |
 | V5 | A policy on a knob that feeds no reward check (volume-like knobs, band edges) | Enforced by V2: such a knob cannot feed the check it claims to `fixes`. |
-| V6 | `rebaseline` with `apply = "auto"` | Large jumps are always the clinician's call. |
+| V6 | `rebaseline` with `apply = "auto"` | Large jumps are always the practitioner's call. |
 | V7 | Two surviving policies `fixes` the same check | One knob per check; mode-exclusive pairs are resolved by `only_when` before this check runs. |
 | V8 | Knob is not `live_tunable`, or its kind is `mode`, `boolean`, `enum`, or `placement` | Cannot be changed mid-session. |
 | V9 | `limits` outside `range`; no `limits` and no `range`; `low ≥ high` | Scale errors. |
@@ -1043,7 +1051,7 @@ Controls declared `live_tunable = true` accept runtime mutations via `runtime.se
 
 ### 7.4 Inhibit semantics
 
-Each inhibit produces a boolean stream. Inhibits affect the values that reach the patient via output bindings:
+Each inhibit produces a boolean stream. Inhibits affect the values that reach the person via output bindings:
 
 ```
 effective_output = output_expression * AND(NOT inhibit_i for each muting inhibit i)
@@ -1094,17 +1102,17 @@ The keyset is derived from the resolved IR's named entities, with a uniform `<ki
 | `reward/condition[i]` | boolean | i-th sub-condition of the dwell. Single-condition dwells uniformly emit `reward/condition[0]`. |
 | `reward/composite` | float | the weighted-composite success in [0,1] (v0.2; present only when the protocol declares named reward/suppress components — §4.7) |
 | `reward/component[<name>]` | float | a named component's [0,1] success signal (v0.2; one per component) |
-| `output/<channel>` | float \| boolean | post-gating, post-clamp value of the patient-facing channel |
+| `output/<channel>` | float \| boolean | post-gating, post-clamp value of the person-facing channel |
 
-Taps are populated identically during the `warmup` and `run` lifecycle states (§7.1). Hosts that render a clinician observation window need warmup-state taps so the warmup progress is visualisable.
+Taps are populated identically during the `warmup` and `run` lifecycle states (§7.1). Hosts that render a practitioner observation window need warmup-state taps so the warmup progress is visualisable.
 
-Implementation guidance (non-normative): tap collection should be a pure read of values the evaluator has already computed for reward/output evaluation. The reference implementation captures taps before the warmup output-suppression branch so the values are available even when patient-facing events are suppressed.
+Implementation guidance (non-normative): tap collection should be a pure read of values the evaluator has already computed for reward/output evaluation. The reference implementation captures taps before the warmup output-suppression branch so the values are available even when person-facing events are suppressed.
 
 See `docs/EMBEDDING.md` for the host-side API surface and a code example.
 
 ### 7.9 Research mode (sham conditions and allocation concealment)
 
-Refrain runtimes SHOULD support a research-mode operating mode that enables CRED-nf-grade controlled studies: blinded allocation between real and sham conditions, with the allocation decision sealed cryptographically so neither clinician nor researcher can decode it until the study is unblinded. The reference implementation is described here; runtimes that match this contract can claim conformance regardless of internal architecture.
+Refrain runtimes SHOULD support a research-mode operating mode that enables CRED-nf-grade controlled studies: blinded allocation between real and sham conditions, with the allocation decision sealed cryptographically so neither practitioner nor researcher can decode it until the study is unblinded. The reference implementation is described here; runtimes that match this contract can claim conformance regardless of internal architecture.
 
 The full threat model, cryptographic protocol, and constant-time guarantees are in `docs/RESEARCH-MODE.md`. This section establishes the language-level contract.
 
@@ -1118,7 +1126,7 @@ class ChunkTransformer:
     def reset(self) -> None: ...
 ```
 
-When configured, the evaluator calls `transformer.step(chunk)` on each incoming chunk and processes the returned chunk as if it were the raw input. **Every downstream observable — reward events, output bindings, tap values per §7.8 — reflects the transformed signal, not the original.** This is required for blinding: a clinician's observation window plotting envelopes from the "real" signal during a sham session would instantly unblind.
+When configured, the evaluator calls `transformer.step(chunk)` on each incoming chunk and processes the returned chunk as if it were the raw input. **Every downstream observable — reward events, output bindings, tap values per §7.8 — reflects the transformed signal, not the original.** This is required for blinding: a practitioner's observation window plotting envelopes from the "real" signal during a sham session would instantly unblind.
 
 The identity transformer (which returns chunks unchanged) is the default. Hosts opt into a custom transformer via the runtime's `Evaluator.live(..., chunk_transformer=...)` API or equivalent.
 
@@ -1128,11 +1136,11 @@ The reference implementation ships three first-class sham transformers, each pre
 
 | Sham type | Preserves | Destroys | Use case |
 |---|---|---|---|
-| `time_shifted_self` | spectral statistics, artifact structure, channel relationships | temporal correlation with the patient's current state | training paradigms where the *type* of signal matters but the *timing* is what carries the conditioning |
+| `time_shifted_self` | spectral statistics, artifact structure, channel relationships | temporal correlation with the person's current state | training paradigms where the *type* of signal matters but the *timing* is what carries the conditioning |
 | `phase_scrambled` | power spectrum within the scrambling window | phase coherence, transient structure | training paradigms that depend on amplitude-based features (most envelope-based NF) |
-| `yoked_replay` | inter-channel and temporal structure of a real recording | any link to the current patient's state | designs that need a "control patient's signal" as the sham, common in multi-arm studies |
+| `yoked_replay` | inter-channel and temporal structure of a real recording | any link to the current person's state | designs that need a "control person's signal" as the sham, common in multi-arm studies |
 
-Runtimes MAY ship additional sham types; the protocol whitelist (`meta.sham_strategies`, §4.1) is the safety mechanism that prevents clinically inappropriate shams from being applied to a given protocol.
+Runtimes MAY ship additional sham types; the protocol whitelist (`meta.sham_strategies`, §4.1) is the safety mechanism that prevents methodologically inappropriate shams from being applied to a given protocol.
 
 #### 7.9.3 Sealed allocation
 
@@ -1142,7 +1150,7 @@ For studies that require true blinding, runtimes SHOULD support a *sealed alloca
 2. Refrain rolls a cryptographically-random allocation (real vs sham; if sham, which type).
 3. Refrain selects the corresponding transformer for the session.
 4. Refrain seals the allocation decision with libsodium `crypto_box_seal` against the public key, producing an opaque token.
-5. The host stores the token. Neither host nor clinician can decrypt it.
+5. The host stores the token. Neither host nor practitioner can decrypt it.
 6. Post-hoc, the holder of the matching X25519 private key (typically an independent statistician) decrypts every session's token and reconstructs the allocation matrix.
 
 The sealed plaintext is a JSON object whose schema is fixed at the language level (so cross-runtime tokens are interoperable):
@@ -1168,8 +1176,8 @@ The sealed plaintext is a JSON object whose schema is fixed at the language leve
 
 Runtimes claiming research-mode conformance MUST guarantee:
 
-- **No within-session side channels.** A clinician observing the patient's session in real time MUST NOT be able to distinguish real from sham via timing patterns, event distributions, latency profiles, or any other observable. Constant-time-within-session is mandatory.
-- **Observable internals reflect the processed signal.** The §7.8 tap API MUST expose values from the transformed (sham) signal during sham mode, not from the underlying raw input. Otherwise tap-based observation windows unblind the clinician.
+- **No within-session side channels.** A practitioner observing the person's session in real time MUST NOT be able to distinguish real from sham via timing patterns, event distributions, latency profiles, or any other observable. Constant-time-within-session is mandatory.
+- **Observable internals reflect the processed signal.** The §7.8 tap API MUST expose values from the transformed (sham) signal during sham mode, not from the underlying raw input. Otherwise tap-based observation windows unblind the practitioner.
 - **Whitelist enforcement.** Runtimes MUST reject sham candidates whose type name is not in `meta.sham_strategies`.
 
 Constant-time *across* sessions (i.e., resistance to timing attacks aggregated over many runs) is OPTIONAL and host-configurable. See `docs/RESEARCH-MODE.md` for the threat model and the opt-in `strict_constant_time` mode.
@@ -1233,7 +1241,7 @@ inhibit changes — by manual `set_control`, by `apply_advice`, or by a
 baseline seed firing — when the host calls `mark_equipment_change()`, or when
 a new phase in `phases` begins. A manual `set_control` on such a control also
 starts the `between_moves` cooldown (§7.10.3 step 11, §7.10.6), exactly as an
-applied advice does — the advisor treats "the clinician just moved this knob
+applied advice does — the advisor treats "the practitioner just moved this knob
 by hand" the same as "autopilot just moved it" for cooldown purposes.
 
 #### 7.10.3 Decision steps
@@ -1279,7 +1287,7 @@ holds exactly like any other, it simply never reaches a reward-rate judgement.
 #### 7.10.5 Direction hints (no policy)
 
 When a protocol declares **no knob policies at all**, the advisor still tells
-a clinician which way to move a setting, when it can determine that
+a practitioner which way to move a setting, when it can determine that
 unambiguously from the protocol's own expressions — without ever proposing a
 value or allowing automatic application. (An uncovered limiter in a protocol
 that *does* declare some knob policies gets `no_knob` instead, not a hint —
@@ -1358,12 +1366,12 @@ made for baseline seeding.
 
 ## 8. CRED-nf mapping
 
-Every CRED-nf checklist item maps to a Refrain field. A complete protocol generates a CRED-nf-compliant supplement table via `refrain export cred-nf`.
+Every CRED-nf checklist item about what the protocol *computes* maps to a Refrain field; the two items about who a study enrolled are host-side (see the table). A complete protocol generates a CRED-nf-compliant supplement table via `refrain export cred-nf`.
 
 | CRED-nf item | Refrain location |
 |---|---|
 | Pre/post outcome measures | `meta.outcome_measures` |
-| Indication / clinical population | `meta.indication`, `meta.population` |
+| Indication / population | host-side only — the reference library ships no indication or population tags (see `refrain-protocols`) |
 | Control / sham condition | `meta.control_ref`, `meta.sham_strategies` (§4.1), plus the sealed-allocation token (§7.9) for studies that ran randomised sham |
 | Citation / prior literature | `meta.citation` |
 | Adverse event monitoring | `meta.safety_monitoring` |
@@ -1459,7 +1467,7 @@ Different blocks have different default behaviors when both parent and child dec
 
 A new named block in the child (one whose name doesn't appear in the parent) extends the set.
 
-The principle: *the most common operation in clinical practice is "I want this protocol but with a different placement / different threshold / different ORF default."* Named-block default is replace (unambiguous intent when re-declared); for partial override, use `amend`; for deletion, use `remove`.
+The principle: *the most common operation in practice is "I want this protocol but with a different placement / different threshold / different ORF default."* Named-block default is replace (unambiguous intent when re-declared); for partial override, use `amend`; for deletion, use `remove`.
 
 ### 11.2 `amend` — partial override
 

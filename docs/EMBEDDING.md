@@ -2,7 +2,7 @@
 
 This guide is for someone wiring Refrain into an EEG recorder, an LSL
 relay, or any other host that already has its own data acquisition and
-its own patient-facing renderer. Refrain provides the protocol parser,
+its own person-facing renderer. Refrain provides the protocol parser,
 typed IR, and the streaming evaluator that turns chunks of EEG into
 reward events; the host owns everything else.
 
@@ -21,7 +21,7 @@ The intended division of labour:
 │                   └──────────────────────────────────┘             │
 │                                  ↓                                 │
 │  ┌──────────────────────────────────────────────────────────────┐  │
-│  │  Patient renderer: audio player, video modulator, ambient    │  │
+│  │  Person renderer: audio player, video modulator, ambient    │  │
 │  │  effects. Reads events; produces sensory feedback.           │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────────┘
@@ -77,15 +77,15 @@ def on_brainbit_chunk(chunk):
     """
     for event in evaluator.step_chunk(chunk):
         if event.channel == "audio_chime" and event.kind == "event":
-            patient.audio.play_chime()
+            person.audio.play_chime()
         elif event.channel == "audio_gain" and event.kind == "value":
-            patient.audio.set_gain(event.value)          # already in [0, 1]
+            person.audio.set_gain(event.value)          # already in [0, 1]
         elif event.channel == "video_clarity":
-            patient.video.set_clarity(event.value)
+            person.video.set_clarity(event.value)
         elif event.channel == "ambient_density":
-            patient.ambient.set_density(event.value)
+            person.ambient.set_density(event.value)
 
-# === Clinician tunes a control mid-session ==========================
+# === Practitioner tunes a control mid-session ==========================
 
 evaluator.set_control("smr_target_pct", 65)   # was 70 by default
 
@@ -102,7 +102,7 @@ That's the whole surface. Five `Evaluator` methods: `live`, `start`,
 ## Deploy-time: binding a parameterized protocol
 
 A protocol can declare `placement` controls so a *single* `.refrain` artifact
-deploys at clinician-chosen sites without re-authoring (SPEC §4.9). Binding
+deploys at practitioner-chosen sites without re-authoring (SPEC §4.9). Binding
 happens once, at **resolve time** — off the realtime path and independent of
 `backend=`. The resolved IR is identical in shape to a hand-written fixed-site
 protocol, so the wire format (`IR_JSON_VERSION` stays `0.1`) and the Rust core
@@ -127,10 +127,10 @@ for name, c in placements.items():
 Each placement control carries `.kind` (`"active" | "bipolar" | "pair" | "set"`),
 `.allowed` (a tuple of channel names — or of 2-tuples for `bipolar`/`pair`; `()`
 means "any device channel"), `.default_placement`, `.label`, `.final`, and for
-`set` the size bounds `.set_min` / `.set_max`. Build the clinician's site-picker
+`set` the size bounds `.set_min` / `.set_max`. Build the practitioner's site-picker
 UI from exactly these fields.
 
-**2. Bind the clinician's choices and re-resolve.** The value shape matches the
+**2. Bind the practitioner's choices and re-resolve.** The value shape matches the
 control's `kind`:
 
 ```python
@@ -162,7 +162,7 @@ from refrain.resolver import ResolveError
 try:
     ir = resolve(protocol_ast, amp, bindings={"site": "Fz"})
 except ResolveError as e:
-    show_clinician_error(str(e))   # e.g. "site 'Fz' not in allowed {...}" / not on this amp
+    show_setup_error(str(e))   # e.g. "site 'Fz' not in allowed {...}" / not on this amp
 ```
 
 A `set` placement also gates `reward.continuous`: a continuous reward over a
@@ -188,7 +188,7 @@ window ends so your UI can show "warming up: 47 s left."
 
 Skipping warmup is supported but should only be used in offline
 analysis: `evaluator.start(skip_warmup=True)`. In a live clinical
-session, the warmup is what prevents the patient from hearing filter
+session, the warmup is what prevents the person from hearing filter
 settling artifacts in the first 90 seconds.
 
 ---
@@ -264,7 +264,7 @@ The host has two integration paths:
 
 Pass any `ChunkTransformer` to `Evaluator.live(...)` and Refrain pipes
 every chunk through it before the eval pipeline sees the data. The
-patient experiences whatever the transformer emits; tap values and
+person experiences whatever the transformer emits; tap values and
 output events all reflect the transformed signal.
 
 ```python
@@ -368,7 +368,7 @@ allowed = ir.meta.fields.get("sham_strategies", [])
 ### Constant-time guarantees
 
 By default, Refrain guarantees *within-session* constant time —
-clinicians observing the patient cannot distinguish real from sham via
+practitioners observing the person cannot distinguish real from sham via
 timing patterns inside one session.
 
 For threat models that also worry about *cross-session* timing
@@ -394,7 +394,7 @@ catching evaluator bugs that affect a specific allocation.
 
 ## Introspection: live taps
 
-For host applications that render a clinician observation window —
+For host applications that render a practitioner observation window —
 envelope traces per derive, threshold lines that move with the
 envelopes, a dwell-component tape showing which sub-condition is
 blocking reward, a pre-gating "how close to reward" overlay — Refrain
@@ -403,11 +403,11 @@ computations via `Evaluator.last_taps()`.
 
 ```python
 events = evaluator.step_chunk(chunk)
-# Dispatch patient-facing events as before
+# Dispatch person-facing events as before
 for ev in events:
-    render_to_patient(ev)
+    render_to_person(ev)
 
-# Pull internal values for the clinician observation window
+# Pull internal values for the practitioner observation window
 taps = evaluator.last_taps()
 plot_envelope.append(taps["derive/smr_envelope"])
 plot_threshold.append(taps["threshold/smr_t"])
@@ -464,7 +464,7 @@ strict key-set contract — so read them separately.
 
 **`seed_report()`** — a control declared `seed = percentile { from, window,
 target_pct }` (SPEC's baseline-seeding surface) measures its value from the
-patient's own signal during warmup and writes it once at the warmup→run
+person's own signal during warmup and writes it once at the warmup→run
 edge. `Evaluator.seed_report()` returns the outcome of every such control,
 keyed by bare control name (not the tap's `control/<name>` form):
 
@@ -485,7 +485,7 @@ report = evaluator.seed_report()
 samples reached the buffer (or they were all non-finite) — and the control
 kept its declared default rather than writing a measured value. `pending`
 means warmup hasn't reached the run edge yet. `disarmed_by_host` means a
-clinician called `set_control()` on the seeded control before it fired; that
+practitioner called `set_control()` on the seeded control before it fired; that
 disarms the seed permanently for the session rather than racing it. Empty
 for a protocol with no seeded controls.
 
@@ -495,7 +495,7 @@ behind `percentile` and `auto_range` (SPEC's `percentile`/`auto_range`
 primitives, not the control `seed` block above — same word, different
 feature). Those trackers start cold every session; to carry an
 adaptive ceiling forward, read the compact summary with
-`evaluator.export_state()` at session end, persist it to the patient
+`evaluator.export_state()` at session end, persist it to the person
 record, and hand it back on the next run via
 `Evaluator.live(..., seed_state=<prior export>)`. The state is a small,
 rate-independent anchor set (not a raw buffer) and never touches the
@@ -518,11 +518,11 @@ of.
 
 **Who does what.** Refrain never changes a control on its own — it only ever
 proposes. Turning autopilot *on* for a session, and deciding whether an
-`adjust` result should be applied automatically or left for the clinician to
+`adjust` result should be applied automatically or left for the practitioner to
 approve, are both host decisions. `apply_advice(id, by="autopilot")` is the
 one enforcement point: it refuses to apply any change the protocol declared
 suggest-only, so a host cannot accidentally auto-apply something the protocol
-author reserved for a clinician's judgement.
+author reserved for a practitioner's judgement.
 
 ### The six calls
 
@@ -553,7 +553,7 @@ evaluator.autopilot_policy() -> dict
   `dismissed` event dict.
 - **`mark_equipment_change()`** — logs an `equipment_change` event, restarts
   the evidence window, and starts the `equipment_settle` hold. Call this
-  whenever your UI lets a clinician adjust the amp or electrodes mid-session.
+  whenever your UI lets a practitioner adjust the amp or electrodes mid-session.
 - **`drain_advice_events()`** — every audit event since the last drain, in
   order. Persist these with the session record; routine `collecting` and
   `on_track` results are not events, only transitions are.
@@ -758,7 +758,7 @@ input. So "develop offline, deploy live" is a supported workflow.
 ## What's not yet here
 
 - Live bandpass-coefficient recompute (Phase 0e-c). If your protocol
-  uses `bandpass(center: orf, …)` and the clinician retunes `orf`
+  uses `bandpass(center: orf, …)` and the practitioner retunes `orf`
   mid-session, the change is recorded but the filter coefficients don't
   re-derive until the session restarts. SMR Cz doesn't trigger this
   (its bands are literals); Othmer ILF does.

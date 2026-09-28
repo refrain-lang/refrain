@@ -183,7 +183,7 @@ and stays at whatever version its other features already put it at.
   "evidence": "expert_opinion",
   "citation": [
     "Peniston & Kulkosky 1989, 1991 (protocol)",
-    "Peak Mind clinical team 2026: step sizes and target band adapted from Coherence Recorder guidance v1"
+    "Peak Mind practice team 2026: step sizes and target band adapted from Coherence Recorder guidance v1"
   ],
   "rationale": "Crossover is rare by nature; a 50-75% target would drive the ratio target to its floor. Tighten crossover first, one 0.05 step at a time.",
   "reviewed": null,
@@ -305,7 +305,7 @@ The full list of variants, taken from the schema `$defs` and confirmed against
 | `bool` | `value` (boolean) | — | Boolean literal. |
 | `stream_ref` | `target` (string) | `stream_type` | Reference to a named input or derive stream by canonical name (e.g. `"input/raw"`, `"derive/smr_envelope"`). |
 | `threshold_ref` | `target` (string) | `stream_type` | Reference to a named threshold by canonical name (e.g. `"threshold/smr_t"`). |
-| `control_ref` | `target` (string), `default` (number) | `dims` | Reference to a clinician control. `target` is the canonical name (e.g. `"control/smr_target_pct"`); `default` is the value used until `set_control` arrives. Preserves the binding so the runtime can route live updates. |
+| `control_ref` | `target` (string), `default` (number) | `dims` | Reference to a practitioner control. `target` is the canonical name (e.g. `"control/smr_target_pct"`); `default` is the value used until `set_control` arrives. Preserves the binding so the runtime can route live updates. |
 | `reward_field` | `field_path` (string) | `stream_type` | Accesses a named field of the reward block (e.g. `"event.holds"`). |
 | `call` | `callee` (string) | `args` (array of `Arg`), `coeffs` (`Coeffs` or null), `stream_type` | Primitive call. Each `Arg` has `name` (string or null) and `value` (Expr). `coeffs` is present when Python successfully baked coefficients at emit time. |
 | `array` | `elements` (array of Expr) | — | Homogeneous array literal. |
@@ -413,7 +413,7 @@ threshold, reward, and conditional output expressions.
   },
 
   // Threshold: rolling 70th-percentile over 2-minute window
-  // target_pct is a control_ref — clinician-tunable live
+  // target_pct is a control_ref — practitioner-tunable live
   "thresholds": {
     "smr_t": {
       "canonical_name": "threshold/smr_t",

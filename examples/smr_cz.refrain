@@ -11,15 +11,11 @@ protocol "smr_cz_v1" {
 
   meta {
     version          = "1.0.0"
-    evidence         = "clinical"
+    evidence         = "established"
     description      = "SMR/theta-beta operant training at Cz, linked-ears reference"
     author           = "Peak Mind"
     citation         = "Sterman M.B. & Lubar J.F. (foundational corpus, 1970s-1990s)"
-    population       = "children_adults"
-    indication       = "ADHD_attention_regulation"
     control_ref      = "library/operant/smr_sham@1.0"
-    safety_monitoring = ["pre_session_check", "intra_session_clinician_observation"]
-    outcome_measures = ["IVA-2_continuous_performance", "Conners-3"]
   }
 
   requires {
@@ -63,7 +59,7 @@ protocol "smr_cz_v1" {
   }
 
   // Adaptive thresholds for SMR (uptrain) and theta (downtrain).
-  // Target percentiles come from the controls block so the clinician can
+  // Target percentiles come from the controls block so the practitioner can
   // tune them live via Evaluator.set_control(...).
   threshold "smr_t" {
     signal       = "smr_envelope"
