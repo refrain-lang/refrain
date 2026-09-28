@@ -1,7 +1,7 @@
 # Writing an autopilot policy
 
-**Audience:** protocol authors adding autopilot to a neurofeedback protocol,
-and reviewers checking a policy's clinical numbers before it ships.
+**Audience:** protocol authors adding autopilot to a training protocol,
+and reviewers checking a policy's numbers before it ships.
 
 **Companion docs:** [`SPEC.md`](./SPEC.md) §4.7, §4.9.5, §4.12, §6.7, §7.10 for
 the normative grammar and decision procedure. [`EMBEDDING.md`](./EMBEDDING.md)
@@ -16,16 +16,16 @@ step, what the compiler refuses and why, and a full worked example.
 ## 1. What autopilot is
 
 Refrain watches a training session and, every chunk, decides whether to hold
-steady or nudge one clinician-tunable setting — with the numbers behind the
+steady or nudge one practitioner-tunable setting — with the numbers behind the
 decision shown alongside it. The host (Coherence Recorder today; Companion and
-Portal later) displays that decision and applies it only when the clinician
+Portal later) displays that decision and applies it only when the practitioner
 has turned autopilot on for the session **and** the protocol allows that
 particular change to be applied automatically. Refrain itself never changes a
 setting; it only ever proposes.
 
 A protocol participates at one of three levels:
 
-| In the protocol | Clinician receives |
+| In the protocol | Practitioner receives |
 |---|---|
 | Nothing (every protocol today) | **Observations** and, where the protocol's structure makes it unambiguous, **direction hints** — judged against a built-in default target. No proposed value, nothing applied. |
 | An `autopilot { }` block with `reward_target` and the other protocol-wide settings, but no per-control policy | The same observations and hints, now judged against the protocol's own target, timing and guard messages instead of the defaults. |
@@ -48,16 +48,16 @@ reward condition gets no useful advice from a policy; skip it.
   actually varies session to session (alpha/theta's theta-gate-and-crossover
   pair is the canonical case).
 - **Baseline-mode (µV) thresholds**, which are fixed values seeded once from
-  the patient's own signal and never self-adjust again — these are exactly
-  the thresholds that drift out of range across clients and sessions.
+  the person's own signal and never self-adjust again — these are exactly
+  the thresholds that drift out of range across people and sessions.
 - **Plain, non-adaptive targets** like a crossover ratio (`crossover_target`)
-  that the clinician currently has to eyeball and retune by hand.
+  that the practitioner currently has to eyeball and retune by hand.
 
 **Guard (inhibit) knobs can be suggested but never auto-applied.** A knob that
 feeds an inhibit can carry a policy, but the compiler refuses
 `apply = "auto"` on it (rule V4, §6). Loosening a guard automatically would
 mean the engine deciding, on its own, to let more artifact or drowsiness
-through — that decision stays with the clinician.
+through — that decision stays with the practitioner.
 
 ## 3. Step 1 — name the reward checks
 
@@ -107,7 +107,7 @@ required the moment the block exists at all:
 ```refrain
 autopilot {
   evidence  = "exploratory"
-  citation  = "Peak Mind clinical team (2026). Adapted from Peniston & Kulkosky 1989 practice."
+  citation  = "Peak Mind practice team (2026). Adapted from Peniston & Kulkosky 1989 practice."
   rationale = "Crossover is rare by nature; a 50-75% target would drive the ratio target to its floor."
   reviewed  = "J. Croall, 2026-09-24"          // optional
 
@@ -118,7 +118,7 @@ autopilot {
   equipment_settle  = 60 s
   tighten_first     = ["crossover", "theta"]
 
-  delta = guard { max = 15%; say = "Client may be drifting toward sleep; check alertness." }
+  delta = guard { max = 15%; say = "Slow activity rising; may be drifting toward sleep. Check alertness." }
   emg   = guard { max = 15%; say = "Muscle artifact; check jaw/neck tension or the electrode." }
 }
 ```
@@ -144,7 +144,7 @@ protocol.
 
 **`tighten_first` in one sentence:** loosening always follows the evidence —
 the worst-passing check is always the one eased — but *tightening* is a
-clinical choice, because several checks can be passing comfortably at once
+judgement call, because several checks can be passing comfortably at once
 and the protocol author decides which one to make stricter first.
 
 Every setting has a built-in default (used by every protocol, including ones
@@ -192,8 +192,8 @@ controls {
 | Strategy | Proposed value | Use it for |
 |---|---|---|
 | `fixed_step` | `current ± step`, in the knob's own units | Fixed scales: a ratio target, a reward-rate percentage. |
-| `proportional_step` | `current × (1 ± step)`, `step` a percent | Voltage (µV) thresholds that vary widely client to client — a fixed-µV step is either too small for a high-baseline client or too large for a low-baseline one; a percentage step scales with the current value. |
-| `rebaseline` | The `percentile` of the last `window` of clean samples of derive `from` | "Today's threshold is clearly wrong for this client" — a bigger jump than a single step. **Always suggest-only** (the compiler refuses `apply = "auto"` on it, rule V6): a rebaseline is a large enough move that a clinician should look at it first. |
+| `proportional_step` | `current × (1 ± step)`, `step` a percent | Voltage (µV) thresholds that vary widely from person to person — a fixed-µV step is either too small for a high-baseline person or too large for a low-baseline one; a percentage step scales with the current value. |
+| `rebaseline` | The `percentile` of the last `window` of clean samples of derive `from` | "Today's threshold is clearly wrong for this person" — a bigger jump than a single step. **Always suggest-only** (the compiler refuses `apply = "auto"` on it, rule V6): a rebaseline is a large enough move that a practitioner should look at it first. |
 
 **Fields common to all three:**
 
@@ -201,8 +201,8 @@ controls {
 |---|---|---|
 | `fixes` | yes | The named check this knob addresses. |
 | `higher_is` | yes | `"harder"` or `"easier"` — what raising this knob's value does to the check. |
-| `apply` | yes | `"auto"` (autopilot may apply it, protocol permitting) or `"suggest"` (clinician applies it by hand). |
-| `limits` | no | Autopilot's own bounds, which may be **narrower** than the control's `range` (e.g. a 50–90% clinical comfort zone inside a 15–99% technical range). Defaults to `range`; required if the control has no `range`. |
+| `apply` | yes | `"auto"` (autopilot may apply it, protocol permitting) or `"suggest"` (the practitioner applies it by hand). |
+| `limits` | no | Autopilot's own bounds, which may be **narrower** than the control's `range` (e.g. a 50–90% comfort zone inside a 15–99% technical range). Defaults to `range`; required if the control has no `range`. |
 | `round_to` | no | Snap every proposed value to this precision, in the knob's units. |
 | `say` | no | Display name used in advice text; defaults to the control's `label`, then its bare name. |
 | `watch`, `between_moves` | no | Per-knob overrides of the protocol-wide values. |
@@ -236,9 +236,9 @@ disabled" — a protocol that fails any rule does not compile at all.
 | V1 | `fixes = "crossover"`, but no check in the protocol is named `"crossover"` | A typo in `fixes` would silently disable the policy — the advisor could never find the check it names | Name the check with `as "crossover"`, or fix the spelling |
 | V2 | `fixes = "theta"` on a knob that doesn't appear anywhere in that check's expression, after mode folding | A knob can't fix a check it has no effect on | Point `fixes` at a check the knob actually feeds, or add `only_when` if it only feeds that check in one mode |
 | V3 | `higher_is = "easier"` on a knob the compiler traces as making its check harder when raised (or vice versa) | The declared direction disagrees with what the protocol's own expressions say | Fix `higher_is` to match the traced direction |
-| V4 | `apply = "auto"` on a knob that feeds a guard (inhibit), in any mode branch | Guards are never loosened automatically — that stays a clinical decision | Use `apply = "suggest"` |
+| V4 | `apply = "auto"` on a knob that feeds a guard (inhibit), in any mode branch | Guards are never loosened automatically — that stays the practitioner's decision | Use `apply = "suggest"` |
 | V5 | A policy on a knob that feeds no reward check at all (a volume-like setting, a band edge) | Whichever check you name in `fixes`, this knob doesn't feed it — V2 catches this the same way it catches a `fixes` naming the wrong check | Remove the policy — this knob isn't a candidate for autopilot |
-| V6 | `rebaseline { … apply = "auto" }` | A re-baseline is a bigger jump than a single step; it always needs a clinician to look at it first | Use `apply = "suggest"` |
+| V6 | `rebaseline { … apply = "auto" }` | A re-baseline is a bigger jump than a single step; it always needs a practitioner to look at it first | Use `apply = "suggest"` |
 | V7 | Two different controls both declare `fixes = "crossover"` | One knob per check — the advisor wouldn't know which one to move | Split them with `only_when` if they apply to different modes, or remove one policy |
 | V8 | A policy on a `mode`, `boolean`, `enum`, or `placement` control, or on a control that isn't `live_tunable` | Only `number`, `percent`, `voltage`, and `frequency` controls that can change mid-session are eligible | Only add policies to live-tunable numeric/percent/voltage/frequency controls |
 | V9 | `limits` outside the control's `range`; no `limits` and no `range` either; or `limits`' low end at or above its high end | Scale error — autopilot's bounds must make sense against the control | Fix the pair, or add a `range` to the control |
@@ -275,12 +275,12 @@ in the reference protocol library, applied to the autopilot numbers:
 Like `meta.evidence`, this is provenance — where the numbers come from — not a
 claim about what they will do for anyone.
 
-**`citation`** is one string or a list of strings. Cite the protocol's clinical
+**`citation`** is one string or a list of strings. Cite the protocol's
 origin *and* the source of the autopilot numbers *separately* — they are
 often not the same source:
 
 - A paper: `"Author A, Author B (Year). Title. Journal, vol(issue), pages. doi:…"`
-- A team's own written protocol: `"<Team> clinical protocol <id>, <date>"`
+- A team's own written protocol: `"<Team> practice protocol <id>, <date>"`
 - Numbers adapted from an existing tool, not yet re-validated on this signal
   path: `"Adapted from <source>; re-confirm on recorded sessions"`
 
@@ -302,17 +302,20 @@ or any autopilot number is a protocol change like any other — bump
 
 `examples/alpha_theta_autopilot.refrain` is the reference: a copy of the
 production `alpha_theta` protocol with two named checks and a full policy
-added. It also pins the montage reference to the literal `"linked_ears"`
-instead of `amp.reference`, so the example resolves without an amp profile,
-like every other example — the only other deviation from production. Its
-`autopilot { }` block:
+added. Production compares the theta and alpha envelopes directly, which gives
+the crossover check no setting to move, so the example swaps that for a
+theta/alpha ratio derive checked against a live, warmup-seeded
+`crossover_target` control. It also pins the montage reference to the literal
+`"linked_ears"` instead of `amp.reference`, so the example resolves without an
+amp profile, like every other example. The file's header lists every
+difference from production. Its `autopilot { }` block:
 
 ```
 autopilot {
   evidence      = "exploratory"
   citation      = [
     "Peniston & Kulkosky 1989, 1991 (protocol)",
-    "Peak Mind clinical team 2026: step sizes and target band adapted from Coherence Recorder guidance v1",
+    "Peak Mind practice team 2026: step sizes and target band adapted from Coherence Recorder guidance v1",
   ]
   rationale     = "Crossover is rare by nature; a 50-75% target would drive the ratio target to its floor. Tighten crossover first, one 0.05 step at a time."
   reward_target = (10%, 35%)
@@ -320,7 +323,7 @@ autopilot {
   watch         = 2 min
   between_moves = 3 min
   tighten_first = ["crossover", "theta"]
-  delta = guard { max = 15%; say = "Client may be drifting toward sleep; check alertness." }
+  delta = guard { max = 15%; say = "Slow activity rising; may be drifting toward sleep. Check alertness." }
   emg   = guard { max = 15%; say = "Muscle artifact; check jaw/neck tension or the electrode." }
 }
 ```
@@ -366,12 +369,12 @@ theta_threshold_uv = voltage {
 is enough, and it's `apply = "auto"` because a small, bounded ratio nudge
 carries low risk. The theta gate is split by `threshold_style`:
 `theta_reward_pct` (an adaptive percentile target) under `"adaptive"` mode,
-`theta_threshold_uv` (a fixed µV threshold, seeded from the patient's own
+`theta_threshold_uv` (a fixed µV threshold, seeded from the person's own
 signal) under `"baseline"` mode — `proportional_step` there, because a
-10%-of-current step scales correctly whether this client's baseline theta
+10%-of-current step scales correctly whether this person's baseline theta
 sits at 4 µV or 14 µV. Both theta-side policies are suggest-only: the theta
-gate change is more clinically visible than the crossover ratio, so it goes
-through the clinician.
+gate change is more noticeable than the crossover ratio, so it goes
+through the practitioner.
 
 **Two advice results**, generated by feeding this exact compiled protocol
 through the advisor with scripted evidence (the same technique
@@ -442,7 +445,7 @@ guard example, EMG active 20% of a 120 s window against a 15% ceiling:
 
 **No change is required.** Every protocol in this repo and in
 `refrain-protocols` compiles unchanged — identical IR-JSON, identical
-`content_hash` — and stays fully manual: a clinician sees exactly what they
+`content_hash` — and stays fully manual: a practitioner sees exactly what they
 see today. Once a host calls `advice()`, these protocols additionally get
 **observations** (the current reward rate, checks, and guard activity against
 the built-in default target) and, for protocols whose limiting check has an

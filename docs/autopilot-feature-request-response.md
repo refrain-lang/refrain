@@ -36,12 +36,12 @@ nothing about your 100+ existing compiled protocols changes until someone
 does that.
 
 **Refrain never changes a control on its own.** It proposes; your app
-decides whether the clinician has autopilot turned on for this session and
+decides whether the practitioner has autopilot turned on for this session and
 whether this particular proposal is one the protocol allows to be applied
 without a human in the loop. `apply_advice(id, by="autopilot")` is the one
 enforcement point — it refuses anything the protocol declared suggest-only,
 so a host bug can't auto-apply something the protocol author reserved for a
-clinician's judgement.
+practitioner's judgement.
 
 ## 2. What replaces your two rulebooks
 
@@ -66,7 +66,7 @@ of protocol.
 | `guidance.py`'s 120 s window / 180 s retention / 180 s cadence / 60 s equipment freeze | `autopilot.watch` / (built-in `2 × watch` retention, not separately configurable) / `between_moves` / `equipment_settle` — same defaults (120 s / 180 s / 60 s) when a protocol doesn't override them. |
 | `guidance.py.observe(frame)`, `.record_gong(t_s)`, `.mark_equipment_adjustment(t_s)`, `.set_current_target(value)`, `.recommendation()`, `.resolve(id, outcome)` | `step_chunk` (feeds the advisor automatically — nothing to call), `advice()`, `mark_equipment_change()`, `set_control()` (unchanged signature, now also notifies the advisor), `apply_advice()`/`dismiss_advice()`. |
 | nf-coach's `findCoachingControl` (flag / `baseline_seed` / name-suffix guessing) | The protocol's own `fixes = "<check>"` on each knob's policy — declared, not inferred. Where no policy exists at all, the resolver's direction tracer (§7.10.5) finds the single knob that sets a check's threshold from the check's own expression — still no name pattern. |
-| nf-coach's `deriveControlMode` (up-train vs. down-train inferred from `baseline_seed.percentile <= 50`) | `higher_is = "harder" \| "easier"`, declared per knob and cross-checked against the traced direction at compile time (rule V3) — where the compiler can trace the knob, a wrong declaration is a compile error, not a silent wrong-direction suggestion. Where it can't (the check doesn't compare its signal directly against the knob), the direction can't be verified, so the compiler only lets that knob suggest (`apply = "suggest"`, rule V18): a clinician sees every move before it happens. |
+| nf-coach's `deriveControlMode` (up-train vs. down-train inferred from `baseline_seed.percentile <= 50`) | `higher_is = "harder" \| "easier"`, declared per knob and cross-checked against the traced direction at compile time (rule V3) — where the compiler can trace the knob, a wrong declaration is a compile error, not a silent wrong-direction suggestion. Where it can't (the check doesn't compare its signal directly against the knob), the direction can't be verified, so the compiler only lets that knob suggest (`apply = "suggest"`, rule V18): a practitioner sees every move before it happens. |
 | nf-coach's `assessEfficacy` verdict (`settling`/`on_track`/`too_strict`/`too_easy`, a text suggestion, one 50–75% sweet spot for every protocol) | `advice()`'s `state`/`reason`/`message`, with an actual proposed value (not just a phrase) when a policy exists, judged against the protocol's own `reward_target`. The reason codes `too_strict`/`too_easy`/`on_track` carry over by name. |
 | nf-coach's `bandNotes`/`bandDirections` (per-band % change vs. warmup baseline, for the post-session debrief) | **Out of scope, unchanged.** This is a display feature over data the recorder already has (baseline deltas), not a coaching decision — nothing here needs to move into the engine. |
 | nf-coach's `REWARD_RATE_TARGET_LO`/`HI` (already dead — "legacy export; no longer drives the verdict") | `evidence.chimes_per_min` — reported for information only, never drives a decision, matching what your own code already concluded these numbers should be. |
@@ -129,7 +129,7 @@ regenerate bindings to pick it up.
 
 **The per-session enable switch and the audit trail are yours, same as
 before.** `session.autopilot_on` in the loop above is your own flag —
-Refrain has no opinion on whether a given session, clinician, or client
+Refrain has no opinion on whether a given session, practitioner, or person training
 should have autopilot on; it only ever tells you what it would do and lets
 `apply_advice` refuse what the protocol forbids. `drain_advice_events()`
 hands you every `suggested`/`superseded`/`blocked`/`applied`/`dismissed`/
@@ -167,8 +167,11 @@ Out of scope for this release, tracked as the next piece of work once
 v0.22.0 ships:
 
 - Add names and the policy shown in `examples/alpha_theta_autopilot.refrain`
-  to the production `protocols/eeg/alpha_theta.refrain` (currently v1.3.0) —
+  to the production `protocols/eeg/alpha_theta.refrain` (currently v1.1.0) —
   this is where your alpha/theta sessions actually start getting live advice.
+  Production v1.1.0 compares the theta and alpha envelopes directly, so the
+  crossover check has no setting to move; the example's ratio derive and
+  `crossover_target` control (or an equivalent) have to land with it.
 - Name the checks in SMR and its siblings (`smr`, `high_beta_down`,
   `hrv_resonance`, `critical_fluctuation`, `faa_f3f4`), and add `limiter`
   messages or policies where they're worth it — `critical_fluctuation` in
@@ -187,7 +190,7 @@ v0.22.0 ships:
 | Keep the 70% theta-gate floor? | No, and this is a real behavior change — see §2's correction |
 | New host calls | Six, listed in §3; `advice()` is a read, nothing new to wire into the chunk loop |
 | Per-session switch / audit persistence | Yours, unchanged in ownership |
-| Anything to double-check before trusting it clinically | Yes — the 10–35% band under the instantaneous measure (§5) |
+| Anything to double-check before relying on it | Yes — the 10–35% band under the instantaneous measure (§5) |
 | `refrain-protocols` changes | Follow-up, not this release (§6) |
 
 Thanks for filing a request precise enough that we could carry your own
