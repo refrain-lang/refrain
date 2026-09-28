@@ -300,15 +300,14 @@ or any autopilot number is a protocol change like any other — bump
 
 ## 8. Worked example
 
-`examples/alpha_theta_autopilot.refrain` is the reference: a copy of the
-production `alpha_theta` protocol with two named checks and a full policy
-added. Production compares the theta and alpha envelopes directly, which gives
-the crossover check no setting to move, so the example swaps that for a
-theta/alpha ratio derive checked against a live, warmup-seeded
-`crossover_target` control. It also pins the montage reference to the literal
-`"linked_ears"` instead of `amp.reference`, so the example resolves without an
-amp profile, like every other example. The file's header lists every
-difference from production. Its `autopilot { }` block:
+`examples/alpha_theta_autopilot.refrain` is the reference: an exact copy of
+the production `alpha_theta` protocol (v1.2.0, which already checks a
+theta/alpha ratio derive against a live, warmup-seeded `crossover_target`
+control) with two named checks and a full policy added. It also pins the
+montage reference to the literal `"linked_ears"` instead of `amp.reference`,
+so the example resolves without an amp profile, like every other example.
+The file's header lists every difference from production. Its
+`autopilot { }` block:
 
 ```
 autopilot {

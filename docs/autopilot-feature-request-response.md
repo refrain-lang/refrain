@@ -166,12 +166,13 @@ against your session logs.
 Out of scope for this release, tracked as the next piece of work once
 v0.22.0 ships:
 
-- Add names and the policy shown in `examples/alpha_theta_autopilot.refrain`
-  to the production `protocols/eeg/alpha_theta.refrain` (currently v1.1.0) —
-  this is where your alpha/theta sessions actually start getting live advice.
-  Production v1.1.0 compares the theta and alpha envelopes directly, so the
-  crossover check has no setting to move; the example's ratio derive and
-  `crossover_target` control (or an equivalent) have to land with it.
+- The ratio derive and `crossover_target` control have already landed in
+  production `protocols/eeg/alpha_theta.refrain`, now at v1.2.0
+  (refrain-protocols PR #23), so the crossover check has a live setting to
+  move. What's still open: naming the two reward checks and adding the
+  policy shown in `examples/alpha_theta_autopilot.refrain` to that same
+  production file — this is where your alpha/theta sessions actually start
+  getting live advice.
 - Name the checks in SMR and its siblings (`smr`, `high_beta_down`,
   `hrv_resonance`, `critical_fluctuation`, `faa_f3f4`), and add `limiter`
   messages or policies where they're worth it — `critical_fluctuation` in

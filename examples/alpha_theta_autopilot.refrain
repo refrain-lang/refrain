@@ -1,17 +1,13 @@
 // Alpha/theta crossover WITH AUTOPILOT — worked example for
 // docs/AUTOPILOT-AUTHORING.md.
 //
-// ## How this example differs from production
-//
-// A copy of refrain-protocols' protocols/eeg/alpha_theta.refrain v1.1.0,
-// except:
-//   - The two reward checks are named (`as "theta"`, `as "crossover"`).
-//   - The crossover check compares a theta/alpha ratio derive against a live
-//     `crossover_target` control (warmup-seeded), instead of comparing the
-//     two envelopes directly. Production's direct comparison leaves the
-//     crossover check with no setting autopilot could move; a target of 1.0
-//     is the strict crossover, lower values give graded shaping toward it.
-//   - An `autopilot { }` block and three control policies are added.
+// An exact copy of refrain-protocols' protocols/eeg/alpha_theta.refrain
+// v1.2.0, plus:
+//   - The two reward checks are named (`as "theta"`, `as "crossover"`), so
+//     an autopilot policy can address each one by name.
+//   - Three control policies add autopilot to `crossover_target`,
+//     `theta_reward_pct`, and `theta_threshold_uv`.
+//   - An `autopilot { }` block.
 //   - The montage reference is the literal "linked_ears" instead of
 //     `amp.reference`, so the example resolves without an amp profile, like
 //     every other example.
@@ -22,8 +18,8 @@
 // before it is relied on (design doc
 // docs/superpowers/specs/2026-09-24-protocol-autopilot-design.md §10.1).
 //
-// The production header follows, unchanged except where it describes the
-// two deviations above.
+// The production header follows, unchanged except for the reference note
+// below.
 //
 // Alpha/theta crossover — CONFIGURABLE canonical template (Peniston-Kulkosky).
 //
@@ -34,39 +30,40 @@
 // three configurable templates — see below.
 //
 // Eyes-closed, deep-state training: reward when the theta envelope rises
-// both above its own adaptive/baseline bar AND above the alpha envelope
-// (the crossover). A deliberately loose 2-4 Hz delta/sleep guard prevents
-// reward during sleep-like slowing or gross slow artifact without making
-// delta a training target. Longer, eyes-closed session; continuous audio
-// feedback follows the ratio and falls to its quiet floor while an inhibit
-// is active.
+// both above its own adaptive/baseline bar AND its ratio to alpha clears a
+// live, graded crossover target. A deliberately loose 2-4 Hz delta/sleep
+// guard prevents reward during sleep-like slowing or gross slow artifact
+// without making delta a training target. Longer, eyes-closed session;
+// continuous audio feedback follows the ratio and falls to its quiet floor
+// while an inhibit is active.
 //
 // ## Deviation from the reference, and why
 //
 // smr.refrain's `threshold.signal` (and every sibling template's) is always
 // a plain string naming ONE derive — refrain's resolver requires this
 // (`resolver.py._resolve_threshold`: "threshold signal must be a stream
-// reference", a `StringLit` only). A ratio/formula derive (`derive "ratio" {
-// formula = "theta_envelope" / "alpha_envelope" }`, the idiom used by e.g.
-// faa_f3f4.refrain's `faa` derive) would satisfy that, BUT it is a THIRD
-// derive that does not match the recorder's envelope-classifier chain
-// (`smooth(magnitude(hilbert(bandpass(...))))`) — it would render as a
-// captionless `generic` card and emit a "derive not classified as envelope"
-// warning, which this template (like its siblings) must not.
+// reference", a `StringLit` only). That constraint is why an earlier
+// revision of this file avoided a ratio/formula derive (the idiom used by
+// e.g. faa_f3f4.refrain's `faa` derive: `derive "faa" { formula = "alpha_l"
+// / "alpha_r" }`) and instead compared the two envelope derives DIRECTLY
+// inside `above(...)` — a bare `above("theta_envelope", "alpha_envelope")`
+// clause, fixed at strict 1:1 crossover, with no third derive to render as
+// a captionless `generic` card or trip the recorder's "derive not
+// classified as envelope" warning.
 //
-// So production expresses the crossover as a second `above(...)` clause comparing
-// the two envelope derives DIRECTLY (`above("theta_envelope",
-// "alpha_envelope")`) inside the same `all_of([...])` as the adaptive/
-// baseline threshold clause — no third derive, no ratio signal. This keeps
-// exactly two derives (both real envelope cards, zero warnings) while still
-// giving every up-train template in this batch a genuine, percentile-driven
-// `*_reward_pct` control (`theta_reward_pct`, gated by an `above(...)`
-// reward condition — same detection path `manifest._is_reward_rate_control`
-// already uses for the other three). The result is at least as
-// strict as a bare crossover: reward requires theta to be adaptively
-// elevated (or above its baseline bar) AND above alpha, not just the ratio
-// crossing 1.0. (This example trades that for a ratio derive and a movable
-// target — see "How this example differs from production" above.)
+// This revision adds the ratio derive (`theta_alpha_ratio`) after all,
+// because it buys a real feature a bare `above(...)` comparison cannot: a
+// live, graded crossover target instead of a fixed 1:1 bar. The target
+// (`crossover_target`) can sit below strict crossover to reward progress
+// toward it, and can be seeded from a warm-up (see its `seed` below).
+// Recorder renders the source alpha and theta envelope cards for this
+// derive rather than a redundant generic card, so the extra derive adds no
+// UI card and no classifier warning. This still gives every up-train
+// template in this batch a genuine, percentile-driven `*_reward_pct`
+// control (`theta_reward_pct`, gated by an `above(...)` reward condition —
+// same detection path `manifest._is_reward_rate_control` already uses for
+// the other three). Reward requires theta to be adaptively elevated (or
+// above its baseline bar) AND meet the selected ratio target.
 //
 // (alpha_theta_pz.refrain's own bandpass shape — `bandpass(center:
 // alpha_center, bandwidth: ratio(1.5))` — also predates the band-tuple
@@ -83,7 +80,7 @@
 //     baseline-fixed absolute (seeded from the live signal).
 //   - Band edges are PAIRED `frequency` controls, `live_tunable = false`.
 //   - The delta/sleep and EMG artifact guards are `mode` controls (on/off).
-//     Delta defaults to a loose 95th-percentile veto so normal hypnagogic
+//     Delta defaults to a loose 99th-percentile veto so normal hypnagogic
 //     descent is not treated as a failure.
 //   - The EMG guard is carried over
 //     from the retired BrainBit fork of alpha_theta_pz.refrain: muscle
@@ -93,17 +90,17 @@
 // Amp-portable in production (reads amp.reference); this example pins the
 // literal "linked_ears" reference instead — see above.
 //
-// meta.advanced_controls collapses everything except `threshold_style`,
-// `theta_reward_pct` and `crossover_target` behind "Advanced".
+// meta.advanced_controls keeps threshold style, theta reward rate, and the
+// crossover target visible; everything else is behind "Advanced".
 
 protocol "alpha_theta_autopilot" {
 
   meta {
-    version           = "1.2.0"
+    version           = "1.3.0"
     evidence          = "established"
-    description       = "Configurable alpha/theta crossover template (Peniston-Kulkosky) — practitioner-selected site, bands, and thresholds"
+    description       = "Configurable alpha/theta crossover template (Peniston-Kulkosky) — warmup-seeded crossover target, practitioner-selected site, bands, and thresholds"
     title             = "Deep meditative state — configurable alpha/theta crossover"
-    summary           = "Eyes-closed deep-state training that rewards theta rising above alpha at a chosen posterior site, with adaptive or baseline-fixed thresholds."
+    summary           = "Eyes-closed deep-state training that rewards theta's ratio to alpha clearing a live, warmup-seeded crossover target at a chosen posterior site, with adaptive or baseline-fixed thresholds."
     family            = "alpha_theta"
     threshold_style   = "selectable"
     status            = "draft"
@@ -165,9 +162,8 @@ protocol "alpha_theta_autopilot" {
     ]
   }
 
-  // Graded crossover signal (example-only, see header). A target below 1.0
-  // rewards approaching the classic theta-over-alpha crossover; 1.0 keeps the
-  // strict definition.
+  // Graded crossover signal. A target below 1.0 rewards progress toward the
+  // classic theta-over-alpha crossover; 1.0 preserves the strict definition.
   derive "theta_alpha_ratio" {
     formula = "theta_envelope" / "alpha_envelope"
   }
@@ -226,7 +222,8 @@ protocol "alpha_theta_autopilot" {
 
   reward {
     // Crossover: theta must be BOTH above its own adaptive/baseline bar AND
-    // above the alpha envelope (the rewarded deep state) — see header.
+    // its ratio to alpha at or above the live crossover target (the
+    // rewarded deep state) — see header.
     event = dwell(
       condition: all_of([
         above("theta_envelope", "theta_t")           as "theta",
@@ -238,7 +235,7 @@ protocol "alpha_theta_autopilot" {
     // gate, unlike the discrete-chime siblings — tracks the live
     // theta/alpha ratio at all times, matching alpha_theta_pz.refrain's own
     // established convention for this protocol family.
-    continuous = sigmoid("theta_envelope" / "alpha_envelope",
+    continuous = sigmoid("theta_alpha_ratio",
                          midpoint: 1.0, steepness: 2)
   }
 
@@ -255,7 +252,7 @@ protocol "alpha_theta_autopilot" {
       label   = "Threshold style"
     }
     theta_reward_pct = percent {
-      default      = 40
+      default      = 15
       range        = (15, 70)
       label        = "Theta reward rate"
       live_tunable = true
@@ -280,7 +277,7 @@ protocol "alpha_theta_autopilot" {
       label   = "Delta/sleep guard"
     }
     delta_inhibit_rate = percent {
-      default      = 95
+      default      = 99
       range        = (75, 99)
       label        = "Delta inhibit threshold"
       live_tunable = true
