@@ -194,7 +194,7 @@ and stays at whatever version its other features already put it at.
   "equipment_settle_samples": null,
   "tighten_first": ["crossover", "theta"],
   "guards": {
-    "delta": { "max": 0.15, "say": "Client may be drifting toward sleep; check alertness." },
+    "delta": { "max": 0.15, "say": "Slow activity rising; may be drifting toward sleep. Check alertness." },
     "emg":   { "max": 0.15, "say": "Muscle artifact; check jaw/neck tension or the electrode." }
   },
   "limiters": {}

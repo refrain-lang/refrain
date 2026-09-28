@@ -5,7 +5,7 @@
 // both engines. The generator also makes one scripted set_control. Not a
 // clinical protocol.
 protocol "autopilot_staged" {
-  meta { version = "1.0.0"; evidence = "clinical"; description = "staged autopilot parity bench" }
+  meta { version = "1.0.0"; evidence = "exploratory"; description = "staged autopilot parity bench" }
   requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
   input "raw" { montage = passthrough() }
   derive "t_env" { from = "raw"; pipeline = [ magnitude(), smooth(tau: 200 ms) ] }

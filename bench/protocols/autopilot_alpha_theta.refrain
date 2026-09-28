@@ -2,7 +2,7 @@
 // 80 s run exercises collecting, judging, applying and cooldown in both
 // engines. Not a clinical protocol.
 protocol "autopilot_alpha_theta" {
-  meta { version = "1.0.0"; evidence = "clinical"; description = "autopilot parity bench" }
+  meta { version = "1.0.0"; evidence = "exploratory"; description = "autopilot parity bench" }
   requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
   input "raw" { montage = passthrough() }
   derive "t_env" { from = "raw"; pipeline = [ magnitude(), smooth(tau: 200 ms) ] }

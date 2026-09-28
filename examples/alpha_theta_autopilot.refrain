@@ -19,7 +19,8 @@
 // The 10-35% reward target was carried over from the recorder's guidance
 // engine, which measured the one-second HELD reward. The advisor measures the
 // instantaneous checks, so the band must be re-confirmed on recorded sessions
-// before it is relied on (spec §10.1).
+// before it is relied on (design doc
+// docs/superpowers/specs/2026-09-24-protocol-autopilot-design.md §10.1).
 //
 // The production header follows, unchanged except where it describes the
 // two deviations above.

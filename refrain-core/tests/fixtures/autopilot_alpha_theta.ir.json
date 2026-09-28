@@ -23,7 +23,7 @@
     },
     "evidence": {
       "node": "string",
-      "value": "clinical"
+      "value": "exploratory"
     },
     "description": {
       "node": "string",

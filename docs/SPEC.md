@@ -863,11 +863,11 @@ autopilot {
   tighten_first     = ["crossover", "theta"]
 
   // guards: hold and explain when an inhibit is active too often
-  delta = guard { max = 15%; say = "Client may be drifting toward sleep; check alertness." }
+  delta = guard { max = 15%; say = "Slow activity rising; may be drifting toward sleep. Check alertness." }
   emg   = guard { max = 15%; say = "Muscle artifact; check jaw/neck tension or the electrode." }
 
   // a reward check with no knob, or whose knob must not be touched
-  high_beta = limiter { say = "Likely client tension; coach relaxation rather than loosening." }
+  high_beta = limiter { say = "Likely tension; coach relaxation rather than loosening." }
 }
 ```
 
