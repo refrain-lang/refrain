@@ -8,11 +8,11 @@
 
 ## Summary
 
-Clinical neurofeedback has a reproducibility problem with measurable scientific cost. Protocols are described in prose, implemented inside closed clinical software, and hand-translated by every research group that tries to replicate them. The 2025 JAMA Psychiatry meta-analysis on NF for ADHD found no significant effect across 38 RCTs — but a small significant effect when the analysis was restricted to studies using established standard protocols. The signal exists. Protocol heterogeneity is destroying it.
+Biosignal training has a reproducibility problem with measurable scientific cost. Protocols are described in prose, implemented inside closed software, and hand-translated by every research group that tries to replicate them. EEG neurofeedback is where the cost has been measured most carefully, so it is the worked example throughout this document. The 2025 JAMA Psychiatry meta-analysis on NF for ADHD found no significant effect across 38 RCTs — but a small significant effect when the analysis was restricted to studies using established standard protocols. The signal exists. Protocol heterogeneity is destroying it.
 
 Other fields with the same problem have solved it the same way: by replacing prose protocols with declarative artifacts that are simultaneously human-readable, machine-executable, and citable. Bioinformatics did this with Snakemake/CWL/Nextflow. Networking did it with P4. Audio DSP did it with Faust. Infrastructure did it with Terraform. Aerospace and automotive did it with SCADE.
 
-Refrain is a proposed declarative description language for clinical NF protocols. A Refrain file is a text artifact that fully specifies what a NF protocol does — the montage, the signal processing, the thresholds, the rewards, the inhibits, the session structure — at a level of precision that a compatible runtime can execute it directly, and a peer reviewer can audit it directly. The same artifact runs on different amplifiers. The same artifact appears in a paper supplement. The same artifact fulfills the existing CRED-nf reporting checklist by construction.
+Refrain is a declarative description language for biosignal training paradigms — the operant loop of input, derive, threshold, reward or inhibit, output. A Refrain file is a text artifact that fully specifies what a training protocol does — the signal-source binding, the signal processing, the thresholds, the rewards, the inhibits, the session structure — at a level of precision that a compatible runtime can execute it directly, and a peer reviewer can audit it directly. The same artifact runs on different hardware. The same artifact appears in a paper supplement. For EEG neurofeedback, the same artifact fulfills the existing CRED-nf reporting checklist by construction.
 
 This document lays out the problem, the vision, the pattern Refrain inherits from other fields, the proposed solution at concept level, and the open questions. It is a draft to socialize, not a commitment.
 
@@ -20,7 +20,7 @@ This document lays out the problem, the vision, the pattern Refrain inherits fro
 
 ## The Problem
 
-### Clinical NF has a reproducibility crisis, and the field admits it
+### Biosignal training has a reproducibility problem, and the field admits it
 
 Neurofeedback as a clinical practice has been around for fifty years. The literature on its efficacy remains contentious — and the contention is, increasingly, not really about whether NF works but about whether *the studies of NF* can be trusted to tell us whether it works.
 
@@ -33,15 +33,15 @@ Recent systematic reviews say the quiet part aloud:
 - "Heterogeneity in protocols and placebo effects complicate interpretation… future large-scale, well-controlled trials needed to establish robust, standardized protocols."
 - "Protocol standardization regarding electrode placement, targeted frequency bands, and session parameters will facilitate replication and meta-analytic synthesis."
 
-The community has responded with the **CRED-nf checklist** (Ros et al., *Brain*, 2020) — a consensus standard for what a NF paper must report: electrode locations, frequency bands, threshold algorithms, reward modalities, contingency timing, session structure, control conditions, and so on. CRED-nf is endorsed by the EQUATOR Network and used as a quality-assessment rubric in 2024-2025 systematic reviews. It is the most coordinated standardization effort in the field, and it is clearly necessary.
+In EEG neurofeedback, the community has responded with the **CRED-nf checklist** (Ros et al., *Brain*, 2020) — a consensus standard for what a NF paper must report: electrode locations, frequency bands, threshold algorithms, reward modalities, contingency timing, session structure, control conditions, and so on. CRED-nf is endorsed by the EQUATOR Network and used as a quality-assessment rubric in 2024-2025 systematic reviews. It is the most coordinated standardization effort in the field, and it is clearly necessary.
 
-But CRED-nf is a checklist for *reporting in prose*. It tells authors what to describe. It does not give them a way to describe it that another lab can then re-run. The translation from "a paper that contains all CRED-nf items" to "a protocol another group can replicate" still requires a clinical neuroscientist re-implementing in MATLAB, Python, or whatever closed clinical software they use. The replication gap is the implementation gap.
+But CRED-nf is a checklist for *reporting in prose*. It tells authors what to describe. It does not give them a way to describe it that another lab can then re-run. The translation from "a paper that contains all CRED-nf items" to "a protocol another group can replicate" still requires someone re-implementing in MATLAB, Python, or whatever closed clinical software they use. The replication gap is the implementation gap.
 
 ### Protocols are opaque inside closed software
 
 Most clinical NF runs on closed-source software: Cygnet (Bee Medic), BrainMaster, Neuroguide, Neurofield's clinical suite, and others. These are competent commercial products with decades of clinical use. They are also, from a research-replicability standpoint, sealed. A practitioner picks a "preset" inside a GUI; the preset corresponds to a specific configuration of filters, thresholds, mappings, and inhibits that exists as an opaque data structure in the vendor's binary. Researchers cannot inspect the preset; they cannot diff it against a similar one; they cannot publish it as a supplement.
 
-The consequence is that "Othmer ILF at T3-T4" — to take a real example — is a name for a clinical practice, but the actual protocol that a given clinician runs on a given day depends on a vendor binary, a clinician's tuning history, a session's parameter trajectory, and convention. None of this is captured in a way that survives the patient-clinician encounter.
+The consequence is that "Othmer ILF at T3-T4" — to take a real example — is a name for a clinical practice, but the actual protocol that a given clinician runs on a given day depends on a vendor binary, a clinician's tuning history, a session's parameter trajectory, and convention. None of this is captured in a way that survives the session.
 
 For a field hoping to mature into evidence-based clinical practice, this is a structural problem, not a procedural one. No amount of better reporting in prose closes the gap. The protocol *itself* needs to be a portable, inspectable, reproducible artifact.
 
@@ -55,17 +55,19 @@ The cost is also paid by clinicians who want to base their practice on evidence;
 
 ## The Vision
 
-Imagine the clinical NF field five years from now, if this problem is solved.
+Biosignal processing tools have existed for decades. BioExplorer and BioEra let people wire up a signal chain visually — brainwaves, heart rate, skin conductance — and real work was built on them. What none of them produced was a *portable artifact*: the protocol lived inside the tool, in a format only that tool could read, and it left the building as a screenshot and a paragraph.
 
-A clinician who reads a 2027 paper reporting positive results from "Othmer ILF training at T3-T4 for treatment-resistant depression" finds, in the supplementary materials, a single text file. The file is human-readable: a few hundred lines describing the montage, the signal pipeline, the inhibit bands, the reward mapping, the session schedule. The file is also machine-executable: pasted into the clinician's recorder software, it runs the exact protocol the paper studied, on whatever compatible amplifier the clinic owns.
+Refrain's vision is the artifact. One text file that describes a complete training paradigm — for brainwaves, heart-rate variability, skin conductance, temperature — precisely enough to execute, review, publish, and re-run somewhere else. It is general-wellness and research software: practitioners, researchers, and people training themselves all read the same file.
+
+Imagine that world five years from now.
+
+Someone who reads a 2027 paper reporting positive results from an HRV resonance-frequency protocol, or from Othmer ILF training at T3-T4, finds a single text file in the supplementary materials. The file is human-readable: a few hundred lines describing the signal-source binding, the signal pipeline, the inhibit bands, the reward mapping, the session schedule. The file is also machine-executable: pasted into their recorder software, it runs the exact protocol the paper studied, on whatever compatible hardware they own.
 
 A research group running a multi-site replication study no longer has to send the lead investigator's MATLAB scripts back and forth, accompanied by phone calls about "what did you mean by 'theta inhibit at threshold'?" Each site checks in the same protocol file from version control; the runtimes verify the file's hardware requirements against each site's amplifier and refuse to run if there is a mismatch. The protocol is, literally, the protocol.
 
-A regulatory submission for a software-as-medical-device classification includes the protocol files as part of the artifact. Auditors can inspect what the device actually does — frequency bands, threshold algorithms, reward contingencies — at a level of formality the FDA's existing software lifecycle expectations already anticipate.
+A practitioner who reads a recent paper and wants to try a small variant writes a fifteen-line file that extends the published protocol with an additional inhibit, then runs it. The variant is its own artifact; if outcomes look promising, it can be shared as a derivative work. Composition is cheap.
 
-A clinician who reads a recent paper and wants to try a small variant on their own patients writes a fifteen-line file that extends the published protocol with an additional inhibit, then runs it. The variant is its own artifact; if outcomes look promising, it can be shared as a derivative work. Composition is cheap.
-
-A practitioner moving between clinics no longer has to relearn a vendor's GUI; they bring their library of protocol files with them. Vendors compete on the quality of their runtime, the polish of their patient-facing UX, and the strength of their normative databases — not on lock-in to opaque preset libraries.
+A practitioner moving between practices no longer has to relearn a vendor's GUI; they bring their library of protocol files with them. Vendors compete on the quality of their runtime, the polish of their user-facing experience, and the strength of their normative databases — not on lock-in to opaque preset libraries.
 
 The core move is small but consequential: **the protocol becomes the artifact.** Not a paragraph in a paper; not a row in a vendor database; not lore in a clinician's head. A text file. Versioned. Diffable. Citable. Executable.
 
@@ -121,15 +123,15 @@ Across these fields, the architectural pattern is consistent:
 6. **There is an escape hatch for novel work.** Custom primitives can be defined when the standard library doesn't cover what you need.
 7. **The pattern coexists with vendor competition.** Vendors compete on runtime quality, not on lock-in.
 
-Refrain proposes to instantiate this pattern for clinical neurofeedback. The pattern is well-understood; the work is the *content* of the language — the primitive set, the protocol library, the runtime — rather than the form.
+Refrain proposes to instantiate this pattern for biosignal training paradigms. The pattern is well-understood; the work is the *content* of the language — the primitive set, the protocol library, the runtime — rather than the form.
 
 ---
 
 ## The Proposed Solution: Refrain
 
-Refrain is a declarative description language for clinical neurofeedback protocols.
+Refrain is a declarative description language for biosignal training paradigms.
 
-A Refrain file (`.refrain`) describes a complete NF protocol: the required hardware capabilities, the channel montage, the signal processing pipeline (filters, envelopes, derivatives, statistics), the threshold logic, the inhibit/artifact gates, the reward expression, the output bindings (audio gain, video modulation, ambient effects, discrete events), the clinician-tunable controls, and the session structure.
+A Refrain file (`.refrain`) describes a complete training protocol: the required hardware capabilities, the signal-source binding, the signal processing pipeline (filters, envelopes, derivatives, statistics), the threshold logic, the inhibit/artifact gates, the reward expression, the output bindings (audio gain, video modulation, ambient effects, discrete events), the practitioner-tunable controls, and the session structure.
 
 The file is text. It is human-readable. It is the canonical artifact: when it appears in a paper supplement, it *is* the protocol; when it runs on a recorder, it *is* what runs.
 
@@ -143,9 +145,11 @@ This library is designed to cover roughly 80% of clinically deployed NF protocol
 
 ### The CRED-nf bridge
 
-The most consequential single design decision: the language schema is structurally aligned with the CRED-nf checklist. Every CRED-nf item maps to a field in the protocol file. A complete Refrain protocol *automatically generates* a CRED-nf-compliant supplementary materials table. CRED-nf compliance becomes a tooling feature rather than a manual obligation.
+One consequential design decision: the language schema is structurally aligned with the CRED-nf checklist. Every CRED-nf item maps to a field in the protocol file. A complete Refrain protocol *automatically generates* a CRED-nf-compliant supplementary materials table. CRED-nf compliance becomes a tooling feature rather than a manual obligation.
 
 This is the alignment with the field's existing standardization momentum. CRED-nf described, in prose, what a NF protocol must contain. Refrain makes that description executable.
+
+CRED-nf is one supported reporting standard, not the only one. HRV biofeedback has its own reporting norms (Lehrer & Gevirtz), and the same protocol-as-artifact model serves them: the file already contains what those checklists ask authors to describe.
 
 ### The escape hatch
 
@@ -157,9 +161,9 @@ This is not a workaround — it's the same architectural choice P4 makes (extern
 
 A few non-goals are worth stating explicitly to keep the scope honest:
 
-- **Not a general-purpose signal-processing language.** numpy, MATLAB, MNE-Python already exist. Refrain describes clinical NF protocols. Anything outside that domain belongs elsewhere.
+- **Not a general-purpose signal-processing language.** numpy, MATLAB, MNE-Python already exist. Refrain describes biosignal training/feedback paradigms. Everything outside a training paradigm — raw recording, general analysis, arbitrary DSP — still belongs elsewhere, and Refrain is not trying to replace those tools.
 - **Not a graphical programming environment.** OpenViBE went down that road, gained research adoption, did not cross to clinical product. The lesson stands: text artifacts are diffable, citable, and shareable in ways graphs are not. A GUI editor on top of Refrain is welcome — but the canonical artifact is text.
-- **Not a clinical product.** Refrain is the engine; clinical products (Coherence Workstation among them) are the workflow polish, the patient-facing UX, the session management, the EHR integration, and the support that clinicians actually pay for. The language enables those products without being one.
+- **Not an end-user product.** Refrain is the engine; products (Coherence Workstation among them) are the workflow polish, the user-facing experience, the session management, the record-keeping integration, and the support that practitioners actually pay for. The language enables those products without being one.
 - **Not a fully community-owned standard, yet.** Refrain begins as a working language with one canonical implementation (open source) and one canonical commercial runtime (Coherence Workstation). If the language earns adoption, the natural trajectory is toward a community-governed standard with multiple compliant implementations. That trajectory is open; the commitment today is only to start.
 
 ---
@@ -168,11 +172,11 @@ A few non-goals are worth stating explicitly to keep the scope honest:
 
 Three convergent conditions make this a credible moment to start.
 
-**The clinical literature is asking for it.** CRED-nf has been published, endorsed, and is being used as a quality rubric. The 2025 JAMA Psychiatry meta-analysis surfaces the cost of not having standardized protocols in language stark enough to compel attention. The community has done the work of agreeing what *should* be reported; what's missing is the format that makes reporting executable.
+**The reporting standards are asking for it.** CRED-nf has been published, endorsed, and is being used as a quality rubric; HRV biofeedback has equivalent reporting norms. The 2025 JAMA Psychiatry meta-analysis surfaces the cost of not having standardized protocols in language stark enough to compel attention. The community has done the work of agreeing what *should* be reported; what's missing is the format that makes reporting executable.
 
 **Hardware is ready.** Modern research-grade EEG amplifiers (the Neurofield Q21 we work with, similar designs from BrainProducts, Cognionics, OpenBCI) are DC-coupled, simultaneous-sampling, 24-bit, with software-controllable impedance checks. They support the entire range of clinically deployed NF protocols, including the demanding sub-mHz Othmer-style infra-low frequency work. The constraint that historically forced specialized NF hardware no longer holds; commodity research-grade amps suffice.
 
-**Regulatory tailwinds.** The FDA's evolving framework for software-as-medical-device increasingly emphasizes auditability of the artifact that defines device behavior. The EU's MDR has a similar trajectory. A NF software stack whose protocol artifact is human-auditable, version-controlled, and statically analyzable maps cleanly onto where regulated digital health is going. Building that infrastructure now is positioning, not premature.
+**The signals are broadening.** Consumer and research hardware now covers heart-rate variability, skin conductance, temperature, and muscle activity as routinely as it covers EEG, and a chest strap costs less than a textbook. A description language that only spoke about brainwaves would be solving a shrinking fraction of the problem.
 
 **The architectural pattern is well-understood.** Refrain isn't proposing a novel language design; it's proposing a new instance of a well-established pattern. The risks of "we don't know if this approach works" don't apply here. The risks are about *adoption*, not viability.
 
@@ -192,7 +196,7 @@ The honest version of this document includes the parts that aren't figured out.
 
 **Adoption strategy.** Soft-forcing-function adoption — bioinformatics, Terraform — takes roughly five years from credible first implementation to default expectation. The question of how Refrain crosses from "research curiosity" to "expected default" is partly about quality of implementation and partly about community engagement (CRED-nf authors, journal editors, clinical organizations). We do not have a worked-out answer.
 
-**OpenViBE's failure modes.** OpenViBE gained research adoption and did not cross to clinical product. The reasons we identify — visual rather than text artifact; research-grade rather than clinical UX; stagnation in active development — are addressable, but identifying failure modes is not the same as avoiding them. We should expect to discover failure modes our analysis missed.
+**OpenViBE's failure modes.** OpenViBE gained research adoption and did not cross to clinical product. The reasons we identify — visual rather than text artifact; research-grade rather than product UX; stagnation in active development — are addressable, but identifying failure modes is not the same as avoiding them. We should expect to discover failure modes our analysis missed.
 
 ---
 
@@ -200,15 +204,15 @@ The honest version of this document includes the parts that aren't figured out.
 
 The plan, in honest order:
 
-**Phase 0: Validate the math.** Before committing further to Refrain as productionization, validate that the underlying clinical-feel works. The first concrete experiment: a hand-coded `LiveDerivation` plugin in our existing recorder, implementing the proposed Othmer ILF math (DC-coupled bipolar acquisition, narrow bandpass at the ORF, differentiation, rectification, smoothing, auto-ranging, sigmoid mapping). Run on a Q21 with a breakout box, T3-T4 placement, on a willing subject (likely the author). Vary the parameters during the session. Find out whether this approach produces the felt phenomenology of Othmer ILF training. If yes, the bet is worth pursuing. If no, the design space changes substantially.
+**Phase 0: Validate the math.** Before committing further to Refrain as productionization, validate that the underlying feel works. The first concrete experiment: a hand-coded `LiveDerivation` plugin in our existing recorder, implementing the proposed Othmer ILF math (DC-coupled bipolar acquisition, narrow bandpass at the ORF, differentiation, rectification, smoothing, auto-ranging, sigmoid mapping). Run on a Q21 with a breakout box, T3-T4 placement, on a willing subject (likely the author). Vary the parameters during the session. Find out whether this approach produces the felt phenomenology of Othmer ILF training. If yes, the bet is worth pursuing. If no, the design space changes substantially.
 
 **Phase 1: Concept document and socialization.** This document. Shared with clinical and engineering colleagues for criticism. The goal is to surface the framing problems, the assumptions that don't hold, the parts the audience finds unconvincing, and the things that could be made stronger.
 
 **Phase 2: Language v0.1.** Once the validation succeeds and the framing is sharper, draft the formal Refrain specification: syntax, type system, primitive contracts, runtime semantics, CRED-nf mapping. Implement the parser, IR compiler, validator, and a runtime that walks the IR via the existing recorder plugin path. Author three reference protocols in Refrain (SMR, Othmer ILF, alpha-theta). Verify that the same protocol files run on the recorder via the language as on the hand-coded plugin.
 
-**Phase 3: Limited public beta.** With the language working and reference protocols validated, share with research partners. Particularly: the CRED-nf authors and adjacent NF research labs. Iterate on primitive set, syntax, and clinical UX based on real users.
+**Phase 3: Limited public beta.** With the language working and reference protocols validated, share with research partners. Particularly: the CRED-nf authors and adjacent NF research labs. Iterate on primitive set, syntax, and practitioner UX based on real users.
 
-**Phase 4: Coherence Workstation integration.** Refrain becomes the protocol runtime in the clinical product. Customers author or import Refrain protocols; CW provides the curated GUI editor, the patient-facing renderer, the session management, the clinical workflow polish that turns a language into a product.
+**Phase 4: Coherence Workstation integration.** Refrain becomes the protocol runtime in the commercial product. Customers author or import Refrain protocols; CW provides the curated GUI editor, the user-facing renderer, the session management, and the workflow polish that turns a language into a product.
 
 **Phase 5: Standard.** If the language earns sustained adoption, transition governance to a community body. Multiple compliant implementations. Refrain becomes the format the field uses.
 
@@ -218,7 +222,7 @@ Phases 0 and 1 are committed. Phase 2 is contingent on Phase 0 success. Beyond t
 
 ## A Note on Naming
 
-The name Refrain was chosen for its dual resonance. Musically, a refrain is a passage returned to — a structured part of a piece that recurs across iterations. Clinically, a NF protocol is a structured practice the patient returns to across sessions, with the same shape recurring while gradually shifting in calibration. The metaphor captures both the artifact's stability and the practice's repetition.
+The name Refrain was chosen for its dual resonance. Musically, a refrain is a passage returned to — a structured part of a piece that recurs across iterations. In training, a protocol is a structured practice the person returns to across sessions, with the same shape recurring while gradually shifting in calibration. The metaphor captures both the artifact's stability and the practice's repetition.
 
 Practically, the name is short, pronounceable, distinctive in the relevant search space, and not heavily trademarked. The canonical implementation lives at `github.com/refrain-lang`. The language file extension is `.refrain`. The language website is `refrain.dev`.
 
@@ -226,9 +230,9 @@ Practically, the name is short, pronounceable, distinctive in the relevant searc
 
 ## Closing
 
-This document proposes a particular architectural move for clinical neurofeedback: replace prose protocols with declarative artifacts. The move is not novel; the same move has been made, successfully, in adjacent fields with comparable problem shapes. The forcing functions in NF are softer than in those fields, but they are real and growing — the literature is asking for it, the hardware supports it, the regulatory trajectory aligns with it, and the existing standardization effort (CRED-nf) points toward exactly this kind of artifact without quite getting there.
+This document proposes a particular architectural move for biosignal training: replace prose protocols with declarative artifacts. The move is not novel; the same move has been made, successfully, in adjacent fields with comparable problem shapes. The forcing functions here are softer than in those fields, but they are real and growing — the reporting standards are asking for it, the hardware supports it, the signals are broadening beyond EEG, and the existing standardization effort (CRED-nf) points toward exactly this kind of artifact without quite getting there.
 
-What's proposed is an open description language called Refrain. The first concrete step is to validate that the underlying clinical math produces the right experience for a patient. The second is to draft the language formally. The remaining phases are conditional on the previous ones earning their next step.
+What's proposed is an open description language called Refrain. The first concrete step is to validate that the underlying math produces the right experience for the person training. The second is to draft the language formally. The remaining phases are conditional on the previous ones earning their next step.
 
 The honest version of this proposal includes the things we don't know: the right primitive set is a hypothesis; the norms-provider boundary needs design; OpenViBE's failure modes are addressable but not automatically avoided; adoption of soft-forcing-function languages takes years.
 
