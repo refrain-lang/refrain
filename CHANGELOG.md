@@ -5,6 +5,29 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.22.0] — 2026-09-27
+
+### Added
+- **Protocol-declared autopilot.** A protocol can now name its reward checks
+  (`above(...) as "crossover"`), declare an `autopilot { }` block (target
+  reward band, phases, evidence window, cadence, guard ceilings, provenance)
+  and give each tunable control a policy (`fixed_step`, `proportional_step`,
+  `rebaseline`; direction, limits, auto vs suggest). The compiler refuses
+  unsafe or ambiguous policies at compile time: a knob that cannot affect the
+  check it claims to fix, a reversed direction, or auto-adjusting a guard is
+  a `ResolveError`, not a runtime surprise — and check names must be unique
+  **protocol-wide** (not just within one bundle), because `fixes`, `limiter`
+  and `tighten_first` refer to a check by name alone. Both engines run the
+  same deterministic advisor and emit one structured advice result per chunk
+  (`Evaluator.advice()`), with `apply_advice`, `dismiss_advice`,
+  `mark_equipment_change`, `drain_advice_events` and `autopilot_policy`.
+  Protocols without a policy stay manual and receive observations and
+  direction hints. IR-JSON **0.4** (emitted only when the new keys are used —
+  every existing protocol keeps its IR-JSON and hash). Python<->Rust parity is
+  gated over tracer output, scripted scenarios and a whole session. Hosts
+  embedding the advice API should read docs/EMBEDDING.md "Autopilot advice";
+  protocol authors should read docs/AUTOPILOT-AUTHORING.md.
+
 ## [0.21.0] — 2026-07-26
 
 ### Added
