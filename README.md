@@ -1,12 +1,12 @@
 # Refrain
 
-*An open description language for clinical neurofeedback protocols.*
+*An open description language for biosignal training paradigms.*
 
 [![tests](https://github.com/refrain-lang/refrain/actions/workflows/test.yml/badge.svg)](https://github.com/refrain-lang/refrain/actions/workflows/test.yml)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 
-**Status:** v0.1.0 — reference implementation shipped end-to-end (parser, resolver, evaluator, embedding API). Pre-clinical validation. See [CHANGELOG.md](CHANGELOG.md).
+**Status:** v0.1.0 — reference implementation shipped end-to-end (parser, resolver, evaluator, embedding API). Pre-validation — see the positioning note below. See [CHANGELOG.md](CHANGELOG.md).
 
 A Refrain file (`.refrain`) describes a complete clinical neurofeedback protocol — required hardware, channel montage, signal-processing pipeline, threshold logic, inhibit gates, reward expression, output bindings, and clinician-tunable controls — at a level of precision a runtime can execute directly and a peer reviewer can audit directly.
 

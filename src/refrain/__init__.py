@@ -1,6 +1,6 @@
 # Copyright 2026 Refrain Language Authors.
 # Licensed under the Apache License, Version 2.0 (see LICENSE).
-"""Refrain — an open description language for clinical neurofeedback protocols.
+"""Refrain — an open description language for biosignal training paradigms.
 
 A `.refrain` file declares a hardware montage, DSP pipeline, threshold logic,
 reward/inhibit expressions, output bindings, clinician controls, and session

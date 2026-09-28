@@ -1,6 +1,6 @@
 # Refrain — A Concept Document
 
-*An open description language for clinical neurofeedback protocols.*
+*An open description language for biosignal training paradigms.*
 
 *Draft for socialization — May 2026.*
 
