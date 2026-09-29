@@ -8,9 +8,12 @@
 
 **Tech Stack:** Python 3.12, pytest, jsonschema, the `refrain` parser (pinned at `v0.21.0` in `refrain-protocols` CI), Markdown.
 
-**Spec:** `docs/proposals/2026-07-23-biosignal-platform-reframe.md`. Sections §3 (workstream 1) and §4 (workstream 2). Decisions §8 #4 (hybrid neutralization) and §8 #5 (the eight-bucket goals vocabulary) are locked.
+**Spec:** the cross-repo biosignal-platform reframe proposal, sections §3 (workstream 1) and §4 (workstream 2). Its decisions §8 #4 (hybrid neutralization) and §8 #5 (the eight-bucket goals vocabulary) are locked, and this plan restates both in full below — the Global Constraints and the eight goal buckets are reproduced here verbatim, so this plan is self-contained for anyone implementing it.
 
-> The proposal lands on `main` via its own branch, `claude/biosignal-platform-framing-8gk0it`. This branch was rebased onto `main` for merge ordering, so until that branch merges the path above resolves only there.
+> The proposal itself is held internally rather than in this repo: it sets out
+> regulatory positioning and commercial facts that are strategy rather than
+> engineering. Nothing in it is needed to execute this plan, and nothing here
+> depends on reading it.
 
 ## Workspaces
 
@@ -514,7 +517,7 @@ git push -u origin worktree-biosignal-reframe
 
 - [ ] **Step 4: Open the PR**
 
-Target `claude/biosignal-platform-framing-8gk0it` (the branch the approved proposal lives on), not `main`. Title: `docs: reframe Refrain as a biosignal training-paradigm language`. Body must state: no language, IR-JSON, or embedding-API change; links to `docs/proposals/2026-07-23-biosignal-platform-reframe.md` §3.
+Target `main`. Title: `docs: reframe Refrain as a biosignal training-paradigm language`. Body must state: no language, IR-JSON, or embedding-API change, and cite §3 of the reframe proposal (held internally). *Historical note: this originally said to target `claude/biosignal-platform-framing-8gk0it`. That branch predates v0.21.0, its diff would revert that release, and it is obsolete — the shipped PR targeted `main`.*
 
 ---
 
