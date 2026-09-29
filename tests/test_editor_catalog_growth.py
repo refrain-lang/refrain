@@ -52,6 +52,29 @@ protocol "hrv_resonance" {
 '''
 
 
+# A tonic-level protocol: skin conductance read through passthrough() and
+# trained on a smoothed level, with no band anywhere. This is the shape the
+# editor needs for GSR/temperature authoring -- every other derive block is
+# band-based or a formula, so without derive.level it is out of subset.
+LEVEL = '''
+protocol "gsr_calm" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["calm_stress"];
+         modality = "gsr" }
+  requires { sample_rate = ">= 5 Hz"; channels = ["gsr"] }
+  input "skin" { montage = passthrough() }
+  derive "level" { from = "skin"
+    pipeline = [ smooth(tau: 4 s) ] }
+  derive "arousal" { from = "level"
+    pipeline = [ auto_range(window: 5 min, percentile: (1, 99)) ] }
+  threshold "a_t" { signal = "arousal"; type = percentile(target_pct: reward_pct, window: 5 min) }
+  reward { event = dwell(condition: below("arousal", "a_t"), duration: 5 s)
+           continuous = "arousal" }
+  output { audio_gain = reward.continuous; audio_chime = reward.event }
+  controls { reward_pct = percent { default = 30; range = (10, 50); label = "r"; live_tunable = true } }
+}
+'''
+
+
 def _ir(src):
     return ir_to_json_obj(resolve(refrain.parse(src)))
 
@@ -74,3 +97,12 @@ def test_hrv_round_trips():
     assert d["model"]["inputs"][0]["block"] == "montage.passthrough"
     assert d["model"]["reward"]["block"] == "reward.passthrough"
     assert _ir(HRV) == _ir(render_protocol(d["model"]))
+
+
+def test_level_round_trips():
+    d = describe_protocol(LEVEL)
+    assert d["in_subset"] is True
+    blocks = [n["block"] for n in d["model"]["derives"]]
+    assert blocks == ["derive.level", "derive.auto_range"]
+    assert d["model"]["inputs"][0]["block"] == "montage.passthrough"
+    assert _ir(LEVEL) == _ir(render_protocol(d["model"]))

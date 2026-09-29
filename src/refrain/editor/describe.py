@@ -188,6 +188,10 @@ def _match_derive(decl: A.NamedDecl) -> dict:
     names = [c.callee for c in calls if isinstance(c, A.Call)]
     if names == ["rectify"] and len(calls) == 1:  # e.g. |theta - alpha| asymmetry
         return {"name": decl.name, "block": "derive.rectify", "from": bm["from"].value, "slots": {}}
+    if names == ["smooth"] and len(calls) == 1:  # tonic level (GSR / temperature)
+        # No band anywhere: these signals train a smoothed level, not band power.
+        return {"name": decl.name, "block": "derive.level", "from": bm["from"].value,
+                "slots": {"smooth_tau": _to_ms(_arg(calls[0], "tau"))}}
     if names == ["bandpass", "hilbert", "magnitude", "smooth"] and len(calls) == 4:
         bp, sm = calls[0], calls[3]
         center, bw, band = _arg(bp, "center"), _arg(bp, "bandwidth"), _arg(bp, "band")
