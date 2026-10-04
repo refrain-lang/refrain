@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from refrain.fuzz import runner
-from refrain.fuzz.runner import FUZZED, SKIPPED, fuzz_protocol
+from refrain.fuzz.runner import ERRORED, FUZZED, SKIPPED, fuzz_protocol
 from refrain.parser import parse_file
 from refrain.resolver import resolve
 
@@ -40,10 +40,31 @@ def test_single_condition_is_skipped_with_typed_reason():
     assert out.reason == "composite-signal reward condition"
 
 
-def test_unrecognized_condition_is_skipped_unclassified():
+def test_unmodelled_condition_is_a_typed_skip_naming_the_primitive():
+    """Was `test_unrecognized_condition_is_skipped_unclassified`, asserting
+    `reason.startswith("unclassified (")`.
+
+    That bucket was the defect, not the contract. `micro_08_bandpower` uses
+    `inside(...)`, which the surface builder genuinely does not model — a
+    declared `UnsupportedProtocol`, not a crash. It used to raise a bare
+    ValueError and land in the same bucket as real oracle bugs, so a reader
+    could not tell "we don't model this shape" from "we fell over".
+    """
     out = _run("bench/protocols/micro_08_bandpower.refrain")
     assert out.status == SKIPPED
-    assert out.reason.startswith("unclassified (")
+    assert out.reason == "condition shape not modelled (inside())"
+
+
+def test_an_oracle_crash_is_an_error_not_a_skip(monkeypatch):
+    """The other half of the separation: an internal exception during
+    introspection must be ERRORED, so `batch_exit_code` fails the build."""
+    monkeypatch.setattr(
+        runner, "build_surface",
+        lambda *a, **k: (_ for _ in ()).throw(AttributeError("'IRFoo' has no attribute 'value'")),
+    )
+    out = _run("bench/protocols/micro_single_above.refrain")
+    assert out.status == ERRORED
+    assert out.reason.startswith("oracle-bug: AttributeError")
 
 
 def test_backstop_does_not_swallow_scenario_loop_errors(monkeypatch):

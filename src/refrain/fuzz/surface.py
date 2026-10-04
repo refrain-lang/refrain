@@ -204,6 +204,21 @@ def _iter_pipeline_calls(d: IRDerive):
         expr = inner
 
 
+def _band_edge(expr: object, ir: IRProtocol) -> float | None:
+    """One band edge as a number: a literal, or a control's baked default."""
+    if isinstance(expr, IRNumberLit):
+        return float(expr.value)
+    if isinstance(expr, IRControlRef):
+        return _resolve_control_default(ir, expr)
+    return None
+
+
+def _condition_shape_name(expr: object) -> str:
+    """A reason a reader can act on. `IRCall` alone does not say which call."""
+    callee = getattr(expr, "callee", None)
+    return f"{callee}()" if callee else type(expr).__name__
+
+
 def _band_from_call(call: IRCall, ir: IRProtocol) -> tuple[float, float]:
     """Read `band: (lo Hz, hi Hz)`, or derive edges from the `center:`/`bandwidth:`
     form. Formula mirrors primitive_impls._resolve_band (the resolver's source of
@@ -211,7 +226,17 @@ def _band_from_call(call: IRCall, ir: IRProtocol) -> tuple[float, float]:
     band = _arg(call, "band")
     if band is not None:
         lo, hi = band.elements
-        return (float(lo.value), float(hi.value))
+        # A band edge can be a control, not just a literal — the paired
+        # `_lo_hz`/`_hi_hz` form in alpha_theta_autopilot.refrain. The
+        # center/bandwidth branch below already resolved a control to its
+        # default; this branch assumed a literal and raised AttributeError,
+        # which was reported as a skip and so went unnoticed.
+        edges = tuple(_band_edge(e, ir) for e in (lo, hi))
+        if any(e is None for e in edges):
+            raise UnsupportedProtocol(
+                "band edge did not resolve to a literal or a control default"
+            )
+        return (edges[0], edges[1])
     center_expr = _arg(call, "center")
     bw_expr = _arg(call, "bandwidth")
     if center_expr is None or bw_expr is None:
@@ -399,7 +424,9 @@ def _condition_from_ir(expr: IRExpr) -> ConditionNode | ConditionLeaf:
                     else:
                         threshold = _strip_prefix(v.value)
             return ConditionLeaf(op=expr.callee, signal=signal, threshold=threshold)
-    raise ValueError(f"surface: unrecognized condition expr {type(expr).__name__}")
+    raise UnsupportedProtocol(
+        f"condition shape not modelled ({_condition_shape_name(expr)})"
+    )
 
 
 def _dwell_ms_from_ir(ir: IRProtocol) -> float:
@@ -473,7 +500,16 @@ def _reward_condition_from_ir(
             return node
         if isinstance(node, ConditionLeaf):
             return _classify_single_leaf(node, derives, thresholds)
-    raise ValueError("surface: reward.event has no all_of/any_of condition")
+    # Not "no all_of/any_of": this is also where a protocol with no
+    # `reward.event` at all lands (every `micro_*` that only drives
+    # `output { audio_gain = ... }`), and where a non-`dwell` event lands. The
+    # old message named one cause out of three and was raised as a bare
+    # ValueError, so it was bucketed with genuine oracle crashes.
+    if not isinstance(event, IRCall):
+        raise UnsupportedProtocol("no reward.event to fuzz")
+    if event.callee != "dwell":
+        raise UnsupportedProtocol(f"reward.event is {event.callee}(), not dwell()")
+    raise UnsupportedProtocol("reward.event dwell has no condition the oracle models")
 
 
 # ---------------------------------------------------------------------------
