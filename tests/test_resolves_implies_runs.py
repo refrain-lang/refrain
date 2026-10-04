@@ -44,6 +44,10 @@ from refrain.synthetic import channels_for_synthetic
 
 REPO = Path(__file__).resolve().parents[1]
 
+# Which engine to step protocols through. Matches tests/conftest.py's
+# convention so one env var drives the whole suite.
+EVAL_BACKEND = os.environ.get("REFRAIN_EVAL_BACKEND", "python")
+
 # Corpus roots, kept separate so discovery can be asserted per root.
 CORPUS_ROOTS: dict[str, Path] = {
     "examples": REPO / "examples",
@@ -129,7 +133,7 @@ def _channels_for(ir) -> tuple[str, ...]:
     return channels_for_synthetic(ir)
 
 
-def _step_one(ir, *, chunks: int = 3) -> None:
+def _step_one(ir, *, chunks: int = 3, backend: str | None = None) -> None:
     """Push a few chunks of noise through a fresh Evaluator.
 
     Noise rather than zeros because a constant input makes several primitives
@@ -137,12 +141,23 @@ def _step_one(ir, *, chunks: int = 3) -> None:
     percentile trackers see no spread), and a protocol that only survives a
     flat line is not really running. More than one chunk because some impls
     only bind state on a later call.
+
+    Built through `Evaluator.live`, not `Evaluator(...)`, because the bare
+    constructor hard-codes `self._backend = "python"` — only the `live`
+    factory wires up the Rust core. A version of this file that constructed
+    the evaluator directly and relied on `REFRAIN_EVAL_BACKEND` would run the
+    Python engine under both settings and report that as parity.
     """
     fs = float(ir.requires.sample_rate_chosen_hz or 256)
     chans = _channels_for(ir)
     rng = np.random.default_rng(7)
     n = max(8, int(round(fs / 4)))
-    ev = Evaluator(ir, sample_rate_hz=fs, channel_names=chans)
+    ev = Evaluator.live(
+        ir,
+        sample_rate_hz=fs,
+        channel_names=chans,
+        backend=backend or EVAL_BACKEND,
+    )
     for _ in range(chunks):
         ev.step_chunk(rng.standard_normal((n, len(chans))) * 5.0)
 
@@ -150,6 +165,27 @@ def _step_one(ir, *, chunks: int = 3) -> None:
 # ---------------------------------------------------------------------------
 # Guard 1 — discovery is not vacuous
 # ---------------------------------------------------------------------------
+
+
+def test_the_backend_under_test_is_the_one_requested():
+    """Guard against the whole file going quietly Python-only.
+
+    `Evaluator(...)` sets `_backend = "python"` unconditionally; only
+    `Evaluator.live(backend=...)` attaches the Rust core. If this file ever
+    goes back to the bare constructor, a `REFRAIN_EVAL_BACKEND=rust` run would
+    still exercise Python and report it as parity — so assert the engine that
+    came back is the one asked for.
+    """
+    ir = _resolve_one(CORPUS_ROOTS["bench"] / "micro_single_above.refrain")
+    chans = _channels_for(ir)
+    ev = Evaluator.live(
+        ir, sample_rate_hz=256.0, channel_names=chans, backend=EVAL_BACKEND
+    )
+    assert ev._backend == EVAL_BACKEND, (
+        f"asked for {EVAL_BACKEND!r}, got {ev._backend!r}"
+    )
+    if EVAL_BACKEND == "rust":
+        assert ev._rust is not None, "rust backend requested but no core attached"
 
 
 @pytest.mark.parametrize("root_name", sorted(MIN_PER_ROOT))
