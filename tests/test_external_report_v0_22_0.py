@@ -397,26 +397,75 @@ def _audio_gain(expr: str) -> float:
     return float(np.asarray(ev.last_streams()["output/audio_gain"])[-1])
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="D5: types_.py says 'the runtime knows `95 %` means `0.95`'. It does "
-           "not: the reference evaluator multiplies by 10.0 for `10 %`. "
-           "`10 % * 0.05` yields 0.5, not 0.005. (The report only showed the "
-           "emitted IR-JSON value of 30.0; the behaviour diverges too.) Which "
-           "side moves is a maintainer decision — see the issue.",
-)
-def test_d5_percent_literal_is_scaled_at_runtime():
-    # Chosen so the two readings land either side of the output clamp:
-    # 0.10 * 0.05 = 0.005 (scaled) vs 10 * 0.05 = 0.5 (unscaled).
-    assert _audio_gain("10 % * 0.05") == pytest.approx(0.005)
+def test_d5_percent_in_an_expression_keeps_its_face_value():
+    """D5, as measured. `types_.py` claimed 'the runtime knows `95 %` means
+    `0.95`'; in an expression it does not.
+
+    The constants are chosen so the two readings land either side of the output
+    clamp: 0.10 * 0.05 = 0.005 if scaled, 10 * 0.05 = 0.5 if raw. The report
+    only showed the emitted IR-JSON value of 30.0 — the behaviour diverges too.
+    """
+    assert _audio_gain("10 % * 0.05") == pytest.approx(0.5)
 
 
-def test_d5_docstring_still_claims_percent_is_scaled():
-    """Pins the half of the divergence that lives in the docstring, so a fix
-    that edits only one side leaves this failing."""
+def test_d5_autopilot_percent_is_the_one_place_that_divides_by_100():
+    """The sharper version of D5: `%` means two different things in v0.22.0.
+
+    `_ap_percent` divides by 100; nothing else does. So `30 %` is 30.0 in an
+    output expression and 0.3 in a guard, in the same file. Reconciling that
+    changes emitted values either way, so it is filed rather than fixed here —
+    this test pins both halves so a future fix has to move both.
+    """
+    ir = resolve_src(pathlib.Path(
+        pathlib.Path(__file__).resolve().parents[1]
+        / "bench" / "protocols" / "autopilot_alpha_theta.refrain"
+    ).read_text())
+    ap = ir_to_json_obj(ir)["autopilot"]
+    assert ap["reward_target"] == [0.2, 0.4], "written as (20%, 40%)"
+    assert ap["guards"]["emg"]["max"] == pytest.approx(0.3), "written as 30%"
+
+
+def test_d5_percent_control_default_is_a_0_to_100_number_used_raw():
+    """The third convention, and the reason scaling expression-`%` would be
+    wrong rather than simply behaviour-changing: `percentile` requires 0-100."""
+    from refrain.primitive_impls import PercentileImpl
+
+    ir = resolve_src(pathlib.Path(
+        pathlib.Path(__file__).resolve().parents[1]
+        / "bench" / "protocols" / "autopilot_alpha_theta.refrain"
+    ).read_text())
+    controls = ir_to_json_obj(ir)["controls"]
+    assert controls["t_pct"]["type_kind"] == "percent"
+    assert controls["t_pct"]["default"]["value"] == 15.0  # not 0.15
+
+    # 101 is out of range, which pins the scale as 0-100...
+    with pytest.raises(ValueError, match=r"\[0, 100\]"):
+        PercentileImpl(target_pct=101.0, window_ms=1000.0, sample_rate_hz=256.0)
+
+    # ...and 0.95 is accepted, read as the 0.95th percentile rather than the
+    # 95th. That is why rescaling `%` to a 0-1 fraction would be wrong here
+    # and not merely behaviour-changing: it would silently move a clinical
+    # threshold to the bottom of the distribution.
+    data = np.arange(1000, dtype=np.float64)
+    as_95th = PercentileImpl(target_pct=95.0, window_ms=4000.0, sample_rate_hz=250.0)
+    as_fraction = PercentileImpl(target_pct=0.95, window_ms=4000.0, sample_rate_hz=250.0)
+    hi = float(as_95th.step(data)[-1])
+    lo = float(as_fraction.step(data)[-1])
+    assert hi > 900 and lo < 100, f"95 -> {hi}, 0.95 -> {lo}"
+
+
+def test_d5_docstring_states_the_actual_rule():
+    """The docstring was the wrong side of the divergence; it now describes all
+    three conventions. Guards against it drifting back to the false claim."""
     import refrain.types_ as types_
 
-    assert "means `0.95`" in inspect.getdoc(types_)
+    doc = inspect.getdoc(types_)
+    assert "It is NOT rescaled here." in doc
+    assert "keeps its face value" in doc
+    assert "Autopilot fields only" in doc
+    # The old claim may still appear, but only as the thing being corrected.
+    if "means `0.95`" in doc:
+        assert "false everywhere else" in doc
 
 
 # ---------------------------------------------------------------------------
@@ -571,21 +620,21 @@ def _documented_primitive_headings() -> dict[str, tuple[str, str]]:
     return out
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="D8: 'align_to, select_channel and decimate all appear in "
-           "PRIMITIVES.md with signatures and worked examples, with no "
-           "\"planned\" marker. None is in the v0.22.0 registry.' Note "
-           "`decimate` IS marked — '(internal, usually inserted by compiler)' — "
-           "so of the three named, two are genuinely bare.",
-)
-@pytest.mark.parametrize("name", ["align_to", "select_channel"])
+@pytest.mark.parametrize("name", ["align_to", "select_channel", "decimate"])
 def test_d8_documented_primitive_exists_or_is_marked(name):
+    """FIXED, in the docs. Was: 'align_to, select_channel and decimate all
+    appear in PRIMITIVES.md with signatures and worked examples, with no
+    "planned" marker. None is in the v0.22.0 registry.'
+
+    All three headings now say so, and each entry carries a note explaining
+    what is actually absent. The general property — docs and registry must
+    agree in both directions — lives in test_docs_registry_parity.py
+    (mechanism M6); this stays as the record of the three the report named.
+    """
     from refrain.primitives import lookup
 
     own, section = _documented_primitive_headings()[name]
-    if lookup(name) is not None:
-        return
+    assert lookup(name) is None, f"{name} is now implemented; retire this test"
     assert _ABSENT_MARKER.search(own) or _ABSENT_MARKER.search(section), (
         f"PRIMITIVES.md documents `{name}` under heading suffix {own!r} in "
         f"section {section!r} with no planned/stub marker, but it is not in the "
@@ -593,13 +642,18 @@ def test_d8_documented_primitive_exists_or_is_marked(name):
     )
 
 
-def test_d8_absent_primitives_really_are_absent():
-    """Pins the registry side, so a fix that only edits the docs still shows the
-    three as unimplemented rather than appearing to resolve the divergence."""
-    from refrain.primitives import lookup
+def test_d8_decimate_was_marked_but_not_in_a_way_that_said_absent():
+    """A correction to the report, kept because it changes what "marked" means.
 
-    for name in ("align_to", "select_channel", "decimate"):
-        assert lookup(name) is None
+    `decimate`'s heading was not bare: it read '*(internal, usually inserted by
+    compiler)*'. That tells a reader the primitive is not theirs to call, which
+    is not the same as telling them it does not exist — and nothing inserts it,
+    because the evaluator runs at one rate throughout. So of the three the
+    report named, two were genuinely unmarked and one was mis-marked.
+    """
+    body = _PRIMITIVES_MD.read_text()
+    assert "*(internal, usually inserted by compiler)*" not in body
+    assert "nothing inserts it" in body
 
 
 def test_d8_correctly_marked_siblings_stay_marked():
