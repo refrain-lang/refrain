@@ -324,15 +324,9 @@ def test_d4_matching_dimensions_still_resolve():
     assert "t" in ir.thresholds
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="D4: 'above(\"<uV stream>\", 5 Hz) — resolves.' Binary `>` correctly "
-           "rejects a mismatch, so the dimensions Refrain does have go "
-           "unenforced at exactly the points a clinical protocol compares "
-           "things.",
-)
 @pytest.mark.parametrize("ctor", ["above", "below"])
 def test_d4_condition_constructors_dimension_check(ctor):
+    """FIXED. Was: 'above("<uV stream>", 5 Hz) — resolves.'"""
     with pytest.raises(ResolveError, match="dimension"):
         resolve_src(env_protocol(f"""
   reward {{ event = dwell(condition: {ctor}("env", 5 Hz), duration: 250 ms) }}
@@ -340,13 +334,10 @@ def test_d4_condition_constructors_dimension_check(ctor):
 """))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="D4: 'sigmoid(\"<uV stream>\", midpoint: 5 Hz, steepness: 1) — "
-           "resolves.' A midpoint is compared against the input stream, so it "
-           "must share the stream's dimensions.",
-)
 def test_d4_sigmoid_midpoint_dimension_check():
+    """FIXED. Was: 'sigmoid("<uV stream>", midpoint: 5 Hz, steepness: 1) —
+    resolves.' A midpoint is compared against the input, so it must share the
+    input's dimensions."""
     with pytest.raises(ResolveError, match="dimension"):
         resolve_src(env_protocol("""
   reward { continuous = sigmoid("env", midpoint: 5 Hz, steepness: 1) }
@@ -354,13 +345,11 @@ def test_d4_sigmoid_midpoint_dimension_check():
 """))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="D4: 'absolute(value: 900 uV2) as a threshold on a uV signal — "
-           "resolves, and reaches the wire with dims:{voltage:2} on the value "
-           "against {voltage:1} on the stream.'",
-)
 def test_d4_absolute_threshold_dimension_check():
+    """FIXED. Was: 'absolute(value: 900 uV2) as a threshold on a uV signal —
+    resolves, and reaches the wire with dims:{voltage:2} on the value against
+    {voltage:1} on the stream.' It no longer reaches the wire at all, so the
+    characterisation test that recorded that IR-JSON is gone with it."""
     with pytest.raises(ResolveError, match="dimension"):
         resolve_src(env_protocol("""
   threshold "t" { signal = "env"; type = absolute(value: 900 uV2) }
@@ -369,20 +358,21 @@ def test_d4_absolute_threshold_dimension_check():
 """))
 
 
-def test_d4_mismatched_absolute_reaches_the_wire_with_both_dims():
-    """Documents the IR-JSON the reporter quoted: voltage^2 on the value against
-    voltage^1 on the stream, in one emitted threshold. Characterisation, not a
-    wish — delete it along with the xfail above once the check lands."""
+def test_d4_dimensionless_literal_against_a_dimensioned_stream_still_resolves():
+    """The deliberate limit of the fix.
+
+    `sigmoid("smr_envelope", midpoint: 5.0, steepness: 0.5)` in
+    bench/protocols/micro_09_inhibit.refrain means 5 uV, and bare unit-less
+    numbers are how the whole corpus spells a threshold. Binary `>` *does*
+    reject `"env" > 5`, so this is not yet full parity — requiring the unit is
+    a language decision with corpus-wide churn, not a bug fix. Filed
+    separately; this test pins what was deliberately left alone.
+    """
     ir = resolve_src(env_protocol("""
-  threshold "t" { signal = "env"; type = absolute(value: 900 uV2) }
-  reward { event = dwell(condition: above("env", "t"), duration: 250 ms) }
-  output { audio_chime = reward.event }
+  reward { continuous = sigmoid("env", midpoint: 5.0, steepness: 0.5) }
+  output { audio_gain = reward.continuous }
 """))
-    j = ir_to_json_obj(ir)
-    thr = j["thresholds"]["t"]
-    assert thr["stream_type"]["dimensions"]["voltage"] == 1
-    value_dims = thr["threshold_call"]["args"][0]["value"]["dims"]
-    assert value_dims["voltage"] == 2
+    assert ir.reward is not None
 
 
 # ---------------------------------------------------------------------------

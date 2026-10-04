@@ -2860,15 +2860,13 @@ class _Resolver:
             ]
 
         # Resolve output type using the matching signature.
-        output_type = _compute_call_output(
-            spec,
-            resolved_args,
-            _stream_input_hint,
-            call.loc,
-        )
+        sig, arg_map = _build_arg_map(spec, resolved_args, _stream_input_hint, call.loc)
+        output_type = sig.output(arg_map)
 
         # Per-primitive validation of `kind`-style enumerated string args.
         _validate_kind_args(spec, resolved_args, call.loc)
+        # Dimension-check the slots that compare a value against a signal.
+        _validate_arg_dims(spec, arg_map, call.loc, _stream_input_hint)
 
         # Account budget.
         self._state_kb += spec.budget.state_kb
@@ -2922,13 +2920,14 @@ class _Resolver:
                 loc=call.loc,
             )
         prev_type = _expr_stream_type(prev)
-        output_type = _compute_call_output(
-            spec,
-            resolved_args,
-            _stream_input_hint=prev_type,
-            loc=call.loc,
+        sig, arg_map = _build_arg_map(
+            spec, resolved_args, prev_type, call.loc
         )
+        output_type = sig.output(arg_map)
         _validate_kind_args(spec, resolved_args, call.loc)
+        # A `sigmoid`/`linear` stage inside a pipeline compares its midpoint
+        # against the previous stage, so it needs the same check as a call.
+        _validate_arg_dims(spec, arg_map, call.loc, prev_type)
         self._state_kb += spec.budget.state_kb
         self._worst_case_us += spec.budget.worst_case_us
         return IRCall(
@@ -3006,13 +3005,13 @@ def _expr_stream_type(expr: IRExpr) -> StreamType:
     return scalar_stream(DIMENSIONLESS)
 
 
-def _compute_call_output(
+def _build_arg_map(
     spec: PrimitiveSpec,
     args: list[IRArg],
     _stream_input_hint: StreamType | None,
     loc: Loc | None,
-) -> StreamType:
-    """Run the primitive's output factory with a `ResolvedArg` dict."""
+) -> tuple[P.Signature, dict[str, ResolvedArg]]:
+    """Match `args` against the chosen signature, keyed by parameter name."""
     arg_map: dict[str, ResolvedArg] = {}
 
     # Map positional args to the signature's positional params.
@@ -3038,6 +3037,17 @@ def _compute_call_output(
                 name=None, stream_type=_stream_input_hint, dims=None
             )
 
+    return sig, arg_map
+
+
+def _compute_call_output(
+    spec: PrimitiveSpec,
+    args: list[IRArg],
+    _stream_input_hint: StreamType | None,
+    loc: Loc | None,
+) -> StreamType:
+    """Run the primitive's output factory with a `ResolvedArg` dict."""
+    sig, arg_map = _build_arg_map(spec, args, _stream_input_hint, loc)
     return sig.output(arg_map)
 
 
@@ -3082,6 +3092,90 @@ def _validate_kind_args(spec: P.PrimitiveSpec, args: list[IRArg], loc: Loc | Non
                 f"{spec.name}(kind: {arg.value.value!r}) is not a supported "
                 f"filter family; allowed: {list(allowed)}",
                 loc=arg.loc,
+            )
+
+
+# Parameters whose value is compared against the primitive's reference stream
+# and must therefore carry the same dimensions: `param -> reference param`.
+# "__input__" is the implicit pipeline-threaded input (or the inhibit/threshold
+# stream hint), which is how `sigmoid`, `linear` and `absolute` see their
+# subject.
+_DIM_CHECKED_PARAMS: dict[str, tuple[tuple[str, str], ...]] = {
+    "above":    (("threshold", "signal"),),
+    "below":    (("threshold", "signal"),),
+    "inside":   (("low", "signal"), ("high", "signal")),
+    "sigmoid":  (("midpoint", "__input__"),),
+    "linear":   (("midpoint", "__input__"),),
+    "absolute": (("value", "__input__"),),
+}
+
+# Pure shape knobs: dimensionless whatever the input carries.
+_DIMENSIONLESS_PARAMS: dict[str, tuple[str, ...]] = {
+    "sigmoid": ("steepness",),
+    "linear": ("slope",),
+}
+
+
+def _resolved_arg_dims(arg: ResolvedArg | None) -> Dimensions | None:
+    """The dimensions a resolved argument carries, stream or scalar."""
+    if arg is None:
+        return None
+    if arg.dims is not None:
+        return arg.dims
+    if arg.stream_type is not None:
+        return arg.stream_type.dimensions
+    return None
+
+
+def _validate_arg_dims(
+    spec: P.PrimitiveSpec,
+    arg_map: dict[str, ResolvedArg],
+    loc: Loc | None,
+    _stream_input_hint: StreamType | None = None,
+) -> None:
+    """Dimension-check the threshold and condition constructors.
+
+    Binary `>` rejects `"<uV stream>" > 5 Hz`, but `above("<uV stream>", 5 Hz)`
+    used to resolve, as did `sigmoid(..., midpoint: 5 Hz)` and
+    `absolute(value: 900 uV2)` against a uV signal — so the dimensions Refrain
+    does have went unenforced at exactly the points a clinical protocol
+    compares quantities.
+
+    A *dimensionless* operand is still accepted against any stream. Bare
+    unit-less numbers are the established spelling throughout the corpus
+    (`sigmoid("smr_envelope", midpoint: 5.0, ...)` in micro_09_inhibit means
+    5 uV), and whether a literal should instead be required to carry its unit
+    — which is what full parity with binary `>` would mean — is a language
+    decision, not a bug fix. What is unambiguous is that a literal carrying
+    the *wrong* unit is an error.
+    """
+    for param, ref_param in _DIM_CHECKED_PARAMS.get(spec.name, ()):
+        got = _resolved_arg_dims(arg_map.get(param))
+        want = _resolved_arg_dims(arg_map.get(ref_param))
+        if want is None and ref_param == "__input__" and _stream_input_hint is not None:
+            # `absolute(value: 8 uV)` passes its only argument by name, so
+            # `_build_arg_map` has no positional arg to hang the stream hint
+            # on. The threshold's signal is still what the value is compared
+            # against, so take it directly.
+            want = _stream_input_hint.dimensions
+        if got is None or want is None:
+            continue                      # reference stream not visible here
+        if got.is_dimensionless or want.is_dimensionless:
+            continue                      # polymorphic — see the docstring
+        if got != want:
+            raise ResolveError(
+                f"{spec.name}({param}: ...) is {got}, but the signal it is "
+                f"compared against is {want}; they must share dimensions "
+                f"(binary `>` already enforces this)",
+                loc=loc,
+            )
+
+    for param in _DIMENSIONLESS_PARAMS.get(spec.name, ()):
+        got = _resolved_arg_dims(arg_map.get(param))
+        if got is not None and not got.is_dimensionless:
+            raise ResolveError(
+                f"{spec.name}({param}: ...) must be dimensionless, got {got}",
+                loc=loc,
             )
 
 
