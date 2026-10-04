@@ -964,6 +964,28 @@ class _Resolver:
             )
 
         upstream = tuple(_collect_upstream(expr))
+
+        # D6: the evaluator runs every input, then every derive, then every
+        # threshold, so a derive that reads a threshold can never bind it — it
+        # resolved, emitted IR, and died on the first chunk with
+        # `KeyError: 'threshold/<name>'` (Python) / `stream not bound` (Rust).
+        # `resolve` even printed a topological order placing the threshold
+        # first, which actively suggested this was supported.
+        thresholds_read = sorted(
+            u for u in upstream if u.startswith("threshold/")
+        )
+        if thresholds_read:
+            names = ", ".join(t.removeprefix("threshold/") for t in thresholds_read)
+            raise ResolveError(
+                f'derive "{decl.name}" reads threshold(s) {names}, but every '
+                "derive is evaluated before any threshold, so the reference "
+                "can never bind at run time. Reference the seeded `control` "
+                "the threshold is built from instead, or move the comparison "
+                "into `reward` / `inhibit`, which are evaluated after "
+                "thresholds.",
+                loc=decl.loc,
+            )
+
         return IRDerive(
             name=decl.name,
             canonical_name=f"derive/{decl.name}",

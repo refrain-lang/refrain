@@ -437,17 +437,17 @@ protocol "d6" {
 """
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="D6: 'Resolves, emits IR, then dies on the first chunk: stream "
-           "\"baseline_t\" not bound (Rust) / KeyError: "
-           "\"threshold/baseline_t\" (Python).' Either outcome is acceptable: "
-           "reject at resolve, or make the evaluator honour the topological "
-           "order resolve already prints. 'This bit us directly — we committed "
-           "a thermal prototype on the strength of resolve + compile-json and "
-           "it had never run.'",
-)
 def test_d6_threshold_in_formula_derive_either_rejects_or_runs():
+    """FIXED, by rejecting at resolve. Was: 'Resolves, emits IR, then dies on
+    the first chunk: stream "baseline_t" not bound (Rust) / KeyError:
+    "threshold/baseline_t" (Python).'
+
+    Rejecting is the honest option because the ordering is not incidental: the
+    evaluator runs every input, then every derive, then every threshold, so no
+    derive can ever bind a threshold. The companion test that recorded the
+    misleading topological order is gone with it — this shape no longer gets
+    far enough to print one.
+    """
     try:
         ir = resolve_src(D6_SRC)
     except ResolveError:
@@ -455,18 +455,32 @@ def test_d6_threshold_in_formula_derive_either_rejects_or_runs():
     step_once(ir, fs=256.0)  # or it must survive a chunk
 
 
-def test_d6_resolve_prints_a_topological_order_putting_the_threshold_first():
-    """The specific thing that convinced the reporter this was supported. If the
-    evaluator is fixed to honour this order, this test stays true; if the
-    construct is rejected at resolve instead, this test is removed with it."""
-    ir = resolve_src(D6_SRC)
-    order = ir_to_json_obj(ir)["topological_order"]
-    assert "threshold/baseline_t" in order
-    assert "derive/rise" in order
-    assert order.index("threshold/baseline_t") < order.index("derive/rise"), (
-        f"resolve advertises {order}, which puts the threshold before the "
-        f"derive that reads it"
-    )
+def test_d6_error_names_the_threshold_and_the_way_out():
+    """The reporter committed a prototype on the strength of `resolve` plus
+    `compile-json`. The error has to be actionable enough that the next person
+    does not have to rediscover the workaround their own file ended up using
+    (subtract the seeded control instead)."""
+    with pytest.raises(ResolveError) as exc:
+        resolve_src(D6_SRC)
+    msg = str(exc.value)
+    assert "baseline_t" in msg
+    assert "control" in msg
+    assert "reward" in msg or "inhibit" in msg
+
+
+def test_d6_threshold_refs_still_work_where_they_are_evaluated_in_order():
+    """The limit of the rejection: `reward` and `inhibit` run after thresholds,
+    so a threshold reference there is fine and must stay fine. This is the
+    idiom every shipped protocol uses."""
+    ir = resolve_src(env_protocol("""
+  threshold "t" { signal = "env"; type = absolute(value: 8 uV) }
+  reward {
+    event = dwell(condition: above("env", "t"), duration: 250 ms)
+    continuous = sigmoid("env" / "t", midpoint: 1.0, steepness: 3)
+  }
+  output { audio_chime = reward.event; audio_gain = reward.continuous }
+"""))
+    step_once(ir, fs=256.0)
 
 
 # ---------------------------------------------------------------------------
