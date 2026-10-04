@@ -691,16 +691,47 @@ protocol "d94" {
 """
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="D9.4: 'A bandpass above Nyquist is checked only at evaluator "
-           "construction, not at resolve: bandpass(band: (20 Hz, 450 Hz)) "
-           "compiles against a 250 Hz amp.' The resolver knows the chosen "
-           "sample rate, so it can say so before anything is emitted.",
-)
 def test_d9_4_nyquist_violation_is_caught_at_resolve():
+    """FIXED. Was: 'checked only at evaluator construction, not at resolve:
+    bandpass(band: (20 Hz, 450 Hz)) compiles against a 250 Hz amp.'"""
     with pytest.raises(ResolveError, match="[Nn]yquist"):
         resolve_src(D9_4_SRC)
+
+
+def test_d9_4_nyquist_check_covers_the_center_bandwidth_form():
+    """`bandpass(center:, bandwidth:)` has no explicit band, so the implied
+    high edge is what has to be checked."""
+    with pytest.raises(ResolveError, match="[Nn]yquist"):
+        resolve_src("""
+protocol "cb" {
+  requires { sample_rate = ">= 250 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "env" { from = "raw"; pipeline = [ bandpass(center: 200 Hz, bandwidth: 4 Hz, order: 4) ] }
+  output { audio_gain = 0 }
+}
+""")
+
+
+def test_d9_4_nyquist_check_also_covers_bandpower_and_coherence():
+    for prim in (
+        'derive "d" { formula = bandpower(input: "raw", band: (20 Hz, 450 Hz), window: 100 ms) }',
+        'derive "d" { formula = coherence("raw", "raw", band: (20 Hz, 450 Hz), window: 60 s) }',
+    ):
+        with pytest.raises(ResolveError, match="[Nn]yquist"):
+            resolve_src(f"""
+protocol "bp" {{
+  requires {{ sample_rate = ">= 250 Hz"; channels = ["Cz"] }}
+  input "raw" {{ montage = referential(active: "Cz", reference: "linked_ears") }}
+  {prim}
+  output {{ audio_gain = 0 }}
+}}
+""")
+
+
+def test_d9_4_legal_bands_are_unaffected():
+    """Guard against an off-by-one that rejects ordinary EEG bands."""
+    ir = resolve_src(env_protocol('output { audio_gain = 0 }'))
+    assert "env" in ir.derives
 
 
 def test_d9_4_nyquist_violation_is_caught_at_least_somewhere():

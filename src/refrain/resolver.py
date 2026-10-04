@@ -209,6 +209,14 @@ class _Resolver:
         self.bands: dict[str, tuple[float, float]] = {}
         self.autopilot_ast: A.SectionBlock | None = None
 
+        # The rate this protocol will run at, set by `_resolve_requires` —
+        # which runs before any named decl, so every filter's band can be
+        # checked against Nyquist at resolve rather than at evaluator
+        # construction. With no amp profile this is the declared minimum,
+        # which is the conservative reading: a protocol that says it runs at
+        # 250 Hz cannot also ask for a 450 Hz band edge.
+        self.sample_rate_chosen_hz: float | None = None
+
         # Resolved named entities (filled in source order).
         self.inputs: dict[str, IRInput] = {}
         self.derives: dict[str, IRDerive] = {}
@@ -601,10 +609,12 @@ class _Resolver:
         if self.requires_ast is None:
             # SPEC §4.2 doesn't say `requires` is mandatory, but in
             # practice every example has it. Allow absent for now.
+            chosen = self.amp.sample_rates_hz[-1] if self.amp else 256
+            self.sample_rate_chosen_hz = float(chosen)
             return IRRequires(
                 coupling=None,
                 sample_rate_min_hz=None,
-                sample_rate_chosen_hz=self.amp.sample_rates_hz[-1] if self.amp else 256,
+                sample_rate_chosen_hz=chosen,
                 channels=(),
                 impedance="not_required",
                 markers="not_required",
@@ -614,6 +624,7 @@ class _Resolver:
         impedance = self._string_field(fields, "impedance", default="not_required")
         markers = self._string_field(fields, "markers", default="not_required")
         sample_rate_min, sample_rate_chosen = self._parse_sample_rate(fields)
+        self.sample_rate_chosen_hz = float(sample_rate_chosen)
         channels = self._parse_channel_list(fields)
 
         # Validate against amp profile.
@@ -2867,6 +2878,8 @@ class _Resolver:
         _validate_kind_args(spec, resolved_args, call.loc)
         # Dimension-check the slots that compare a value against a signal.
         _validate_arg_dims(spec, arg_map, call.loc, _stream_input_hint)
+        # Nyquist, before anything is emitted (was evaluator-construction only).
+        self._validate_band_nyquist(spec, resolved_args, call.loc)
 
         # Account budget.
         self._state_kb += spec.budget.state_kb
@@ -2879,6 +2892,57 @@ class _Resolver:
             stream_type=output_type,
             loc=call.loc,
         )
+
+    def _validate_band_nyquist(self, spec: P.PrimitiveSpec, args: list[IRArg],
+                               loc: Loc | None) -> None:
+        """Reject a band edge at or above Nyquist, at resolve time.
+
+        `BandpassImpl` and `CoherenceImpl` already raise on this, but only when
+        the evaluator is constructed — so `bandpass(band: (20 Hz, 450 Hz))`
+        against a 250 Hz amp used to parse, resolve, type-check and emit
+        IR-JSON before failing. The resolver knows the chosen rate before any
+        derive is resolved, so it can say so first. The impl-level checks stay
+        as a backstop for hosts that build an evaluator at some other rate.
+        """
+        fs = self.sample_rate_chosen_hz
+        if fs is None or spec.name not in _NYQUIST_CHECKED:
+            return
+        nyq = fs / 2.0
+
+        def _hz(expr: IRExpr) -> float | None:
+            """The literal value of a frequency expression, or None if it is a
+            control ref or expression we cannot evaluate statically."""
+            if isinstance(expr, IRNumberLit) and expr.dims == FREQUENCY:
+                return float(expr.value)
+            return None
+
+        def _complain(edge: float, what: str) -> None:
+            raise ResolveError(
+                f"{spec.name}: {what} {edge:g} Hz is at or above the Nyquist "
+                f"frequency ({nyq:g} Hz) for this protocol's {fs:g} Hz sample "
+                f"rate; raise `requires.sample_rate` or lower the band",
+                loc=loc,
+            )
+
+        named = {a.name: a.value for a in args if a.name is not None}
+        positional = [a.value for a in args if a.name is None]
+
+        # `band: (low Hz, high Hz)` — also accepted positionally by bandpass.
+        band = named.get("band")
+        if band is None:
+            band = next((p for p in positional if isinstance(p, IRTuple)), None)
+        if isinstance(band, IRTuple) and len(band.elements) == 2:
+            for edge, what in zip(band.elements, ("band low edge", "band high edge")):
+                hz = _hz(edge)
+                if hz is not None and hz >= nyq:
+                    _complain(hz, what)
+
+        # `center: f, bandwidth: w` — the implied high edge is center + w/2.
+        center, bandwidth = _hz(named.get("center")), _hz(named.get("bandwidth"))
+        if center is not None:
+            high = center + (bandwidth / 2.0 if bandwidth is not None else 0.0)
+            if high >= nyq:
+                _complain(high, "implied band high edge")
 
     def _lower_pipeline(self, from_expr: A.StringLit, pipeline: A.Array) -> IRExpr:
         """Desugar `derive "X" { from = "Y"; pipeline = [p1, p2, ...] }`
@@ -2928,6 +2992,7 @@ class _Resolver:
         # A `sigmoid`/`linear` stage inside a pipeline compares its midpoint
         # against the previous stage, so it needs the same check as a call.
         _validate_arg_dims(spec, arg_map, call.loc, prev_type)
+        self._validate_band_nyquist(spec, resolved_args, call.loc)
         self._state_kb += spec.budget.state_kb
         self._worst_case_us += spec.budget.worst_case_us
         return IRCall(
@@ -3299,6 +3364,10 @@ _PHASE_MODES = ("timed", "open", "timed_with_floor")
 # clean and run every step at the same rate.
 _PHASE_FIELDS = frozenset({"name", "duration", "mode", "block", "output_muted"})
 _SESSION_FIELDS = frozenset({"phases"})
+
+# Primitives that take a frequency band and whose impls build filter
+# coefficients from it, so an edge at or above Nyquist is unrunnable.
+_NYQUIST_CHECKED = frozenset({"bandpass", "bandpower", "coherence"})
 
 
 def _to_milliseconds(n: A.NumberLit) -> float:
