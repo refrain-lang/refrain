@@ -213,7 +213,7 @@ ratio(R: number) -> bandwidth_ctor
 
 Bandwidth constructor for `bandpass`'s center-bandwidth form. `ratio(R)` means
 edges at `(center / sqrt(R), center * sqrt(R))` — a constant-Q band, so the
-width tracks the center as a clinician retunes it. Only meaningful as
+width tracks the center as a practitioner retunes it. Only meaningful as
 `bandpass(bandwidth:)`; it is not a stream primitive.
 
 ### `hilbert`
