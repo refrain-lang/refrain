@@ -2427,6 +2427,13 @@ class _Resolver:
         if self.session_ast is None:
             return IRSession(phases=())
         fields = self._assignments_dict(self.session_ast.body)
+        extra = set(fields) - _SESSION_FIELDS
+        if extra:
+            raise ResolveError(
+                f"session: unexpected field(s) {sorted(extra)}; allowed: "
+                f"{', '.join(sorted(_SESSION_FIELDS))}.",
+                loc=self.session_ast.loc,
+            )
         phases_ast = fields.get("phases")
         if phases_ast is None:
             return IRSession(phases=(), loc=self.session_ast.loc)
@@ -2447,6 +2454,17 @@ class _Resolver:
             raise ResolveError("session phase needs a `name` field", loc=elt.loc)
         if not isinstance(name_expr, A.StringLit):
             raise ResolveError("phase.name must be a string", loc=name_expr.loc)
+        extra = set(phase_fields) - _PHASE_FIELDS
+        if extra:
+            # A phase cannot bind a parameter (no `set`, no per-phase control
+            # override), so a schedule written in the obvious place used to
+            # compile clean and run every step identically. Reject it, as
+            # `_resolve_block` and the reward-bundle resolver already do.
+            raise ResolveError(
+                f'phase "{name_expr.value}": unexpected field(s) {sorted(extra)}; '
+                f"allowed: {', '.join(sorted(_PHASE_FIELDS))}.",
+                loc=elt.loc,
+            )
         mode = self._resolve_phase_mode(phase_fields.get("mode"))
         block = self._resolve_phase_block(phase_fields.get("block"))
         duration_ms = self._resolve_phase_duration(phase_fields.get("duration"), mode, elt)
@@ -3180,6 +3198,13 @@ def _control_kind_dims(kind: str, loc: Loc | None) -> Dimensions:
 
 
 _PHASE_MODES = ("timed", "open", "timed_with_floor")
+
+# Every field `phase { }` and `session { }` understand. Anything else is
+# rejected rather than dropped: a per-phase parameter binding does not exist
+# yet, so a rate schedule written inside `phase { }` would otherwise compile
+# clean and run every step at the same rate.
+_PHASE_FIELDS = frozenset({"name", "duration", "mode", "block", "output_muted"})
+_SESSION_FIELDS = frozenset({"phases"})
 
 
 def _to_milliseconds(n: A.NumberLit) -> float:

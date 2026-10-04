@@ -279,26 +279,24 @@ def test_d3_block_rejects_unknown_fields_today():
         resolve_src(D3_BLOCK)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="D3: 'Resolves with no error. The resulting phase carries neither "
-           "field.' _resolve_block and the reward-bundle resolver reject unknown "
-           "fields; _resolve_phase just .get()s what it knows. For a stepped "
-           "protocol the author writes the rate schedule in the obvious place, "
-           "it compiles clean, and every step runs at the same rate.",
-)
 def test_d3_phase_rejects_unknown_fields():
-    with pytest.raises(ResolveError, match=r"unexpected field"):
+    """FIXED. Was: 'Resolves with no error. The resulting phase carries neither
+    field.' _resolve_phase now rejects, as _resolve_block already did.
+
+    Both offending fields are named, so an author who wrote a rate schedule in
+    the obvious place is told about `pace` and not only about the typo.
+    """
+    with pytest.raises(ResolveError) as exc:
         resolve_src(D3_PHASE)
+    msg = str(exc.value)
+    assert "unexpected field" in msg
+    assert "pace" in msg and "totally_bogus" in msg
+    assert 'phase "run"' in msg, f"the message should name the phase: {msg}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="D3: the same silent drop in `session { }` itself — "
-           "_resolve_session only reads `phases`.",
-)
 def test_d3_session_rejects_unknown_fields():
-    with pytest.raises(ResolveError, match=r"unexpected field"):
+    """FIXED. The same silent drop in `session { }` itself."""
+    with pytest.raises(ResolveError, match=r"session: unexpected field"):
         resolve_src(D3_SESSION)
 
 
