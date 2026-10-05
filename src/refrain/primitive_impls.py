@@ -591,6 +591,11 @@ class AboveImpl(PrimitiveImpl):
         return signal > threshold
 
 
+class AtOrAboveImpl(PrimitiveImpl):
+    def step(self, signal: np.ndarray, threshold: np.ndarray) -> np.ndarray:
+        return signal >= threshold
+
+
 class BelowImpl(PrimitiveImpl):
     def step(self, signal: np.ndarray, threshold: np.ndarray) -> np.ndarray:
         return signal < threshold
@@ -675,6 +680,27 @@ class DwellImpl(PrimitiveImpl):
         self._streak = streak
         self._was_holding = was_holding
         return DwellResult(events=events, holds=holds)
+
+
+class HoldForImpl(DwellImpl):
+    """Boolean held view of an independent dwell accumulator."""
+
+    def __init__(self, *, duration_ms: float, sample_rate_hz: float):
+        super().__init__(duration_ms=duration_ms, sample_rate_hz=sample_rate_hz)
+        self._sample_rate_hz = sample_rate_hz
+
+    def update_control(self, target: str, value: float) -> None:
+        if value <= 0:
+            raise ValueError("hold_for duration must be positive")
+        self.dwell_samples = max(1, round(value / 1000.0 * self._sample_rate_hz))
+        self.reset()
+
+    def reset(self) -> None:
+        self._streak = 0
+        self._was_holding = False
+
+    def step(self, condition: np.ndarray) -> np.ndarray:
+        return super().step(condition).holds
 
 
 # ---------------------------------------------------------------------------
@@ -1078,6 +1104,8 @@ def make_filter_impl(
         return AbsoluteThresholdImpl(value=float(static_args["value"]))
     if callee == "above":
         return AboveImpl()
+    if callee == "at_or_above":
+        return AtOrAboveImpl()
     if callee == "below":
         return BelowImpl()
     if callee == "inside":
@@ -1091,6 +1119,11 @@ def make_filter_impl(
         return AnyOfImpl()
     if callee == "dwell":
         return DwellImpl(
+            duration_ms=float(static_args["duration_ms"]),
+            sample_rate_hz=sample_rate_hz,
+        )
+    if callee == "hold_for":
+        return HoldForImpl(
             duration_ms=float(static_args["duration_ms"]),
             sample_rate_hz=sample_rate_hz,
         )

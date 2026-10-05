@@ -648,6 +648,16 @@ impl Dwell {
         Dwell { dwell_samples: dwell_samples.max(1), streak: 0, was_holding: false }
     }
 
+    pub fn set_duration_and_reset(&mut self, dwell_samples: usize) {
+        self.dwell_samples = dwell_samples.max(1);
+        self.reset();
+    }
+
+    pub fn reset(&mut self) {
+        self.streak = 0;
+        self.was_holding = false;
+    }
+
     /// Returns `(events, holds)`.
     pub fn step(&mut self, cond: &[bool]) -> (Vec<bool>, Vec<bool>) {
         let n = cond.len();

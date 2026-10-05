@@ -543,6 +543,22 @@ _ABOVE = PrimitiveSpec(
     doc="True when signal > threshold.",
 )
 
+_AT_OR_ABOVE = PrimitiveSpec(
+    name="at_or_above",
+    category="signal",
+    signatures=(
+        Signature(
+            params=(
+                ParamSpec("signal", "stream_ref"),
+                ParamSpec("threshold", "threshold_ref_or_number"),
+            ),
+            output=_boolean_stream_output,
+        ),
+    ),
+    budget=ResourceBudget(state_kb=0, worst_case_us=2),
+    doc="True when signal is at or above threshold.",
+)
+
 _BELOW = PrimitiveSpec(
     name="below",
     category="signal",
@@ -619,6 +635,22 @@ _DWELL = PrimitiveSpec(
     ),
     budget=ResourceBudget(state_kb=2, worst_case_us=5),
     doc="Emit event when condition has been true for `duration`.",
+)
+
+_HOLD_FOR = PrimitiveSpec(
+    name="hold_for",
+    category="signal",
+    signatures=(
+        Signature(
+            params=(
+                ParamSpec("condition", "condition"),
+                ParamSpec("duration", "duration"),
+            ),
+            output=_boolean_stream_output,
+        ),
+    ),
+    budget=ResourceBudget(state_kb=2, worst_case_us=5),
+    doc="True while a condition has held continuously for `duration`.",
 )
 
 
@@ -733,11 +765,13 @@ _REGISTRY: dict[str, PrimitiveSpec] = {
         _SIGMOID,
         _LINEAR,
         _ABOVE,
+        _AT_OR_ABOVE,
         _BELOW,
         _INSIDE,
         _ALL_OF,
         _ANY_OF,
         _DWELL,
+        _HOLD_FOR,
         _ABSOLUTE,
         _PERCENTILE,
         _MUTE,

@@ -454,16 +454,20 @@ Conditions consume scalar streams and produce boolean streams.
 
 ```
 above(signal_ref, threshold_ref)             -> stream<boolean>
+at_or_above(signal_ref, threshold_ref)       -> stream<boolean>
 below(signal_ref, threshold_ref)             -> stream<boolean>
 inside(signal_ref, low: T, high: T)          -> stream<boolean>
 ```
 
-Compare a signal to a threshold or range. The threshold may be a literal value or a `threshold` block reference.
+Compare a signal to a threshold or range. `above` is strict; `at_or_above`
+includes equality. The threshold may be a literal value or a `threshold` block
+reference.
 
 ```refrain
 above("smr_envelope", "smr_t")
 below("theta_envelope", "theta_t")
 inside("alpha_envelope", low: 5 uV, high: 25 uV)
+at_or_above("theta_alpha_ratio", 1.0)
 ```
 
 ### `all_of`, `any_of`
@@ -516,6 +520,29 @@ output {
 ```
 
 `dwell` is the canonical way to express the operant reward pattern. It replaces the older `condition + dwell + continuous` reward shape from earlier strawman drafts.
+
+### `hold_for`
+
+```
+hold_for(condition: stream<boolean>, duration: time) -> stream<boolean>
+```
+
+Use `hold_for` when an output needs a sustained state without creating a
+reward event. Its result becomes true only after the condition has remained
+true for the full duration. Inhibited or muted output, a frozen phase clock,
+or a host call to `Evaluator.reset_held_outputs()` clears its timer. Hosts
+should call that reset on a detected input gap or audio interruption before
+resuming feedback. A live duration-control change also clears the affected
+timer in both Python and Rust.
+
+```refrain
+output {
+  feedback_crossover = hold_for(
+    condition: at_or_above("theta_alpha_ratio", 1.0),
+    duration: crossover_dwell
+  )
+}
+```
 
 ---
 

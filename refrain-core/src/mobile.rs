@@ -207,6 +207,10 @@ impl RefrainCore {
         self.inner.lock().unwrap().set_clock_frozen(frozen);
     }
 
+    pub fn reset_held_outputs(&self) {
+        self.inner.lock().unwrap().reset_held_outputs();
+    }
+
     /// `eval::Evaluator::current_phase`: snapshot of the phase the most recent
     /// chunk ran under (aligned with the taps).
     pub fn current_phase(&self) -> PhaseInfo {
