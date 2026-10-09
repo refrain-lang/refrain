@@ -521,6 +521,32 @@ output {
 
 `dwell` is the canonical way to express the operant reward pattern. It replaces the older `condition + dwell + continuous` reward shape from earlier strawman drafts.
 
+### `dwell_rearm`
+
+```
+dwell_rearm(condition: stream<boolean>, duration: time, rearm: time) -> event_stream
+```
+
+For a discrete feedback cue, this emits once after a continuous qualifying
+hold. A second cue requires `condition` to remain false for the full `rearm`
+interval before another qualifying hold. Short false intervals reset the hold
+timer but do not rearm the cue. Inhibits and muted output count as false;
+`Evaluator.reset_held_outputs()` resets the timer after an input gap or audio
+interruption. Both durations must be positive. `duration` may be a live
+duration control; changing it resets the current hold. `rearm` is a fixed
+duration. The primitive is supported as a direct `output` binding;
+`reward.event` continues to require `dwell(...)`.
+
+```refrain
+output {
+  sustained_cue = dwell_rearm(
+    condition: at_or_above("theta_alpha_ratio", 1.0),
+    duration: sustained_dwell,
+    rearm: 3 s
+  )
+}
+```
+
 ### `hold_for`
 
 ```

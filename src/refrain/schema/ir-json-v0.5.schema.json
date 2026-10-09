@@ -11,8 +11,7 @@
     "inputs",
     "derives",
     "output",
-    "topological_order",
-    "feedback"
+    "topological_order"
   ],
   "additionalProperties": true,
   "properties": {
@@ -783,6 +782,9 @@
           "type": "integer"
         },
         "dwell_samples": {
+          "type": "integer"
+        },
+        "rearm_samples": {
           "type": "integer"
         },
         "nperseg": {

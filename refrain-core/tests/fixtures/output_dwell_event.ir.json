@@ -1,5 +1,5 @@
 {
-  "refrain_ir_version": "0.1",
+  "refrain_ir_version": "0.5",
   "name": "output event",
   "extends": null,
   "sample_rate_hz": 100.0,

@@ -686,6 +686,49 @@ class DwellImpl(PrimitiveImpl):
         return DwellResult(events=events, holds=holds)
 
 
+class DwellRearmImpl(DwellImpl):
+    """One pulse per hold, rearmed only after continuous time out."""
+
+    def __init__(self, *, duration_ms: float, rearm_ms: float, sample_rate_hz: float):
+        super().__init__(duration_ms=duration_ms, sample_rate_hz=sample_rate_hz)
+        if rearm_ms <= 0:
+            raise ValueError("dwell_rearm: rearm must be positive")
+        self.rearm_samples = max(1, int(round(rearm_ms / 1000.0 * sample_rate_hz)))
+        self._sample_rate_hz = sample_rate_hz
+        self._armed = True
+        self._out_streak = 0
+
+    def update_control(self, target: str, value: float) -> None:
+        if value <= 0:
+            raise ValueError("dwell_rearm duration must be positive")
+        self.dwell_samples = max(1, round(value / 1000.0 * self._sample_rate_hz))
+        self.reset()
+
+    def reset(self) -> None:
+        super().reset()
+        self._armed = True
+        self._out_streak = 0
+
+    def step(self, condition: np.ndarray) -> DwellResult:
+        events = np.zeros(condition.shape[0], dtype=bool)
+        holds = np.zeros(condition.shape[0], dtype=bool)
+        for i, on in enumerate(condition):
+            if on:
+                self._streak += 1
+                self._out_streak = 0
+                holding = self._streak >= self.dwell_samples
+                holds[i] = holding
+                if holding and self._armed:
+                    events[i] = True
+                    self._armed = False
+            else:
+                self._streak = 0
+                self._out_streak += 1
+                if self._out_streak >= self.rearm_samples:
+                    self._armed = True
+        return DwellResult(events=events, holds=holds)
+
+
 class HoldForImpl(DwellImpl):
     """Boolean held view of an independent dwell accumulator."""
 
@@ -1124,6 +1167,12 @@ def make_filter_impl(
     if callee == "dwell":
         return DwellImpl(
             duration_ms=float(static_args["duration_ms"]),
+            sample_rate_hz=sample_rate_hz,
+        )
+    if callee == "dwell_rearm":
+        return DwellRearmImpl(
+            duration_ms=float(static_args["duration_ms"]),
+            rearm_ms=float(static_args["rearm_ms"]),
             sample_rate_hz=sample_rate_hz,
         )
     if callee == "hold_for":

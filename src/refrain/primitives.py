@@ -637,6 +637,23 @@ _DWELL = PrimitiveSpec(
     doc="Emit event when condition has been true for `duration`.",
 )
 
+_DWELL_REARM = PrimitiveSpec(
+    name="dwell_rearm",
+    category="signal",
+    signatures=(
+        Signature(
+            params=(
+                ParamSpec("condition", "condition"),
+                ParamSpec("duration", "duration"),
+                ParamSpec("rearm", "duration"),
+            ),
+            output=_event_stream_output,
+        ),
+    ),
+    budget=ResourceBudget(state_kb=2, worst_case_us=5),
+    doc="Emit once after duration; require a continuous false rearm interval.",
+)
+
 _HOLD_FOR = PrimitiveSpec(
     name="hold_for",
     category="signal",
@@ -771,6 +788,7 @@ _REGISTRY: dict[str, PrimitiveSpec] = {
         _ALL_OF,
         _ANY_OF,
         _DWELL,
+        _DWELL_REARM,
         _HOLD_FOR,
         _ABSOLUTE,
         _PERCENTILE,

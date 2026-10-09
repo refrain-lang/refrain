@@ -103,6 +103,7 @@ _DYNAMIC_ARG_KEYS: dict[str, tuple[str, ...]] = {
     "all_of": ("_array",),       # special: array of conditions
     "any_of": ("_array",),
     "dwell": ("condition",),
+    "dwell_rearm": ("condition",),
     "hold_for": ("condition",),
     "sigmoid": ("_pos_0",),
     "linear": ("_pos_0",),
@@ -221,8 +222,10 @@ def _massage_static_args(callee: str, static: dict[str, Any]) -> dict[str, Any]:
         out["window_ms"] = out.pop("window")
     if callee == "auto_range" and "window" in out:
         out["window_ms"] = out.pop("window")
-    if callee in ("dwell", "hold_for") and "duration" in out:
+    if callee in ("dwell", "dwell_rearm", "hold_for") and "duration" in out:
         out["duration_ms"] = out.pop("duration")
+    if callee == "dwell_rearm" and "rearm" in out:
+        out["rearm_ms"] = out.pop("rearm")
     if callee == "bandpower" and "window" in out:
         out["window_ms"] = out.pop("window")
     if callee == "coherence" and "window" in out:
@@ -564,7 +567,7 @@ class Evaluator:
             if isinstance(impl, impls.HoldForImpl):
                 impl.reset()
         for expr in self.ir.output.values():
-            if isinstance(expr, IRCall) and expr.callee == "dwell":
+            if isinstance(expr, IRCall) and expr.callee in ("dwell", "dwell_rearm"):
                 self._impls[id(expr)].reset()
 
     def start(self, *, skip_warmup: bool = False) -> None:
@@ -1738,7 +1741,7 @@ class Evaluator:
                     reward_composite=reward_composite, reward_component_signals=reward_component_signals,
                 )
             )
-        if call.callee in ("hold_for", "dwell") and hasattr(self, "_hold_for_eligible"):
+        if call.callee in ("hold_for", "dwell", "dwell_rearm") and hasattr(self, "_hold_for_eligible"):
             dynamic_chunks[0] = dynamic_chunks[0].astype(bool) & self._hold_for_eligible
         return impl.step(*dynamic_chunks)
 

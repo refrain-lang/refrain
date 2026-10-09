@@ -361,6 +361,8 @@ pub struct Coeffs {
     #[serde(default)]
     pub dwell_samples: Option<usize>,
     #[serde(default)]
+    pub rearm_samples: Option<usize>,
+    #[serde(default)]
     pub nperseg: Option<usize>,
     #[serde(default)]
     pub noverlap: Option<usize>,

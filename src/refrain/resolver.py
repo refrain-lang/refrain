@@ -2298,6 +2298,10 @@ class _Resolver:
             event, check_names = self._strip_check_labels(event, f'reward "{decl.name}"')
         cont_ir = self._resolve_stream_expr(cont) if cont is not None else None
         event_ir = self._resolve_stream_expr(event) if event is not None else None
+        if event_ir is not None and not (
+            isinstance(event_ir, IRCall) and event_ir.callee == "dwell"
+        ):
+            raise ResolveError("reward.event requires dwell(...) as its source", loc=event.loc)
         return IRReward(
             continuous=cont_ir, event=event_ir, combine="all", components=(),
             check_names=check_names, loc=decl.loc,
@@ -2372,6 +2376,10 @@ class _Resolver:
                 f"reward.event must produce event_stream, got {_expr_stream_type(event_ir)}",
                 loc=event_expr.loc if event_expr else None,
             )
+        if event_ir is not None and not (
+            isinstance(event_ir, IRCall) and event_ir.callee == "dwell"
+        ):
+            raise ResolveError("reward.event requires dwell(...) as its source", loc=event_expr.loc)
         self.reward_ir = IRReward(
             continuous=cont_ir, event=event_ir, combine=combine,
             components=components, check_names=check_names, loc=self.reward_ast.loc,
@@ -2971,6 +2979,16 @@ class _Resolver:
             _stream_input_hint,
             call.loc,
         )
+
+        if call.callee == "dwell_rearm":
+            rearm = next((a.value for a in resolved_args if a.name == "rearm"), None)
+            if not isinstance(rearm, IRNumberLit):
+                raise ResolveError("dwell_rearm rearm must be a fixed duration", loc=call.loc)
+            if rearm.value <= 0:
+                raise ResolveError("dwell_rearm rearm must be positive", loc=call.loc)
+            duration = next((a.value for a in resolved_args if a.name == "duration"), None)
+            if isinstance(duration, IRNumberLit) and duration.value <= 0:
+                raise ResolveError("dwell_rearm duration must be positive", loc=call.loc)
 
         # Per-primitive validation of `kind`-style enumerated string args.
         _validate_kind_args(spec, resolved_args, call.loc)

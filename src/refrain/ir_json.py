@@ -135,7 +135,10 @@ def _protocol_ir_version(ir: IRProtocol) -> str:
     rule emits v0.3; a protocol using autopilot (protocol-wide or per-control)
     or named reward checks (the newest features) emits v0.4.
     """
-    if ir.feedback is not None:
+    if ir.feedback is not None or any(
+        isinstance(expr, IRCall) and expr.callee in ("dwell", "dwell_rearm")
+        for expr in ir.output.values()
+    ):
         return "0.5"
     if (
         ir.autopilot is not None
@@ -211,6 +214,8 @@ def _extract_coeffs(impl: object) -> dict | None:
         c["lag_samples"] = int(impl.lag)
     if hasattr(impl, "dwell_samples"):
         c["dwell_samples"] = int(impl.dwell_samples)
+    if hasattr(impl, "rearm_samples"):
+        c["rearm_samples"] = int(impl.rearm_samples)
     if hasattr(impl, "nperseg"):
         c["nperseg"] = int(impl.nperseg)
     if hasattr(impl, "noverlap"):

@@ -19,7 +19,7 @@ use crate::advisor::{Advisor, ChunkFacts};
 use crate::dsp::{
     control_cell, smooth_alpha_from_tau_ms, AutoRange, Autocorr, Bandpower, Biquad, Coherence,
     ControlCell,
-    Differentiate, Dwell, HilbertFir, Magnitude, Percentile, Signal, Smooth, Stage, TrackerState,
+    Differentiate, Dwell, DwellRearm, HilbertFir, Magnitude, Percentile, Signal, Smooth, Stage, TrackerState,
 };
 use crate::ir::{Coeffs, Expr, Protocol};
 
@@ -114,6 +114,7 @@ enum Control {
     /// `self.value`.
     Const { value: ControlCell },
     HoldFor { dwell: Arc<Mutex<Dwell>>, sample_rate_hz: f64 },
+    DwellRearm { dwell: Arc<Mutex<DwellRearm>>, sample_rate_hz: f64 },
 }
 
 impl Control {
@@ -140,6 +141,13 @@ impl Control {
                 *cell.lock().unwrap() = value;
             }
             Control::HoldFor { dwell, sample_rate_hz } => {
+                if value > 0.0 {
+                    dwell.lock().unwrap().set_duration_and_reset(
+                        (value / 1000.0 * *sample_rate_hz).round().max(1.0) as usize
+                    );
+                }
+            }
+            Control::DwellRearm { dwell, sample_rate_hz } => {
                 if value > 0.0 {
                     dwell.lock().unwrap().set_duration_and_reset(
                         (value / 1000.0 * *sample_rate_hz).round().max(1.0) as usize
@@ -318,6 +326,7 @@ enum CNode {
     AnyOf(Vec<CNode>),
     HoldFor { dwell: Arc<Mutex<Dwell>>, condition: Box<CNode> },
     DwellEvent { dwell: Arc<Mutex<Dwell>>, condition: Box<CNode> },
+    DwellRearmEvent { dwell: Arc<Mutex<DwellRearm>>, condition: Box<CNode> },
     Sigmoid { midpoint: ControlCell, steepness: f64, input: Box<CNode> },
     Linear { midpoint: f64, slope: f64, input: Box<CNode> },
     Binop(String, Box<CNode>, Box<CNode>),
@@ -328,6 +337,10 @@ impl CNode {
     fn reset_holds(&mut self) {
         match self {
             CNode::HoldFor { dwell, condition } | CNode::DwellEvent { dwell, condition } => {
+                dwell.lock().unwrap().reset();
+                condition.reset_holds();
+            }
+            CNode::DwellRearmEvent { dwell, condition } => {
                 dwell.lock().unwrap().reset();
                 condition.reset_holds();
             }
@@ -429,6 +442,14 @@ impl CNode {
                 }).collect();
                 let (events, _) = dwell.lock().unwrap().step(&clean);
                 Val::B(events)
+            }
+            CNode::DwellRearmEvent { dwell, condition } => {
+                let input = condition.eval(env, n);
+                let eligible = env.get("__hold_for_eligible").map(Val::as_b);
+                let clean: Vec<bool> = input.as_b().iter().enumerate().map(|(i, &on)| {
+                    on && eligible.map(|mask| mask[i]).unwrap_or(true)
+                }).collect();
+                Val::B(dwell.lock().unwrap().step(&clean))
             }
             CNode::Sigmoid { midpoint, steepness, input } => {
                 let x = input.eval(env, n).into_f();
@@ -706,7 +727,8 @@ fn export_node(
         CNode::Inside { input, .. }
         | CNode::Sigmoid { input, .. }
         | CNode::Linear { input, .. } => export_node(name, input, counts, out),
-        CNode::HoldFor { condition, .. } | CNode::DwellEvent { condition, .. } => export_node(name, condition, counts, out),
+        CNode::HoldFor { condition, .. } | CNode::DwellEvent { condition, .. }
+        | CNode::DwellRearmEvent { condition, .. } => export_node(name, condition, counts, out),
         CNode::AllOf(items) | CNode::AnyOf(items) => {
             for c in items {
                 export_node(name, c, counts, out);
@@ -763,7 +785,8 @@ fn seed_node(
         CNode::Inside { input, .. }
         | CNode::Sigmoid { input, .. }
         | CNode::Linear { input, .. } => seed_node(name, input, seeds, counts),
-        CNode::HoldFor { condition, .. } | CNode::DwellEvent { condition, .. } => seed_node(name, condition, seeds, counts),
+        CNode::HoldFor { condition, .. } | CNode::DwellEvent { condition, .. }
+        | CNode::DwellRearmEvent { condition, .. } => seed_node(name, condition, seeds, counts),
         CNode::AllOf(items) | CNode::AnyOf(items) => {
             for c in items {
                 seed_node(name, c, seeds, counts);
@@ -1031,7 +1054,7 @@ impl Evaluator {
                 ch.clone(),
                 build_node(e, &mut ctx),
                 matches!(e, Expr::RewardField { field_path } if field_path == "event")
-                    || matches!(e, Expr::Call { callee, .. } if callee == "dwell"),
+                    || matches!(e, Expr::Call { callee, .. } if callee == "dwell" || callee == "dwell_rearm"),
             ))
             .collect();
 
@@ -2406,6 +2429,23 @@ fn build_compute_call(
     ctx: &mut BuildCtx,
 ) -> CNode {
     match callee {
+        "dwell_rearm" => {
+            let c = coeffs.expect("dwell_rearm: missing baked coefficients");
+            let dwell = Arc::new(Mutex::new(DwellRearm::new(
+                c.dwell_samples.expect("dwell_rearm: missing dwell_samples"),
+                c.rearm_samples.expect("dwell_rearm: missing rearm_samples"),
+            )));
+            if let Some((_, Some(target))) = num_named_controllable(args, "duration") {
+                ctx.register(&target, Control::DwellRearm {
+                    dwell: dwell.clone(), sample_rate_hz: ctx.sample_rate_hz,
+                });
+            }
+            CNode::DwellRearmEvent { dwell, condition: Box::new(build_node(
+                &args.iter().find(|a| a.name.as_deref() == Some("condition"))
+                    .expect("dwell_rearm needs condition").value,
+                ctx,
+            )) }
+        },
         "dwell" => {
             let dwell = Arc::new(Mutex::new(Dwell::new(
                 coeffs.and_then(|c| c.dwell_samples).expect("dwell: missing baked dwell_samples"),
