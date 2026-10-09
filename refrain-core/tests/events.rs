@@ -113,6 +113,26 @@ fn micro_05_reward_events_equivalent() {
 }
 
 #[test]
+fn direct_output_dwell_events_equivalent() {
+    // Authored pulse stream: one cue per hold, then another after a break.
+    run_events("output_dwell_event");
+}
+
+#[test]
+fn direct_output_dwell_resets_after_gap() {
+    let protocol = load_ir("output_dwell_event");
+    let channels = vec!["Cz".to_string(), "linked_ears".to_string()];
+    let mut evaluator = Evaluator::new(&protocol, 100.0, &channels);
+    evaluator.start(true);
+    assert!(evaluator.step_chunk_events(&vec![vec![2.0, 0.0]; 2]).is_empty());
+    evaluator.reset_held_outputs();
+    assert!(evaluator.step_chunk_events(&vec![vec![2.0, 0.0]; 2]).is_empty());
+    let events = evaluator.step_chunk_events(&vec![vec![2.0, 0.0]]);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].channel, "cue");
+}
+
+#[test]
 fn micro_09_inhibit_events_equivalent() {
     // The `audio_gain` value events carry the per-chunk mean of the muted/
     // clamped continuous output; matching them pins the inhibit gate's effect

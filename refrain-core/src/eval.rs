@@ -317,6 +317,7 @@ enum CNode {
     AllOf(Vec<CNode>),
     AnyOf(Vec<CNode>),
     HoldFor { dwell: Arc<Mutex<Dwell>>, condition: Box<CNode> },
+    DwellEvent { dwell: Arc<Mutex<Dwell>>, condition: Box<CNode> },
     Sigmoid { midpoint: ControlCell, steepness: f64, input: Box<CNode> },
     Linear { midpoint: f64, slope: f64, input: Box<CNode> },
     Binop(String, Box<CNode>, Box<CNode>),
@@ -326,7 +327,7 @@ enum CNode {
 impl CNode {
     fn reset_holds(&mut self) {
         match self {
-            CNode::HoldFor { dwell, condition } => {
+            CNode::HoldFor { dwell, condition } | CNode::DwellEvent { dwell, condition } => {
                 dwell.lock().unwrap().reset();
                 condition.reset_holds();
             }
@@ -419,6 +420,15 @@ impl CNode {
                 }).collect();
                 let (_, holds) = dwell.lock().unwrap().step(&clean);
                 Val::B(holds)
+            }
+            CNode::DwellEvent { dwell, condition } => {
+                let input = condition.eval(env, n);
+                let eligible = env.get("__hold_for_eligible").map(Val::as_b);
+                let clean: Vec<bool> = input.as_b().iter().enumerate().map(|(i, &on)| {
+                    on && eligible.map(|mask| mask[i]).unwrap_or(true)
+                }).collect();
+                let (events, _) = dwell.lock().unwrap().step(&clean);
+                Val::B(events)
             }
             CNode::Sigmoid { midpoint, steepness, input } => {
                 let x = input.eval(env, n).into_f();
@@ -696,7 +706,7 @@ fn export_node(
         CNode::Inside { input, .. }
         | CNode::Sigmoid { input, .. }
         | CNode::Linear { input, .. } => export_node(name, input, counts, out),
-        CNode::HoldFor { condition, .. } => export_node(name, condition, counts, out),
+        CNode::HoldFor { condition, .. } | CNode::DwellEvent { condition, .. } => export_node(name, condition, counts, out),
         CNode::AllOf(items) | CNode::AnyOf(items) => {
             for c in items {
                 export_node(name, c, counts, out);
@@ -753,7 +763,7 @@ fn seed_node(
         CNode::Inside { input, .. }
         | CNode::Sigmoid { input, .. }
         | CNode::Linear { input, .. } => seed_node(name, input, seeds, counts),
-        CNode::HoldFor { condition, .. } => seed_node(name, condition, seeds, counts),
+        CNode::HoldFor { condition, .. } | CNode::DwellEvent { condition, .. } => seed_node(name, condition, seeds, counts),
         CNode::AllOf(items) | CNode::AnyOf(items) => {
             for c in items {
                 seed_node(name, c, seeds, counts);
@@ -1020,7 +1030,8 @@ impl Evaluator {
             .map(|(ch, e)| (
                 ch.clone(),
                 build_node(e, &mut ctx),
-                matches!(e, Expr::RewardField { field_path } if field_path == "event"),
+                matches!(e, Expr::RewardField { field_path } if field_path == "event")
+                    || matches!(e, Expr::Call { callee, .. } if callee == "dwell"),
             ))
             .collect();
 
@@ -2395,6 +2406,16 @@ fn build_compute_call(
     ctx: &mut BuildCtx,
 ) -> CNode {
     match callee {
+        "dwell" => {
+            let dwell = Arc::new(Mutex::new(Dwell::new(
+                coeffs.and_then(|c| c.dwell_samples).expect("dwell: missing baked dwell_samples"),
+            )));
+            CNode::DwellEvent { dwell, condition: Box::new(build_node(
+                &args.iter().find(|a| a.name.as_deref() == Some("condition"))
+                    .expect("dwell needs condition").value,
+                ctx,
+            )) }
+        },
         "hold_for" => {
             let dwell = Arc::new(Mutex::new(Dwell::new(
                 coeffs.and_then(|c| c.dwell_samples).expect("hold_for: missing baked dwell_samples"),

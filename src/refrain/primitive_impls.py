@@ -661,6 +661,10 @@ class DwellImpl(PrimitiveImpl):
         self._streak = 0
         self._was_holding = False
 
+    def reset(self) -> None:
+        self._streak = 0
+        self._was_holding = False
+
     def step(self, condition: np.ndarray) -> DwellResult:
         n = condition.shape[0]
         events = np.zeros(n, dtype=bool)
