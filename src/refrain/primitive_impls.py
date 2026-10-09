@@ -318,6 +318,172 @@ def _pure_delay(
 
 
 # ---------------------------------------------------------------------------
+# Band envelope (one stage, one declared delay)
+# ---------------------------------------------------------------------------
+
+# The filter span must be at least 2x the declared delay or envelope accuracy
+# collapses (measured on real EEG at 256 Hz with a 360 ms delay, 12-15 Hz:
+# r=0.873 at 2x, 0.743 at 1.75x, 0.437 at 1.4x). 2x is the cliff edge, so the
+# auto-sized default keeps a margin above it. 2.2x puts a 350 ms delay at
+# 250 Hz on 195 taps, essentially the 193 that `ResourceBudget(state_kb=8)`
+# was measured at (4.5 KB: complex coefficients plus a real delay line). State
+# scales with latency x sample rate, so a long delay on a fast amp exceeds
+# that figure; the declared budget covers the recommended 250-350 ms range at
+# EEG rates.
+#
+# Sizing from the delay rather than fixing a tap count is deliberate: the
+# declared latency is wall-clock, so the same protocol source must work on a
+# 250 Hz and a 500 Hz amp. A fixed 193 taps would carry 384 ms at 250 Hz but
+# only 192 ms at 500 Hz, and the protocol would be refused on the faster amp.
+BAND_ENVELOPE_SIZING_MARGIN = 2.2
+
+# A declared delay shorter than this cannot be tapered around (see __init__).
+BAND_ENVELOPE_MIN_DELAY_SAMPLES = 3
+
+
+class BandEnvelopeImpl(PrimitiveImpl):
+    """`band_envelope(band:, latency:)` — analytic envelope in one stage.
+
+    Least-squares complex FIR, per Smetanin, Belinskaya, Lebedev & Ossadtchi
+    (2020), "Digital filters for low-latency quantification of brain rhythms
+    in real time", J Neural Eng 17(4) 046022, doi:10.1088/1741-2552/ab890f.
+
+    The desired response is `e^{-jωD}` inside the band and 0 outside, over
+    positive frequencies only so the output is analytic. Its inverse transform
+    — evaluated in closed form rather than on a DFT grid, for the reason given
+    in `__init__` — is used directly as a causal FIR, tapered around tap `D`;
+    the magnitude of its output is the envelope.
+
+    `D` — the group delay — is a **design input**. In
+    `bandpass -> hilbert -> magnitude -> smooth` the delay is instead an
+    emergent sum of four stages that no protocol author chose. Truncating the
+    ideal two-sided response at small `D` is the accuracy cost, and making
+    that cost explicit is the point of the primitive.
+
+    This is the plain unweighted variant. The paper's PSD-weighted form
+    (wcFIR) does better where a loud adjacent rhythm contaminates the band —
+    eyes-closed alpha sitting just below 12–15 Hz is the worst case — and is
+    not implemented here.
+    """
+
+    def __init__(
+        self,
+        *,
+        band: tuple[float, float],
+        latency_ms: float,
+        taps: int | None = None,
+        sample_rate_hz: float,
+    ):
+        low, high = float(band[0]), float(band[1])
+        nyq = sample_rate_hz / 2.0
+        if not (0 < low < high < nyq):
+            raise ValueError(
+                f"band_envelope: band ({low}, {high}) Hz must satisfy "
+                f"0 < low < high < nyquist ({nyq} Hz)"
+            )
+        latency_ms = float(latency_ms)
+        if latency_ms <= 0.0:
+            raise ValueError(
+                f"band_envelope: latency must be positive (got {latency_ms} ms); it is "
+                "the delay the envelope is designed to have, not an upper bound"
+            )
+        delay = int(round(latency_ms / 1000.0 * sample_rate_hz))
+        if delay < BAND_ENVELOPE_MIN_DELAY_SAMPLES:
+            floor_ms = BAND_ENVELOPE_MIN_DELAY_SAMPLES / sample_rate_hz * 1000.0
+            raise ValueError(
+                f"band_envelope: a latency of {latency_ms:g} ms is {delay} sample(s) at "
+                f"{sample_rate_hz:g} Hz, too few to taper the response around. Declare at "
+                f"least {floor_ms:.0f} ms at this rate. Below that the filter's energy "
+                "wraps to the far end of the window, so the delay the output actually "
+                "realizes is the filter length rather than the latency asked for."
+            )
+        # The sizing rule. The taper is centred on tap `delay` and reaches
+        # `delay` taps either side, so a filter shorter than 2·delay+1 truncates
+        # it — and the only symptom is the accuracy number.
+        required_taps = 2 * delay + 1
+        n_taps = (
+            int(math.ceil(BAND_ENVELOPE_SIZING_MARGIN * delay)) if taps is None else int(taps)
+        )
+        if n_taps % 2 == 0:
+            n_taps += 1  # need odd length, as the FIR Hilbert does
+        if n_taps < required_taps:
+            raise ValueError(
+                f"band_envelope: {n_taps} taps cannot carry a {latency_ms:g} ms latency at "
+                f"{sample_rate_hz:g} Hz. The filter span must be at least ~2x the declared "
+                f"delay ({delay} samples), so this needs taps >= {required_taps}. A shorter "
+                "filter truncates the taper and envelope accuracy collapses silently "
+                "(measured on real EEG at 256 Hz / 360 ms, 12-15 Hz: r=0.873 at 2x, "
+                "0.743 at 1.75x, 0.437 at 1.4x)."
+            )
+
+        # The ideal response, in closed form: the inverse transform of
+        # `e^{-jwD}` over [low, high] and 0 elsewhere, positive frequencies
+        # only so the output is analytic.
+        #
+        #   b[n] = (1/fs) * integral_low^high e^{j2.pi.f(n-D)/fs} df
+        #
+        # Evaluated analytically rather than by sampling an N-point DFT grid.
+        # The grid form is what the feature request proposed, but a 3 Hz band
+        # at 250 Hz lands on only two or three grid points, and their jitter
+        # with N makes accuracy swing with the tap count instead of with the
+        # declared latency: measured r ran 0.80-0.94 across tap counts for one
+        # fixed delay. In closed form it is 0.873 at every length from 2.0x to
+        # 5.6x the delay, so the latency the author declares is the only thing
+        # that sets accuracy. That is the property the primitive is for.
+        taps_n = np.arange(n_taps)
+        omega = 2.0 * np.pi * (taps_n - delay) / sample_rate_hz
+        coeffs = np.empty(n_taps, dtype=np.complex128)
+        away = omega != 0.0
+        coeffs[away] = (
+            np.exp(1j * omega[away] * high) - np.exp(1j * omega[away] * low)
+        ) / (1j * omega[away] * sample_rate_hz)
+        coeffs[~away] = (high - low) / sample_rate_hz  # the n == D limit
+
+        # Taper centred on tap `delay`. `half` is bounded by `delay` so the
+        # taper never reaches back past tap 0, which would make the filter
+        # non-causal; the sizing rule above guarantees the other two bounds
+        # leave it at `delay`.
+        half = min(delay, n_taps - delay - 1, n_taps // 2)
+        window = np.zeros(n_taps, dtype=np.float64)
+        window[delay - half : delay + half + 1] = np.hanning(2 * half + 1)
+        coeffs = coeffs * window
+
+        # Calibrate to the analytic-signal convention — |H| = 2 at band centre,
+        # so a sinusoid of amplitude A reads A, the same as
+        # `bandpass -> hilbert -> magnitude`. The windowed ideal response has a
+        # passband gain of about 2/3 of that, which would put the envelope a
+        # constant factor low and fire every `absolute(uV)` threshold in a
+        # converted protocol at the wrong amplitude. Correlation against a
+        # reference envelope cannot see a scale error, so it is pinned by test.
+        centre_hz = 0.5 * (low + high)
+        gain = float(
+            np.abs(
+                np.sum(
+                    coeffs * np.exp(-1j * 2.0 * np.pi * centre_hz * taps_n / sample_rate_hz)
+                )
+            )
+        )
+        if gain == 0.0:  # pragma: no cover - the guards above exclude it
+            raise ValueError(
+                f"band_envelope: band ({low}, {high}) Hz and latency {latency_ms:g} ms "
+                f"at {sample_rate_hz:g} Hz design a filter with no passband gain"
+            )
+
+        self.b = coeffs * (2.0 / gain)
+        self.taps = n_taps
+        self.band = (low, high)
+        self.latency_ms = latency_ms
+        self.group_delay = delay
+        # The coefficients carry the complex part, so the delay line stays
+        # real — the same split HilbertFirImpl uses for its real branch.
+        self._buf = np.zeros(n_taps - 1, dtype=np.float64)
+
+    def step(self, x: np.ndarray) -> np.ndarray:
+        analytic, self._buf = _fir_stream(self.b, x, self._buf)
+        return np.abs(analytic)
+
+
+# ---------------------------------------------------------------------------
 # Time-series math
 # ---------------------------------------------------------------------------
 
@@ -1049,6 +1215,13 @@ def make_filter_impl(
         if kind == "iir_allpass":
             return HilbertIirAllpassImpl()
         raise ValueError(f"hilbert: unknown kind {kind!r}")
+    if callee == "band_envelope":
+        return BandEnvelopeImpl(
+            band=tuple(static_args["band"]),
+            latency_ms=float(static_args["latency_ms"]),
+            taps=static_args.get("taps"),
+            sample_rate_hz=sample_rate_hz,
+        )
     if callee == "magnitude":
         return MagnitudeImpl()
     if callee == "rectify":

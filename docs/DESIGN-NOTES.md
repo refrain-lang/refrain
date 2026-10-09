@@ -950,3 +950,64 @@ Hilbert's 8 s at 4 Hz); it is documented in PRIMITIVES.md and validated in
 error pointing here. Complex demodulation (`demodulate(center, bandwidth)`)
 remains a possible *future* primitive for marginally cleaner narrowband
 envelopes — a quality, not latency, improvement — if a use case wants it.
+
+### §7b. `band_envelope` — the same question at EEG rates, with a different answer
+
+§7a stands. At 0.1 Hz the latency floor is physical and `rectify() + smooth(tau)`
+is the ceiling. What §7a could not have settled is the **EEG** case, because all
+of its evidence was measured at 4 Hz on a 0.1 Hz rhythm. Three things differ:
+
+- **A different constraint binds.** At 0.1 Hz one cycle is ~10 s, so the
+  smoother genuinely is the floor. At 13.5 Hz one cycle is 74 ms, and what binds
+  is a fixed wall-clock number — the literature recommends feedback within
+  250–350 ms (Enriquez-Geppert, Huster & Herrmann 2017, citing Sherlin et al.
+  2011) — not a fraction of a cycle.
+- **A different comparison.** §7a weighed complex demodulation against
+  `rectify + smooth`, both *two* stages. The EEG protocols use *four*:
+  `bandpass(order: 4) -> hilbert() -> magnitude() -> smooth(tau)`. The claim is
+  not that the latency/quality curve is better; it is that four stages pay four
+  delays for one measurement.
+- **Where the cost actually is.** Ablated at 250 Hz, the order-4 band-pass is
+  the expensive stage (284 ms), not the Hilbert (12 ms). §7a's sanctioned fix
+  was aimed at the Hilbert.
+
+**Measured** (11 corpus recordings, Cz, 12–15 Hz, zero-phase reference
+envelope): a median **206 ms saved at equal accuracy**, range 102–266 ms. On
+8–12 Hz at P4, a median of 265 ms (n=12). Cheaper on CPU too — one FIR replaces
+an order-4 SOS cascade, a 65-tap FIR Hilbert and an exponential smoother.
+
+**Two things we got right only after getting them wrong:**
+
+1. **`dwell(duration:)` is not latency.** A `dwell(duration: 250 ms)` cannot
+   fire sooner, because 250 ms of sustained threshold crossing *is* the rewarded
+   target. Summing it into a latency figure overstates by 250 ms and points
+   protocol authors at a stage that has no delay to give back. Every number here
+   excludes it.
+2. **Design the filter in closed form, not on a DFT grid.** The obvious
+   construction samples `e^{-jωD}` on an N-point FFT grid and inverse-transforms
+   it. But a 3 Hz band at 250 Hz covers only two or three grid points, and their
+   positions jitter with N: measured accuracy then swings between r=0.80 and
+   r=0.94 across tap counts *at one fixed delay*. That defeats the primitive's
+   whole proposition, which is that the declared latency is the knob. Evaluating
+   the ideal response analytically gives r=0.873 at every length from 2.0× to
+   5.6× the delay.
+
+**Decision:** `band_envelope(band:, latency:)` ships as an additive primitive
+(see PRIMITIVES.md). The filter span must be ~2× the declared delay or accuracy
+collapses silently, so `taps` is derived from `latency` and an undersized span
+is refused at build time rather than run. Validated against the source at a
+matched band width and matched delay: r = 0.84 against Smetanin et al.'s
+reported 0.85 ± 0.1. Nothing on the HRV path changed, and `dwell`, `smooth` and
+the IR format are untouched.
+
+**Known limits.** 11 recordings, two bands, clinical corpus EEG at 200–500 Hz —
+not BrainBit Flex over BLE, which has worse SNR than any of it. The plain
+unweighted variant only; the paper's PSD-weighted form (wcFIR) targets the
+adjacent-band contamination that is our worst case (eyes-closed alpha leaking
+into 12–15 Hz) and is not implemented. Envelope correlation against a zero-phase
+reference is a proxy: it is the metric §7a used and the paper used, which makes
+the numbers comparable, but nobody has shown that 206 ms of envelope latency
+changes an outcome on this product. Composed-latency *reporting* — having
+`refrain check` state a protocol's feedback delay the way `cost.py` states its
+CPU cost — is not implemented; without it an author still has to reason about
+the number by hand.

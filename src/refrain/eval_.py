@@ -88,6 +88,7 @@ _DYNAMIC_ARG_KEYS: dict[str, tuple[str, ...]] = {
     "bipolar": ("_RAW",),       # special: receives the raw multi-channel chunk
     "referential": ("_RAW",),
     "bandpass": ("_pos_0",),
+    "band_envelope": ("_pos_0",),  # single-input pipeline stage
     "hilbert": ("_pos_0",),
     "magnitude": ("_pos_0",),
     "rectify": ("_pos_0",),
@@ -219,6 +220,8 @@ def _massage_static_args(callee: str, static: dict[str, Any]) -> dict[str, Any]:
         out["window_ms"] = out.pop("window")
     if callee == "auto_range" and "window" in out:
         out["window_ms"] = out.pop("window")
+    if callee == "band_envelope" and "latency" in out:
+        out["latency_ms"] = out.pop("latency")
     if callee == "dwell" and "duration" in out:
         out["duration_ms"] = out.pop("duration")
     if callee == "bandpower" and "window" in out:

@@ -5,6 +5,60 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [Unreleased]
+
+### Added
+- **`band_envelope(band:, latency:)` — a band's amplitude envelope in one
+  stage, with the feedback delay as a declared parameter.** The EEG protocols
+  all measure an envelope as `bandpass(order: 4) -> hilbert() -> magnitude()
+  -> smooth(tau)`. Each of those four stages contributes its own lag
+  additively, so the delay a person actually feels is an emergent sum that no
+  author chose, no single stage is at fault, and there was no way to write
+  down "this latency, best available accuracy." Four individually reasonable
+  choices add up to 468 ms against a published recommendation of 250–350 ms,
+  which is why this went unnoticed across ~40 protocol files rather than in
+  one badly written one. The new primitive replaces the four with a single
+  least-squares complex FIR whose group delay *is* the number in the source
+  (Smetanin et al. 2020, *J Neural Eng* 17(4) 046022). Measured on 11 corpus
+  EEG recordings at Cz, 12–15 Hz, against a zero-phase reference envelope: a
+  median of **206 ms saved at equal accuracy** (range 102–266 ms); on 8–12 Hz
+  at P4, a median of 265 ms. Cheaper on CPU as well, since one FIR replaces an
+  order-4 SOS cascade, a 65-tap FIR Hilbert and an exponential smoother.
+  Validated against the source at a matched band width and matched delay —
+  r = 0.84 against the paper's reported 0.85 ± 0.1 — because at a *mismatched*
+  width the same filter gives r = 0.37 and the comparison would mean nothing.
+  The envelope is calibrated to the same amplitude as `hilbert() +
+  magnitude()`, so an `absolute(6 uV)` threshold means the same thing before
+  and after a conversion.
+
+  Two sharp edges are handled rather than documented. The filter span must be
+  at least ~2× the declared delay or accuracy collapses with no symptom other
+  than the number (r = 0.873 at 2×, 0.437 at 1.4×), so `taps` is derived from
+  `latency` and an undersized span is refused at build time; deriving it also
+  means one protocol source works on a 250 Hz and a 500 Hz amp, where a fixed
+  tap count would be accepted on one and refused on the other. And the filter
+  needs its full span of valid history — about 0.8 s — before its output means
+  anything, which makes the cold-start behaviour tracked in #93 slightly
+  worse; a protocol with a `phase "warmup"` absorbs that for free, and one
+  without will show a rising envelope for the first second, so give it one.
+
+  Additive: `dwell`, `smooth`, the IR format and the HRV path are untouched,
+  and every existing protocol keeps its IR-JSON and hash. Evaluated by the
+  Python backend only — the Rust core has no `band_envelope` stage yet, so a
+  protocol using it must run on `backend="python"`. See PRIMITIVES.md
+  "`band_envelope`" and DESIGN-NOTES §7b, which records why the EEG case is a
+  different question from the low-sample-rate HRV case §7a settled (all of
+  §7a's evidence was at 4 Hz on a 0.1 Hz rhythm) without reopening it.
+
+### Changed
+- **`refrain check` cost estimate** counts `band_envelope` derives. The
+  envelope-band driver finds derives by looking for a `bandpass` call, so a
+  protocol that adopted the one-stage primitive would otherwise have read as
+  having no envelope cost at all. The new coefficient is uncalibrated and does
+  not yet scale with `taps`. Composed-latency *reporting* is still absent:
+  `cost.py` measures the axis running at 0.46 % of budget and says nothing
+  about the one that was ~2× over the recommendation.
+
 ## [0.22.0] — 2026-09-28
 
 ### Added

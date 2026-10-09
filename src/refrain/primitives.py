@@ -350,6 +350,36 @@ _HILBERT = PrimitiveSpec(
         "the cost of band-edge accuracy.",
 )
 
+def _band_envelope_output(args: dict[str, ResolvedArg]) -> StreamType:
+    """`band_envelope` emits a real envelope in the input's unit."""
+    return _magnitude_output(args)
+
+
+_BAND_ENVELOPE = PrimitiveSpec(
+    name="band_envelope",
+    category="signal",
+    signatures=(
+        Signature(
+            params=(
+                ParamSpec("band", "tuple_2_numbers", dims=FREQUENCY),
+                ParamSpec("latency", "duration"),
+                # `taps` sizes the filter. Left out, it is derived from the
+                # declared latency (~2.2x the delay in samples) so one source
+                # works at any sample rate; given explicitly, the impl refuses
+                # a span under ~2x the delay rather than let accuracy collapse
+                # quietly.
+                ParamSpec("taps", "ratio", default=None, required=False),
+            ),
+            output=_band_envelope_output,
+        ),
+    ),
+    budget=ResourceBudget(state_kb=8, worst_case_us=20),
+    doc="Band envelope in one stage, with the feedback delay as a declared "
+        "parameter. Replaces `bandpass -> hilbert -> magnitude -> smooth`, "
+        "whose delay is instead the sum of four stages nobody chose. "
+        "Least-squares complex FIR (Smetanin et al. 2020).",
+)
+
 _BANDPOWER = PrimitiveSpec(
     name="bandpower",
     category="signal",
@@ -722,6 +752,7 @@ _REGISTRY: dict[str, PrimitiveSpec] = {
         _PASSTHROUGH,
         _BANDPASS,
         _HILBERT,
+        _BAND_ENVELOPE,
         _BANDPOWER,
         _COHERENCE,
         _AUTOCORR,
