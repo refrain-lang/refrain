@@ -53,6 +53,35 @@ pub struct Protocol {
     /// Protocol-wide autopilot settings (IR-JSON 0.4). Absent ⇒ built-in defaults.
     #[serde(default)]
     pub autopilot: Option<AutopilotDecl>,
+    /// Typed output presentation contract (IR-JSON 0.5).
+    #[serde(default)]
+    pub feedback: Option<FeedbackDecl>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FeedbackDecl {
+    pub version: u32,
+    pub external_background: bool,
+    pub entries: Vec<FeedbackEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FeedbackEntry {
+    pub name: String,
+    pub output: String,
+    pub kind: String,
+    pub role: String,
+    pub label: String,
+    pub priority: i32,
+    pub asset_role: String,
+    pub preview: bool,
+    pub suppress_on_inhibit: bool,
+    pub suppress_on_mute: bool,
+    pub reset_on_gap: bool,
+    pub attack_ms: Option<f64>,
+    pub release_ms: Option<f64>,
+    pub rearm_ms: Option<f64>,
+    pub min_interval_ms: Option<f64>,
 }
 
 /// IR-JSON schema versions this core can honour. SPEC 9.3: a document tagged
@@ -60,13 +89,18 @@ pub struct Protocol {
 /// misinterpreted. This crate has no `deny_unknown_fields`, so an unknown field
 /// is invisible to serde — without this gate, a newer protocol would run with
 /// its new semantics dropped and no signal to anyone.
-pub const SUPPORTED_IR_VERSIONS: &[&str] = &["0.1", "0.2", "0.3", "0.4"];
+pub const SUPPORTED_IR_VERSIONS: &[&str] = &["0.1", "0.2", "0.3", "0.4", "0.5"];
 
 /// Refuse a document tagged with an unsupported schema version. Untagged
 /// documents predate versioning and are treated as "0.1".
 pub fn check_ir_version(p: &Protocol) -> Result<(), String> {
     let tag = p.refrain_ir_version.as_deref().unwrap_or("0.1");
     if SUPPORTED_IR_VERSIONS.contains(&tag) {
+        if let Some(feedback) = &p.feedback {
+            if feedback.version != 1 {
+                return Err(format!("unsupported feedback version {}", feedback.version));
+            }
+        }
         return Ok(());
     }
     Err(format!(

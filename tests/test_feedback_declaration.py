@@ -59,10 +59,24 @@ def test_existing_protocol_without_feedback_stays_valid():
     assert resolved("").feedback is None
 
 
+def test_child_amends_feedback_without_losing_other_entries():
+    parent = BASE.replace("FEEDBACK", DECL)
+    new_layer = '''layer {
+      output = "gain"; role = "approach"; label = "Approach"; priority = 10
+      asset_role = "approach"; attack = 2 s; release = 8 s; preview = true
+      suppress_on_inhibit = true; suppress_on_mute = true; reset_on_gap = true
+    }'''
+    child = f'protocol "child" extends "parent" {{ amend feedback {{ approach = {new_layer} }} }}'
+    ir = resolve(parse(child), AMP, parent_loader=lambda _: parse(parent))
+    assert [entry.name for entry in ir.feedback.entries] == ["approach", "crossing"]
+    assert ir.feedback.entries[0].attack_ms == 2000
+
+
 @pytest.mark.parametrize("decl, message", [
     (DECL.replace('output = "gain"', 'output = "missing"'), "missing"),
     (DECL.replace('role = "crossing"', 'role = "approach"'), "duplicate role"),
     (DECL.replace('priority = 20', 'priority = 10'), "duplicate priority"),
+    (DECL.replace('crossing = event', 'approach = event'), "duplicate entry"),
     (DECL.replace('output = "chime"', 'output = "gain"'), "event"),
     (DECL.replace('version = 1', 'version = 2'), "version"),
     (DECL.replace('attack = 4 s', 'attack = 61 s'), "attack"),

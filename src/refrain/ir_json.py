@@ -35,6 +35,7 @@ from .ir import (
     IRControlSeed,
     IRDerive,
     IRExpr,
+    IRFeedback,
     IRInhibit,
     IRInput,
     IRMeta,
@@ -134,6 +135,8 @@ def _protocol_ir_version(ir: IRProtocol) -> str:
     rule emits v0.3; a protocol using autopilot (protocol-wide or per-control)
     or named reward checks (the newest features) emits v0.4.
     """
+    if ir.feedback is not None:
+        return "0.5"
     if (
         ir.autopilot is not None
         or any(c.autopilot is not None for c in ir.controls.values())
@@ -530,6 +533,33 @@ def _emit_meta(meta: IRMeta, ctx: _EmitCtx) -> dict:
     return {k: _emit_expr(v, ctx) for k, v in meta.fields.items()}
 
 
+def _emit_feedback(feedback: IRFeedback) -> dict:
+    return {
+        "version": feedback.version,
+        "external_background": feedback.external_background,
+        "entries": [
+            {
+                "name": entry.name,
+                "output": entry.output,
+                "kind": entry.kind,
+                "role": entry.role,
+                "label": entry.label,
+                "priority": entry.priority,
+                "asset_role": entry.asset_role,
+                "preview": entry.preview,
+                "suppress_on_inhibit": entry.suppress_on_inhibit,
+                "suppress_on_mute": entry.suppress_on_mute,
+                "reset_on_gap": entry.reset_on_gap,
+                "attack_ms": entry.attack_ms,
+                "release_ms": entry.release_ms,
+                "rearm_ms": entry.rearm_ms,
+                "min_interval_ms": entry.min_interval_ms,
+            }
+            for entry in feedback.entries
+        ],
+    }
+
+
 def ir_to_json_obj(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> dict:
     """Serialize a resolved protocol into a JSON-compatible dict.
 
@@ -579,6 +609,8 @@ def ir_to_json_obj(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> di
     }
     if ir.autopilot is not None:
         obj["autopilot"] = _emit_autopilot(ir.autopilot, ctx)
+    if ir.feedback is not None:
+        obj["feedback"] = _emit_feedback(ir.feedback)
     return obj
 
 

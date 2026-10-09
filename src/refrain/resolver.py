@@ -2435,6 +2435,7 @@ class _Resolver:
         section = self.feedback_ast
         settings: dict[str, A.Expr] = {}
         entries: list[IRFeedbackEntry] = []
+        names: set[str] = set()
         roles: set[str] = set()
         priorities: set[int] = set()
 
@@ -2471,6 +2472,9 @@ class _Resolver:
                     raise ResolveError(f"feedback declares {stmt.target!r} twice", loc=stmt.loc)
                 settings[stmt.target] = stmt.value
                 continue
+            if stmt.target in names:
+                raise ResolveError(f"feedback duplicate entry {stmt.target!r}", loc=stmt.loc)
+            names.add(stmt.target)
             block = stmt.value
             if not isinstance(block, A.BlockExpr) or block.name not in ("layer", "event"):
                 raise ResolveError(f"feedback {stmt.target!r} must be a layer or event block", loc=stmt.loc)
