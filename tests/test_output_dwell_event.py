@@ -102,6 +102,30 @@ def test_rearmed_output_needs_continuous_time_out_before_another_cue(backend):
     assert count_events(2.0, 1) == 1
 
 
+def test_rearmed_output_guard_breaks_hold_without_rearming(backend):
+    """Authored sample levels test evaluator behavior, not clinical EEG evidence."""
+    guarded = REARM_PROTOCOL.replace(
+        "  output {",
+        '  inhibit "spike" { metric = sigmoid("raw", midpoint: 1.5, steepness: 10); '
+        'threshold = absolute(0.5); action = mute(release: 1 ms) }\n  output {',
+    )
+    ir = resolve(parse(guarded), AMP)
+    evaluator = Evaluator.live(
+        ir, sample_rate_hz=100.0, channel_names=("Cz", "linked_ears"), backend=backend,
+    )
+    evaluator.start(skip_warmup=True)
+
+    def count_events(value: float, count: int) -> int:
+        chunk = np.column_stack((np.full(count, value), np.zeros(count)))
+        return len(evaluator.step_chunk(chunk))
+
+    assert count_events(2.0, 3) == 1
+    assert count_events(4.0, 1) == 0
+    assert count_events(2.0, 10) == 0
+    assert count_events(0.0, 5) == 0
+    assert count_events(2.0, 3) == 1
+
+
 def test_event_output_ir_validates_without_a_feedback_declaration():
     jsonschema = pytest.importorskip("jsonschema")
     ir = resolve(parse(REARM_PROTOCOL), AMP)
