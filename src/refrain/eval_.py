@@ -97,11 +97,14 @@ _DYNAMIC_ARG_KEYS: dict[str, tuple[str, ...]] = {
     "auto_range": ("_pos_0",),
     "absolute": (),
     "above": ("_pos_0", "_pos_1"),
+    "at_or_above": ("_pos_0", "_pos_1"),
     "below": ("_pos_0", "_pos_1"),
     "inside": ("_pos_0",),
     "all_of": ("_array",),       # special: array of conditions
     "any_of": ("_array",),
     "dwell": ("condition",),
+    "dwell_rearm": ("condition",),
+    "hold_for": ("condition",),
     "sigmoid": ("_pos_0",),
     "linear": ("_pos_0",),
     "bandpower": ("input",),
@@ -219,8 +222,10 @@ def _massage_static_args(callee: str, static: dict[str, Any]) -> dict[str, Any]:
         out["window_ms"] = out.pop("window")
     if callee == "auto_range" and "window" in out:
         out["window_ms"] = out.pop("window")
-    if callee == "dwell" and "duration" in out:
+    if callee in ("dwell", "dwell_rearm", "hold_for") and "duration" in out:
         out["duration_ms"] = out.pop("duration")
+    if callee == "dwell_rearm" and "rearm" in out:
+        out["rearm_ms"] = out.pop("rearm")
     if callee == "bandpower" and "window" in out:
         out["window_ms"] = out.pop("window")
     if callee == "coherence" and "window" in out:
@@ -549,7 +554,21 @@ class Evaluator:
             self._rust.set_clock_frozen(bool(frozen))
             return
         self._clock_frozen = bool(frozen)
+        if frozen:
+            self.reset_held_outputs()
         self._snapshot_current_phase()
+
+    def reset_held_outputs(self) -> None:
+        """Invalidate held feedback streaks after audio mute or a data gap."""
+        if self._rust is not None:
+            self._rust.reset_held_outputs()
+            return
+        for impl in self._impls.values():
+            if isinstance(impl, impls.HoldForImpl):
+                impl.reset()
+        for expr in self.ir.output.values():
+            if isinstance(expr, IRCall) and expr.callee in ("dwell", "dwell_rearm"):
+                self._impls[id(expr)].reset()
 
     def start(self, *, skip_warmup: bool = False) -> None:
         """Enter `warmup` (or directly `run` if the protocol has no
@@ -1187,6 +1206,12 @@ class Evaluator:
         # envelopes / thresholds / output traces during warmup.
         per_channel_output: dict[str, tuple[np.ndarray, bool]] = {}
         for channel, expr in self.ir.output.items():
+            # Held feedback states must lose eligibility on guards, muted
+            # phases, and inactive blocks, not merely have their output hidden.
+            # Otherwise a hidden streak can emerge as an immediate reward.
+            self._hold_for_eligible = (
+                ~muted & (not suppress_output) & (channel in active_channels)
+            )
             values = self._eval_expr(
                 expr,
                 stream_values, control_chunks_cache, actual_chunk_size,
@@ -1196,6 +1221,8 @@ class Evaluator:
                 reward_component_signals=reward_component_signals,
             )
             is_event = self._is_event_channel(expr)
+            if isinstance(values, impls.DwellResult):
+                values = values.events
             if channel not in active_channels:
                 # Inactive-block channel: forced silent (same effect as an
                 # output_muted phase) — mirror the warmup zeroing pattern.
@@ -1714,6 +1741,8 @@ class Evaluator:
                     reward_composite=reward_composite, reward_component_signals=reward_component_signals,
                 )
             )
+        if call.callee in ("hold_for", "dwell", "dwell_rearm") and hasattr(self, "_hold_for_eligible"):
+            dynamic_chunks[0] = dynamic_chunks[0].astype(bool) & self._hold_for_eligible
         return impl.step(*dynamic_chunks)
 
     def _eval_reward_event(
@@ -1831,10 +1860,12 @@ class Evaluator:
 
     @staticmethod
     def _is_event_channel(expr: IRExpr) -> bool:
-        """Heuristic: a binding to `reward.event` (directly) drives an
-        event-channel output. Bindings to `reward.event.holds` or other
-        expressions produce analog values."""
-        return isinstance(expr, IRRewardField) and expr.field_path == "event"
+        """An event-stream binding emits pulses; held booleans are analog."""
+        return (
+            isinstance(expr, IRRewardField) and expr.field_path == "event"
+        ) or (
+            isinstance(expr, IRCall) and expr.stream_type.value_kind == "event"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2069,9 +2100,9 @@ def _rust_bool_tap_keys(ir: IRProtocol) -> frozenset[str]:
         for i in range(n_sub):
             keys.add(f"reward/condition[{i}]")
 
-    # output/<channel> — event channels are bound to reward.event
+    # output/<channel> — event-stream channels include direct dwell outputs.
     for channel, expr in ir.output.items():
-        if isinstance(expr, IRRewardField) and expr.field_path == "event":
+        if Evaluator._is_event_channel(expr):
             keys.add(f"output/{channel}")
 
     return frozenset(keys)
@@ -2095,7 +2126,7 @@ def _rust_bool_stream_keys(ir: IRProtocol) -> frozenset[str]:
 
     # output/<channel> for event-kind (reward.event) output channels.
     for channel, expr in ir.output.items():
-        if isinstance(expr, IRRewardField) and expr.field_path == "event":
+        if Evaluator._is_event_channel(expr):
             keys.add(f"output/{channel}")
 
     return frozenset(keys)

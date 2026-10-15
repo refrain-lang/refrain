@@ -5,6 +5,15 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [0.23.0] — unreleased
+
+### Added
+- `hold_for(condition, duration)` and `at_or_above(signal, threshold)` for
+  protocol-defined held output states. The Python and Rust evaluators reset
+  held states during inhibited or muted output, a frozen phase clock, and an
+  explicit host-requested signal interruption. Live duration changes reset
+  the affected hold.
+
 ## [0.22.0] — 2026-09-28
 
 ### Added

@@ -492,16 +492,20 @@ Conditions consume scalar streams and produce boolean streams.
 
 ```
 above(signal_ref, threshold_ref)             -> stream<boolean>
+at_or_above(signal_ref, threshold_ref)       -> stream<boolean>
 below(signal_ref, threshold_ref)             -> stream<boolean>
 inside(signal_ref, low: T, high: T)          -> stream<boolean>
 ```
 
-Compare a signal to a threshold or range. The threshold may be a literal value or a `threshold` block reference.
+Compare a signal to a threshold or range. `above` is strict; `at_or_above`
+includes equality. The threshold may be a literal value or a `threshold` block
+reference.
 
 ```refrain
 above("smr_envelope", "smr_t")
 below("theta_envelope", "theta_t")
 inside("alpha_envelope", low: 5 uV, high: 25 uV)
+at_or_above("theta_alpha_ratio", 1.0)
 ```
 
 ### `all_of`, `any_of`
@@ -554,6 +558,55 @@ output {
 ```
 
 `dwell` is the canonical way to express the operant reward pattern. It replaces the older `condition + dwell + continuous` reward shape from earlier strawman drafts.
+
+### `dwell_rearm`
+
+```
+dwell_rearm(condition: stream<boolean>, duration: time, rearm: time) -> event_stream
+```
+
+For a discrete feedback cue, this emits once after a continuous qualifying
+hold. A second cue requires `condition` to remain false for the full `rearm`
+interval before another qualifying hold. Short false intervals reset the hold
+timer but do not rearm the cue. Inhibits and muted output count as false;
+`Evaluator.reset_held_outputs()` resets the timer after an input gap or audio
+interruption. Both durations must be positive. `duration` may be a live
+duration control; changing it resets the current hold. `rearm` is a fixed
+duration. The primitive is supported as a direct `output` binding;
+`reward.event` continues to require `dwell(...)`.
+
+```refrain
+output {
+  sustained_cue = dwell_rearm(
+    condition: at_or_above("theta_alpha_ratio", 1.0),
+    duration: sustained_dwell,
+    rearm: 3 s
+  )
+}
+```
+
+### `hold_for`
+
+```
+hold_for(condition: stream<boolean>, duration: time) -> stream<boolean>
+```
+
+Use `hold_for` when an output needs a sustained state without creating a
+reward event. Its result becomes true only after the condition has remained
+true for the full duration. Inhibited or muted output, a frozen phase clock,
+or a host call to `Evaluator.reset_held_outputs()` clears its timer. Hosts
+should call that reset on a detected input gap or audio interruption before
+resuming feedback. A live duration-control change also clears the affected
+timer in both Python and Rust.
+
+```refrain
+output {
+  feedback_crossover = hold_for(
+    condition: at_or_above("theta_alpha_ratio", 1.0),
+    duration: crossover_dwell
+  )
+}
+```
 
 ---
 

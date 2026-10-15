@@ -748,6 +748,8 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -782,6 +784,8 @@ fun uniffi_refrain_core_checksum_method_refraincore_hold(
 fun uniffi_refrain_core_checksum_method_refraincore_last_taps(
 ): Short
 fun uniffi_refrain_core_checksum_method_refraincore_mark_equipment_change(
+): Short
+fun uniffi_refrain_core_checksum_method_refraincore_reset_held_outputs(
 ): Short
 fun uniffi_refrain_core_checksum_method_refraincore_seed_report(
 ): Short
@@ -871,6 +875,8 @@ fun uniffi_refrain_core_fn_method_refraincore_hold(`ptr`: Pointer,`held`: Byte,u
 fun uniffi_refrain_core_fn_method_refraincore_last_taps(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_refrain_core_fn_method_refraincore_mark_equipment_change(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_refrain_core_fn_method_refraincore_reset_held_outputs(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_refrain_core_fn_method_refraincore_seed_report(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1038,6 +1044,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_refrain_core_checksum_method_refraincore_mark_equipment_change() != 54873.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_refrain_core_checksum_method_refraincore_reset_held_outputs() != 19434.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_refrain_core_checksum_method_refraincore_seed_report() != 3631.toShort()) {
@@ -1526,6 +1535,8 @@ public interface RefrainCoreInterface {
     
     fun `markEquipmentChange`()
     
+    fun `resetHeldOutputs`()
+    
     /**
      * `eval::Evaluator::seed_report`: per-control baseline-seed outcome
      * (§2.7), keyed by bare control name. Empty for a non-seeding protocol.
@@ -1808,6 +1819,17 @@ open class RefrainCore: Disposable, AutoCloseable, RefrainCoreInterface
     callWithPointer {
     uniffiRustCall() { _status ->
     UniffiLib.INSTANCE.uniffi_refrain_core_fn_method_refraincore_mark_equipment_change(
+        it, _status)
+}
+    }
+    
+    
+
+    override fun `resetHeldOutputs`()
+        = 
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_refrain_core_fn_method_refraincore_reset_held_outputs(
         it, _status)
 }
     }

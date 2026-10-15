@@ -1,0 +1,219 @@
+{
+  "refrain_ir_version": "0.5",
+  "name": "rearmed tunable",
+  "extends": null,
+  "sample_rate_hz": 100.0,
+  "channels": [
+    "Cz"
+  ],
+  "requires": {
+    "coupling": null,
+    "sample_rate_min_hz": null,
+    "sample_rate_chosen_hz": 256,
+    "channels": [],
+    "impedance": "not_required",
+    "markers": "not_required"
+  },
+  "meta": {
+    "version": {
+      "node": "string",
+      "value": "1.0"
+    },
+    "evidence": {
+      "node": "string",
+      "value": "experimental"
+    },
+    "description": {
+      "node": "string",
+      "value": "authored tunable dwell"
+    }
+  },
+  "inputs": {
+    "raw": {
+      "canonical_name": "input/raw",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "montage": {
+        "node": "call",
+        "callee": "referential",
+        "args": [
+          {
+            "name": "active",
+            "value": {
+              "node": "string",
+              "value": "Cz"
+            }
+          },
+          {
+            "name": "reference",
+            "value": {
+              "node": "string",
+              "value": "linked_ears"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        }
+      }
+    }
+  },
+  "derives": {},
+  "thresholds": {},
+  "inhibits": {},
+  "reward": {
+    "continuous": null,
+    "event": null,
+    "combine": "all",
+    "components": []
+  },
+  "output": {
+    "cue": {
+      "node": "call",
+      "callee": "dwell_rearm",
+      "args": [
+        {
+          "name": "condition",
+          "value": {
+            "node": "call",
+            "callee": "above",
+            "args": [
+              {
+                "name": null,
+                "value": {
+                  "node": "stream_ref",
+                  "target": "input/raw",
+                  "stream_type": {
+                    "value_kind": "scalar",
+                    "dimensions": {
+                      "time": 0,
+                      "voltage": 1
+                    },
+                    "vector_size": null
+                  }
+                }
+              },
+              {
+                "name": null,
+                "value": {
+                  "node": "number",
+                  "value": 0.5,
+                  "dims": {
+                    "time": 0,
+                    "voltage": 0
+                  },
+                  "unit": null
+                }
+              }
+            ],
+            "stream_type": {
+              "value_kind": "boolean",
+              "dimensions": {
+                "time": 0,
+                "voltage": 0
+              },
+              "vector_size": null
+            }
+          }
+        },
+        {
+          "name": "duration",
+          "value": {
+            "node": "control_ref",
+            "target": "control/cue_dwell",
+            "default": 30.0,
+            "dims": {
+              "time": 1,
+              "voltage": 0
+            }
+          }
+        },
+        {
+          "name": "rearm",
+          "value": {
+            "node": "number",
+            "value": 50.0,
+            "dims": {
+              "time": 1,
+              "voltage": 0
+            },
+            "unit": "ms"
+          }
+        }
+      ],
+      "stream_type": {
+        "value_kind": "event",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      },
+      "coeffs": {
+        "dwell_samples": 3,
+        "rearm_samples": 5
+      }
+    }
+  },
+  "controls": {
+    "cue_dwell": {
+      "canonical_name": "control/cue_dwell",
+      "type_kind": "duration",
+      "dims": {
+        "time": 1,
+        "voltage": 0
+      },
+      "default": {
+        "node": "number",
+        "value": 30.0,
+        "dims": {
+          "time": 1,
+          "voltage": 0
+        },
+        "unit": "ms"
+      },
+      "range_low": {
+        "node": "number",
+        "value": 10.0,
+        "dims": {
+          "time": 1,
+          "voltage": 0
+        },
+        "unit": "ms"
+      },
+      "range_high": {
+        "node": "number",
+        "value": 100.0,
+        "dims": {
+          "time": 1,
+          "voltage": 0
+        },
+        "unit": "ms"
+      },
+      "log_scale": false,
+      "label": null,
+      "live_tunable": true,
+      "tune_strategy": null
+    }
+  },
+  "session": {
+    "phases": []
+  },
+  "blocks": {},
+  "reward_bundles": {},
+  "topological_order": [
+    "control/cue_dwell",
+    "input/raw"
+  ]
+}

@@ -229,6 +229,10 @@ impl RustEvaluator {
         self.inner.set_clock_frozen(frozen);
     }
 
+    fn reset_held_outputs(&mut self) {
+        self.inner.reset_held_outputs();
+    }
+
     /// `eval_.Evaluator.current_phase`: snapshot of the phase the most recent
     /// chunk ran under (aligned with `last_taps`). Returns a dict with keys
     /// index/name/mode/output_muted/block/remaining_s/clock_frozen/held.

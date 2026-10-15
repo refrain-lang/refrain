@@ -29,6 +29,7 @@ SCHEMA_BY_VERSION = {
     "0.2": SCHEMA_DIR / "ir-json-v0.2.schema.json",
     "0.3": SCHEMA_DIR / "ir-json-v0.3.schema.json",
     "0.4": SCHEMA_DIR / "ir-json-v0.4.schema.json",
+    "0.5": SCHEMA_DIR / "ir-json-v0.5.schema.json",
 }
 FIXTURES = REPO / "refrain-core" / "tests" / "fixtures"
 IR_JSON_FILES = sorted(FIXTURES.glob("*.ir.json"))

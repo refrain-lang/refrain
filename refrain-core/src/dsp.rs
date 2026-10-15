@@ -648,6 +648,16 @@ impl Dwell {
         Dwell { dwell_samples: dwell_samples.max(1), streak: 0, was_holding: false }
     }
 
+    pub fn set_duration_and_reset(&mut self, dwell_samples: usize) {
+        self.dwell_samples = dwell_samples.max(1);
+        self.reset();
+    }
+
+    pub fn reset(&mut self) {
+        self.streak = 0;
+        self.was_holding = false;
+    }
+
     /// Returns `(events, holds)`.
     pub fn step(&mut self, cond: &[bool]) -> (Vec<bool>, Vec<bool>) {
         let n = cond.len();
@@ -667,6 +677,59 @@ impl Dwell {
             self.was_holding = holding;
         }
         (events, holds)
+    }
+}
+
+/// Event latch that requires a continuous false interval before rearming.
+pub struct DwellRearm {
+    dwell_samples: usize,
+    rearm_samples: usize,
+    streak: usize,
+    out_streak: usize,
+    armed: bool,
+}
+
+impl DwellRearm {
+    pub fn new(dwell_samples: usize, rearm_samples: usize) -> Self {
+        Self {
+            dwell_samples: dwell_samples.max(1),
+            rearm_samples: rearm_samples.max(1),
+            streak: 0,
+            out_streak: 0,
+            armed: true,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.streak = 0;
+        self.out_streak = 0;
+        self.armed = true;
+    }
+
+    pub fn set_duration_and_reset(&mut self, dwell_samples: usize) {
+        self.dwell_samples = dwell_samples.max(1);
+        self.reset();
+    }
+
+    pub fn step(&mut self, cond: &[bool]) -> Vec<bool> {
+        let mut events = vec![false; cond.len()];
+        for (i, &on) in cond.iter().enumerate() {
+            if on {
+                self.streak += 1;
+                self.out_streak = 0;
+                if self.streak >= self.dwell_samples && self.armed {
+                    events[i] = true;
+                    self.armed = false;
+                }
+            } else {
+                self.streak = 0;
+                self.out_streak += 1;
+                if self.out_streak >= self.rearm_samples {
+                    self.armed = true;
+                }
+            }
+        }
+        events
     }
 }
 

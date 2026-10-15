@@ -37,6 +37,7 @@ follow-up.
 from __future__ import annotations
 
 import dataclasses
+import re
 from dataclasses import dataclass, replace
 
 from . import ast as A
@@ -61,6 +62,8 @@ from .ir import (
     IRCustom,
     IRDerive,
     IRExpr,
+    IRFeedback,
+    IRFeedbackEntry,
     IRGuard,
     IRInhibit,
     IRInput,
@@ -201,6 +204,7 @@ class _Resolver:
         self.requires_ast: A.SectionBlock | None = None
         self.reward_ast: A.SectionBlock | None = None
         self.output_ast: A.SectionBlock | None = None
+        self.feedback_ast: A.SectionBlock | None = None
         self.controls_ast: A.SectionBlock | None = None
         self.session_ast: A.SectionBlock | None = None
         self.groups_ast: A.SectionBlock | None = None
@@ -299,6 +303,7 @@ class _Resolver:
         self._resolve_reward()
         output_ir = self._resolve_output()
         self.output = output_ir
+        feedback_ir = self._resolve_feedback(output_ir)
         session_ir = self._resolve_session()
         self._validate_staging(session_ir)
         self._resolve_control_seeds(session_ir)
@@ -329,6 +334,7 @@ class _Resolver:
             reward_bundles=dict(self._reward_bundles),
             amp_profile=self.amp,
             autopilot=autopilot_ir,
+            feedback=feedback_ir,
             loc=proto.loc,
         )
         return self._validate_autopilot_trace(protocol)
@@ -574,6 +580,7 @@ class _Resolver:
                     "requires": "requires_ast",
                     "reward": "reward_ast",
                     "output": "output_ast",
+                    "feedback": "feedback_ast",
                     "controls": "controls_ast",
                     "session": "session_ast",
                     "groups": "groups_ast",
@@ -2324,6 +2331,10 @@ class _Resolver:
             event, check_names = self._strip_check_labels(event, f'reward "{decl.name}"')
         cont_ir = self._resolve_stream_expr(cont) if cont is not None else None
         event_ir = self._resolve_stream_expr(event) if event is not None else None
+        if event_ir is not None and not (
+            isinstance(event_ir, IRCall) and event_ir.callee == "dwell"
+        ):
+            raise ResolveError("reward.event requires dwell(...) as its source", loc=event.loc)
         return IRReward(
             continuous=cont_ir, event=event_ir, combine="all", components=(),
             check_names=check_names, loc=decl.loc,
@@ -2398,6 +2409,10 @@ class _Resolver:
                 f"reward.event must produce event_stream, got {_expr_stream_type(event_ir)}",
                 loc=event_expr.loc if event_expr else None,
             )
+        if event_ir is not None and not (
+            isinstance(event_ir, IRCall) and event_ir.callee == "dwell"
+        ):
+            raise ResolveError("reward.event requires dwell(...) as its source", loc=event_expr.loc)
         self.reward_ir = IRReward(
             continuous=cont_ir, event=event_ir, combine=combine,
             components=components, check_names=check_names, loc=self.reward_ast.loc,
@@ -2453,6 +2468,122 @@ class _Resolver:
             # custom channels out-of-scope for v0.0; we don't reject.
             out[stmt.target] = self._resolve_stream_expr(stmt.value)
         return out
+
+    def _resolve_feedback(self, output: dict[str, IRExpr]) -> IRFeedback | None:
+        if self.feedback_ast is None:
+            return None
+
+        section = self.feedback_ast
+        settings: dict[str, A.Expr] = {}
+        entries: list[IRFeedbackEntry] = []
+        names: set[str] = set()
+        roles: set[str] = set()
+        priorities: set[int] = set()
+
+        def fields_of(body: tuple[A.Statement, ...], where: str) -> dict[str, A.Expr]:
+            fields: dict[str, A.Expr] = {}
+            for stmt in body:
+                if not isinstance(stmt, A.Assignment):
+                    raise ResolveError(f"{where} only allows assignments", loc=stmt.loc)
+                if stmt.target in fields:
+                    raise ResolveError(f"{where} declares {stmt.target!r} twice", loc=stmt.loc)
+                fields[stmt.target] = stmt.value
+            return fields
+
+        def required_string(fields: dict[str, A.Expr], field: str, loc: Loc | None) -> str:
+            expr = fields.get(field)
+            if not isinstance(expr, A.StringLit) or not expr.value.strip():
+                raise ResolveError(f"feedback {field} must be a nonempty string", loc=expr.loc if expr else loc)
+            return expr.value
+
+        def duration(fields: dict[str, A.Expr], field: str, loc: Loc | None) -> float:
+            expr = fields.get(field)
+            if not isinstance(expr, A.NumberLit) or expr.unit not in ("ms", "s", "min"):
+                raise ResolveError(f"feedback {field} must be a duration", loc=expr.loc if expr else loc)
+            value = _to_milliseconds(expr)
+            if value < 0 or value > 60_000:
+                raise ResolveError(f"feedback {field} must be between 0 and 60 s", loc=expr.loc)
+            return value
+
+        for stmt in section.body:
+            if not isinstance(stmt, A.Assignment):
+                raise ResolveError("feedback only allows assignments", loc=stmt.loc)
+            if stmt.target in ("version", "external_background"):
+                if stmt.target in settings:
+                    raise ResolveError(f"feedback declares {stmt.target!r} twice", loc=stmt.loc)
+                settings[stmt.target] = stmt.value
+                continue
+            if stmt.target in names:
+                raise ResolveError(f"feedback duplicate entry {stmt.target!r}", loc=stmt.loc)
+            names.add(stmt.target)
+            block = stmt.value
+            if not isinstance(block, A.BlockExpr) or block.name not in ("layer", "event"):
+                raise ResolveError(f"feedback {stmt.target!r} must be a layer or event block", loc=stmt.loc)
+            fields = fields_of(block.body, f"feedback {stmt.target!r}")
+            common = {"output", "role", "label", "priority", "asset_role", "preview",
+                      "suppress_on_inhibit", "suppress_on_mute", "reset_on_gap"}
+            timing = {"attack", "release"} if block.name == "layer" else {"rearm", "min_interval"}
+            extra = set(fields) - common - timing
+            if extra:
+                raise ResolveError(f"feedback {stmt.target!r} has unknown fields {sorted(extra)}", loc=block.loc)
+            channel = required_string(fields, "output", block.loc)
+            if channel not in output:
+                raise ResolveError(f"feedback {stmt.target!r} references unknown output {channel!r}", loc=fields["output"].loc)
+            channel_type = _expr_stream_type(output[channel])
+            if block.name == "event" and channel_type != EVENT_STREAM:
+                raise ResolveError(f"feedback {stmt.target!r} event requires event-stream output", loc=fields["output"].loc)
+            if block.name == "layer" and not (
+                channel_type == BOOLEAN_STREAM or channel_type == scalar_stream(DIMENSIONLESS)
+            ):
+                raise ResolveError(f"feedback {stmt.target!r} layer requires dimensionless or Boolean output", loc=fields["output"].loc)
+            role = required_string(fields, "role", block.loc)
+            label = required_string(fields, "label", block.loc)
+            asset_role = required_string(fields, "asset_role", block.loc)
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", role):
+                raise ResolveError("feedback role must be an identifier", loc=fields["role"].loc)
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", asset_role):
+                raise ResolveError("feedback asset_role must be an identifier, not a path", loc=fields["asset_role"].loc)
+            if role in roles:
+                raise ResolveError(f"feedback duplicate role {role!r}", loc=fields["role"].loc)
+            roles.add(role)
+            priority_expr = fields.get("priority")
+            if not isinstance(priority_expr, A.NumberLit) or priority_expr.unit is not None or not priority_expr.value.is_integer():
+                raise ResolveError("feedback priority must be an integer", loc=priority_expr.loc if priority_expr else block.loc)
+            priority = int(priority_expr.value)
+            if priority in priorities:
+                raise ResolveError(f"feedback duplicate priority {priority}", loc=priority_expr.loc)
+            priorities.add(priority)
+            for flag in ("preview", "suppress_on_inhibit", "suppress_on_mute", "reset_on_gap"):
+                if flag not in fields:
+                    raise ResolveError(f"feedback {stmt.target!r} needs {flag}", loc=block.loc)
+            for field in timing:
+                if field not in fields:
+                    raise ResolveError(f"feedback {stmt.target!r} needs {field}", loc=block.loc)
+            entries.append(IRFeedbackEntry(
+                name=stmt.target, output=channel, kind=block.name, role=role, label=label,
+                priority=priority, asset_role=asset_role,
+                preview=self._bool_field(fields, "preview", default=False),
+                suppress_on_inhibit=self._bool_field(fields, "suppress_on_inhibit", default=True),
+                suppress_on_mute=self._bool_field(fields, "suppress_on_mute", default=True),
+                reset_on_gap=self._bool_field(fields, "reset_on_gap", default=True),
+                attack_ms=duration(fields, "attack", block.loc) if block.name == "layer" else None,
+                release_ms=duration(fields, "release", block.loc) if block.name == "layer" else None,
+                rearm_ms=duration(fields, "rearm", block.loc) if block.name == "event" else None,
+                min_interval_ms=duration(fields, "min_interval", block.loc) if block.name == "event" else None,
+            ))
+
+        version = settings.get("version")
+        if not isinstance(version, A.NumberLit) or version.value != 1 or version.unit is not None:
+            raise ResolveError("feedback version must be 1", loc=version.loc if version else section.loc)
+        if "external_background" not in settings:
+            raise ResolveError("feedback needs external_background", loc=section.loc)
+        if not entries:
+            raise ResolveError("feedback needs at least one entry", loc=section.loc)
+        return IRFeedback(
+            version=1,
+            external_background=self._bool_field(settings, "external_background", default=False),
+            entries=tuple(entries),
+        )
 
     # -- Session ------------------------------------------------------------
 
@@ -2895,6 +3026,16 @@ class _Resolver:
         # Resolve output type using the matching signature.
         sig, arg_map = _build_arg_map(spec, resolved_args, _stream_input_hint, call.loc)
         output_type = sig.output(arg_map)
+
+        if call.callee == "dwell_rearm":
+            rearm = next((a.value for a in resolved_args if a.name == "rearm"), None)
+            if not isinstance(rearm, IRNumberLit):
+                raise ResolveError("dwell_rearm rearm must be a fixed duration", loc=call.loc)
+            if rearm.value <= 0:
+                raise ResolveError("dwell_rearm rearm must be positive", loc=call.loc)
+            duration = next((a.value for a in resolved_args if a.name == "duration"), None)
+            if isinstance(duration, IRNumberLit) and duration.value <= 0:
+                raise ResolveError("dwell_rearm duration must be positive", loc=call.loc)
 
         # Per-primitive validation of `kind`-style enumerated string args.
         _validate_kind_args(spec, resolved_args, call.loc)
