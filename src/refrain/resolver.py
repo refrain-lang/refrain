@@ -209,6 +209,14 @@ class _Resolver:
         self.bands: dict[str, tuple[float, float]] = {}
         self.autopilot_ast: A.SectionBlock | None = None
 
+        # The rate this protocol will run at, set by `_resolve_requires` —
+        # which runs before any named decl, so every filter's band can be
+        # checked against Nyquist at resolve rather than at evaluator
+        # construction. With no amp profile this is the declared minimum,
+        # which is the conservative reading: a protocol that says it runs at
+        # 250 Hz cannot also ask for a 450 Hz band edge.
+        self.sample_rate_chosen_hz: float | None = None
+
         # Resolved named entities (filled in source order).
         self.inputs: dict[str, IRInput] = {}
         self.derives: dict[str, IRDerive] = {}
@@ -601,10 +609,12 @@ class _Resolver:
         if self.requires_ast is None:
             # SPEC §4.2 doesn't say `requires` is mandatory, but in
             # practice every example has it. Allow absent for now.
+            chosen = self.amp.sample_rates_hz[-1] if self.amp else 256
+            self.sample_rate_chosen_hz = float(chosen)
             return IRRequires(
                 coupling=None,
                 sample_rate_min_hz=None,
-                sample_rate_chosen_hz=self.amp.sample_rates_hz[-1] if self.amp else 256,
+                sample_rate_chosen_hz=chosen,
                 channels=(),
                 impedance="not_required",
                 markers="not_required",
@@ -614,6 +624,7 @@ class _Resolver:
         impedance = self._string_field(fields, "impedance", default="not_required")
         markers = self._string_field(fields, "markers", default="not_required")
         sample_rate_min, sample_rate_chosen = self._parse_sample_rate(fields)
+        self.sample_rate_chosen_hz = float(sample_rate_chosen)
         channels = self._parse_channel_list(fields)
 
         # Validate against amp profile.
@@ -953,6 +964,28 @@ class _Resolver:
             )
 
         upstream = tuple(_collect_upstream(expr))
+
+        # D6: the evaluator runs every input, then every derive, then every
+        # threshold, so a derive that reads a threshold can never bind it — it
+        # resolved, emitted IR, and died on the first chunk with
+        # `KeyError: 'threshold/<name>'` (Python) / `stream not bound` (Rust).
+        # `resolve` even printed a topological order placing the threshold
+        # first, which actively suggested this was supported.
+        thresholds_read = sorted(
+            u for u in upstream if u.startswith("threshold/")
+        )
+        if thresholds_read:
+            names = ", ".join(t.removeprefix("threshold/") for t in thresholds_read)
+            raise ResolveError(
+                f'derive "{decl.name}" reads threshold(s) {names}, but every '
+                "derive is evaluated before any threshold, so the reference "
+                "can never bind at run time. Reference the seeded `control` "
+                "the threshold is built from instead, or move the comparison "
+                "into `reward` / `inhibit`, which are evaluated after "
+                "thresholds.",
+                loc=decl.loc,
+            )
+
         return IRDerive(
             name=decl.name,
             canonical_name=f"derive/{decl.name}",
@@ -2427,6 +2460,13 @@ class _Resolver:
         if self.session_ast is None:
             return IRSession(phases=())
         fields = self._assignments_dict(self.session_ast.body)
+        extra = set(fields) - _SESSION_FIELDS
+        if extra:
+            raise ResolveError(
+                f"session: unexpected field(s) {sorted(extra)}; allowed: "
+                f"{', '.join(sorted(_SESSION_FIELDS))}.",
+                loc=self.session_ast.loc,
+            )
         phases_ast = fields.get("phases")
         if phases_ast is None:
             return IRSession(phases=(), loc=self.session_ast.loc)
@@ -2447,6 +2487,17 @@ class _Resolver:
             raise ResolveError("session phase needs a `name` field", loc=elt.loc)
         if not isinstance(name_expr, A.StringLit):
             raise ResolveError("phase.name must be a string", loc=name_expr.loc)
+        extra = set(phase_fields) - _PHASE_FIELDS
+        if extra:
+            # A phase cannot bind a parameter (no `set`, no per-phase control
+            # override), so a schedule written in the obvious place used to
+            # compile clean and run every step identically. Reject it, as
+            # `_resolve_block` and the reward-bundle resolver already do.
+            raise ResolveError(
+                f'phase "{name_expr.value}": unexpected field(s) {sorted(extra)}; '
+                f"allowed: {', '.join(sorted(_PHASE_FIELDS))}.",
+                loc=elt.loc,
+            )
         mode = self._resolve_phase_mode(phase_fields.get("mode"))
         block = self._resolve_phase_block(phase_fields.get("block"))
         duration_ms = self._resolve_phase_duration(phase_fields.get("duration"), mode, elt)
@@ -2842,15 +2893,15 @@ class _Resolver:
             ]
 
         # Resolve output type using the matching signature.
-        output_type = _compute_call_output(
-            spec,
-            resolved_args,
-            _stream_input_hint,
-            call.loc,
-        )
+        sig, arg_map = _build_arg_map(spec, resolved_args, _stream_input_hint, call.loc)
+        output_type = sig.output(arg_map)
 
         # Per-primitive validation of `kind`-style enumerated string args.
         _validate_kind_args(spec, resolved_args, call.loc)
+        # Dimension-check the slots that compare a value against a signal.
+        _validate_arg_dims(spec, arg_map, call.loc, _stream_input_hint)
+        # Nyquist, before anything is emitted (was evaluator-construction only).
+        self._validate_band_nyquist(spec, resolved_args, call.loc)
 
         # Account budget.
         self._state_kb += spec.budget.state_kb
@@ -2863,6 +2914,57 @@ class _Resolver:
             stream_type=output_type,
             loc=call.loc,
         )
+
+    def _validate_band_nyquist(self, spec: P.PrimitiveSpec, args: list[IRArg],
+                               loc: Loc | None) -> None:
+        """Reject a band edge at or above Nyquist, at resolve time.
+
+        `BandpassImpl` and `CoherenceImpl` already raise on this, but only when
+        the evaluator is constructed — so `bandpass(band: (20 Hz, 450 Hz))`
+        against a 250 Hz amp used to parse, resolve, type-check and emit
+        IR-JSON before failing. The resolver knows the chosen rate before any
+        derive is resolved, so it can say so first. The impl-level checks stay
+        as a backstop for hosts that build an evaluator at some other rate.
+        """
+        fs = self.sample_rate_chosen_hz
+        if fs is None or spec.name not in _NYQUIST_CHECKED:
+            return
+        nyq = fs / 2.0
+
+        def _hz(expr: IRExpr) -> float | None:
+            """The literal value of a frequency expression, or None if it is a
+            control ref or expression we cannot evaluate statically."""
+            if isinstance(expr, IRNumberLit) and expr.dims == FREQUENCY:
+                return float(expr.value)
+            return None
+
+        def _complain(edge: float, what: str) -> None:
+            raise ResolveError(
+                f"{spec.name}: {what} {edge:g} Hz is at or above the Nyquist "
+                f"frequency ({nyq:g} Hz) for this protocol's {fs:g} Hz sample "
+                f"rate; raise `requires.sample_rate` or lower the band",
+                loc=loc,
+            )
+
+        named = {a.name: a.value for a in args if a.name is not None}
+        positional = [a.value for a in args if a.name is None]
+
+        # `band: (low Hz, high Hz)` — also accepted positionally by bandpass.
+        band = named.get("band")
+        if band is None:
+            band = next((p for p in positional if isinstance(p, IRTuple)), None)
+        if isinstance(band, IRTuple) and len(band.elements) == 2:
+            for edge, what in zip(band.elements, ("band low edge", "band high edge")):
+                hz = _hz(edge)
+                if hz is not None and hz >= nyq:
+                    _complain(hz, what)
+
+        # `center: f, bandwidth: w` — the implied high edge is center + w/2.
+        center, bandwidth = _hz(named.get("center")), _hz(named.get("bandwidth"))
+        if center is not None:
+            high = center + (bandwidth / 2.0 if bandwidth is not None else 0.0)
+            if high >= nyq:
+                _complain(high, "implied band high edge")
 
     def _lower_pipeline(self, from_expr: A.StringLit, pipeline: A.Array) -> IRExpr:
         """Desugar `derive "X" { from = "Y"; pipeline = [p1, p2, ...] }`
@@ -2904,13 +3006,15 @@ class _Resolver:
                 loc=call.loc,
             )
         prev_type = _expr_stream_type(prev)
-        output_type = _compute_call_output(
-            spec,
-            resolved_args,
-            _stream_input_hint=prev_type,
-            loc=call.loc,
+        sig, arg_map = _build_arg_map(
+            spec, resolved_args, prev_type, call.loc
         )
+        output_type = sig.output(arg_map)
         _validate_kind_args(spec, resolved_args, call.loc)
+        # A `sigmoid`/`linear` stage inside a pipeline compares its midpoint
+        # against the previous stage, so it needs the same check as a call.
+        _validate_arg_dims(spec, arg_map, call.loc, prev_type)
+        self._validate_band_nyquist(spec, resolved_args, call.loc)
         self._state_kb += spec.budget.state_kb
         self._worst_case_us += spec.budget.worst_case_us
         return IRCall(
@@ -2988,13 +3092,13 @@ def _expr_stream_type(expr: IRExpr) -> StreamType:
     return scalar_stream(DIMENSIONLESS)
 
 
-def _compute_call_output(
+def _build_arg_map(
     spec: PrimitiveSpec,
     args: list[IRArg],
     _stream_input_hint: StreamType | None,
     loc: Loc | None,
-) -> StreamType:
-    """Run the primitive's output factory with a `ResolvedArg` dict."""
+) -> tuple[P.Signature, dict[str, ResolvedArg]]:
+    """Match `args` against the chosen signature, keyed by parameter name."""
     arg_map: dict[str, ResolvedArg] = {}
 
     # Map positional args to the signature's positional params.
@@ -3020,6 +3124,17 @@ def _compute_call_output(
                 name=None, stream_type=_stream_input_hint, dims=None
             )
 
+    return sig, arg_map
+
+
+def _compute_call_output(
+    spec: PrimitiveSpec,
+    args: list[IRArg],
+    _stream_input_hint: StreamType | None,
+    loc: Loc | None,
+) -> StreamType:
+    """Run the primitive's output factory with a `ResolvedArg` dict."""
+    sig, arg_map = _build_arg_map(spec, args, _stream_input_hint, loc)
     return sig.output(arg_map)
 
 
@@ -3064,6 +3179,90 @@ def _validate_kind_args(spec: P.PrimitiveSpec, args: list[IRArg], loc: Loc | Non
                 f"{spec.name}(kind: {arg.value.value!r}) is not a supported "
                 f"filter family; allowed: {list(allowed)}",
                 loc=arg.loc,
+            )
+
+
+# Parameters whose value is compared against the primitive's reference stream
+# and must therefore carry the same dimensions: `param -> reference param`.
+# "__input__" is the implicit pipeline-threaded input (or the inhibit/threshold
+# stream hint), which is how `sigmoid`, `linear` and `absolute` see their
+# subject.
+_DIM_CHECKED_PARAMS: dict[str, tuple[tuple[str, str], ...]] = {
+    "above":    (("threshold", "signal"),),
+    "below":    (("threshold", "signal"),),
+    "inside":   (("low", "signal"), ("high", "signal")),
+    "sigmoid":  (("midpoint", "__input__"),),
+    "linear":   (("midpoint", "__input__"),),
+    "absolute": (("value", "__input__"),),
+}
+
+# Pure shape knobs: dimensionless whatever the input carries.
+_DIMENSIONLESS_PARAMS: dict[str, tuple[str, ...]] = {
+    "sigmoid": ("steepness",),
+    "linear": ("slope",),
+}
+
+
+def _resolved_arg_dims(arg: ResolvedArg | None) -> Dimensions | None:
+    """The dimensions a resolved argument carries, stream or scalar."""
+    if arg is None:
+        return None
+    if arg.dims is not None:
+        return arg.dims
+    if arg.stream_type is not None:
+        return arg.stream_type.dimensions
+    return None
+
+
+def _validate_arg_dims(
+    spec: P.PrimitiveSpec,
+    arg_map: dict[str, ResolvedArg],
+    loc: Loc | None,
+    _stream_input_hint: StreamType | None = None,
+) -> None:
+    """Dimension-check the threshold and condition constructors.
+
+    Binary `>` rejects `"<uV stream>" > 5 Hz`, but `above("<uV stream>", 5 Hz)`
+    used to resolve, as did `sigmoid(..., midpoint: 5 Hz)` and
+    `absolute(value: 900 uV2)` against a uV signal — so the dimensions Refrain
+    does have went unenforced at exactly the points a clinical protocol
+    compares quantities.
+
+    A *dimensionless* operand is still accepted against any stream. Bare
+    unit-less numbers are the established spelling throughout the corpus
+    (`sigmoid("smr_envelope", midpoint: 5.0, ...)` in micro_09_inhibit means
+    5 uV), and whether a literal should instead be required to carry its unit
+    — which is what full parity with binary `>` would mean — is a language
+    decision, not a bug fix. What is unambiguous is that a literal carrying
+    the *wrong* unit is an error.
+    """
+    for param, ref_param in _DIM_CHECKED_PARAMS.get(spec.name, ()):
+        got = _resolved_arg_dims(arg_map.get(param))
+        want = _resolved_arg_dims(arg_map.get(ref_param))
+        if want is None and ref_param == "__input__" and _stream_input_hint is not None:
+            # `absolute(value: 8 uV)` passes its only argument by name, so
+            # `_build_arg_map` has no positional arg to hang the stream hint
+            # on. The threshold's signal is still what the value is compared
+            # against, so take it directly.
+            want = _stream_input_hint.dimensions
+        if got is None or want is None:
+            continue                      # reference stream not visible here
+        if got.is_dimensionless or want.is_dimensionless:
+            continue                      # polymorphic — see the docstring
+        if got != want:
+            raise ResolveError(
+                f"{spec.name}({param}: ...) is {got}, but the signal it is "
+                f"compared against is {want}; they must share dimensions "
+                f"(binary `>` already enforces this)",
+                loc=loc,
+            )
+
+    for param in _DIMENSIONLESS_PARAMS.get(spec.name, ()):
+        got = _resolved_arg_dims(arg_map.get(param))
+        if got is not None and not got.is_dimensionless:
+            raise ResolveError(
+                f"{spec.name}({param}: ...) must be dimensionless, got {got}",
+                loc=loc,
             )
 
 
@@ -3180,6 +3379,17 @@ def _control_kind_dims(kind: str, loc: Loc | None) -> Dimensions:
 
 
 _PHASE_MODES = ("timed", "open", "timed_with_floor")
+
+# Every field `phase { }` and `session { }` understand. Anything else is
+# rejected rather than dropped: a per-phase parameter binding does not exist
+# yet, so a rate schedule written inside `phase { }` would otherwise compile
+# clean and run every step at the same rate.
+_PHASE_FIELDS = frozenset({"name", "duration", "mode", "block", "output_muted"})
+_SESSION_FIELDS = frozenset({"phases"})
+
+# Primitives that take a frequency band and whose impls build filter
+# coefficients from it, so an edge at or above Nyquist is unrunnable.
+_NYQUIST_CHECKED = frozenset({"bandpass", "bandpower", "coherence"})
 
 
 def _to_milliseconds(n: A.NumberLit) -> float:

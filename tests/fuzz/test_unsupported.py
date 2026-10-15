@@ -31,14 +31,20 @@ def test_single_condition_reward_raises_typed_skip():
     assert exc.value.reason == "composite-signal reward condition"
 
 
-def test_center_bandwidth_bandpass_no_longer_raises_typed_skip():
-    # Since center/bandwidth support was added, othmer_ilf_t3t4 now gets past
-    # bandpass parsing. It then fails at the reward stage (no dwell event) with
-    # a plain ValueError backstop — NOT an UnsupportedProtocol typed skip.
+def test_center_bandwidth_bandpass_falls_through_to_a_typed_reward_skip():
+    """Was `test_center_bandwidth_bandpass_no_longer_raises_typed_skip`, which
+    asserted a plain ValueError and `not isinstance(..., UnsupportedProtocol)`.
+
+    othmer_ilf_t3t4 gets past bandpass parsing and then has no `reward.event`
+    to fuzz at all. That is a shape the fuzzer does not model, which is what
+    `UnsupportedProtocol` is for — the bare ValueError put it in the same
+    bucket as a crash, and the backstop now treats that bucket as a build
+    failure.
+    """
     ir = _ir("examples/othmer_ilf_t3t4.refrain")
-    with pytest.raises(ValueError) as exc:
+    with pytest.raises(UnsupportedProtocol) as exc:
         build_surface(ir)
-    assert not isinstance(exc.value, UnsupportedProtocol)
+    assert exc.value.reason == "no reward.event to fuzz"
 
 
 def test_supported_protocol_still_builds():
@@ -47,14 +53,19 @@ def test_supported_protocol_still_builds():
     assert surface.protocol_name
 
 
-def test_unrecognized_condition_stays_valueerror_not_typed():
-    # micro_08_bandpower hits `_condition_from_ir` with a non-leaf IRCall;
-    # Increment 0 leaves this as a plain ValueError (-> backstop "unclassified"),
-    # NOT one of our typed skips.
+def test_unmodelled_condition_is_a_typed_skip_that_names_the_primitive():
+    """Was `test_unrecognized_condition_stays_valueerror_not_typed`, which
+    pinned the plain-ValueError behaviour as an Increment-0 state.
+
+    micro_08_bandpower reaches `_condition_from_ir` with an `inside(...)` call.
+    "We don't model `inside()`" is a declinable shape, and the reason now says
+    which primitive — the old message was `unrecognized condition expr IRCall`,
+    which does not tell a reader what to add support for.
+    """
     ir = _ir("bench/protocols/micro_08_bandpower.refrain")
-    with pytest.raises(ValueError) as exc:
+    with pytest.raises(UnsupportedProtocol) as exc:
         build_surface(ir)
-    assert not isinstance(exc.value, UnsupportedProtocol)
+    assert exc.value.reason == "condition shape not modelled (inside())"
 
 
 # ---------------------------------------------------------------------------
@@ -162,3 +173,42 @@ def test_multi_leaf_condition_with_unresolvable_absolute_leaf_skips_cleanly():
     with pytest.raises(UnsupportedProtocol) as e:
         build_surface(ir)
     assert e.value.reason == "absolute threshold value did not resolve to a literal"
+
+
+# ---------------------------------------------------------------------------
+# A band edge may be a control, not only a literal
+# ---------------------------------------------------------------------------
+
+
+def test_band_edges_given_as_controls_resolve_to_their_defaults():
+    """`_band_from_call`'s `band:` branch assumed two number literals and did
+    `float(lo.value)`, so the paired `_lo_hz`/`_hi_hz` form in
+    alpha_theta_autopilot raised
+
+        AttributeError: 'IRControlRef' object has no attribute 'value'
+
+    which the runner reported as `skipped: unclassified (...)` — printed
+    alongside the declared skips and read like one. The `center:`/`bandwidth:`
+    branch had resolved a control to its default all along; the `band:` branch
+    now does too.
+    """
+    ir = _ir("examples/alpha_theta_autopilot.refrain")
+    # It is still unfuzzable, but for an honest declared reason rather than a
+    # crash: its reward signal is a ratio derive, not a bandpass envelope.
+    with pytest.raises(UnsupportedProtocol) as exc:
+        build_surface(ir)
+    assert "non-bandpass" in exc.value.reason
+
+    # The band itself now reads cleanly. Pin it directly so a regression in
+    # `_band_from_call` cannot hide behind the reward-stage skip above.
+    from refrain.fuzz.surface import _band_from_call
+
+    delta = ir.derives["delta_envelope"].expression
+    call = delta
+    while call is not None and getattr(call, "callee", None) != "bandpass":
+        args = getattr(call, "args", ())
+        call = next((a.value for a in args if getattr(a.value, "callee", None)), None)
+    assert call is not None, "could not find the bandpass call"
+    lo, hi = _band_from_call(call, ir)
+    # delta_lo_hz defaults to 2 Hz (range 1-4), delta_hi_hz to 4 Hz (range 2-8).
+    assert (lo, hi) == (2.0, 4.0), f"delta band read as ({lo}, {hi})"

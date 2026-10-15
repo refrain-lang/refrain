@@ -29,8 +29,11 @@ FUZZED = "fuzzed"
 SKIPPED = "skipped"
 ERRORED = "errored"
 
-# Introspection/generation failures we treat as "unclassified" skips. NOT a
-# blanket `except Exception` — the evaluate/oracle/check loop runs outside this.
+# Introspection/generation failures. These become ERRORED (an oracle bug), not
+# SKIPPED — a shape the generator legitimately does not model raises
+# `UnsupportedProtocol` instead, and conflating the two makes a crash read like
+# a pass. NOT a blanket `except Exception`: the evaluate/oracle/check loop runs
+# outside this backstop so genuine engine violations always surface.
 _BACKSTOP_ERRORS = (ValueError, KeyError, TypeError, AttributeError, IndexError)
 
 
@@ -60,8 +63,16 @@ def fuzz_protocol(ir, *, path: str, max_scenarios: int, chunk_size: int,
     except UnsupportedProtocol as exc:
         return ProtocolOutcome(path=path, status=SKIPPED, reason=exc.reason)
     except _BACKSTOP_ERRORS as exc:
+        # An internal exception in introspection or generation is a BUG, not a
+        # skip. These used to be reported as `skipped: unclassified (...)`,
+        # printed alongside the declared `UnsupportedProtocol` skips and read
+        # like them — which is what hid the fact that the oracle could not
+        # handle a control reference in a band tuple. A skip is the generator
+        # declining a shape it does not model; this is the generator falling
+        # over. ERRORED makes `batch_exit_code` return 1.
         return ProtocolOutcome(
-            path=path, status=SKIPPED, reason=f"unclassified ({_short_reason(exc)})"
+            path=path, status=ERRORED,
+            reason=f"oracle-bug: {type(exc).__name__}: {_short_reason(exc)}",
         )
 
     # --- evaluate -> oracle -> check: OUTSIDE the backstop ---
