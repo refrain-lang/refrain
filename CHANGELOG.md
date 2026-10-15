@@ -42,13 +42,47 @@ bumps are additive; major bumps may break compatibility.
   worse; a protocol with a `phase "warmup"` absorbs that for free, and one
   without will show a rising envelope for the first second, so give it one.
 
-  Additive: `dwell`, `smooth`, the IR format and the HRV path are untouched,
-  and every existing protocol keeps its IR-JSON and hash. Evaluated by the
-  Python backend only — the Rust core has no `band_envelope` stage yet, so a
-  protocol using it must run on `backend="python"`. See PRIMITIVES.md
-  "`band_envelope`" and DESIGN-NOTES §7b, which records why the EEG case is a
-  different question from the low-sample-rate HRV case §7a settled (all of
-  §7a's evidence was at 4 Hz on a 0.1 Hz rhythm) without reopening it.
+  Additive for existing protocols: `dwell`, `smooth` and the HRV path are
+  untouched, and every protocol that does not use the new primitive keeps a
+  byte-identical IR-JSON and hash. See PRIMITIVES.md "`band_envelope`" and
+  DESIGN-NOTES §7b, which records why the EEG case is a different question
+  from the low-sample-rate HRV case §7a settled (all of §7a's evidence was at
+  4 Hz on a 0.1 Hz rhythm) without reopening it.
+
+- **`band_envelope` runs on the portable Rust core, not just the Python
+  evaluator.** Shipping it Python-first would have been the wrong place to
+  stop: the recorder picks the Rust backend whenever the `refrain_core` wheel
+  imports, so a Python-only stage meant the primitive would fail in the
+  configuration the product actually runs — and fail by crashing the session,
+  since an unrecognised compute primitive reaches a `panic!`. Filter *design*
+  stays in Python, as it does for every other stage: the core receives the
+  finished complex taps and runs the convolution, so the closed-form inverse
+  transform, the Hanning taper and the amplitude calibration exist in exactly
+  one place. The two backends are held to sample-for-sample parity by the
+  existing drift gate, which now covers this stage through a new golden-vector
+  pair (`micro_13_band_envelope`, deliberately the same band and channel as
+  the four-stage `micro_03_envelope`) and a dual-backend test asserting that
+  the Rust path realizes the latency the author declared.
+
+- **IR-JSON v0.5: `fir_taps_re` / `fir_taps_im`.** Complex FIR taps on the
+  wire, split into two real arrays — JSON has no complex type, and the pair
+  mirrors the runtime's own complex-signal layout, so the core reads it
+  without a deinterleaving pass. This is a version bump rather than a quiet
+  field addition because the v0.4 `Coeffs` definition closes itself to
+  additional properties: a v0.5 document does not validate against v0.4, and
+  `SUPPORTED_IR_VERSIONS` makes an older core refuse it at load with an
+  explicit version error instead of running the pipeline with the stage's
+  coefficients silently dropped. The schema requires the two arrays to appear
+  together. Only a protocol using `band_envelope` emits v0.5.
+
+### Fixed
+- **Stale golden-vector fixtures.** The committed `*.ir.json` fixtures carried
+  `sample_rate_chosen_hz: 2048` for 15 protocols, from before the q21 amp
+  profile was CANbus-capped to 256 Hz in v0.16.1. The drift gate regenerates
+  fixtures before comparing, so it never noticed the committed copies had gone
+  stale — they only differed from what the current emitter produces, which is
+  invisible to a gate that overwrites them first. Regenerated; the only change
+  is that one field.
 
 ### Changed
 - **`refrain check` cost estimate** counts `band_envelope` derives. The

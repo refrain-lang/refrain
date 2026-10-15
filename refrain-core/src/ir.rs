@@ -60,7 +60,7 @@ pub struct Protocol {
 /// misinterpreted. This crate has no `deny_unknown_fields`, so an unknown field
 /// is invisible to serde — without this gate, a newer protocol would run with
 /// its new semantics dropped and no signal to anyone.
-pub const SUPPORTED_IR_VERSIONS: &[&str] = &["0.1", "0.2", "0.3", "0.4"];
+pub const SUPPORTED_IR_VERSIONS: &[&str] = &["0.1", "0.2", "0.3", "0.4", "0.5"];
 
 /// Refuse a document tagged with an unsupported schema version. Untagged
 /// documents predate versioning and are treated as "0.1".
@@ -316,6 +316,15 @@ pub struct Coeffs {
     pub sos: Option<Vec<Vec<f64>>>,
     #[serde(default)]
     pub fir_taps: Option<Vec<f64>>,
+    /// Complex FIR taps, split into parallel real/imaginary vectors
+    /// (`band_envelope`). Always present or absent together, and the same
+    /// length as each other. New in IR-JSON v0.5. The split mirrors
+    /// `dsp::Signal::Complex`, so the runtime reads them without
+    /// deinterleaving; JSON has no complex type, so some split is required.
+    #[serde(default)]
+    pub fir_taps_re: Option<Vec<f64>>,
+    #[serde(default)]
+    pub fir_taps_im: Option<Vec<f64>>,
     #[serde(default)]
     pub group_delay: Option<usize>,
     #[serde(default)]

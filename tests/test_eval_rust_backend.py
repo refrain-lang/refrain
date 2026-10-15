@@ -591,3 +591,116 @@ def test_rust_backend_refuses_unsupported_ir_version(smr_ir):
     msg = str(excinfo.value)
     assert "99.0" in msg, f"diagnostic must name the offending version, got: {msg}"
     assert "refrain_ir_version" in msg, f"diagnostic must name the field, got: {msg}"
+
+
+# ---------------------------------------------------------------------------
+# band_envelope — complex-tap FIR parity
+#
+# `band_envelope` is the first primitive whose baked coefficients are complex
+# (`fir_taps_re` / `fir_taps_im`, IR-JSON v0.5), so it is the first stage where
+# the two backends could disagree about a coefficient *layout* rather than a
+# recurrence. These tests live here, not in test_band_envelope.py, because the
+# drift gate runs `tests/test_eval_*.py` under REFRAIN_EVAL_BACKEND=rust — a
+# test in the other file would never exercise the Rust path.
+# ---------------------------------------------------------------------------
+
+BAND_ENVELOPE_SRC = """
+protocol "band_envelope_parity" {
+  meta { version = "0.1.0" evidence = "demo" }
+  requires { sample_rate = ">= 256 Hz" channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "env" {
+    from = "raw"
+    pipeline = [ band_envelope(band: (12 Hz, 15 Hz), latency: 250 ms) ]
+  }
+  output { audio_gain = 0 }
+}
+"""
+
+
+@pytest.fixture(scope="module")
+def band_envelope_ir():
+    return resolve(parse(BAND_ENVELOPE_SRC), load_amp_profile(AMP_Q21))
+
+
+def _run_envelope(ir, signal: np.ndarray, backend: str) -> np.ndarray:
+    """Drive one backend over `signal`, returning the concatenated `env` stream."""
+    ev = Evaluator.live(
+        ir,
+        sample_rate_hz=SAMPLE_RATE,
+        channel_names=CHANNELS,
+        record_streams=True,
+        backend=backend,
+    )
+    ev.start(skip_warmup=True)
+    out: list[np.ndarray] = []
+    for i in range(0, len(signal), CHUNK_SIZE):
+        ev.step_chunk(signal[i : i + CHUNK_SIZE])
+        out.append(np.asarray(ev.last_streams()["env"], dtype=np.float64).copy())
+    ev.stop()
+    return np.concatenate(out)
+
+
+def _band_envelope_signal(n: int = 4096, seed: int = CHUNK_SEED) -> np.ndarray:
+    """A 13.5 Hz carrier (mid-band) under slow noise AM, on Cz alone.
+
+    The rhythm goes on Cz and the two ear references stay at zero, so the
+    `referential(active: "Cz", reference: "linked_ears")` montage passes it
+    through unchanged — `Cz - mean(A1, A2)` is then exactly the carrier. Tiling
+    the same signal across all three channels instead would cancel to a flat
+    zero, and two backends agreeing on zeros proves nothing.
+    """
+    rng = np.random.default_rng(seed)
+    t = np.arange(n) / SAMPLE_RATE
+    slow = np.convolve(rng.standard_normal(n), np.ones(256) / 256.0, mode="same")
+    x = (1.0 + 0.8 * slow / (np.abs(slow).max() + 1e-12)) * np.sin(2 * np.pi * 13.5 * t)
+    out = np.zeros((n, len(CHANNELS)), dtype=np.float64)
+    out[:, CHANNELS.index("Cz")] = 10.0 * x
+    return out
+
+
+def test_rust_backend_band_envelope_stream_parity(band_envelope_ir):
+    """The complex-tap FIR must produce the same envelope on both backends.
+
+    Tolerance matches the equivalence gate (atol=1e-6, rtol=1e-4), skipping
+    the filter's cold start: a 250 ms latency at 256 Hz is 141 taps, so the
+    first 140 samples are filling the delay line on both sides.
+    """
+    pytest.importorskip("refrain_core", reason="refrain_core wheel not installed")
+    signal = _band_envelope_signal()
+
+    py = _run_envelope(band_envelope_ir, signal, "python")
+    rust = _run_envelope(band_envelope_ir, signal, "rust")
+
+    assert len(py) == len(rust), f"length mismatch: {len(py)} vs {len(rust)}"
+    warm = 512
+    np.testing.assert_allclose(rust[warm:], py[warm:], atol=1e-6, rtol=1e-4)
+    # A stage that silently returned zeros would also pass an allclose against
+    # itself, so require the envelope actually tracked something.
+    assert py[warm:].std() > 0.1, "reference envelope is flat — signal not in band?"
+
+
+def test_rust_backend_band_envelope_realizes_the_declared_latency(band_envelope_ir):
+    """The Rust path must deliver the envelope at the latency the author declared.
+
+    This is the primitive's whole contract, so it is pinned on the portable
+    backend too and not only in the Python unit tests. The baked `group_delay`
+    is 64 samples (250 ms at 256 Hz); the realized lag is measured against a
+    zero-phase reference envelope, which is unrealizable but is the accuracy
+    target the delay is being traded for.
+    """
+    pytest.importorskip("refrain_core", reason="refrain_core wheel not installed")
+    from tests.test_band_envelope import _lag_and_corr, _zero_phase_envelope
+
+    signal = _band_envelope_signal(n=8192)
+    rust = _run_envelope(band_envelope_ir, signal, "rust")
+
+    truth = _zero_phase_envelope(signal[:, 0], SAMPLE_RATE, (12.0, 15.0))
+    warm = 1024
+    lag_ms, corr = _lag_and_corr(rust[warm:], truth[warm:], SAMPLE_RATE)
+
+    # 250 ms declared, within one chunk's worth of measurement resolution.
+    assert abs(lag_ms - 250.0) < 1000.0 * CHUNK_SIZE / SAMPLE_RATE, (
+        f"Rust backend realized {lag_ms:.0f} ms against a declared 250 ms"
+    )
+    assert corr > 0.8, f"envelope tracking collapsed on the Rust backend: r={corr:.3f}"

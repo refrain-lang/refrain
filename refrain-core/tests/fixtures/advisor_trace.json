@@ -244,6 +244,11 @@
   ],
   "inhibit_controls": []
  },
+ "micro_13_band_envelope.ir.json": {
+  "bundles": {},
+  "check_controls": [],
+  "inhibit_controls": []
+ },
  "micro_passthrough_identity.ir.json": {
   "bundles": {},
   "check_controls": [],

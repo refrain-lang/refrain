@@ -293,8 +293,14 @@ of the session, so give the primitive one.
 use `rectify() + smooth(tau)` — see `hilbert` above and DESIGN-NOTES §7a. A
 declared latency shorter than 3 samples at the target rate is refused.
 
-Evaluated by the Python backend. The Rust core has no `band_envelope` stage
-yet, so a protocol using it must run on `backend="python"`.
+**Both backends.** Evaluated by the Python evaluator and the portable Rust
+core, which are held to sample-for-sample parity by the drift gate
+(`refrain-core/tools/check_equivalence.py`). Filter design stays in Python: the
+core receives the finished complex taps as `fir_taps_re` / `fir_taps_im` and
+runs the convolution. Those coefficient fields are new in IR-JSON v0.5, so a
+protocol using this primitive emits a v0.5 document and needs a runtime that
+accepts v0.5 — an older core refuses it at load with an explicit version
+error rather than running it with the stage silently dropped.
 
 ### `bandpower`
 

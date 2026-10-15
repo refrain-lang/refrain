@@ -997,8 +997,31 @@ an order-4 SOS cascade, a 65-tap FIR Hilbert and an exponential smoother.
 collapses silently, so `taps` is derived from `latency` and an undersized span
 is refused at build time rather than run. Validated against the source at a
 matched band width and matched delay: r = 0.84 against Smetanin et al.'s
-reported 0.85 ± 0.1. Nothing on the HRV path changed, and `dwell`, `smooth` and
-the IR format are untouched.
+reported 0.85 ± 0.1. Nothing on the HRV path changed, and `dwell` and `smooth`
+are untouched.
+
+**The portable core needed a wire-format field.** The primitive shipped Python-
+first, which was the wrong place to stop: the recorder selects the Rust backend
+whenever the `refrain_core` wheel imports, so a Python-only stage meant a
+protocol that adopted the primitive would fail in the configuration the product
+actually runs. Carrying it across needed one addition to IR-JSON, and the choice
+was between two shapes.
+
+Baking the finished taps into the wire format follows what the `Coeffs` struct
+already says it is for — "coefficients baked by the Python front-end so the core
+never reimplements SciPy filter *design*". The alternative, implementing the
+closed-form design in Rust, would have avoided touching IR-JSON but put the
+taper, the `n == D` limit and the amplitude calibration in two languages, with
+the equivalence gate as the only thing holding them together. The design math is
+where the subtlety is — two of the three bugs found while building this were in
+it — so duplicating it to protect a schema version is the wrong trade.
+
+The taps are complex, and `Coeffs` in v0.4 closes itself to additional
+properties, so this is a version bump (v0.5) and not a quiet field addition: a
+v0.5 document does not validate against v0.4, and `SUPPORTED_IR_VERSIONS` makes
+an older core refuse it at load instead of running the pipeline with the stage's
+coefficients dropped. Every protocol that does not use the primitive still emits
+a byte-identical document at its old version.
 
 **Known limits.** 11 recordings, two bands, clinical corpus EEG at 200–500 Hz —
 not BrainBit Flex over BLE, which has worse SNR than any of it. The plain
@@ -1007,7 +1030,10 @@ adjacent-band contamination that is our worst case (eyes-closed alpha leaking
 into 12–15 Hz) and is not implemented. Envelope correlation against a zero-phase
 reference is a proxy: it is the metric §7a used and the paper used, which makes
 the numbers comparable, but nobody has shown that 206 ms of envelope latency
-changes an outcome on this product. Composed-latency *reporting* — having
+changes an outcome on this product. Both backends are held to sample-for-sample
+parity by the drift gate, but parity is not accuracy — it says the two agree,
+not that either is right, and the accuracy evidence is still the corpus
+measurement above. Composed-latency *reporting* — having
 `refrain check` state a protocol's feedback delay the way `cost.py` states its
 CPU cost — is not implemented; without it an author still has to reason about
 the number by hand.

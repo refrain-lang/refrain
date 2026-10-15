@@ -9,7 +9,7 @@
   "requires": {
     "coupling": null,
     "sample_rate_min_hz": 256,
-    "sample_rate_chosen_hz": 2048,
+    "sample_rate_chosen_hz": 256,
     "channels": [
       "Cz"
     ],

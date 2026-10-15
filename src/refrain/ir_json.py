@@ -56,6 +56,12 @@ from .types_ import Dimensions, StreamType
 
 IR_JSON_VERSION = "0.1"
 
+# Primitives whose baked coefficients include complex FIR taps
+# (`fir_taps_re` / `fir_taps_im`). These fields were added in IR-JSON v0.5;
+# the v0.4 schema closes `Coeffs` to additional properties, so a protocol
+# using one of these cannot be represented in any earlier version.
+_COMPLEX_FIR_PRIMITIVES = frozenset({"band_envelope"})
+
 # Param kinds that name a physical electrode. The primitive registry already
 # tags them (bipolar's plus/minus, referential's active/reference/channels), so
 # read them from there rather than restating the list — a new montage primitive
@@ -124,6 +130,23 @@ def effective_channels(ir: IRProtocol) -> tuple[str, ...]:
     return tuple(montage_channels(ir))
 
 
+def _uses_complex_fir_taps(ir: IRProtocol) -> bool:
+    """True when any stream expression bakes complex FIR taps.
+
+    REUSES `cost`'s IR walkers rather than adding a parallel one. Checking
+    every stream expression (not just derive pipelines) is deliberate: an
+    inhibit metric can hold the same call, and if it bakes the coefficient
+    fields then the document needs the schema version that allows them.
+    """
+    from .cost import _all_stream_exprs, _iter_calls
+
+    return any(
+        call.callee in _COMPLEX_FIR_PRIMITIVES
+        for expr in _all_stream_exprs(ir)
+        for call in _iter_calls(expr)
+    )
+
+
 def _protocol_ir_version(ir: IRProtocol) -> str:
     """Lowest IR-JSON version that represents this protocol.
 
@@ -132,8 +155,14 @@ def _protocol_ir_version(ir: IRProtocol) -> str:
     (byte-identical to the pre-v0.2 emitter); anything using the v0.2
     composite or staging features emits v0.2; a control with a baseline-seed
     rule emits v0.3; a protocol using autopilot (protocol-wide or per-control)
-    or named reward checks (the newest features) emits v0.4.
+    or named reward checks emits v0.4; a protocol whose pipeline bakes complex
+    FIR taps (`band_envelope`) emits v0.5, because the `fir_taps_re`/
+    `fir_taps_im` coefficient fields did not exist in v0.4 and that schema
+    closes `Coeffs` to additional properties — a v0.5 document would not
+    validate against it.
     """
+    if _uses_complex_fir_taps(ir):
+        return "0.5"
     if (
         ir.autopilot is not None
         or any(c.autopilot is not None for c in ir.controls.values())
@@ -197,6 +226,16 @@ def _extract_coeffs(impl: object) -> dict | None:
         c["sos"] = np.asarray(impl.sos).tolist()
     if hasattr(impl, "h"):
         c["fir_taps"] = np.asarray(impl.h).tolist()
+        c["group_delay"] = int(impl.group_delay)
+    if hasattr(impl, "h_complex"):
+        # A complex-tap FIR (`band_envelope`) bakes as two real arrays rather
+        # than an interleaved one: that is the layout the portable core's
+        # complex signal already uses (parallel re/im vectors), so the runtime
+        # reads it without a deinterleaving pass, and it stays legible on the
+        # wire. JSON has no complex type, so some split is required either way.
+        h = np.asarray(impl.h_complex)
+        c["fir_taps_re"] = np.real(h).tolist()
+        c["fir_taps_im"] = np.imag(h).tolist()
         c["group_delay"] = int(impl.group_delay)
     if hasattr(impl, "alpha"):
         c["alpha"] = float(impl.alpha)

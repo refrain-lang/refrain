@@ -469,7 +469,10 @@ class BandEnvelopeImpl(PrimitiveImpl):
                 f"at {sample_rate_hz:g} Hz design a filter with no passband gain"
             )
 
-        self.b = coeffs * (2.0 / gain)
+        # Named `h_complex`, not `h`: `ir_json._extract_coeffs` duck-types on
+        # the attribute name, and `h` is the real-tap FIR branch (HilbertFirImpl).
+        # The complex branch bakes as a split re/im pair for the portable core.
+        self.h_complex = coeffs * (2.0 / gain)
         self.taps = n_taps
         self.band = (low, high)
         self.latency_ms = latency_ms
@@ -479,7 +482,7 @@ class BandEnvelopeImpl(PrimitiveImpl):
         self._buf = np.zeros(n_taps - 1, dtype=np.float64)
 
     def step(self, x: np.ndarray) -> np.ndarray:
-        analytic, self._buf = _fir_stream(self.b, x, self._buf)
+        analytic, self._buf = _fir_stream(self.h_complex, x, self._buf)
         return np.abs(analytic)
 
 
