@@ -35,6 +35,7 @@ from .ir import (
     IRControlSeed,
     IRDerive,
     IRExpr,
+    IRFeedback,
     IRInhibit,
     IRInput,
     IRMeta,
@@ -155,13 +156,20 @@ def _protocol_ir_version(ir: IRProtocol) -> str:
     (byte-identical to the pre-v0.2 emitter); anything using the v0.2
     composite or staging features emits v0.2; a control with a baseline-seed
     rule emits v0.3; a protocol using autopilot (protocol-wide or per-control)
-    or named reward checks emits v0.4; a protocol whose pipeline bakes complex
-    FIR taps (`band_envelope`) emits v0.5, because the `fir_taps_re`/
-    `fir_taps_im` coefficient fields did not exist in v0.4 and that schema
-    closes `Coeffs` to additional properties — a v0.5 document would not
-    validate against it.
+    or named reward checks emits v0.4; a protocol that declares typed feedback,
+    binds a dwell/rearm output, or bakes complex FIR taps (`band_envelope`)
+    emits v0.5. Each of those three needs a field the v0.4 schema has no slot
+    for, and v0.4 closes `Coeffs` to additional properties, so such a document
+    would not validate against v0.4 at all.
     """
-    if _uses_complex_fir_taps(ir):
+    if (
+        ir.feedback is not None
+        or any(
+            isinstance(expr, IRCall) and expr.callee in ("dwell", "dwell_rearm")
+            for expr in ir.output.values()
+        )
+        or _uses_complex_fir_taps(ir)
+    ):
         return "0.5"
     if (
         ir.autopilot is not None
@@ -247,6 +255,8 @@ def _extract_coeffs(impl: object) -> dict | None:
         c["lag_samples"] = int(impl.lag)
     if hasattr(impl, "dwell_samples"):
         c["dwell_samples"] = int(impl.dwell_samples)
+    if hasattr(impl, "rearm_samples"):
+        c["rearm_samples"] = int(impl.rearm_samples)
     if hasattr(impl, "nperseg"):
         c["nperseg"] = int(impl.nperseg)
     if hasattr(impl, "noverlap"):
@@ -569,6 +579,33 @@ def _emit_meta(meta: IRMeta, ctx: _EmitCtx) -> dict:
     return {k: _emit_expr(v, ctx) for k, v in meta.fields.items()}
 
 
+def _emit_feedback(feedback: IRFeedback) -> dict:
+    return {
+        "version": feedback.version,
+        "external_background": feedback.external_background,
+        "entries": [
+            {
+                "name": entry.name,
+                "output": entry.output,
+                "kind": entry.kind,
+                "role": entry.role,
+                "label": entry.label,
+                "priority": entry.priority,
+                "asset_role": entry.asset_role,
+                "preview": entry.preview,
+                "suppress_on_inhibit": entry.suppress_on_inhibit,
+                "suppress_on_mute": entry.suppress_on_mute,
+                "reset_on_gap": entry.reset_on_gap,
+                "attack_ms": entry.attack_ms,
+                "release_ms": entry.release_ms,
+                "rearm_ms": entry.rearm_ms,
+                "min_interval_ms": entry.min_interval_ms,
+            }
+            for entry in feedback.entries
+        ],
+    }
+
+
 def ir_to_json_obj(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> dict:
     """Serialize a resolved protocol into a JSON-compatible dict.
 
@@ -618,6 +655,8 @@ def ir_to_json_obj(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> di
     }
     if ir.autopilot is not None:
         obj["autopilot"] = _emit_autopilot(ir.autopilot, ctx)
+    if ir.feedback is not None:
+        obj["feedback"] = _emit_feedback(ir.feedback)
     return obj
 
 

@@ -254,6 +254,21 @@
   "check_controls": [],
   "inhibit_controls": []
  },
+ "output_dwell_event.ir.json": {
+  "bundles": {},
+  "check_controls": [],
+  "inhibit_controls": []
+ },
+ "output_dwell_rearm.ir.json": {
+  "bundles": {},
+  "check_controls": [],
+  "inhibit_controls": []
+ },
+ "output_dwell_rearm_tunable.ir.json": {
+  "bundles": {},
+  "check_controls": [],
+  "inhibit_controls": []
+ },
  "realistic_smr.ir.json": {
   "bundles": {
    "": {

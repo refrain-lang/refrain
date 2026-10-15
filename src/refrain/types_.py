@@ -20,8 +20,28 @@ they use preserves the input rate or operates on a windowed metric
 internal to an inhibit. Rate analysis lands in Phase 0c (see
 `docs/DESIGN-NOTES.md`).
 
-`%` is dimensionally identical to `dimensionless`; the runtime knows
-`95 %` means `0.95`. The type checker treats them as the same kind.
+`%` is dimensionally identical to `dimensionless`, and the type checker
+treats them as the same kind.
+
+It is NOT rescaled here. An earlier version of this docstring said "the
+runtime knows `95 %` means `0.95`"; that is true of exactly one place and
+false everywhere else, so it is worth stating precisely:
+
+  * In an **expression**, a `%` literal keeps its face value. `30 %` is the
+    number 30.0, and `30 % * reward.continuous` is thirty times the reward,
+    not three tenths of it. The surface unit is preserved on `IRNumberLit`
+    and reaches IR-JSON as `{"value": 30.0, "unit": "%"}`.
+  * A **`percent` control** is likewise a 0-100 number used raw:
+    `default = 75` reaches the wire as `75.0`, and
+    `percentile(target_pct:)` requires `0 <= target_pct <= 100`.
+  * **Autopilot fields only** divide by 100. `reward_target = (20%, 40%)`
+    resolves to `(0.2, 0.4)` and a guard's `max = 30%` to `0.3`, via
+    `_ap_percent` in the resolver — which never consults `unit_dims`.
+
+So the same token means two different things depending on where it is
+written. That is a real inconsistency rather than a documentation gap;
+reconciling it changes emitted values either way, so it is tracked as an
+issue rather than quietly fixed. Until then, this is the rule.
 """
 
 from __future__ import annotations

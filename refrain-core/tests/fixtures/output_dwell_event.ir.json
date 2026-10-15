@@ -1,0 +1,163 @@
+{
+  "refrain_ir_version": "0.5",
+  "name": "output event",
+  "extends": null,
+  "sample_rate_hz": 100.0,
+  "channels": [
+    "Cz"
+  ],
+  "requires": {
+    "coupling": null,
+    "sample_rate_min_hz": null,
+    "sample_rate_chosen_hz": 256,
+    "channels": [],
+    "impedance": "not_required",
+    "markers": "not_required"
+  },
+  "meta": {
+    "version": {
+      "node": "string",
+      "value": "1.0"
+    },
+    "evidence": {
+      "node": "string",
+      "value": "experimental"
+    },
+    "description": {
+      "node": "string",
+      "value": "authored event stream"
+    }
+  },
+  "inputs": {
+    "raw": {
+      "canonical_name": "input/raw",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "montage": {
+        "node": "call",
+        "callee": "referential",
+        "args": [
+          {
+            "name": "active",
+            "value": {
+              "node": "string",
+              "value": "Cz"
+            }
+          },
+          {
+            "name": "reference",
+            "value": {
+              "node": "string",
+              "value": "linked_ears"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        }
+      }
+    }
+  },
+  "derives": {},
+  "thresholds": {},
+  "inhibits": {},
+  "reward": {
+    "continuous": null,
+    "event": null
+  },
+  "output": {
+    "cue": {
+      "node": "call",
+      "callee": "dwell",
+      "args": [
+        {
+          "name": "condition",
+          "value": {
+            "node": "call",
+            "callee": "above",
+            "args": [
+              {
+                "name": null,
+                "value": {
+                  "node": "stream_ref",
+                  "target": "input/raw",
+                  "stream_type": {
+                    "value_kind": "scalar",
+                    "dimensions": {
+                      "time": 0,
+                      "voltage": 1
+                    },
+                    "vector_size": null
+                  }
+                }
+              },
+              {
+                "name": null,
+                "value": {
+                  "node": "number",
+                  "value": 0.5,
+                  "dims": {
+                    "time": 0,
+                    "voltage": 0
+                  },
+                  "unit": null
+                }
+              }
+            ],
+            "stream_type": {
+              "value_kind": "boolean",
+              "dimensions": {
+                "time": 0,
+                "voltage": 0
+              },
+              "vector_size": null
+            }
+          }
+        },
+        {
+          "name": "duration",
+          "value": {
+            "node": "number",
+            "value": 30.0,
+            "dims": {
+              "time": 1,
+              "voltage": 0
+            },
+            "unit": "ms"
+          }
+        }
+      ],
+      "stream_type": {
+        "value_kind": "event",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      },
+      "coeffs": {
+        "dwell_samples": 3
+      }
+    }
+  },
+  "controls": {},
+  "session": {
+    "phases": []
+  },
+  "blocks": {},
+  "reward_bundles": {},
+  "topological_order": [
+    "input/raw"
+  ]
+}

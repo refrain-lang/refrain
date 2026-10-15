@@ -74,7 +74,7 @@ Operations that reduce dimensionality (e.g., `uV / uV → dimensionless`) are tr
 
 ## Rate alignment
 
-### `align_to`
+### `align_to` *(planned; not in the v0.22.0 registry)*
 
 ```
 align_to(source: stream_ref, target: stream_ref)  -> stream<T>
@@ -94,6 +94,12 @@ formula = align_to("raw_envelope", target: "auto_ranged_signal") > "auto_ranged_
 ```
 
 The compiler emits an error when streams of different rates appear in arithmetic without alignment, suggesting the appropriate `align_to` call.
+
+> **Not implemented in v0.22.0.** `align_to` is absent from the primitive
+> registry and fails with "unknown primitive". The evaluator still takes a
+> single `sample_rate_hz`, so there are no mixed-rate streams to align yet
+> (see `docs/DESIGN-NOTES.md`). The signature above is the intended shape,
+> not a description of what runs.
 
 ---
 
@@ -154,13 +160,15 @@ input "tachogram" {        // 4 Hz cardiac tachogram, single channel
 }
 ```
 
-### `select_channel`
+### `select_channel` *(planned; not in the v0.22.0 registry)*
 
 ```
 select_channel(channel_name) : stream<vector uV> -> stream<scalar uV>
 ```
 
 Extracts a single channel from a multi-channel stream. Used inside `formula` or `pipeline` when you have a 19-channel input but want a single-channel derivation.
+
+> **Not implemented in v0.22.0** — absent from the primitive registry.
 
 ### `source_project` *(stub for v0.1)*
 
@@ -196,6 +204,17 @@ State is reinitialized via warm-restart on coefficient change (see SPEC §7.7).
 bandpass(band: (12 Hz, 15 Hz), order: 4)
 bandpass(center: orf, bandwidth: ratio(2.5))
 ```
+
+### `ratio`
+
+```
+ratio(R: number) -> bandwidth_ctor
+```
+
+Bandwidth constructor for `bandpass`'s center-bandwidth form. `ratio(R)` means
+edges at `(center / sqrt(R), center * sqrt(R))` — a constant-Q band, so the
+width tracks the center as a practitioner retunes it. Only meaningful as
+`bandpass(bandwidth:)`; it is not a stream primitive.
 
 ### `hilbert`
 
@@ -409,13 +428,16 @@ pipeline = [
 ]
 ```
 
-### `decimate` *(internal, usually inserted by compiler)*
+### `decimate` *(planned; not in the v0.22.0 registry — would be compiler-inserted)*
 
 ```
 decimate(target_rate: Hz) -> stream<scalar T>
 ```
 
 Resamples a stream to a lower rate via polyphase FIR with anti-aliasing. The compiler inserts decimators automatically when downstream primitives declare lower input rates; explicit usage is rare.
+
+> **Not implemented in v0.22.0** — absent from the primitive registry, and
+> nothing inserts it, since the evaluator runs at one rate throughout.
 
 ---
 
@@ -446,13 +468,29 @@ persist it to the session record, and re-prime the next run with
 rate-independent summary (not a raw buffer) and is runtime-only — it does not
 change the protocol IR. See `docs/EMBEDDING.md`.
 
+### `absolute`
+
+```
+absolute(value: T) -> threshold_type
+```
+
+Fixed threshold. `value` carries the dimensions of the signal the enclosing
+`threshold` names — `absolute(8 uV)` against a uV envelope, `absolute(55 uV2)`
+against a bandpower metric — and a mismatched unit is rejected at resolve. The
+bare positional form `absolute(8 uV)` and the named form
+`absolute(value: 8 uV)` are equivalent.
+
+```refrain
+threshold "smr_t" { signal = "smr_envelope"; type = absolute(8 uV) }
+```
+
 ### `percentile`
 
 ```
 percentile(target_pct: float, window: duration) -> stream<scalar T>
 ```
 
-Tracks a running percentile of an input stream. Used inside `threshold` declarations as an adaptive threshold.
+Tracks a running percentile of an input stream. Used inside `threshold` declarations as an adaptive threshold. `target_pct` is on a 0-100 scale and is used raw — `70` is the 70th percentile, not the 0.7th (see the note on `%` in `refrain/types_.py`).
 
 ```refrain
 threshold "smr_t" {
@@ -529,20 +567,24 @@ Output is zero within `width / 2` of `center`, then linearly increases. Useful f
 
 Conditions consume scalar streams and produce boolean streams.
 
-### `above`, `below`, `inside`
+### `above`, `at_or_above`, `below`, `inside`
 
 ```
 above(signal_ref, threshold_ref)             -> stream<boolean>
+at_or_above(signal_ref, threshold_ref)       -> stream<boolean>
 below(signal_ref, threshold_ref)             -> stream<boolean>
 inside(signal_ref, low: T, high: T)          -> stream<boolean>
 ```
 
-Compare a signal to a threshold or range. The threshold may be a literal value or a `threshold` block reference.
+Compare a signal to a threshold or range. `above` is strict; `at_or_above`
+includes equality. The threshold may be a literal value or a `threshold` block
+reference.
 
 ```refrain
 above("smr_envelope", "smr_t")
 below("theta_envelope", "theta_t")
 inside("alpha_envelope", low: 5 uV, high: 25 uV)
+at_or_above("theta_alpha_ratio", 1.0)
 ```
 
 ### `all_of`, `any_of`
@@ -595,6 +637,55 @@ output {
 ```
 
 `dwell` is the canonical way to express the operant reward pattern. It replaces the older `condition + dwell + continuous` reward shape from earlier strawman drafts.
+
+### `dwell_rearm`
+
+```
+dwell_rearm(condition: stream<boolean>, duration: time, rearm: time) -> event_stream
+```
+
+For a discrete feedback cue, this emits once after a continuous qualifying
+hold. A second cue requires `condition` to remain false for the full `rearm`
+interval before another qualifying hold. Short false intervals reset the hold
+timer but do not rearm the cue. Inhibits and muted output count as false;
+`Evaluator.reset_held_outputs()` resets the timer after an input gap or audio
+interruption. Both durations must be positive. `duration` may be a live
+duration control; changing it resets the current hold. `rearm` is a fixed
+duration. The primitive is supported as a direct `output` binding;
+`reward.event` continues to require `dwell(...)`.
+
+```refrain
+output {
+  sustained_cue = dwell_rearm(
+    condition: at_or_above("theta_alpha_ratio", 1.0),
+    duration: sustained_dwell,
+    rearm: 3 s
+  )
+}
+```
+
+### `hold_for`
+
+```
+hold_for(condition: stream<boolean>, duration: time) -> stream<boolean>
+```
+
+Use `hold_for` when an output needs a sustained state without creating a
+reward event. Its result becomes true only after the condition has remained
+true for the full duration. Inhibited or muted output, a frozen phase clock,
+or a host call to `Evaluator.reset_held_outputs()` clears its timer. Hosts
+should call that reset on a detected input gap or audio interruption before
+resuming feedback. A live duration-control change also clears the affected
+timer in both Python and Rust.
+
+```refrain
+output {
+  feedback_crossover = hold_for(
+    condition: at_or_above("theta_alpha_ratio", 1.0),
+    duration: crossover_dwell
+  )
+}
+```
 
 ---
 

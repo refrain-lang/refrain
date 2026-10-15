@@ -113,6 +113,56 @@ fn micro_05_reward_events_equivalent() {
 }
 
 #[test]
+fn direct_output_dwell_events_equivalent() {
+    // Authored pulse stream: one cue per hold, then another after a break.
+    run_events("output_dwell_event");
+}
+
+#[test]
+fn rearmed_output_dwell_events_equivalent() {
+    // A four-sample break cannot rearm a five-sample requirement.
+    run_events("output_dwell_rearm");
+}
+
+#[test]
+fn rearmed_output_dwell_resets_after_gap() {
+    let protocol = load_ir("output_dwell_rearm");
+    let channels = vec!["Cz".to_string(), "linked_ears".to_string()];
+    let mut evaluator = Evaluator::new(&protocol, 100.0, &channels);
+    evaluator.start(true);
+    assert!(evaluator.step_chunk_events(&vec![vec![2.0, 0.0]; 2]).is_empty());
+    evaluator.reset_held_outputs();
+    assert!(evaluator.step_chunk_events(&vec![vec![2.0, 0.0]; 2]).is_empty());
+    assert_eq!(evaluator.step_chunk_events(&vec![vec![2.0, 0.0]]).len(), 1);
+}
+
+#[test]
+fn rearmed_output_dwell_duration_changes_live() {
+    let protocol = load_ir("output_dwell_rearm_tunable");
+    let channels = vec!["Cz".to_string(), "linked_ears".to_string()];
+    let mut evaluator = Evaluator::new(&protocol, 100.0, &channels);
+    evaluator.start(true);
+    assert_eq!(evaluator.step_chunk_events(&vec![vec![2.0, 0.0]; 3]).len(), 1);
+    evaluator.set_control("cue_dwell", 50.0).unwrap();
+    assert!(evaluator.step_chunk_events(&vec![vec![2.0, 0.0]; 4]).is_empty());
+    assert_eq!(evaluator.step_chunk_events(&vec![vec![2.0, 0.0]]).len(), 1);
+}
+
+#[test]
+fn direct_output_dwell_resets_after_gap() {
+    let protocol = load_ir("output_dwell_event");
+    let channels = vec!["Cz".to_string(), "linked_ears".to_string()];
+    let mut evaluator = Evaluator::new(&protocol, 100.0, &channels);
+    evaluator.start(true);
+    assert!(evaluator.step_chunk_events(&vec![vec![2.0, 0.0]; 2]).is_empty());
+    evaluator.reset_held_outputs();
+    assert!(evaluator.step_chunk_events(&vec![vec![2.0, 0.0]; 2]).is_empty());
+    let events = evaluator.step_chunk_events(&vec![vec![2.0, 0.0]]);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].channel, "cue");
+}
+
+#[test]
 fn micro_09_inhibit_events_equivalent() {
     // The `audio_gain` value events carry the per-chunk mean of the muted/
     // clamped continuous output; matching them pins the inhibit gate's effect

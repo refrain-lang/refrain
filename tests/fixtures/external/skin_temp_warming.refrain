@@ -1,0 +1,118 @@
+// Finger skin-temperature training ("hand warming") on an EmotiBit MD
+// thermopile. Draft for review — NOT validated against a human yet.
+//
+// UNITS WART, read this first: Refrain's type system has exactly two base
+// dimensions, time and voltage. There is no temperature dimension and no
+// `C` unit, so every temperature below is written `uV` and MEANS degrees
+// Celsius. The montage types as uV, so the whole chain type-checks — it is
+// just lying. 1.5 uV in this file is 1.5 °C.
+//
+// Signal: TH (skin-facing thermopile) minus T1 (board die sensor). The
+// EmotiBit is strapped to the finger it measures, so the board warms along
+// with the skin; T1 carries that common drift and the differential removes
+// it. This is the design the probe exists to confirm — if run 1 shows T1
+// climbing while TH-T1 stays flat, this montage is right.
+
+protocol "skin_temp_warming_v1" {
+
+  meta {
+    version     = "0.1.0"
+    evidence    = "research"
+    description = "Hand-warming thermal biofeedback on a finger thermopile"
+    author      = "Coherence Recorder"
+    citation    = "Freedman et al. (1983); Raynaud's Treatment Study (2000)"
+    population  = "adults"
+    indication  = "raynauds_peripheral_vasoconstriction"
+  }
+
+  requires {
+    coupling    = "dc"
+    sample_rate = ">= 7 Hz"
+    channels    = ["TH", "T1"]
+    impedance   = "not_required"
+    markers     = "not_required"
+  }
+
+  input "skin" {
+    montage = bipolar(plus: "TH", minus: "T1")
+  }
+
+  // 10 s is long against sensor noise and short against vasomotor change,
+  // which moves over minutes.
+  derive "skin_temp" {
+    from = "skin"
+    pipeline = [ smooth(tau: 10 s) ]
+  }
+
+  // Degrees above today's baseline. This is the trained quantity.
+  //
+  // Subtracts the seeded CONTROL, not a threshold. Referencing a threshold
+  // from a formula derive resolves cleanly and then dies at the first chunk
+  // ("stream baseline_t not bound") — the evaluator runs every derive before
+  // any threshold, so the reference is unresolvable at run time. Verified on
+  // both backends, 2026-10-03. Subtracting the control is equivalent here and
+  // actually runs.
+  //
+  // baseline_c is measured during the muted warmup and frozen. Thermal
+  // training is always relative to where the hand started: room temperature
+  // and time of day move the absolute value far more than training does.
+  derive "rise" {
+    formula = "skin_temp" - baseline_c
+  }
+
+  threshold "target_t" {
+    signal = "rise"
+    type   = absolute(value: target_rise_c)
+  }
+
+  reward {
+    // Sustained full target rise — the clinical milestone.
+    event      = dwell(condition: above("rise", "target_t"), duration: hold_s)
+    // Proportional feedback, the classic thermal-biofeedback shape: half
+    // output at half the target rise.
+    continuous = sigmoid("rise" / target_rise_c, midpoint: 0.5, steepness: 4)
+  }
+
+  output {
+    audio_gain  = reward.continuous
+    audio_chime = reward.event
+  }
+
+  controls {
+    baseline_pct = percent {
+      default      = 50
+      range        = (10, 90)
+      label        = "Baseline percentile"
+      live_tunable = true
+    }
+
+    baseline_c = voltage {
+      default      = 30 uV
+      range        = (15 uV, 40 uV)
+      label        = "Session baseline (deg C)"
+      live_tunable = true
+      seed = percentile { from = "skin_temp"; window = 120 s; target_pct = baseline_pct }
+    }
+
+    target_rise_c = voltage {
+      default      = 1.5 uV
+      range        = (0.5 uV, 4 uV)
+      label        = "Target rise (deg C)"
+      live_tunable = true
+    }
+
+    hold_s = duration {
+      default      = 60 s
+      range        = (10 s, 600 s)
+      label        = "Hold to score"
+      live_tunable = true
+    }
+  }
+
+  session {
+    phases = [
+      phase { name = "warmup";   duration = 300 s; output_muted = true },
+      phase { name = "training"; duration = 900 s },
+    ]
+  }
+}

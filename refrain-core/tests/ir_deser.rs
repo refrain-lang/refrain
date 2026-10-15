@@ -1,7 +1,27 @@
 //! The Rust core consumes the IR-JSON wire format emitted by the Python
 //! front-end. This test pins that it deserializes a real emitted fixture.
 
-use refrain_core::ir::Protocol;
+use refrain_core::ir::{check_ir_version, Protocol};
+
+#[test]
+fn deserializes_feedback_v05_and_rejects_newer_wire_versions() {
+    let json = r#"{
+        "refrain_ir_version": "0.5", "sample_rate_hz": 256.0,
+        "channels": ["Cz"], "inputs": {}, "derives": {}, "output": {},
+        "feedback": {"version": 1, "external_background": false, "entries": [
+            {"name":"approach","output":"gain","kind":"layer","role":"approach",
+             "label":"Approach","priority":10,"asset_role":"approach","preview":true,
+             "suppress_on_inhibit":true,"suppress_on_mute":true,"reset_on_gap":true,
+             "attack_ms":4000.0,"release_ms":8000.0,"rearm_ms":null,"min_interval_ms":null}
+        ]}
+    }"#;
+    let p: Protocol = serde_json::from_str(json).unwrap();
+    assert!(check_ir_version(&p).is_ok());
+    let feedback = p.feedback.unwrap();
+    assert_eq!(feedback.entries[0].role, "approach");
+    let future: Protocol = serde_json::from_str(&json.replace("0.5", "0.6")).unwrap();
+    assert!(check_ir_version(&future).is_err());
+}
 
 fn load(stem: &str) -> Protocol {
     let path = format!("tests/fixtures/{stem}.ir.json");

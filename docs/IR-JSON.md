@@ -22,7 +22,8 @@ rising to `"0.2"` for staged/composite-reward protocols, `"0.3"` for a
 protocol with a control baseline-seed rule (§3.1 below), and `"0.4"` for a
 protocol using autopilot or named reward checks (§3.2 below; schema at
 `src/refrain/schema/ir-json-v0.4.schema.json`), and `"0.5"` for a protocol
-whose pipeline bakes complex FIR taps (§3.3 below). Each version's schema is a
+that declares typed feedback, binds a dwell/rearm output, or bakes complex FIR
+taps (§3.3 below covers the last of the three). Each version's schema is a
 superset of the previous one's fields. This document otherwise describes the
 `"0.1"` shape; §3.1, §3.2 and §3.3 cover the `"0.3"`, `"0.4"` and `"0.5"`
 additions.
@@ -304,18 +305,23 @@ complex type, and the pair mirrors the runtime's own complex-signal layout
 (parallel real/imaginary vectors, `refrain-core/src/dsp.rs`), so the core reads
 them without a deinterleaving pass.
 
-**Version gate.** `_protocol_ir_version()` returns `"0.5"` iff some stream
-expression calls a primitive in `_COMPLEX_FIR_PRIMITIVES`. The bump is
-required rather than cosmetic: the v0.4 `Coeffs` definition sets
+**Version gate.** Complex taps are one of three independent reasons a
+protocol emits `"0.5"` — the others are a typed `feedback` declaration and a
+dwell/rearm output binding — and `_protocol_ir_version()` returns `"0.5"` if
+any of them applies. For this one the trigger is a stream expression calling a
+primitive in `_COMPLEX_FIR_PRIMITIVES`. Riding the existing bump is correct
+rather than lazy: all three shipped in the same unreleased version, so no
+consumer is pinned to a v0.5 without these fields. They could not go in v0.4
+regardless — its `Coeffs` definition sets
 `"additionalProperties": false`, so a document carrying these fields does not
 validate against v0.4 at all. `SUPPORTED_IR_VERSIONS` in
 `refrain-core/src/ir.rs` includes `"0.5"`; an older core refuses a
 `"0.5"`-tagged document at load rather than running the pipeline with the
 stage's coefficients silently dropped.
 
-A protocol using no complex-tap primitive keeps a byte-identical IR-JSON,
-`content_hash`, and `refrain_ir_version` to what it emitted before v0.5
-existed.
+A protocol using none of the three v0.5 features keeps a byte-identical
+IR-JSON, `content_hash`, and `refrain_ir_version` to what it emitted before
+v0.5 existed.
 
 ---
 

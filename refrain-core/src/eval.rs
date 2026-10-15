@@ -11,6 +11,7 @@
 //! output remain Phase-B.)
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
@@ -18,7 +19,7 @@ use crate::advisor::{Advisor, ChunkFacts};
 use crate::dsp::{
     control_cell, smooth_alpha_from_tau_ms, AutoRange, Autocorr, BandEnvelope, Bandpower, Biquad,
     Coherence, ControlCell,
-    Differentiate, Dwell, HilbertFir, Magnitude, Percentile, Signal, Smooth, Stage, TrackerState,
+    Differentiate, Dwell, DwellRearm, HilbertFir, Magnitude, Percentile, Signal, Smooth, Stage, TrackerState,
 };
 use crate::ir::{Coeffs, Expr, Protocol};
 
@@ -112,6 +113,8 @@ enum Control {
     /// reads each chunk. Mirrors the Python `update_control` that sets
     /// `self.value`.
     Const { value: ControlCell },
+    HoldFor { dwell: Arc<Mutex<Dwell>>, sample_rate_hz: f64 },
+    DwellRearm { dwell: Arc<Mutex<DwellRearm>>, sample_rate_hz: f64 },
 }
 
 impl Control {
@@ -136,6 +139,20 @@ impl Control {
             }
             Control::Const { value: cell } => {
                 *cell.lock().unwrap() = value;
+            }
+            Control::HoldFor { dwell, sample_rate_hz } => {
+                if value > 0.0 {
+                    dwell.lock().unwrap().set_duration_and_reset(
+                        (value / 1000.0 * *sample_rate_hz).round().max(1.0) as usize
+                    );
+                }
+            }
+            Control::DwellRearm { dwell, sample_rate_hz } => {
+                if value > 0.0 {
+                    dwell.lock().unwrap().set_duration_and_reset(
+                        (value / 1000.0 * *sample_rate_hz).round().max(1.0) as usize
+                    );
+                }
             }
         }
     }
@@ -302,10 +319,14 @@ enum CNode {
     Pct(Percentile, Box<CNode>),
     Coherence { coh: Coherence, a: Box<CNode>, b: Box<CNode> }, // 2-input, per-chunk scalar
     Above(Box<CNode>, Box<CNode>),
+    AtOrAbove(Box<CNode>, Box<CNode>),
     Below(Box<CNode>, Box<CNode>),
     Inside { input: Box<CNode>, low: f64, high: f64 }, // low <= x <= high
     AllOf(Vec<CNode>),
     AnyOf(Vec<CNode>),
+    HoldFor { dwell: Arc<Mutex<Dwell>>, condition: Box<CNode> },
+    DwellEvent { dwell: Arc<Mutex<Dwell>>, condition: Box<CNode> },
+    DwellRearmEvent { dwell: Arc<Mutex<DwellRearm>>, condition: Box<CNode> },
     Sigmoid { midpoint: ControlCell, steepness: f64, input: Box<CNode> },
     Linear { midpoint: f64, slope: f64, input: Box<CNode> },
     Binop(String, Box<CNode>, Box<CNode>),
@@ -313,6 +334,35 @@ enum CNode {
 }
 
 impl CNode {
+    fn reset_holds(&mut self) {
+        match self {
+            CNode::HoldFor { dwell, condition } | CNode::DwellEvent { dwell, condition } => {
+                dwell.lock().unwrap().reset();
+                condition.reset_holds();
+            }
+            CNode::DwellRearmEvent { dwell, condition } => {
+                dwell.lock().unwrap().reset();
+                condition.reset_holds();
+            }
+            CNode::Above(a, b) | CNode::AtOrAbove(a, b) | CNode::Below(a, b)
+            | CNode::Binop(_, a, b) => {
+                a.reset_holds();
+                b.reset_holds();
+            }
+            CNode::Cond(a, b, c) => {
+                a.reset_holds(); b.reset_holds(); c.reset_holds();
+            }
+            CNode::AllOf(items) | CNode::AnyOf(items) => {
+                for item in items { item.reset_holds(); }
+            }
+            CNode::Pipeline(_, input) | CNode::Pct(_, input)
+            | CNode::Inside { input, .. } | CNode::Sigmoid { input, .. }
+            | CNode::Linear { input, .. } => input.reset_holds(),
+            CNode::Coherence { a, b, .. } => { a.reset_holds(); b.reset_holds(); }
+            _ => {}
+        }
+    }
+
     fn eval(&mut self, env: &HashMap<String, Val>, n: usize) -> Val {
         match self {
             CNode::Const(c) => Val::F(vec![*c; n]),
@@ -355,6 +405,10 @@ impl CNode {
                 let (a, b) = (l.eval(env, n), r.eval(env, n));
                 Val::B(a.as_f().iter().zip(b.as_f()).map(|(x, y)| x > y).collect())
             }
+            CNode::AtOrAbove(l, r) => {
+                let (a, b) = (l.eval(env, n), r.eval(env, n));
+                Val::B(a.as_f().iter().zip(b.as_f()).map(|(x, y)| x >= y).collect())
+            }
             CNode::Below(l, r) => {
                 let (a, b) = (l.eval(env, n), r.eval(env, n));
                 Val::B(a.as_f().iter().zip(b.as_f()).map(|(x, y)| x < y).collect())
@@ -370,6 +424,32 @@ impl CNode {
             CNode::AnyOf(items) => {
                 let parts: Vec<Val> = items.iter_mut().map(|c| c.eval(env, n)).collect();
                 Val::B((0..n).map(|i| parts.iter().any(|p| p.as_b()[i])).collect())
+            }
+            CNode::HoldFor { dwell, condition } => {
+                let input = condition.eval(env, n);
+                let eligible = env.get("__hold_for_eligible").map(Val::as_b);
+                let clean: Vec<bool> = input.as_b().iter().enumerate().map(|(i, &on)| {
+                    on && eligible.map(|mask| mask[i]).unwrap_or(true)
+                }).collect();
+                let (_, holds) = dwell.lock().unwrap().step(&clean);
+                Val::B(holds)
+            }
+            CNode::DwellEvent { dwell, condition } => {
+                let input = condition.eval(env, n);
+                let eligible = env.get("__hold_for_eligible").map(Val::as_b);
+                let clean: Vec<bool> = input.as_b().iter().enumerate().map(|(i, &on)| {
+                    on && eligible.map(|mask| mask[i]).unwrap_or(true)
+                }).collect();
+                let (events, _) = dwell.lock().unwrap().step(&clean);
+                Val::B(events)
+            }
+            CNode::DwellRearmEvent { dwell, condition } => {
+                let input = condition.eval(env, n);
+                let eligible = env.get("__hold_for_eligible").map(Val::as_b);
+                let clean: Vec<bool> = input.as_b().iter().enumerate().map(|(i, &on)| {
+                    on && eligible.map(|mask| mask[i]).unwrap_or(true)
+                }).collect();
+                Val::B(dwell.lock().unwrap().step(&clean))
             }
             CNode::Sigmoid { midpoint, steepness, input } => {
                 let x = input.eval(env, n).into_f();
@@ -636,7 +716,7 @@ fn export_node(
             export_node(name, a, counts, out);
             export_node(name, b, counts, out);
         }
-        CNode::Above(l, r) | CNode::Below(l, r) => {
+        CNode::Above(l, r) | CNode::AtOrAbove(l, r) | CNode::Below(l, r) => {
             export_node(name, l, counts, out);
             export_node(name, r, counts, out);
         }
@@ -647,6 +727,8 @@ fn export_node(
         CNode::Inside { input, .. }
         | CNode::Sigmoid { input, .. }
         | CNode::Linear { input, .. } => export_node(name, input, counts, out),
+        CNode::HoldFor { condition, .. } | CNode::DwellEvent { condition, .. }
+        | CNode::DwellRearmEvent { condition, .. } => export_node(name, condition, counts, out),
         CNode::AllOf(items) | CNode::AnyOf(items) => {
             for c in items {
                 export_node(name, c, counts, out);
@@ -692,7 +774,7 @@ fn seed_node(
             seed_node(name, a, seeds, counts);
             seed_node(name, b, seeds, counts);
         }
-        CNode::Above(l, r) | CNode::Below(l, r) => {
+        CNode::Above(l, r) | CNode::AtOrAbove(l, r) | CNode::Below(l, r) => {
             seed_node(name, l, seeds, counts);
             seed_node(name, r, seeds, counts);
         }
@@ -703,6 +785,8 @@ fn seed_node(
         CNode::Inside { input, .. }
         | CNode::Sigmoid { input, .. }
         | CNode::Linear { input, .. } => seed_node(name, input, seeds, counts),
+        CNode::HoldFor { condition, .. } | CNode::DwellEvent { condition, .. }
+        | CNode::DwellRearmEvent { condition, .. } => seed_node(name, condition, seeds, counts),
         CNode::AllOf(items) | CNode::AnyOf(items) => {
             for c in items {
                 seed_node(name, c, seeds, counts);
@@ -810,7 +894,7 @@ pub struct Evaluator {
     /// When non-empty, `eval_chunk` computes the weighted composite and binds
     /// `reward.composite` / `reward.component.<name>` into the env.
     reward_components: Vec<CompiledComponent>,
-    outputs: Vec<(String, CNode)>,
+    outputs: Vec<(String, CNode, bool)>,
     /// Canonical tap names per stream entity, parallel to the env's bare names.
     /// `input/<name>`, `derive/<name>`, `threshold/<name>` — the prefixed keys
     /// `last_taps` exposes (the env / streams maps use the bare names).
@@ -966,7 +1050,12 @@ impl Evaluator {
         let outputs = p
             .output
             .iter()
-            .map(|(ch, e)| (ch.clone(), build_node(e, &mut ctx)))
+            .map(|(ch, e)| (
+                ch.clone(),
+                build_node(e, &mut ctx),
+                matches!(e, Expr::RewardField { field_path } if field_path == "event")
+                    || matches!(e, Expr::Call { callee, .. } if callee == "dwell" || callee == "dwell_rearm"),
+            ))
             .collect();
 
         // Canonical tap names, parallel to each entity's compiled list above
@@ -1291,7 +1380,14 @@ impl Evaluator {
     /// Orthogonal to output muting. Mirrors `Evaluator.set_clock_frozen`.
     pub fn set_clock_frozen(&mut self, frozen: bool) {
         self.clock_frozen = frozen;
+        if frozen { self.reset_held_outputs(); }
         self.snapshot_current_phase();
+    }
+
+    pub fn reset_held_outputs(&mut self) {
+        for (_, node, _) in self.outputs.iter_mut() {
+            node.reset_holds();
+        }
     }
 
     /// Snapshot of the phase the most recent chunk ran under (aligned with
@@ -1620,10 +1716,19 @@ impl Evaluator {
         }
 
         let mut outs: Vec<(String, Val)> = Vec::new();
-        for (ch, node) in self.outputs.iter_mut() {
-            let v = node.eval(&env, n);
+        for (ch, node, is_event) in self.outputs.iter_mut() {
+            let active = !mutes_output
+                && output_filter.as_ref().is_none_or(|f| f.contains(ch));
+            env.insert("__hold_for_eligible".to_string(), Val::B(
+                muted.iter().map(|&blocked| active && !blocked).collect()
+            ));
+            let v = match (node.eval(&env, n), *is_event) {
+                (Val::B(values), false) => Val::F(values.into_iter().map(bool_f).collect()),
+                (value, _) => value,
+            };
             outs.push((ch.clone(), v));
         }
+        env.remove("__hold_for_eligible");
 
         // Output activation gate (mirrors `_process_chunk`): silence any channel
         // not in the active block's output set, and silence ALL channels during
@@ -2336,7 +2441,53 @@ fn build_compute_call(
     ctx: &mut BuildCtx,
 ) -> CNode {
     match callee {
+        "dwell_rearm" => {
+            let c = coeffs.expect("dwell_rearm: missing baked coefficients");
+            let dwell = Arc::new(Mutex::new(DwellRearm::new(
+                c.dwell_samples.expect("dwell_rearm: missing dwell_samples"),
+                c.rearm_samples.expect("dwell_rearm: missing rearm_samples"),
+            )));
+            if let Some((_, Some(target))) = num_named_controllable(args, "duration") {
+                ctx.register(&target, Control::DwellRearm {
+                    dwell: dwell.clone(), sample_rate_hz: ctx.sample_rate_hz,
+                });
+            }
+            CNode::DwellRearmEvent { dwell, condition: Box::new(build_node(
+                &args.iter().find(|a| a.name.as_deref() == Some("condition"))
+                    .expect("dwell_rearm needs condition").value,
+                ctx,
+            )) }
+        },
+        "dwell" => {
+            let dwell = Arc::new(Mutex::new(Dwell::new(
+                coeffs.and_then(|c| c.dwell_samples).expect("dwell: missing baked dwell_samples"),
+            )));
+            CNode::DwellEvent { dwell, condition: Box::new(build_node(
+                &args.iter().find(|a| a.name.as_deref() == Some("condition"))
+                    .expect("dwell needs condition").value,
+                ctx,
+            )) }
+        },
+        "hold_for" => {
+            let dwell = Arc::new(Mutex::new(Dwell::new(
+                coeffs.and_then(|c| c.dwell_samples).expect("hold_for: missing baked dwell_samples"),
+            )));
+            if let Some((_, Some(target))) = num_named_controllable(args, "duration") {
+                ctx.register(&target, Control::HoldFor {
+                    dwell: dwell.clone(), sample_rate_hz: ctx.sample_rate_hz,
+                });
+            }
+            CNode::HoldFor { dwell, condition: Box::new(build_node(
+                &args.iter().find(|a| a.name.as_deref() == Some("condition"))
+                    .expect("hold_for needs condition").value,
+                ctx,
+            )) }
+        },
         "above" => CNode::Above(
+            Box::new(build_node(positional(args, 0), ctx)),
+            Box::new(build_node(positional(args, 1), ctx)),
+        ),
+        "at_or_above" => CNode::AtOrAbove(
             Box::new(build_node(positional(args, 0), ctx)),
             Box::new(build_node(positional(args, 1), ctx)),
         ),

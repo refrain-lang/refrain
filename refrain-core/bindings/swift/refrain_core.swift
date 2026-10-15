@@ -580,6 +580,8 @@ public protocol RefrainCoreProtocol: AnyObject, Sendable {
     
     func markEquipmentChange() 
     
+    func resetHeldOutputs() 
+    
     /**
      * `eval::Evaluator::seed_report`: per-control baseline-seed outcome
      * (§2.7), keyed by bare control name. Empty for a non-seeding protocol.
@@ -787,6 +789,12 @@ open func lastTaps() -> [String: Double]  {
     
 open func markEquipmentChange()  {try! rustCall() {
     uniffi_refrain_core_fn_method_refraincore_mark_equipment_change(self.uniffiClonePointer(),$0
+    )
+}
+}
+    
+open func resetHeldOutputs()  {try! rustCall() {
+    uniffi_refrain_core_fn_method_refraincore_reset_held_outputs(self.uniffiClonePointer(),$0
     )
 }
 }
@@ -1578,6 +1586,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_refrain_core_checksum_method_refraincore_mark_equipment_change() != 54873) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_refrain_core_checksum_method_refraincore_reset_held_outputs() != 19434) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_refrain_core_checksum_method_refraincore_seed_report() != 3631) {

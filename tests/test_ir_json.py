@@ -23,6 +23,7 @@ from refrain.parser import parse, parse_file
 from refrain.primitive_impls import BandpassImpl, HilbertFirImpl, SmoothImpl
 from refrain.resolver import resolve
 from tests.conftest_staged import HET as _HET_SRC
+from tests.test_feedback_declaration import resolved as feedback_resolved
 
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
@@ -30,6 +31,31 @@ BENCH_PROTOCOLS = REPO / "bench" / "protocols"
 AMP_PATH = REPO / "src" / "refrain" / "amp_profiles" / "q21.json"
 
 _AMP = load_amp_profile(AMP_PATH)
+
+
+def test_feedback_declaration_uses_versioned_wire_contract():
+    obj = ir_to_json_obj(feedback_resolved())
+    assert obj["refrain_ir_version"] == "0.5"
+    assert obj["feedback"] == {
+        "version": 1,
+        "external_background": False,
+        "entries": [
+            {"name": "approach", "output": "gain", "kind": "layer", "role": "approach",
+             "label": "Approach", "priority": 10, "asset_role": "approach", "preview": True,
+             "suppress_on_inhibit": True, "suppress_on_mute": True, "reset_on_gap": True,
+             "attack_ms": 4000.0, "release_ms": 8000.0,
+             "rearm_ms": None, "min_interval_ms": None},
+            {"name": "crossing", "output": "chime", "kind": "event", "role": "crossing",
+             "label": "Crossing", "priority": 20, "asset_role": "crossing", "preview": True,
+             "suppress_on_inhibit": True, "suppress_on_mute": True, "reset_on_gap": True,
+             "attack_ms": None, "release_ms": None,
+             "rearm_ms": 3000.0, "min_interval_ms": 20000.0},
+        ],
+    }
+    assert json.loads(ir_to_json(feedback_resolved())) == obj
+    import jsonschema
+    schema = json.loads((REPO / "src/refrain/schema/ir-json-v0.5.schema.json").read_text())
+    jsonschema.validate(obj, schema)
 
 
 @pytest.fixture(scope="module")

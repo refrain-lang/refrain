@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://refrainlang.org/schema/ir-json-v0.5.schema.json",
   "title": "Refrain IR-JSON v0.5",
-  "description": "Machine-readable schema for the Refrain IR-JSON wire format (v0.5: adds complex FIR taps for `band_envelope`). Produced by refrain.ir_json; consumed by refrain-core. Draft 2020-12.",
+  "description": "Machine-readable Refrain IR-JSON v0.5: adds typed feedback declarations and complex FIR taps.",
   "type": "object",
   "required": [
     "refrain_ir_version",
@@ -16,8 +16,7 @@
   "additionalProperties": true,
   "properties": {
     "refrain_ir_version": {
-      "const": "0.5",
-      "description": "Wire-format version tag. Must be the string '0.5'."
+      "const": "0.5"
     },
     "name": {
       "type": [
@@ -239,6 +238,9 @@
           }
         }
       }
+    },
+    "feedback": {
+      "$ref": "#/$defs/Feedback"
     }
   },
   "$defs": {
@@ -253,7 +255,10 @@
           ]
         },
         "sample_rate_min_hz": {
-          "type": "number"
+          "type": [
+            "number",
+            "null"
+          ]
         },
         "sample_rate_chosen_hz": {
           "type": "number"
@@ -765,14 +770,14 @@
           }
         },
         "fir_taps_re": {
-          "description": "Real part of a complex FIR's taps (`band_envelope`). Paired with `fir_taps_im`, same length. New in v0.5.",
+          "description": "Real part of a complex FIR's taps (`band_envelope`). Paired with `fir_taps_im`, same length.",
           "type": "array",
           "items": {
             "type": "number"
           }
         },
         "fir_taps_im": {
-          "description": "Imaginary part of a complex FIR's taps (`band_envelope`). Paired with `fir_taps_re`, same length. New in v0.5.",
+          "description": "Imaginary part of a complex FIR's taps (`band_envelope`). Paired with `fir_taps_re`, same length.",
           "type": "array",
           "items": {
             "type": "number"
@@ -794,6 +799,9 @@
           "type": "integer"
         },
         "dwell_samples": {
+          "type": "integer"
+        },
+        "rearm_samples": {
           "type": "integer"
         },
         "nperseg": {
@@ -1122,6 +1130,123 @@
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/Expr"
+          }
+        }
+      }
+    },
+    "Feedback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "external_background",
+        "entries"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "external_background": {
+          "type": "boolean"
+        },
+        "entries": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "output",
+              "kind",
+              "role",
+              "label",
+              "priority",
+              "asset_role",
+              "preview",
+              "suppress_on_inhibit",
+              "suppress_on_mute",
+              "reset_on_gap",
+              "attack_ms",
+              "release_ms",
+              "rearm_ms",
+              "min_interval_ms"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "output": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "enum": [
+                  "layer",
+                  "event"
+                ]
+              },
+              "role": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1
+              },
+              "priority": {
+                "type": "integer"
+              },
+              "asset_role": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "preview": {
+                "type": "boolean"
+              },
+              "suppress_on_inhibit": {
+                "type": "boolean"
+              },
+              "suppress_on_mute": {
+                "type": "boolean"
+              },
+              "reset_on_gap": {
+                "type": "boolean"
+              },
+              "attack_ms": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 60000
+              },
+              "release_ms": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 60000
+              },
+              "rearm_ms": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 60000
+              },
+              "min_interval_ms": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 60000
+              }
+            }
           }
         }
       }

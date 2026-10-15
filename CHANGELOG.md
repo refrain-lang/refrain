@@ -5,9 +5,15 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
-## [Unreleased]
+## [0.23.0] — unreleased
 
 ### Added
+- `hold_for(condition, duration)` and `at_or_above(signal, threshold)` for
+  protocol-defined held output states. The Python and Rust evaluators reset
+  held states during inhibited or muted output, a frozen phase clock, and an
+  explicit host-requested signal interruption. Live duration changes reset
+  the affected hold.
+
 - **`band_envelope(band:, latency:)` — a band's amplitude envelope in one
   stage, with the feedback delay as a declared parameter.** The EEG protocols
   all measure an envelope as `bandpass(order: 4) -> hilbert() -> magnitude()
@@ -64,18 +70,28 @@ bumps are additive; major bumps may break compatibility.
   the four-stage `micro_03_envelope`) and a dual-backend test asserting that
   the Rust path realizes the latency the author declared.
 
-- **IR-JSON v0.5: `fir_taps_re` / `fir_taps_im`.** Complex FIR taps on the
-  wire, split into two real arrays — JSON has no complex type, and the pair
-  mirrors the runtime's own complex-signal layout, so the core reads it
-  without a deinterleaving pass. This is a version bump rather than a quiet
-  field addition because the v0.4 `Coeffs` definition closes itself to
-  additional properties: a v0.5 document does not validate against v0.4, and
-  `SUPPORTED_IR_VERSIONS` makes an older core refuse it at load with an
-  explicit version error instead of running the pipeline with the stage's
-  coefficients silently dropped. The schema requires the two arrays to appear
-  together. Only a protocol using `band_envelope` emits v0.5.
+- **`fir_taps_re` / `fir_taps_im` coefficient fields (IR-JSON v0.5).** Complex
+  FIR taps on the wire, split into two real arrays — JSON has no complex type,
+  and the pair mirrors the runtime's own complex-signal layout, so the core
+  reads it without a deinterleaving pass. The schema requires the two arrays to
+  appear together, since a document carrying one without the other would design
+  a different filter than the emitter intended and the only symptom would be a
+  wrong envelope. These ride the v0.5 bump this release already makes for typed
+  feedback declarations rather than adding a version of their own; they cannot
+  go in v0.4, whose `Coeffs` definition closes itself to additional properties.
+  `_protocol_ir_version()` now returns `"0.5"` for any of the three features
+  that need it, and a protocol using none of them still emits a byte-identical
+  document at its existing version.
 
 ### Fixed
+- **`at_or_above` had no `###` heading in the primitive reference,** which the
+  new docs/registry parity test counts as undocumented. The comparison
+  section's signature block and prose already describe it; only the heading
+  omitted it, so it joins the grouped `above`/`below`/`inside` heading the way
+  the reference already groups siblings. Worth noting how this got in: the
+  parity test and `at_or_above` arrived in different pull requests, each green
+  on its own, and the pair only goes red once both are on main.
+
 - **Stale golden-vector fixtures.** The committed `*.ir.json` fixtures carried
   `sample_rate_chosen_hz: 2048` for 15 protocols, from before the q21 amp
   profile was CANbus-capped to 256 Hz in v0.16.1. The drift gate regenerates

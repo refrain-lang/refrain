@@ -418,6 +418,32 @@ class IRMeta:
 
 
 @dataclass(frozen=True, slots=True)
+class IRFeedbackEntry:
+    name: str
+    output: str
+    kind: str
+    role: str
+    label: str
+    priority: int
+    asset_role: str
+    preview: bool
+    suppress_on_inhibit: bool
+    suppress_on_mute: bool
+    reset_on_gap: bool
+    attack_ms: float | None = None
+    release_ms: float | None = None
+    rearm_ms: float | None = None
+    min_interval_ms: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class IRFeedback:
+    version: int
+    external_background: bool
+    entries: tuple[IRFeedbackEntry, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class IRProtocol:
     """A fully resolved, typed, validated protocol."""
 
@@ -440,6 +466,7 @@ class IRProtocol:
     blocks: dict[str, IRBlock] = field(default_factory=dict)
     reward_bundles: dict[str, IRReward] = field(default_factory=dict)
     autopilot: IRAutopilot | None = None
+    feedback: IRFeedback | None = None
     loc: Loc | None = None
 
 
@@ -460,6 +487,8 @@ __all__ = [
     "IRCustom",
     "IRDerive",
     "IRExpr",
+    "IRFeedback",
+    "IRFeedbackEntry",
     "IRGuard",
     "IRInhibit",
     "IRInput",

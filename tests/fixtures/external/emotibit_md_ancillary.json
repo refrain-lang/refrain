@@ -1,0 +1,24 @@
+{
+  "schema": "refrain-amp-profile/v0",
+  "model": "emotibit-md-ancillary",
+  "vendor": "EmotiBit",
+  "firmware": "unspecified",
+  "_comment_coupling": "Temperature and skin conductance are DC-coupled by nature — there is no AC path to speak of.",
+  "coupling": ["dc"],
+  "sample_rates_hz": [15],
+  "_comment_channels": "BrainFlow's EmotiBit ancillary preset. TH is the MLX90632 medical thermopile aimed at skin; T1 is the MAX30101 die sensor on the board. Both are degrees C despite kind 'other' — Refrain has no temperature dimension (see the protocol's units note).",
+  "channels": [
+    {"name": "EDA", "kind": "other"},
+    {"name": "T1", "kind": "other"},
+    {"name": "TH", "kind": "other"}
+  ],
+  "supports_impedance_check": false,
+  "supports_markers": true,
+  "max_simultaneous_channels": 3,
+  "adc_bits": 16,
+  "input_range_uv": 1000000,
+  "resource_limits": {
+    "max_state_kb": 512,
+    "max_worst_case_us_per_step": 100000
+  }
+}
