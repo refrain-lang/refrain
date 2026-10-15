@@ -460,6 +460,22 @@
       "template": "\"{a}\" - \"{b}\""
     },
     {
+      "id": "derive.difference_control",
+      "kind": "derive",
+      "form": "formula",
+      "slots": [
+        {
+          "name": "a",
+          "type": "ref"
+        },
+        {
+          "name": "b",
+          "type": "ref"
+        }
+      ],
+      "template": "\"{a}\" - {b}"
+    },
+    {
       "id": "derive.rectify",
       "kind": "derive",
       "form": "pipeline",
