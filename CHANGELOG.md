@@ -14,6 +14,101 @@ bumps are additive; major bumps may break compatibility.
   explicit host-requested signal interruption. Live duration changes reset
   the affected hold.
 
+- **`band_envelope(band:, latency:)` — a band's amplitude envelope in one
+  stage, with the feedback delay as a declared parameter.** The EEG protocols
+  all measure an envelope as `bandpass(order: 4) -> hilbert() -> magnitude()
+  -> smooth(tau)`. Each of those four stages contributes its own lag
+  additively, so the delay a person actually feels is an emergent sum that no
+  author chose, no single stage is at fault, and there was no way to write
+  down "this latency, best available accuracy." Four individually reasonable
+  choices add up to 468 ms against a published recommendation of 250–350 ms,
+  which is why this went unnoticed across ~40 protocol files rather than in
+  one badly written one. The new primitive replaces the four with a single
+  least-squares complex FIR whose group delay *is* the number in the source
+  (Smetanin et al. 2020, *J Neural Eng* 17(4) 046022). Measured on 11 corpus
+  EEG recordings at Cz, 12–15 Hz, against a zero-phase reference envelope: a
+  median of **206 ms saved at equal accuracy** (range 102–266 ms); on 8–12 Hz
+  at P4, a median of 265 ms. Cheaper on CPU as well, since one FIR replaces an
+  order-4 SOS cascade, a 65-tap FIR Hilbert and an exponential smoother.
+  Validated against the source at a matched band width and matched delay —
+  r = 0.84 against the paper's reported 0.85 ± 0.1 — because at a *mismatched*
+  width the same filter gives r = 0.37 and the comparison would mean nothing.
+  The envelope is calibrated to the same amplitude as `hilbert() +
+  magnitude()`, so an `absolute(6 uV)` threshold means the same thing before
+  and after a conversion.
+
+  Two sharp edges are handled rather than documented. The filter span must be
+  at least ~2× the declared delay or accuracy collapses with no symptom other
+  than the number (r = 0.873 at 2×, 0.437 at 1.4×), so `taps` is derived from
+  `latency` and an undersized span is refused at build time; deriving it also
+  means one protocol source works on a 250 Hz and a 500 Hz amp, where a fixed
+  tap count would be accepted on one and refused on the other. And the filter
+  needs its full span of valid history — about 0.8 s — before its output means
+  anything, which makes the cold-start behaviour tracked in #93 slightly
+  worse; a protocol with a `phase "warmup"` absorbs that for free, and one
+  without will show a rising envelope for the first second, so give it one.
+
+  Additive for existing protocols: `dwell`, `smooth` and the HRV path are
+  untouched, and every protocol that does not use the new primitive keeps a
+  byte-identical IR-JSON and hash. See PRIMITIVES.md "`band_envelope`" and
+  DESIGN-NOTES §7b, which records why the EEG case is a different question
+  from the low-sample-rate HRV case §7a settled (all of §7a's evidence was at
+  4 Hz on a 0.1 Hz rhythm) without reopening it.
+
+- **`band_envelope` runs on the portable Rust core, not just the Python
+  evaluator.** Shipping it Python-first would have been the wrong place to
+  stop: the recorder picks the Rust backend whenever the `refrain_core` wheel
+  imports, so a Python-only stage meant the primitive would fail in the
+  configuration the product actually runs — and fail by crashing the session,
+  since an unrecognised compute primitive reaches a `panic!`. Filter *design*
+  stays in Python, as it does for every other stage: the core receives the
+  finished complex taps and runs the convolution, so the closed-form inverse
+  transform, the Hanning taper and the amplitude calibration exist in exactly
+  one place. The two backends are held to sample-for-sample parity by the
+  existing drift gate, which now covers this stage through a new golden-vector
+  pair (`micro_13_band_envelope`, deliberately the same band and channel as
+  the four-stage `micro_03_envelope`) and a dual-backend test asserting that
+  the Rust path realizes the latency the author declared.
+
+- **`fir_taps_re` / `fir_taps_im` coefficient fields (IR-JSON v0.5).** Complex
+  FIR taps on the wire, split into two real arrays — JSON has no complex type,
+  and the pair mirrors the runtime's own complex-signal layout, so the core
+  reads it without a deinterleaving pass. The schema requires the two arrays to
+  appear together, since a document carrying one without the other would design
+  a different filter than the emitter intended and the only symptom would be a
+  wrong envelope. These ride the v0.5 bump this release already makes for typed
+  feedback declarations rather than adding a version of their own; they cannot
+  go in v0.4, whose `Coeffs` definition closes itself to additional properties.
+  `_protocol_ir_version()` now returns `"0.5"` for any of the three features
+  that need it, and a protocol using none of them still emits a byte-identical
+  document at its existing version.
+
+### Fixed
+- **`at_or_above` had no `###` heading in the primitive reference,** which the
+  new docs/registry parity test counts as undocumented. The comparison
+  section's signature block and prose already describe it; only the heading
+  omitted it, so it joins the grouped `above`/`below`/`inside` heading the way
+  the reference already groups siblings. Worth noting how this got in: the
+  parity test and `at_or_above` arrived in different pull requests, each green
+  on its own, and the pair only goes red once both are on main.
+
+- **Stale golden-vector fixtures.** The committed `*.ir.json` fixtures carried
+  `sample_rate_chosen_hz: 2048` for 15 protocols, from before the q21 amp
+  profile was CANbus-capped to 256 Hz in v0.16.1. The drift gate regenerates
+  fixtures before comparing, so it never noticed the committed copies had gone
+  stale — they only differed from what the current emitter produces, which is
+  invisible to a gate that overwrites them first. Regenerated; the only change
+  is that one field.
+
+### Changed
+- **`refrain check` cost estimate** counts `band_envelope` derives. The
+  envelope-band driver finds derives by looking for a `bandpass` call, so a
+  protocol that adopted the one-stage primitive would otherwise have read as
+  having no envelope cost at all. The new coefficient is uncalibrated and does
+  not yet scale with `taps`. Composed-latency *reporting* is still absent:
+  `cost.py` measures the axis running at 0.46 % of budget and says nothing
+  about the one that was ~2× over the recommendation.
+
 ## [0.22.0] — 2026-09-28
 
 ### Added

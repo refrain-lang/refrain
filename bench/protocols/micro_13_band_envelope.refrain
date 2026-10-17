@@ -1,0 +1,33 @@
+// micro_13_band_envelope.refrain
+// Bench micro: the same SMR envelope as micro_03_envelope, in one stage
+// with the feedback delay declared instead of accumulated. Pairing the two
+// protocols is the point — they are the before and after of the same
+// measurement, at the same band and channel.
+
+protocol "micro_13_band_envelope" {
+  meta {
+    version  = "0.1.0"
+    evidence = "demo"
+    description = "Bench: band_envelope at a declared latency (cf. micro_03_envelope)"
+  }
+
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels    = ["Cz"]
+  }
+
+  input "raw" {
+    montage = referential(active: "Cz", reference: "linked_ears")
+  }
+
+  derive "smr_envelope" {
+    from = "raw"
+    pipeline = [
+      band_envelope(band: (12 Hz, 15 Hz), latency: 250 ms),
+    ]
+  }
+
+  output {
+    audio_gain = 0
+  }
+}

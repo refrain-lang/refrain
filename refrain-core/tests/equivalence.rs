@@ -151,6 +151,14 @@ fn micro_12_control_param_slots_equivalent() {
 }
 
 #[test]
+fn micro_13_band_envelope_equivalent() {
+    // band_envelope: a complex-tap FIR whose taps are baked by Python and
+    // whose output is the magnitude. The pair with micro_03_envelope is
+    // deliberate — same band, same channel, four stages vs one.
+    run_protocol("micro_13_band_envelope");
+}
+
+#[test]
 fn realistic_smr_equivalent() {
     run_protocol("realistic_smr");
 }

@@ -350,6 +350,15 @@ pub struct Coeffs {
     pub sos: Option<Vec<Vec<f64>>>,
     #[serde(default)]
     pub fir_taps: Option<Vec<f64>>,
+    /// Complex FIR taps, split into parallel real/imaginary vectors
+    /// (`band_envelope`). Always present or absent together, and the same
+    /// length as each other. New in IR-JSON v0.5. The split mirrors
+    /// `dsp::Signal::Complex`, so the runtime reads them without
+    /// deinterleaving; JSON has no complex type, so some split is required.
+    #[serde(default)]
+    pub fir_taps_re: Option<Vec<f64>>,
+    #[serde(default)]
+    pub fir_taps_im: Option<Vec<f64>>,
     #[serde(default)]
     pub group_delay: Option<usize>,
     #[serde(default)]

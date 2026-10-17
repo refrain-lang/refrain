@@ -17,8 +17,8 @@ use serde_json::Value;
 
 use crate::advisor::{Advisor, ChunkFacts};
 use crate::dsp::{
-    control_cell, smooth_alpha_from_tau_ms, AutoRange, Autocorr, Bandpower, Biquad, Coherence,
-    ControlCell,
+    control_cell, smooth_alpha_from_tau_ms, AutoRange, Autocorr, BandEnvelope, Bandpower, Biquad,
+    Coherence, ControlCell,
     Differentiate, Dwell, DwellRearm, HilbertFir, Magnitude, Percentile, Signal, Smooth, Stage, TrackerState,
 };
 use crate::ir::{Coeffs, Expr, Protocol};
@@ -2203,6 +2203,7 @@ fn is_dsp(callee: &str) -> bool {
     matches!(
         callee,
         "bandpass"
+            | "band_envelope"
             | "hilbert"
             | "magnitude"
             | "rectify"
@@ -2291,6 +2292,17 @@ fn build_stage(
             Box::new(HilbertFir::new(
                 c.fir_taps.as_ref().expect("fir_taps"),
                 c.group_delay.expect("group_delay"),
+            ))
+        }
+        // One stage where `bandpass -> hilbert -> magnitude -> smooth` stood:
+        // complex taps, real output. `group_delay` is baked for reporting and
+        // needs no runtime alignment here — unlike `hilbert`, which delays its
+        // real branch to meet the FIR'd imaginary one.
+        "band_envelope" => {
+            let c = need();
+            Box::new(BandEnvelope::new(
+                c.fir_taps_re.as_ref().expect("band_envelope: fir_taps_re"),
+                c.fir_taps_im.as_ref().expect("band_envelope: fir_taps_im"),
             ))
         }
         "magnitude" | "rectify" => Box::new(Magnitude),

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://refrainlang.org/schema/ir-json-v0.5.schema.json",
   "title": "Refrain IR-JSON v0.5",
-  "description": "Machine-readable Refrain IR-JSON v0.5: adds typed feedback declarations.",
+  "description": "Machine-readable Refrain IR-JSON v0.5: adds typed feedback declarations and complex FIR taps.",
   "type": "object",
   "required": [
     "refrain_ir_version",
@@ -255,7 +255,10 @@
           ]
         },
         "sample_rate_min_hz": {
-          "type": ["number", "null"]
+          "type": [
+            "number",
+            "null"
+          ]
         },
         "sample_rate_chosen_hz": {
           "type": "number"
@@ -766,6 +769,20 @@
             "type": "number"
           }
         },
+        "fir_taps_re": {
+          "description": "Real part of a complex FIR's taps (`band_envelope`). Paired with `fir_taps_im`, same length.",
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "fir_taps_im": {
+          "description": "Imaginary part of a complex FIR's taps (`band_envelope`). Paired with `fir_taps_re`, same length.",
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
         "group_delay": {
           "type": "integer"
         },
@@ -793,6 +810,14 @@
         "noverlap": {
           "type": "integer"
         }
+      },
+      "dependentRequired": {
+        "fir_taps_re": [
+          "fir_taps_im"
+        ],
+        "fir_taps_im": [
+          "fir_taps_re"
+        ]
       }
     },
     "Expr": {

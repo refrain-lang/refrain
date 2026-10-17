@@ -103,6 +103,20 @@ def test_hilbert_no_args():
     assert c.args == ()
 
 
+def test_band_envelope():
+    c = _call(_parse_expr("band_envelope(band: (12 Hz, 15 Hz), latency: 250 ms)"))
+    assert c.callee == "band_envelope"
+    band = _arg(c, "band").value
+    assert isinstance(band, A.Tuple)
+    assert band.elements == (A.NumberLit(12.0, "Hz"), A.NumberLit(15.0, "Hz"))
+    assert _arg(c, "latency").value == A.NumberLit(250.0, "ms")
+
+
+def test_band_envelope_explicit_taps():
+    c = _call(_parse_expr("band_envelope(band: (8 Hz, 12 Hz), latency: 200 ms, taps: 257)"))
+    assert _arg(c, "taps").value == A.NumberLit(257.0, None)
+
+
 def test_bandpower():
     c = _call(_parse_expr('bandpower(input: "raw", band: (50 Hz, 100 Hz), window: 100 ms)'))
     assert c.callee == "bandpower"

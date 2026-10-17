@@ -41,6 +41,10 @@ from .ir import (
 # PENDING P2 CALIBRATION. See module docstring.
 K_PERCENTILE_US_PER_WINDOW_SAMPLE = 0.0092  # per-output-sample np.percentile over the window
 K_ENVELOPE_US_PER_SAMPLE = 1.0              # one bandpass->hilbert->mag->smooth band
+# UNCALIBRATED. One 193-tap complex FIR replacing that four-stage chain; the
+# ratio is the 12.2 us vs 18.4 us measured per 50 ms chunk at 250 Hz. Scales
+# with `taps`, which this does not yet read.
+K_BAND_ENVELOPE_US_PER_SAMPLE = 0.66
 K_DISPATCH_US_PER_SAMPLE = 0.25            # fixed IR-walk / framing floor
 K_BANDPOWER_US_PER_WINDOW_SAMPLE = 0.002   # UNCALIBRATED (windowed FFT, periodic)
 K_COHERENCE_US_PER_WINDOW_SAMPLE = 0.01    # UNCALIBRATED (windowed cross-spectrum per pair)
@@ -189,6 +193,21 @@ def estimate_cost(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> Cos
             name=f"bandpower ({len(bp_calls)})",
             detail=f"{win_samples:,.0f} window-samples (periodic windowed FFT)",
             us_per_sample=K_BANDPOWER_US_PER_WINDOW_SAMPLE * win_samples,
+            calibrated=False,
+        ))
+
+    # --- one-stage band envelopes --------------------------------------------
+    # `band_envelope` replaces bandpass -> hilbert -> magnitude -> smooth, so a
+    # derive that uses it has no `bandpass` call for the envelope-band counter
+    # below to find. Without this term such a protocol reads as having no
+    # envelope cost at all.
+    be_calls = [c for e in _all_stream_exprs(ir) for c in _iter_calls(e)
+                if c.callee == "band_envelope"]
+    if be_calls:
+        drivers.append(CostDriver(
+            name=f"band_envelope ({len(be_calls)})",
+            detail="one complex FIR per band, at the declared latency",
+            us_per_sample=K_BAND_ENVELOPE_US_PER_SAMPLE * len(be_calls),
             calibrated=False,
         ))
 

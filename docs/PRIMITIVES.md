@@ -242,6 +242,85 @@ pipeline = [
 ]
 ```
 
+### `band_envelope`
+
+```
+band_envelope(band: (low_Hz, high_Hz), latency: duration,
+              taps: int = auto)                        -> stream<scalar uV>
+```
+
+A band's amplitude envelope in **one stage, with the feedback delay as a
+declared parameter**. Replaces the four-stage idiom:
+
+```refrain
+// four stages; the delay is whatever they sum to
+pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 250 ms) ]
+
+// one stage; the delay is the number you wrote
+pipeline = [ band_envelope(band: (12 Hz, 15 Hz), latency: 250 ms) ]
+```
+
+Least-squares complex FIR, per Smetanin, Belinskaya, Lebedev & Ossadtchi
+(2020), "Digital filters for low-latency quantification of brain rhythms in
+real time", *J Neural Eng* 17(4) 046022,
+[doi:10.1088/1741-2552/ab890f](https://doi.org/10.1088/1741-2552/ab890f). The
+desired response is `e^{-jωD}` inside the band and 0 outside, positive
+frequencies only so the output is analytic; the magnitude of that is the
+envelope. `D` is the declared `latency`.
+
+The point is not that the filter family is cleverer — at positive delay it is
+equivalent to a windowed-DFT Hilbert, as the paper says. The point is that
+**four delays become one, and an author can name it.** In the four-stage chain
+each stage contributes its own lag additively, no single stage is at fault, and
+there is no way to express "this latency, best available accuracy."
+
+The envelope is calibrated to the same amplitude as `hilbert() + magnitude()`,
+so `absolute(6 uV)` means the same thing before and after a conversion.
+
+**Measured** on 11 corpus EEG recordings at Cz, 12–15 Hz, against a zero-phase
+reference envelope: a median of **206 ms saved at equal accuracy** (range
+102–266 ms) versus the four-stage chain. On 8–12 Hz at P4, a median of 265 ms
+(n=12). At a band width and delay matched to the paper's (4 Hz, 100 ms) this
+implementation measures r = 0.84 against its reported 0.85 ± 0.1.
+
+**Latency is not a free parameter below a point.** A short declared delay
+truncates the ideal two-sided response, and that truncation *is* the accuracy
+cost. The same filter at 100 ms measures r = 0.84 on a 4 Hz band but r = 0.37
+on SMR's 3 Hz band: the method transfers, the band width does not. Narrow bands
+with a loud neighbour are the weak case — eyes-closed alpha sitting just below
+12–15 Hz leaks in. The paper's PSD-weighted variant (wcFIR) targets exactly
+this and is not implemented.
+
+**Sizing.** The filter span must be at least ~2× the declared delay. Below
+that the taper is truncated and accuracy collapses with no other symptom
+(measured at 256 Hz with a 360 ms delay: r = 0.873 at 2×, 0.743 at 1.75×,
+0.437 at 1.4×). `taps` is therefore derived from `latency` by default and a
+span under 2× the delay is **refused at build time**, not run. Pass `taps`
+explicitly only to widen it. Above 2× accuracy is flat, so the declared
+latency is the only thing that sets it.
+
+**Cold start.** The filter needs its full span of history before its output
+means anything — about 0.8 s for a 250 ms latency at 250 Hz. This makes the
+cold-start behaviour tracked in #93 slightly worse: like every filter in the
+library it starts from zero state, so the first samples are an artifact rather
+than a measurement. A protocol with a warmup phase absorbs this for free
+(`phase "warmup" { ... }`), and the EEG protocols all have one. A protocol
+**without** a warmup phase will show a rising envelope for the first second
+of the session, so give the primitive one.
+
+**Low sample rates.** This is an EEG-rate primitive. For a 4 Hz HRV tachogram
+use `rectify() + smooth(tau)` — see `hilbert` above and DESIGN-NOTES §7a. A
+declared latency shorter than 3 samples at the target rate is refused.
+
+**Both backends.** Evaluated by the Python evaluator and the portable Rust
+core, which are held to sample-for-sample parity by the drift gate
+(`refrain-core/tools/check_equivalence.py`). Filter design stays in Python: the
+core receives the finished complex taps as `fir_taps_re` / `fir_taps_im` and
+runs the convolution. Those coefficient fields are new in IR-JSON v0.5, so a
+protocol using this primitive emits a v0.5 document and needs a runtime that
+accepts v0.5 — an older core refuses it at load with an explicit version
+error rather than running it with the stage silently dropped.
+
 ### `bandpower`
 
 ```

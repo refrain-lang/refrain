@@ -44,3 +44,11 @@ coverage.xml
 
 # Distribution
 *.whl
+
+# iOS build artifacts — produced by the ios-xcframework CI job, not committed.
+# `xcodebuild -create-xcframework` refuses to write into an existing output
+# ("librefrain_core.a couldn't be copied ... an item with the same name
+# already exists"), so a committed copy turns that job red. Headers/ is a
+# copy of refrain-core/bindings/swift/, which IS committed and verified.
+refrain-core/Headers/
+refrain-core/RefrainCore.xcframework/

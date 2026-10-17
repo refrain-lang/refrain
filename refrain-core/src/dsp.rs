@@ -159,6 +159,75 @@ impl Stage for HilbertFir {
     }
 }
 
+/// `band_envelope(band:, latency:)`: a band-limited analytic envelope in one
+/// stage. The taps are complex and the input is real, so one convolution
+/// produces the analytic signal directly and `|y|` is the envelope — no
+/// separate Hilbert branch and no pure-delay branch to align.
+///
+/// Filter *design* stays in Python (`BandEnvelopeImpl`): the closed-form
+/// inverse transform, the Hanning taper and the analytic-amplitude
+/// calibration all happen there, and only the finished taps cross the wire.
+/// This mirrors every other stage here — the core runs recurrences, it does
+/// not reimplement SciPy.
+///
+/// The delay line is real, matching `BandEnvelopeImpl._buf`: the coefficients
+/// carry the complex part, so there is nothing complex to carry between
+/// chunks.
+pub struct BandEnvelope {
+    h_re: Vec<f64>,
+    h_im: Vec<f64>,
+    state: Vec<f64>, // trailing h.len()-1 input samples
+}
+
+impl BandEnvelope {
+    pub fn new(h_re: &[f64], h_im: &[f64]) -> Self {
+        assert_eq!(
+            h_re.len(),
+            h_im.len(),
+            "band_envelope: fir_taps_re/fir_taps_im length mismatch ({} vs {})",
+            h_re.len(),
+            h_im.len()
+        );
+        assert!(!h_re.is_empty(), "band_envelope: empty tap vector");
+        let keep = h_re.len().saturating_sub(1);
+        BandEnvelope { h_re: h_re.to_vec(), h_im: h_im.to_vec(), state: vec![0.0; keep] }
+    }
+}
+
+impl Stage for BandEnvelope {
+    fn process(&mut self, input: Signal) -> Signal {
+        let x = input.into_real();
+        let n = x.len();
+        let nh = self.h_re.len();
+
+        // Same `convolve(..., "valid")` indexing HilbertFir uses, so the two
+        // agree sample-for-sample with numpy: padded = state ++ x, then
+        // y[i] = sum_k h[k] * padded[i + nh-1 - k].
+        let mut padded = Vec::with_capacity(self.state.len() + n);
+        padded.extend_from_slice(&self.state);
+        padded.extend_from_slice(&x);
+
+        let mut out = vec![0.0; n];
+        for (i, slot) in out.iter_mut().enumerate() {
+            let mut acc_re = 0.0;
+            let mut acc_im = 0.0;
+            for k in 0..nh {
+                let v = padded[i + (nh - 1) - k];
+                acc_re += self.h_re[k] * v;
+                acc_im += self.h_im[k] * v;
+            }
+            // The envelope is |analytic|; the complex intermediate never
+            // leaves this stage, so the output stream is real.
+            *slot = (acc_re * acc_re + acc_im * acc_im).sqrt();
+        }
+
+        let keep = nh.saturating_sub(1);
+        self.state = padded[padded.len() - keep..].to_vec();
+
+        Signal::Real(out)
+    }
+}
+
 /// `magnitude()` — |z| for a complex stream (and |x| for a real one).
 pub struct Magnitude;
 

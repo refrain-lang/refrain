@@ -355,6 +355,7 @@ if __name__ == "__main__":
         "micro_10_autocorr",
         "micro_11_control_expr",
         "micro_12_control_param_slots",
+        "micro_13_band_envelope",
         "realistic_smr",
         "composite_smr_theta",
     ):

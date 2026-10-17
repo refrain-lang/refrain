@@ -215,6 +215,7 @@ Verified against the actual fixture files in `refrain-core/tests/fixtures/`.
 | `micro_07_ilf` | Bipolar montage + infra-low-frequency pipeline (`bipolar`, `bandpass`, `differentiate`, `rectify`, `smooth`, `auto_range`, `sigmoid`, `dwell`, `inside`) |
 | `micro_08_bandpower` | Bandpower (`bandpower` + auto-range normalization) |
 | `micro_09_inhibit` | Inhibit gate + output muting (`Inhibit` block, `muted` tap, `bandpower` metric; `events.json` and `taps.json` present) |
+| `micro_13_band_envelope` | One-stage band envelope (`band_envelope` with baked `fir_taps_re`/`fir_taps_im`/`group_delay`; IR-JSON v0.5). Deliberately the same band and channel as `micro_03_envelope`, so the two bundles are the four-stage and one-stage forms of one measurement. |
 | `realistic_smr` | Full clinical protocol: 3-band envelope pipeline, percentile + absolute thresholds, dwell+`all_of`, sigmoid continuous reward, conditional output expressions, `control_ref` thresholds, session phases (`events.json` and `taps.json` present) |
 | `realistic_smr_setcontrol` | Live `set_control` retuning mid-run: same signal as `realistic_smr`, SMR and theta percentile targets changed at chunk 64; percentile buffer preserved across the change (`events.json`, `taps.json`, `schedule.json` present) |
 
