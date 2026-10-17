@@ -209,6 +209,19 @@ def _match_derive(decl: A.NamedDecl) -> dict:
             block = "derive.ratio" if f.op == "/" else "derive.difference"
             return {"name": decl.name, "block": block,
                     "slots": {"a": f.left.value, "b": f.right.value}}
+        if isinstance(f, A.BinaryOp) and f.op == "-" \
+           and isinstance(f.left, A.StringLit) and isinstance(f.right, A.NameRef):
+            # Right operand is a CONTROL, not a stream -- an unquoted name. The
+            # block's template renders it unquoted for exactly that reason, so
+            # `derive.difference`'s `"{a}" - "{b}"` cannot stand in: it would
+            # emit a reference to a stream that does not exist.
+            #
+            # This is thermal biofeedback's shape, "rise above the baseline
+            # this session seeded and froze". Subtraction only: nothing needs
+            # to divide by a control, and an unused block is a block whose
+            # round trip nothing exercises.
+            return {"name": decl.name, "block": "derive.difference_control",
+                    "slots": {"a": f.left.value, "b": f.right.name}}
         if isinstance(f, A.Call) and f.callee == "coherence":
             ia = _arg(f, "input_a") or (f.args[0].value if len(f.args) > 0 else None)
             ib = _arg(f, "input_b") or (f.args[1].value if len(f.args) > 1 else None)

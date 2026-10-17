@@ -106,3 +106,55 @@ def test_level_round_trips():
     assert blocks == ["derive.level", "derive.auto_range"]
     assert d["model"]["inputs"][0]["block"] == "montage.passthrough"
     assert _ir(LEVEL) == _ir(render_protocol(d["model"]))
+
+
+# Thermal biofeedback's shape: a tonic level, then the RISE of that level above
+# a baseline the session seeds and freezes. The second stage subtracts a
+# CONTROL, not another stream -- `derive.difference` quotes both operands and
+# so cannot express it. Modelled on the recorder's shipped
+# skin_temp_warming.refrain, minimally.
+RISE = '''
+protocol "skin_temp_rise" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["calm_stress"];
+         modality = "temp" }
+  requires { sample_rate = ">= 7 Hz"; channels = ["TH", "T1"] }
+  input "skin" { montage = bipolar(plus: "TH", minus: "T1") }
+  derive "skin_temp" { from = "skin"; pipeline = [ smooth(tau: 10 s) ] }
+  derive "rise" { formula = "skin_temp" - baseline_c }
+  threshold "target_t" { signal = "rise"; type = absolute(value: target_rise_c) }
+  reward { event = dwell(condition: above("rise", "target_t"), duration: 60 s)
+           continuous = "rise" }
+  output { audio_gain = reward.continuous; audio_chime = reward.event }
+  controls {
+    baseline_pct = percent { default = 50; range = (10, 90); label = "Baseline percentile"; live_tunable = true }
+    baseline_c = voltage {
+      default = 1 uV; range = (0 uV, 20 uV); label = "Session baseline"; live_tunable = true
+      seed = percentile { from = "skin_temp"; window = 120 s; target_pct = baseline_pct }
+    }
+    target_rise_c = voltage { default = 1.5 uV; range = (0.5 uV, 4 uV); label = "Target rise"; live_tunable = true }
+  }
+  session { phases = [ phase { name = "warmup"; duration = 300 s; output_muted = true },
+                       phase { name = "training"; duration = 900 s } ] }
+}
+'''
+
+
+def test_difference_against_a_control_round_trips():
+    d = describe_protocol(RISE)
+    assert d["in_subset"] is True
+    blocks = [n["block"] for n in d["model"]["derives"]]
+    assert blocks == ["derive.level", "derive.difference_control"]
+    # `b` is the control's bare name -- the template renders it unquoted, which
+    # is what makes it a control reference rather than a stream named
+    # "baseline_c".
+    rise = d["model"]["derives"][1]
+    assert rise["slots"] == {"a": "skin_temp", "b": "baseline_c"}
+    assert _ir(RISE) == _ir(render_protocol(d["model"]))
+
+
+def test_difference_against_a_control_renders_the_operand_unquoted():
+    d = describe_protocol(RISE)
+    out = render_protocol(d["model"])
+    assert 'formula = "skin_temp" - baseline_c' in out
+    # And a stream-to-stream difference still quotes both sides.
+    assert 'formula = "skin_temp" - "baseline_c"' not in out
