@@ -34,7 +34,46 @@ def _seed_view(seed: Any) -> dict:
     }
 
 
-def _control_view(name: str, ctl: Any) -> dict:
+def _seed_view_from_ast(be: A.BlockExpr) -> dict:
+    """`_seed_view`'s shape, read straight off the AST instead of the IR.
+
+    The resolver deliberately withholds a seed whose control mode-folding left
+    unreferenced ("dead seed: control folded out — do not attach"), which is
+    right for the runtime: nothing should compute it. The editor is a different
+    audience. `describe_protocol` still lists that control, so taking its seed
+    only from the resolved IR showed the control while silently losing its
+    seeding rule — and re-rendering then wrote a protocol whose other mode had
+    lost it for good.
+
+    Emits the same types the IR path does (floats), so a seed looks identical
+    whether or not the active mode happens to reference its control.
+    """
+    bm = _body_map(be)
+    target = _slot_from_expr(bm["target_pct"])
+    return {
+        "statistic": be.name,
+        "from": bm["from"].value,
+        "window_ms": _to_ms(bm["window"]),
+        "target_pct": float(target) if isinstance(target, (int, float)) else target,
+    }
+
+
+def _ast_control_seeds(ast: A.File) -> dict:
+    """control name -> its `seed = <statistic> { ... }` block, from the AST."""
+    out: dict = {}
+    for stmt in ast.protocol.body:
+        if not (isinstance(stmt, A.SectionBlock) and stmt.keyword == "controls"):
+            continue
+        for a in stmt.body:
+            if not (isinstance(a, A.Assignment) and isinstance(a.value, A.BlockExpr)):
+                continue
+            seed = _body_map(a.value).get("seed")
+            if isinstance(seed, A.BlockExpr):
+                out[a.target] = seed
+    return out
+
+
+def _control_view(name: str, ctl: Any, ast_seed: Any = None) -> dict:
     view = {
         "name": name,
         "kind": ctl.type_kind,
@@ -46,6 +85,8 @@ def _control_view(name: str, ctl: Any) -> dict:
     }
     if getattr(ctl, "seed", None) is not None:
         view["seed"] = _seed_view(ctl.seed)
+    elif ast_seed is not None:
+        view["seed"] = _seed_view_from_ast(ast_seed)
     return view
 
 
@@ -168,6 +209,19 @@ def _match_derive(decl: A.NamedDecl) -> dict:
             block = "derive.ratio" if f.op == "/" else "derive.difference"
             return {"name": decl.name, "block": block,
                     "slots": {"a": f.left.value, "b": f.right.value}}
+        if isinstance(f, A.BinaryOp) and f.op == "-" \
+           and isinstance(f.left, A.StringLit) and isinstance(f.right, A.NameRef):
+            # Right operand is a CONTROL, not a stream -- an unquoted name. The
+            # block's template renders it unquoted for exactly that reason, so
+            # `derive.difference`'s `"{a}" - "{b}"` cannot stand in: it would
+            # emit a reference to a stream that does not exist.
+            #
+            # This is thermal biofeedback's shape, "rise above the baseline
+            # this session seeded and froze". Subtraction only: nothing needs
+            # to divide by a control, and an unused block is a block whose
+            # round trip nothing exercises.
+            return {"name": decl.name, "block": "derive.difference_control",
+                    "slots": {"a": f.left.value, "b": f.right.name}}
         if isinstance(f, A.Call) and f.callee == "coherence":
             ia = _arg(f, "input_a") or (f.args[0].value if len(f.args) > 0 else None)
             ib = _arg(f, "input_b") or (f.args[1].value if len(f.args) > 1 else None)
@@ -584,13 +638,14 @@ def describe_protocol(source: str, *, amp: Any = None) -> dict:
                 "in_subset": False, "controls": [], "placements": [], "modes": [], "model": None}
 
     controls, placements, modes = [], [], []
+    ast_seeds = _ast_control_seeds(ast)
     for name, ctl in ir.controls.items():
         if ctl.type_kind == "placement":
             placements.append(_placement_view(name, ctl))
         elif ctl.type_kind == "mode":
             modes.append(_mode_view(name, ctl))
         else:
-            controls.append(_control_view(name, ctl))
+            controls.append(_control_view(name, ctl, ast_seeds.get(name)))
 
     try:
         model = _build_model(ast, controls, placements, modes)
