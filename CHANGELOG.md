@@ -5,7 +5,7 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
-## [0.23.0] — unreleased
+## [0.23.0] — 2026-10-17
 
 ### Added
 - `hold_for(condition, duration)` and `at_or_above(signal, threshold)` for
@@ -83,6 +83,17 @@ bumps are additive; major bumps may break compatibility.
   that need it, and a protocol using none of them still emits a byte-identical
   document at its existing version.
 
+- **`derive.level` in the protocol editor.** Tonic-level signals — skin
+  conductance, temperature — train a smoothed level rather than band power, so
+  their derive is a bare `smooth(tau:)` with no band anywhere in it. The editor
+  had no block for that shape and read such protocols as out-of-subset.
+  Editor-catalog only — no compiler, IR, or runtime change.
+
+- **`derive.difference_control` in the protocol editor.** A signal minus a
+  control, for protocols that train a value against an author-set reference
+  rather than against a percentile of its own history. Editor-catalog only —
+  no compiler, IR, or runtime change.
+
 ### Fixed
 - **`at_or_above` had no `###` heading in the primitive reference,** which the
   new docs/registry parity test counts as undocumented. The comparison
@@ -99,6 +110,48 @@ bumps are additive; major bumps may break compatibility.
   stale — they only differed from what the current emitter produces, which is
   invisible to a gate that overwrites them first. Regenerated; the only change
   is that one field.
+
+- **Nine defects reported against v0.22.0 by an embedding application, six of
+  them fixed here.** Every one was a construct that resolved cleanly and then
+  did the wrong thing: `phase { pace = 0.108 Hz }` compiled and silently
+  dropped the field (`_resolve_phase` and `_resolve_session` now reject unknown
+  fields as `_resolve_block` already did); `above`, `below`, `inside`,
+  `sigmoid`, `linear` and `absolute` did not dimension-check the slot compared
+  against a signal, and `steepness` / `slope` are now required to be
+  dimensionless; a derive reading a `threshold` is refused at resolve with an
+  error naming the threshold and both ways out; band edges are checked against
+  Nyquist for `bandpass`, `bandpower` and `coherence`; `align_to`,
+  `select_channel` and `decimate` are marked absent rather than appearing to
+  exist. The four that were design questions rather than defects are tracked as
+  #91, #92, #93 and #94.
+
+  Three new test mechanisms came with it: one test per reported defect with the
+  unfixed ones `xfail(strict=True)` so fixing one forces its marker off in the
+  same commit; a gate asserting that any protocol which resolves also survives
+  `step_chunk`, over 40 protocols with both allowlists empty; and a parity gate
+  requiring `PRIMITIVES.md` and the primitive registry to agree in both
+  directions.
+
+- **A control's seed no longer disappears when mode-folding leaves the control
+  unreferenced.** The resolver deliberately withholds such a seed, which is
+  right for the runtime — nothing should compute it — but the editor is a
+  different audience. `describe_protocol` still listed the control while
+  silently losing its seeding rule, so re-rendering wrote a protocol whose
+  other mode had lost it for good. The editor now reads that seed off the AST
+  when the IR withholds it.
+
+- **The editor fixture corpus covered 10 of 46 protocols and said nothing about
+  the other 36.** `gen_editor_fixtures.py` described every protocol with no amp
+  profile, but `amp.reference` is an error without one and 35 of the 46
+  protocols in the reference library use it, so they failed to resolve and were
+  skipped in silence. Each protocol is now tried against no amp first — the HRV
+  protocols need a tachogram channel no EEG profile has — then against each
+  built-in profile, taking the first that resolves. Coverage goes to 37 of 46,
+  the remaining 9 are genuinely outside the editor's subset, and anything
+  skipped is printed with the reason. The amp decides only whether a protocol
+  resolves, never what it resolves to: of the 34 that resolve under two or more
+  profiles, all 34 produce a byte-identical model, and the generator now
+  asserts that rather than trusting it.
 
 ### Changed
 - **`refrain check` cost estimate** counts `band_envelope` derives. The
