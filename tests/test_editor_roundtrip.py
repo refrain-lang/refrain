@@ -413,3 +413,80 @@ def test_bipolar_lit_is_in_subset_and_round_trips():
     assert montage["block"] == "montage.bipolar_lit"
     assert montage["slots"] == {"plus": "T3", "minus": "T4"}
     assert _ir(BIPOLAR_LIT) == _ir(render_protocol(d["model"]))
+
+
+# A mode-conditional protocol whose BASELINE branch uses an absolute threshold
+# bound to a seeded control. Under the default `adaptive` mode the resolver
+# folds that branch away, so `thr_uv` is unreferenced and the runtime IR
+# correctly carries no seed for it -- there is nothing to compute. The EDITOR
+# view is a different question: it still shows `thr_uv` as a control, so
+# dropping only its seed loses authored intent on save.
+SEEDED_MODE = '''
+protocol "seeded_mode" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["focus_attention"] }
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "env" { from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4),
+                 hilbert(), magnitude(), smooth(tau: 250 ms) ] }
+  threshold "env_t" {
+    signal = "env"
+    type   = style == "baseline"
+             ? absolute(value: thr_uv)
+             : percentile(target_pct: reward_pct, window: 2 min)
+  }
+  reward { event = dwell(condition: above("env", "env_t"), duration: 250 ms)
+           continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+  output { audio_chime = reward.event; audio_gain = reward.continuous }
+  controls {
+    style = mode { choices = ["adaptive", "baseline"]; default = "adaptive"; label = "Threshold style" }
+    reward_pct = percent { default = 70; range = (50, 90); label = "Target reward %"; live_tunable = true }
+    thr_uv = voltage {
+      default      = 2.0 uV
+      range        = (0.5 uV, 10.0 uV)
+      label        = "Threshold"
+      live_tunable = true
+      seed = percentile {
+        from       = "env"
+        window     = 60 s
+        target_pct = 40
+      }
+    }
+  }
+  session { phases = [ phase { name = "warmup"; duration = 90 s; output_muted = true },
+                       phase { name = "training"; duration = 30 min } ] }
+}
+'''
+
+
+def test_editor_keeps_a_seed_on_a_mode_folded_control():
+    """A seed on a control the active mode folds out must survive describe.
+
+    The resolver deliberately does not attach a `dead` seed to the runtime IR
+    (resolver.py: "dead seed: control folded out -- do not attach"), which is
+    right: nothing should compute it. But `describe_protocol` keeps the control
+    itself in the model, so reading seeds off the resolved IR drops the seed
+    while keeping its control -- and re-rendering then emits a protocol whose
+    baseline mode has silently lost its seeding rule.
+    """
+    d = describe_protocol(SEEDED_MODE)
+    assert d["in_subset"] is True
+    ctl = next(c for c in d["model"]["controls"] if c["name"] == "thr_uv")
+    assert ctl.get("seed") == {
+        "statistic": "percentile",
+        "from": "env",
+        "window_ms": 60000,
+        "target_pct": 40,
+    }
+
+
+def test_rendering_a_mode_folded_control_keeps_its_seed_block():
+    """The round trip must not drop the seed from the emitted source."""
+    d = describe_protocol(SEEDED_MODE)
+    out = render_protocol(d["model"])
+    assert "seed = percentile" in out
+    assert 'from       = "env"' in out
+    # And the re-rendered protocol still resolves and still round-trips.
+    again = describe_protocol(out)
+    assert again["in_subset"] is True
+    assert again["model"] == d["model"]
