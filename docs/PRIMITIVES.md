@@ -488,7 +488,7 @@ Output is zero within `width / 2` of `center`, then linearly increases. Useful f
 
 Conditions consume scalar streams and produce boolean streams.
 
-### `above`, `below`, `inside`
+### `above`, `at_or_above`, `below`, `inside`
 
 ```
 above(signal_ref, threshold_ref)             -> stream<boolean>
