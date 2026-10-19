@@ -5,6 +5,49 @@ based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/) — minor
 bumps are additive; major bumps may break compatibility.
 
+## [Unreleased]
+
+### Added
+- **The protocol editor can now author the flagship EEG protocols.** `smr`,
+  `alpha_up`, `beta_attention` and `high_beta_down` were outside the editor's
+  describable subset, so the editor silently refused the four protocols the
+  product leads with. Six independent obstacles, each invisible until the
+  previous one was removed: band edges given as paired `frequency` controls
+  rather than literals (both in `derive` pipelines and in an artifact
+  inhibit's `bandpower`), a mode-gated conditional for an inhibit's
+  `target_pct`, `render_slot` having no way to emit a carried-through
+  expression, and a placement control losing its authored position on render.
+  The corpus of parity fixtures goes from 37 to 41 of 44 protocols.
+
+- **`derive.envelope_declared`, the editor block for `band_envelope`.** Slots
+  `band_low_hz`, `band_high_hz` (both control-bindable, because the protocols
+  drive band edges from live-tunable paired controls) and `latency_ms` (not
+  bindable: it sizes a filter whose coefficients are baked when the protocol
+  resolves). A derive that passes `taps` explicitly is reported as out of
+  subset rather than round-tripped without it. `catalog_version` 1 → 2.
+
+- **`describe_protocol` now returns `reason`.** Out-of-subset protocols said
+  only `in_subset: False`, and the deliberately broad `except` that keeps the
+  editor from crashing on a resolvable protocol made a genuine bug in a
+  matcher indistinguishable from a deliberate exclusion. `reason` carries a
+  `_NotInSubset` message as-is and prefixes anything else with its exception
+  type, so a bug reads as a bug. Two of the six fixes above were hidden by
+  exactly that ambiguity.
+
+### Fixed
+- **The editor could render a protocol that the language then refused.** A
+  placement control with `allowed` omitted — legal, and meaning any channel —
+  was described as `allowed: []` and rendered back as `allowed = []`, which
+  the resolver rejects. Four corpus protocols were affected and every existing
+  gate was green, because `tools/gen_editor_fixtures.py` wrote
+  `render_protocol(model)` to disk without ever asking the resolver to read it
+  back. The generator now re-resolves each rendered protocol and compares IR
+  with the original, failing loudly on either a `ResolveError` or a mismatch,
+  and takes an optional list of protocol stems that must be in the subset — a
+  fixture count cannot do that job, because the total is reached with or
+  without some of the fixes when a protocol is held out by a second,
+  unrelated obstacle.
+
 ## [0.23.0] — 2026-10-17
 
 ### Added

@@ -49,6 +49,8 @@ def render_slot(value, slot_type: str) -> str:
     """Format one slot value for insertion into a .refrain template."""
     if isinstance(value, dict) and "bind" in value:
         return value["bind"]                       # control binding -> bare name
+    if isinstance(value, dict) and "expr" in value:
+        return value["expr"]                       # carried-through expression
     if slot_type == "frequency":
         return f"{_fmt_num(value)} Hz"
     if slot_type in ("number", "percent", "duration_ms"):

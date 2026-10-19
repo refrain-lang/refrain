@@ -1,5 +1,5 @@
 {
-  "catalog_version": "1",
+  "catalog_version": "2",
   "blocks": [
     {
       "id": "derive.envelope",
@@ -34,12 +34,12 @@
         {
           "name": "band_low_hz",
           "type": "frequency",
-          "control_bindable": false
+          "control_bindable": true
         },
         {
           "name": "band_high_hz",
           "type": "frequency",
-          "control_bindable": false
+          "control_bindable": true
         },
         {
           "name": "order",
@@ -55,6 +55,30 @@
         }
       ],
       "template": "bandpass(band: ({band_low_hz}, {band_high_hz}), order: {order}),\n      hilbert(),\n      magnitude(),\n      smooth(tau: {smooth_tau_ms} ms)"
+    },
+    {
+      "id": "derive.envelope_declared",
+      "kind": "derive",
+      "form": "pipeline",
+      "slots": [
+        {
+          "name": "band_low_hz",
+          "type": "frequency",
+          "control_bindable": true
+        },
+        {
+          "name": "band_high_hz",
+          "type": "frequency",
+          "control_bindable": true
+        },
+        {
+          "name": "latency_ms",
+          "type": "duration_ms",
+          "control_bindable": false,
+          "default": 360
+        }
+      ],
+      "template": "band_envelope(band: ({band_low_hz}, {band_high_hz}), latency: {latency_ms} ms)"
     },
     {
       "id": "montage.referential",

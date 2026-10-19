@@ -1,5 +1,19 @@
 from refrain.editor import describe_protocol
 
+_IN_SUBSET_MINIMAL = '''
+protocol "minimal_declared_cz" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["sensorimotor_sleep"] }
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "env" { from = "raw"
+    pipeline = [ band_envelope(band: (12 Hz, 15 Hz), latency: 360 ms) ] }
+  threshold "env_t" { signal = "env"; type = percentile(target_pct: 70, window: 2 min) }
+  reward { event = dwell(condition: above("env", "env_t"), duration: 250 ms)
+           continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+  output { audio_chime = reward.event; audio_gain = reward.event.holds ? reward.continuous : 0 }
+}
+'''
+
 SMR = '''
 protocol "smr_up_c4" {
   meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["sensorimotor_sleep"] }
@@ -93,3 +107,40 @@ def test_describe_lists_mode_control():
     assert modes["threshold_style"]["label"] == "Threshold style"
     # A mode control must not leak into the numeric controls list.
     assert "threshold_style" not in {c["name"] for c in desc["controls"]}
+
+
+def test_in_subset_protocol_reports_no_reason():
+    from refrain.editor import describe_protocol as dp
+    d = dp(_IN_SUBSET_MINIMAL)
+    assert d["in_subset"] is True
+    assert d["reason"] is None
+
+
+def test_out_of_subset_reports_the_decision():
+    from refrain.editor import describe_protocol as dp
+    # Resolves fine, but bandpass -> smooth is not a shape the editor models
+    # (this is scp_cz's pipeline). A resolve failure would exercise a
+    # different path, so it has to be a protocol the language accepts.
+    d = dp(_IN_SUBSET_MINIMAL.replace(
+        "pipeline = [ band_envelope(band: (12 Hz, 15 Hz), latency: 360 ms) ]",
+        "pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), smooth(tau: 250 ms) ]"))
+    assert d["ok"] is True
+    assert d["in_subset"] is False
+    assert "not in subset" in d["reason"]
+
+
+def test_a_matcher_crash_is_reported_as_a_crash_not_a_decision():
+    """The broad except at describe.py:653 cannot tell a deliberate
+    _NotInSubset from an AttributeError in a matcher, and that is what hid two
+    of the six editor fixes. `reason` names the exception type for anything
+    that is not a _NotInSubset, so a bug reads as a bug."""
+    import refrain.editor.describe as D
+    from refrain.editor import describe_protocol as dp
+    orig = D._match_derive
+    D._match_derive = lambda decl: (_ for _ in ()).throw(AttributeError("boom"))
+    try:
+        d = dp(_IN_SUBSET_MINIMAL)
+    finally:
+        D._match_derive = orig
+    assert d["in_subset"] is False
+    assert d["reason"].startswith("AttributeError")
