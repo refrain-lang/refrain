@@ -117,6 +117,33 @@ bumps are additive; major bumps may break compatibility.
   wider than ~5 Hz. No corpus protocol omits `window`, so no recorded number
   moves.
 
+- **Three equivalence tests compared values the framework already knew were
+  not comparable.** `equivalence.rs` has always skipped the fixtures'
+  `warmup_samples` window; `events.rs`, `taps.rs` and `set_control.rs` never
+  read that field. Inside it a derive's value is the filters' own settling,
+  and with the warm start a bandpass fed a standing level sits at its
+  steady-state zero from sample one — correctly, and to within rounding,
+  which leaves the first samples of any envelope downstream as numerical
+  dust (`micro_05_reward`'s reads 1.1e-23 at sample 1). That protocol's
+  reward divides one dust value by another, so its warmup values differ
+  between SciPy's `sosfilt` and the Rust recurrence, and between
+  architectures. Event identity — count, channel, kind, timestamp — and the
+  whole tap key set are still asserted across the entire run; only values
+  inside the window are let go, and a guard refuses a run where every value
+  would be skipped.
+
+- **`test_sos_unit_zi_matches_scipy` used a fixed tolerance against an
+  ill-conditioned reference.** Per second-order section the warm-start state
+  solves a 2x2 system whose determinant `1 + a1 + a2` is the denominator of
+  the section's DC gain — 4.4e-5 for a 0.0159 Hz corner — so agreement
+  between any two correct implementations is bounded by about `eps / det`,
+  and SciPy reaches that bound by a LAPACK solve where the closed form
+  reaches it by Cramer's rule. Measured: 1.2e-15 at det 3.9e-2, 1.4e-13 at
+  4.4e-4, 1.5e-12 at 4.4e-5. The tolerance is derived from the determinant
+  now, and the robust property — the filter sits at `x[0] * H(1)` from
+  sample one, to 1e-15 relative on every version and architecture tried — is
+  its own test.
+
 ## [0.23.0] — 2026-10-17
 
 ### Added
