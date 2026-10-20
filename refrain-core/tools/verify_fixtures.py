@@ -32,10 +32,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 WORKTREE = Path(__file__).resolve().parents[2]
@@ -92,8 +94,19 @@ def _diff_scalar(committed: object, fresh: object, where: str) -> list[str]:
     return [f"{where}: {_fmt(committed)} -> {_fmt(fresh)}"]
 
 
-def diff_json(committed: object, fresh: object, path: str = "") -> list[str]:
-    """Every way `fresh` differs from `committed`, as `<path>: a -> b` lines."""
+def diff_json(
+    committed: object,
+    fresh: object,
+    path: str = "",
+    skip_value_at: Callable[[str], bool] | None = None,
+) -> list[str]:
+    """Every way `fresh` differs from `committed`, as `<path>: a -> b` lines.
+
+    `skip_value_at` is consulted for leaf *values* only, with the leaf's path.
+    Structure — key sets, array lengths, types — is always compared, so a skip
+    can hide a number that settled differently but never a stream that
+    appeared, vanished or changed shape. See `_warmup_skip`.
+    """
     where = path or "<root>"
 
     if isinstance(committed, dict):
@@ -106,7 +119,9 @@ def diff_json(committed: object, fresh: object, path: str = "") -> list[str]:
             out.append(f"{path}.{key}: emitted, not in the committed fixture")
         for key in committed:
             if key in fresh:
-                out += diff_json(committed[key], fresh[key], f"{path}.{key}")
+                out += diff_json(
+                    committed[key], fresh[key], f"{path}.{key}", skip_value_at
+                )
         return out
 
     if isinstance(committed, list):
@@ -116,10 +131,80 @@ def diff_json(committed: object, fresh: object, path: str = "") -> list[str]:
             return [f"{where}: length {len(committed)} -> {len(fresh)}"]
         out = []
         for i, (c, f) in enumerate(zip(committed, fresh, strict=True)):
-            out += diff_json(c, f, f"{path}[{i}]")
+            out += diff_json(c, f, f"{path}[{i}]", skip_value_at)
         return out
 
+    if skip_value_at is not None and skip_value_at(where):
+        return []
     return _diff_scalar(committed, fresh, where)
+
+
+_STREAM_INDEX = re.compile(r"^\.streams\.(?P<name>.+)\[(?P<i>\d+)\]$")
+_EVENT_VALUE = re.compile(r"^\[(?P<i>\d+)\]\.value$")
+
+
+def _warmup_skip(name: str, committed_dir: Path) -> Callable[[str], bool] | None:
+    """A predicate marking the leaves inside a fixture's warmup window.
+
+    The first `warmup_samples` of any stream are the filters' own settling, not
+    a measurement, and `Io::warmup_samples` is in every `.io.json` to say how
+    wide that is. `equivalence.rs` has always honoured it (`for i in
+    warmup..got.len()`), and #113 taught `events.rs`, `taps.rs` and
+    `set_control.rs` to honour it too. This comparison did not, which is how
+    `main` went red with four PRs each green alone: the committed
+    `micro_05_reward` values at samples 0 and 1 are platform-dependent.
+
+    They are platform-dependent because they are not signal. A warm-started
+    bandpass rejects DC, so fed a standing level it sits at its steady-state
+    response to within rounding, leaving the first envelope samples at ~1e-23.
+    `micro_05_reward`'s reward is `sigmoid("smr_envelope" / "smr_t")` — one
+    dust value over another. On arm64 that ratio is 1.14e-23/7.95e-24 and the
+    sigmoid reads 0.783; on x86-64 it underflows to 0 and the sigmoid reads
+    `sigmoid(-3)` = 0.047. Both are correct arithmetic on numerical noise.
+
+    Returns None when the fixture declares no window, so nothing is skipped
+    unless a fixture asked for it.
+    """
+    stem = name.removesuffix(".io.json").removesuffix(".events.json")
+    io_path = committed_dir / f"{stem}.io.json"
+    if not io_path.exists():
+        return None
+    try:
+        io = json.loads(io_path.read_bytes())
+    except json.JSONDecodeError:
+        return None
+    warmup = io.get("warmup_samples")
+    if not isinstance(warmup, int) or warmup <= 0:
+        return None
+
+    if name.endswith(".io.json"):
+        def skip(leaf: str) -> bool:
+            m = _STREAM_INDEX.match(leaf)
+            return m is not None and int(m.group("i")) < warmup
+        return skip
+
+    if name.endswith(".events.json"):
+        rate = io.get("sample_rate_hz")
+        if not isinstance(rate, (int, float)) or rate <= 0:
+            return None
+        warmup_s = warmup / float(rate)
+        events = json.loads((committed_dir / name).read_bytes())
+        if not isinstance(events, list):
+            return None
+        inside = {
+            i
+            for i, ev in enumerate(events)
+            if isinstance(ev, dict)
+            and isinstance(ev.get("timestamp_s"), (int, float))
+            and ev["timestamp_s"] < warmup_s
+        }
+
+        def skip_event(leaf: str) -> bool:
+            m = _EVENT_VALUE.match(leaf)
+            return m is not None and int(m.group("i")) in inside
+        return skip_event
+
+    return None
 
 
 def compare_dirs(committed: Path, fresh: Path) -> list[str]:
@@ -155,7 +240,19 @@ def compare_dirs(committed: Path, fresh: Path) -> list[str]:
         except json.JSONDecodeError as exc:
             drift.append(f"{name}: not valid JSON ({exc})")
             continue
-        lines = diff_json(obj_a, obj_b)
+        skip = _warmup_skip(name, committed)
+        lines = diff_json(obj_a, obj_b, skip_value_at=skip)
+        if skip is not None and not lines:
+            # Say so rather than pass silently: a fixture whose only drift is
+            # inside the window is the case this skip exists for, and a silent
+            # pass is how the gate would stop meaning anything.
+            unskipped = diff_json(obj_a, obj_b)
+            if unskipped:
+                print(
+                    f"  note: {name} differs only inside its warmup window "
+                    f"({len(unskipped)} value(s) not compared)"
+                )
+                continue
         if not lines:
             print(f"  note: {name} differs byte-for-byte but is within the parity bar")
             continue
