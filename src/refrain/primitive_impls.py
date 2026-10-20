@@ -1217,18 +1217,47 @@ _DEFAULT_NPERSEG_DIVISOR = 4
 def coherence_nperseg(band: tuple[float, float], sample_rate_hz: float) -> int:
     """Welch segment length for `band` at `sample_rate_hz`, in samples.
 
-    Bin spacing is `sample_rate / nperseg`, and an interval of width `W`
-    always holds at least `floor(W / spacing)` bin centres, so
-    `spacing <= W / MIN_BINS_IN_BAND` guarantees the minimum. Floored at the
-    historical 250 ms default so wide bands are unchanged.
+    The shortest segment that really holds `MIN_BINS_IN_BAND` bin centres
+    inside the band, floored at the historical 250 ms default so a
+    well-resolved wide band keeps its existing numbers and segment count.
+
+    Shortest, because every sample of segment costs segments: a `window` holds
+    `window / (nperseg / 2)` of them at 50% overlap, and magnitude-squared
+    coherence averaged over `n` segments has a noise floor of about `1/n`. A
+    longer segment buys frequency resolution with dynamic range.
+
+    **Counted, not bounded.** `spacing <= W / MIN_BINS` is *sufficient* — it
+    guarantees the bins regardless of where the grid falls — but it is not
+    *necessary*, and the gap is not small. Three bin centres need two gaps
+    between them, so `spacing <= W / 2`, i.e. `nperseg >= 2 * fs / W`, is the
+    weakest a segment can possibly be; between `2 * fs / W` and
+    `3 * fs / W` whether the bins land in the band depends on the grid, which
+    only counting can tell. Alpha at 250 Hz is the case that matters: the
+    sufficient bound gives 188 samples (752 ms, the first bin 0.021 Hz below
+    the 8 Hz edge, 4 segments in a 2 s window), and counting gives 125 (500 ms,
+    bins exactly on 8, 10 and 12 Hz, 7 segments). Same three bins, 1.75x the
+    segments, and the band it reports is the band the author declared.
+
+    The scan is bounded both ways and so always terminates: it starts at the
+    necessary bound, where nothing shorter can qualify, and ends at the
+    sufficient one, which always does.
     """
     low, high = float(band[0]), float(band[1])
     width = high - low
     default = max(8, int(sample_rate_hz // _DEFAULT_NPERSEG_DIVISOR))
     if width <= 0:
         return default
-    needed = int(math.ceil(MIN_BINS_IN_BAND * sample_rate_hz / width))
-    return max(8, default, needed)
+    # Necessary: below this the spacing exceeds W/2 and at most two centres
+    # fit, whatever the alignment. Sufficient: at this the floor argument
+    # holds regardless of alignment.
+    necessary = int(math.ceil((MIN_BINS_IN_BAND - 1) * sample_rate_hz / width))
+    sufficient = int(math.ceil(MIN_BINS_IN_BAND * sample_rate_hz / width))
+    lo = max(8, default, necessary)
+    hi = max(8, default, sufficient)
+    for nperseg in range(lo, hi):
+        if len(coherence_bins_in_band(band, sample_rate_hz, nperseg)) >= MIN_BINS_IN_BAND:
+            return nperseg
+    return hi
 
 
 def coherence_bins_in_band(

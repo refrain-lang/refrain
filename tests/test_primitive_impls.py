@@ -655,37 +655,81 @@ def test_coherence_window_too_short_rejected():
     """Window must accommodate ≥ 2 segments of multi-segment Welch.
 
     The segment length comes from the band, so the minimum window does too:
-    a 4 Hz band needs 1.33 Hz resolution, i.e. 750 ms segments, i.e. a 1.5 s
-    window. A 100 ms one must be rejected with a diagnostic that names the
-    band, the segment length and both ways out."""
+    a 4 Hz band at 256 Hz is resolved by 500 ms segments, so two of them need
+    a 1 s window. A 100 ms one must be rejected with a diagnostic that names
+    the band, the segment length and both ways out."""
     with pytest.raises(ValueError, match="window must be") as exc:
         CoherenceImpl(band=(8.0, 12.0), window_ms=100.0, sample_rate_hz=SR)
     msg = str(exc.value)
     assert "3 Welch bins" in msg
-    assert "1500 ms" in msg
+    assert "1000 ms" in msg
     assert "widen" in msg and "window" in msg
 
 
 def test_coherence_segment_length_comes_from_the_band():
     """The shipped `band: (8 Hz, 12 Hz)` at both rates the two coherence
     protocols declare. Used to be 62 samples at 250 Hz (one bin inside the
-    band, at 8.06 Hz) and 64 at 256 Hz (two bins, both of them band edges)."""
+    band, at 8.06 Hz) and 64 at 256 Hz (two bins, both of them band edges).
+
+    500 ms rather than the 752/750 ms a sufficient `spacing <= W / 3` bound
+    gives, because at these rates the grid lands exactly on both band edges
+    at half that length — same three bins, and 7 segments in the declared 2 s
+    window instead of 4.
+    """
     from refrain.primitive_impls import (
         MIN_BINS_IN_BAND,
         coherence_bins_in_band,
     )
 
-    for fs, want_nperseg, want_bins in ((250.0, 188, 3), (256.0, 192, 4)):
+    # Segments at 50% overlap, as the impl counts them. 250 Hz gets 6 rather
+    # than 7 because 125 is odd, so `noverlap` is 62 and the hop is 63.
+    for fs, want_nperseg, want_segments in ((250.0, 125, 6), (256.0, 128, 7)):
         impl = CoherenceImpl(band=(8.0, 12.0), window_ms=2000.0, sample_rate_hz=fs)
         assert impl.nperseg == want_nperseg, f"{fs} Hz -> {impl.nperseg}"
         bins = coherence_bins_in_band((8.0, 12.0), fs, impl.nperseg)
-        assert len(bins) == want_bins >= MIN_BINS_IN_BAND, f"{fs} Hz -> {bins}"
-        # Two segments minimum, and the 2 s window these protocols declare
-        # holds four at 50% overlap.
+        assert len(bins) == MIN_BINS_IN_BAND, f"{fs} Hz -> {bins}"
+        # The declared band is the measured band: the grid lands on both edges.
+        assert bins[0] == pytest.approx(8.0), f"{fs} Hz -> {bins}"
+        assert bins[-1] == pytest.approx(12.0), f"{fs} Hz -> {bins}"
         n_seg = 1 + (impl.window_samples - impl.nperseg) // (
             impl.nperseg - impl.noverlap
         )
-        assert n_seg == 4, f"{fs} Hz -> {n_seg} segments"
+        assert n_seg == want_segments, f"{fs} Hz -> {n_seg} segments"
+
+
+def test_coherence_segment_length_is_counted_not_bounded():
+    """`spacing <= W / MIN_BINS` is sufficient but not necessary, and the gap
+    costs real dynamic range.
+
+    Three bin centres need two gaps, so `nperseg >= 2 * fs / W` is the
+    weakest any segment can be; the old rule used `3 * fs / W`, which is
+    always enough but never checks whether something shorter already works.
+    Every length this picks must still hold the minimum, and must never
+    exceed what the sufficient bound would have given.
+    """
+    import math
+
+    from refrain.primitive_impls import (
+        MIN_BINS_IN_BAND,
+        coherence_bins_in_band,
+        coherence_nperseg,
+    )
+
+    shorter_somewhere = False
+    for fs in (125.0, 128.0, 250.0, 256.0, 500.0):
+        for low, high in ((8.0, 12.0), (13.0, 15.0), (9.0, 11.0), (4.0, 30.0),
+                          (1.0, 40.0), (12.0, 15.0), (0.5, 4.0)):
+            n = coherence_nperseg((low, high), fs)
+            bins = coherence_bins_in_band((low, high), fs, n)
+            assert len(bins) >= MIN_BINS_IN_BAND, f"{fs} {low}-{high} -> {bins}"
+            sufficient = max(
+                8,
+                int(fs // 4),
+                int(math.ceil(MIN_BINS_IN_BAND * fs / (high - low))),
+            )
+            assert n <= sufficient, f"{fs} {low}-{high} -> {n} > {sufficient}"
+            shorter_somewhere |= n < sufficient
+    assert shorter_somewhere, "counting never beat the bound — rule is a no-op"
 
 
 def test_coherence_wide_band_keeps_the_historical_segment_length():
@@ -752,5 +796,5 @@ def test_coherence_default_window_follows_the_band():
     from refrain.primitive_impls import coherence_default_window_ms
 
     assert coherence_default_window_ms((1.0, 40.0), SR) == 1000.0
-    assert coherence_default_window_ms((8.0, 12.0), SR) == 1500.0
-    assert coherence_default_window_ms((13.0, 15.0), SR) == 3000.0
+    assert coherence_default_window_ms((8.0, 12.0), SR) == 1000.0
+    assert coherence_default_window_ms((13.0, 15.0), SR) == 2000.0

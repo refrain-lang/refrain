@@ -249,18 +249,31 @@ def test_d2_band_too_narrow_for_the_window_is_refused_at_resolve():
     its own it would reject both shipped coherence protocols, which held one
     and two bins until the segment length started coming from the band.
     """
+    # A 2 Hz band at 256 Hz needs 1 s segments, so a 1 s window holds one.
     with pytest.raises(ResolveError) as exc:
-        resolve_src(COH_WINDOW_SRC % dict(lo=8, hi=12, win="1 s"))
+        resolve_src(COH_WINDOW_SRC % dict(lo=13, hi=15, win="1 s"))
     msg = str(exc.value)
     assert "3 Welch frequency bins" in msg
-    assert "1500 ms" in msg          # the window it would need
-    assert "750 ms" in msg           # the segments that implies
+    assert "2000 ms" in msg          # the window it would need
+    assert "1000 ms" in msg          # the segments that implies
     assert "widen `band`" in msg and "lengthen `window`" in msg.lower()
+
+
+def test_d2_a_1_s_window_now_resolves_the_alpha_band():
+    """Counting the bins rather than bounding them shortened alpha's segment
+    from 750 ms to 500 ms, so the 1 s window this guard used to refuse holds
+    two of them and is accepted.
+
+    Pinned because it is the user-visible half of the segment-length change:
+    the guard did not get weaker, the segment got shorter.
+    """
+    ir = resolve_src(COH_WINDOW_SRC % dict(lo=8, hi=12, win="1 s"))
+    step_once(ir, fs=256.0)
 
 
 def test_d2_the_shipped_band_and_window_still_resolve():
     """The two shipped protocols declare `band: (8 Hz, 12 Hz), window: 2 s`.
-    The guard must not reject that — 2 s holds four 750 ms segments."""
+    The guard must not reject that — 2 s holds seven 500 ms segments."""
     ir = resolve_src(COH_WINDOW_SRC % dict(lo=8, hi=12, win="2 s"))
     step_once(ir, fs=256.0)
 

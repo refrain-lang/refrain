@@ -58,23 +58,44 @@ bumps are additive; major bumps may break compatibility.
   "cannot be computed" — the repo's own `test_d2_narrow_eeg_bands_also_collapse`
   had this checked in for SMR (13, 15) Hz and narrow alpha (9, 11) Hz.
 
-  The segment length now comes from the band: long enough for at least three
-  bin centres inside it, floored at the historical 250 ms. A 4 Hz band needs
-  1.33 Hz resolution, so 750 ms segments, of which the 2 s window both shipped
-  coherence protocols declare holds four — clearing the existing two-segment
-  minimum without touching either protocol file or widening any band. Bands
-  wider than about 12 Hz are unaffected.
+  The segment length now comes from the band: the **shortest** segment that
+  really holds three bin centres inside it, floored at the historical 250 ms.
+  Shortest matters, because every sample of segment costs segments — a
+  `window` holds `window / (nperseg / 2)` of them at 50% overlap, and MSC
+  averaged over `n` segments has a noise floor of about `1/n`, so a longer
+  segment buys frequency resolution with dynamic range.
 
-  **This moves recorded numbers.** Measured on a matched input, the alpha MSC
-  of a coherent pair moves from 0.922 to 0.880 at 250 Hz and from 0.932 to
-  0.832 at 256 Hz, and in either direction depending on where in the band the
-  coupling actually is — a pair coupled at 11 Hz reads 0.782 → 0.886 at
-  250 Hz, one coupled at 8.5 Hz reads 0.887 → 0.521. Fewer segments also mean
-  a noisier estimate: independent noise averages MSC 0.26 over four segments
-  where it averaged 0.08 over fifteen. Warm-up lengthens with the segment
-  (~370 ms → ~1.1 s at 250 Hz). Python-only: `nperseg` has been baked into the
-  IR since v0.1 and the Rust core reads the baked value, so no schema change
-  and no IR version bump.
+  **Counted, not bounded**, and the distinction is worth 1.5x the segments.
+  `spacing <= W / 3` is *sufficient* — it holds whatever the alignment — but
+  not *necessary*: three centres need two gaps, so `nperseg >= 2 * fs / W` is
+  the weakest a segment can be, and between `2 * fs / W` and `3 * fs / W` only
+  counting can say whether the bins land in the band. For the shipped
+  `(8 Hz, 12 Hz)` the sufficient bound gives 188 samples at 250 Hz — 752 ms,
+  first bin 0.021 Hz *below* the 8 Hz edge, 4 segments in the declared 2 s
+  window. Counting gives 125 — 500 ms, bins exactly on **8, 10 and 12 Hz**,
+  and 6 segments. At 256 Hz it is 128 samples, 500 ms, the same three bins,
+  7 segments. So the band reported is the band the author declared, and the
+  estimate is quieter. Bands wider than about 12 Hz are unaffected and keep
+  their existing numbers and segment count.
+
+  **This moves recorded numbers.** Measured on a matched input against the
+  shipped behaviour (250 ms segments, one bin inside the band at 250 Hz and
+  two band edges at 256 Hz):
+
+  | scenario | 250 Hz | 256 Hz |
+  |---|---|---|
+  | alpha coherent across the band | 0.922 → 0.927 | 0.932 → 0.933 |
+  | coupled at 11 Hz only | 0.782 → 0.726 | 0.828 → 0.752 |
+  | coupled at 8.5 Hz only | 0.887 → 0.675 | 0.782 → 0.646 |
+
+  The broadband case barely moves; the single-frequency cases move a lot and
+  in both directions, which is the point — a one-bin average could not tell
+  where in the band the coupling was. Segments per window go 15 → 6 (250 Hz)
+  and 15 → 7 (256 Hz), so the floor rises: independent noise averages MSC
+  0.160 at 250 Hz and 0.147 at 256 Hz, tracking `1/n`. Warm-up lengthens with
+  the segment, to ~750 ms at 250 Hz. Python-only: `nperseg` has been baked
+  into the IR since v0.1 and the Rust core reads the baked value, so no schema
+  change and no IR version bump.
 
 - **Filters cold-started at zero, so a signal with a standing offset read
   wrong for seconds** (#93). `SmoothImpl` set `_state = 0.0` and `BandpassImpl`
@@ -112,10 +133,11 @@ bumps are additive; major bumps may break compatibility.
   for any band narrower than about 5 Hz, so a protocol that simply omitted
   `window` would have resolved and then refused to build — the
   resolves-then-crashes shape (#94) this release is trying to remove. The
-  default is now the band's own minimum where that exceeds 1 s: 1500 ms for a
-  4 Hz band at 256 Hz, 3000 ms for a 2 Hz one, still 1000 ms for anything
-  wider than ~5 Hz. No corpus protocol omits `window`, so no recorded number
-  moves.
+  default is now the band's own minimum where that exceeds 1 s: 2000 ms for a
+  2 Hz band at 256 Hz, and still 1000 ms for a 4 Hz band and anything wider,
+  because counting the bins makes a 4 Hz band's segment 500 ms and two of
+  those fit a flat second exactly. No corpus protocol omits `window`, so no
+  recorded number moves.
 
 - **Three equivalence tests compared values the framework already knew were
   not comparable.** `equivalence.rs` has always skipped the fixtures'
