@@ -7,6 +7,10 @@ bumps are additive; major bumps may break compatibility.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.24.0] — 2026-10-20
+
 ### Added
 - **`sqrt()`.** Square root of a squared quantity, which makes RMS, standard
   deviation and the coefficient of variation expressible — mean-square and
@@ -123,6 +127,46 @@ bumps are additive; major bumps may break compatibility.
 
 
 ### Fixed
+
+- **Two checks that were right against the tree they were written on** (#114).
+  #110, #111, #112 and #113 each passed every CI check on its own branch; with
+  all four merged, six of seven jobs on `main` failed. A per-PR gate cannot
+  catch this, because every branch is green against its own base.
+
+  `refrain check`'s "resolves but cannot be stepped" test (#110) used as its
+  fixture an inhibit reading a derive through `passthrough()` — one of the four
+  shapes #111 fixed. The protocol runs now, `check` correctly prints OK, and
+  the test failed. The step failure is injected instead, which pins what
+  `check` must do with any step-time failure and cannot rot the next time a
+  primitive is fixed; the old protocol stays as a pin asserting it runs.
+
+  The golden-vector drift comparison ignored the `warmup_samples` each fixture
+  declares, and **the committed vectors hold values that are not reproducible
+  across architectures.** A warm-started bandpass rejects DC, so on a standing
+  level it sits at its steady-state response to within rounding and the first
+  envelope samples are ~1e-23; `micro_05_reward`'s reward is
+  `sigmoid("smr_envelope" / "smr_t")`, one dust value over another. On arm64
+  that ratio is 1.14e-23/7.95e-24 and the sigmoid reads 0.783; on x86-64 it
+  underflows to zero and reads `sigmoid(-3)` = 0.047. Both are correct
+  arithmetic on numerical noise, which is why the gate passed on every
+  developer machine and failed in CI. The comparison now mirrors `events.rs`:
+  identity always compared — key sets, array lengths, types, an event's
+  channel, kind and timestamp — and only values strictly inside the window
+  released, with a note saying how many were not compared so a window-only
+  drift cannot pass silently. 512 of 4096 samples, so 87.5% of every stream is
+  still compared.
+
+- **The editor model schema rejected the slot shape #109 introduced** (#114).
+  #109 added `{"expr": "<source text>"}` — a slot the editor carries through
+  rather than models — and made the four flagship EEG protocols describable
+  with it, without widening `$defs.slotValue`, which allowed only a scalar or
+  `{"bind": ...}`. So all four flagships described to a model `validate_model`
+  rejected: a host that validates before rendering refused exactly the
+  protocols #109 existed to admit. Found by the TypeScript mirror, where the
+  vendored copy of the schema failed identically. It hid because every test in
+  that file validated a hand-written model and nothing checked what the
+  describer emits — which is now a test.
+
 - **Four protocol shapes passed `refrain check` and then crashed when the
   evaluator was built** (refrain#94). Each one is the evaluator ignoring
   something the resolver had already worked out correctly, and each had been
