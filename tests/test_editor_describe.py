@@ -144,3 +144,35 @@ def test_a_matcher_crash_is_reported_as_a_crash_not_a_decision():
         D._match_derive = orig
     assert d["in_subset"] is False
     assert d["reason"].startswith("AttributeError")
+
+
+def test_an_input_with_an_explicit_unit_is_out_of_subset():
+    """An `input` round-trips as its montage alone, so a `unit` declaration
+    would be dropped on render and the signal would come back as microvolts.
+
+    Measured before the guard existed: a Celsius protocol went through
+    describe -> render and the rendered input read
+    `input "skin" { montage = bipolar(plus: "TH", minus: "T1") }`, with the
+    input's dimensions C -> uV and the derive's C -> uV behind it. The
+    numbers were unchanged, so nothing in the file looked wrong.
+
+    Refusing the protocol is visible; retyping its signal is not.
+    """
+    from refrain.editor import describe_protocol as dp
+    src = _IN_SUBSET_MINIMAL.replace(
+        'input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }',
+        'input "raw" { montage = referential(active: "Cz", reference: "linked_ears")\n'
+        '               unit = "C" }')
+    d = dp(src)
+    assert d["ok"] is True, d["reason"]          # the language accepts it
+    assert d["in_subset"] is False
+    assert "unit" in d["reason"]
+
+
+def test_the_unit_guard_does_not_touch_an_ordinary_input():
+    """The same protocol without the declaration stays in the subset, so the
+    refusal is the declaration and not the montage shape."""
+    from refrain.editor import describe_protocol as dp
+    d = dp(_IN_SUBSET_MINIMAL)
+    assert d["in_subset"] is True
+    assert d["reason"] is None

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
+import warnings
 from dataclasses import dataclass, replace
 
 from . import ast as A
@@ -89,6 +90,7 @@ from .types_ import (
     DIMENSIONLESS,
     EVENT_STREAM,
     FREQUENCY,
+    TEMPERATURE,
     TIME,
     VOLTAGE,
     Dimensions,
@@ -134,7 +136,7 @@ _DEFAULT_WATCH_MS = 120_000.0
 
 
 # ---------------------------------------------------------------------------
-# Errors
+# Errors and warnings
 # ---------------------------------------------------------------------------
 
 
@@ -147,6 +149,27 @@ class ResolveError(Exception):
             super().__init__(f"line {loc.line}:{loc.col}: {message}")
         else:
             super().__init__(message)
+
+
+class ResolveWarning(UserWarning):
+    """A protocol that resolves, but whose source says less than it means.
+
+    The first case is a bare number where a dimension belongs: `midpoint: 5.0`
+    under a microvolt signal means 5 uV and reads as "five of something". A
+    warning rather than an error because 23 of the 26 `midpoint:` values in
+    the shipped corpus are bare, so rejecting them is a migration across every
+    protocol file for no new capability — and a corpus-wide edit is itself a
+    way for mistakes to enter. The nudge goes to the author without the churn.
+    """
+
+
+def _warn(message: str, loc: Loc | None) -> None:
+    """Emit a `ResolveWarning`, prefixed with the source position."""
+    where = f"line {loc.line}:{loc.col}: " if loc is not None else ""
+    # stacklevel is deliberately left at the default: the useful position is
+    # the one in the .refrain source, which is already in the message, not a
+    # frame in this module.
+    warnings.warn(f"{where}{message}", ResolveWarning)
 
 
 # ---------------------------------------------------------------------------
@@ -804,13 +827,51 @@ class _Resolver:
         # with a concrete channel string — identical to a literal-site protocol.
         montage_ast = self._substitute_placement_args(montage_ast)
         montage_ir = self._resolve_call(montage_ast)
+        stream_type = self._input_stream_type(decl, fields, montage_ir.stream_type)
         return IRInput(
             name=decl.name,
             canonical_name=f"input/{decl.name}",
-            stream_type=montage_ir.stream_type,
+            stream_type=stream_type,
             montage=montage_ir,
             loc=decl.loc,
         )
+
+    def _input_stream_type(
+        self,
+        decl: A.NamedDecl,
+        fields: dict[str, A.Expr],
+        montage_type: StreamType,
+    ) -> StreamType:
+        """The input's stream type, with an optional `unit = "<unit>"` override.
+
+        Every montage returns microvolts, which is right for an electrode and
+        wrong for everything else a biosignal amplifier carries. A thermopile
+        channel typed as uV is what forced a shipped skin-temperature protocol
+        to write every target in `uV` and mean degrees Celsius — the file
+        type-checked while lying, and the resolver printed `default = 1.5 uV`
+        under a control labelled "Target rise (deg C)".
+
+        Declaring the unit on the input makes the whole chain downstream carry
+        it, because derives propagate their input's dimensions. Omitting the
+        field leaves the montage's own type untouched, so no existing protocol
+        moves.
+        """
+        unit_ast = fields.get("unit")
+        if unit_ast is None:
+            return montage_type
+        if not isinstance(unit_ast, A.StringLit):
+            raise ResolveError(
+                f"input \"{decl.name}\".unit must be a string naming a surface "
+                "unit (e.g. `unit = \"C\"`)",
+                loc=unit_ast.loc,
+            )
+        try:
+            dims = unit_dims(unit_ast.value)
+        except ValueError as exc:
+            raise ResolveError(
+                f"input \"{decl.name}\".unit: {exc}", loc=unit_ast.loc
+            ) from exc
+        return replace(montage_type, dimensions=dims)
 
     def _substitute_placement_args(self, call: A.Call) -> A.Call:
         """Rewrite montage A.Call args for placement substitution.
@@ -2931,10 +2992,13 @@ class _Resolver:
             loc=loc,
         )
 
-    def _resolve_binary(self, expr: A.BinaryOp) -> IRBinaryOp:
+    def _resolve_binary(self, expr: A.BinaryOp) -> IRExpr:
         left = self._resolve_stream_expr(expr.left)
         right = self._resolve_stream_expr(expr.right)
         result_type = _binop_type(expr.op, left, right, expr.loc)
+        folded = _fold_arithmetic(expr.op, left, right, result_type, expr.loc)
+        if folded is not None:
+            return folded
         return IRBinaryOp(op=expr.op, left=left, right=right, stream_type=result_type, loc=expr.loc)
 
     def _resolve_conditional(self, expr: A.Conditional) -> IRConditional:
@@ -3025,7 +3089,7 @@ class _Resolver:
 
         # Resolve output type using the matching signature.
         sig, arg_map = _build_arg_map(spec, resolved_args, _stream_input_hint, call.loc)
-        output_type = sig.output(arg_map)
+        output_type = _output_type(sig, arg_map, call.loc)
 
         if call.callee == "dwell_rearm":
             rearm = next((a.value for a in resolved_args if a.name == "rearm"), None)
@@ -3243,7 +3307,7 @@ class _Resolver:
         sig, arg_map = _build_arg_map(
             spec, resolved_args, prev_type, call.loc
         )
-        output_type = sig.output(arg_map)
+        output_type = _output_type(sig, arg_map, call.loc)
         _validate_kind_args(spec, resolved_args, call.loc)
         # A `sigmoid`/`linear` stage inside a pipeline compares its midpoint
         # against the previous stage, so it needs the same check as a call.
@@ -3324,6 +3388,25 @@ def _expr_stream_type(expr: IRExpr) -> StreamType:
     if isinstance(expr, IRControlRef):
         return scalar_stream(expr.dims)
     return scalar_stream(DIMENSIONLESS)
+
+
+def _output_type(
+    sig: P.Signature,
+    arg_map: dict[str, ResolvedArg],
+    loc: Loc | None,
+) -> StreamType:
+    """Run a signature's output factory, with its unit complaints located.
+
+    A factory that cannot name its own output type raises `ValueError` —
+    `sqrt()` of an odd-powered stream is the case that needs it, since there
+    is no half-power to return. The factories live in `primitives.py`, which
+    cannot import `ResolveError` without a cycle, so the message is rewrapped
+    here with the call's line and column.
+    """
+    try:
+        return sig.output(arg_map)
+    except ValueError as exc:
+        raise ResolveError(str(exc), loc=loc) from exc
 
 
 def _build_arg_map(
@@ -3462,13 +3545,14 @@ def _validate_arg_dims(
     does have went unenforced at exactly the points a clinical protocol
     compares quantities.
 
-    A *dimensionless* operand is still accepted against any stream. Bare
-    unit-less numbers are the established spelling throughout the corpus
-    (`sigmoid("smr_envelope", midpoint: 5.0, ...)` in micro_09_inhibit means
-    5 uV), and whether a literal should instead be required to carry its unit
-    — which is what full parity with binary `>` would mean — is a language
-    decision, not a bug fix. What is unambiguous is that a literal carrying
-    the *wrong* unit is an error.
+    A *dimensionless* operand is still **accepted** against any stream, and
+    warned about. Bare unit-less numbers are the established spelling
+    throughout the corpus (`sigmoid("smr_envelope", midpoint: 5.0, ...)` in
+    micro_09_inhibit means 5 uV), so requiring the unit — which is what full
+    parity with binary `>` would mean — is an edit to every protocol file for
+    no new capability. Decided 2026-10-19: keep taking the bare number, and
+    say at resolve time what it was read as. A literal carrying the *wrong*
+    unit stays an error.
     """
     for param, ref_param in _DIM_CHECKED_PARAMS.get(spec.name, ()):
         got = _resolved_arg_dims(arg_map.get(param))
@@ -3481,6 +3565,19 @@ def _validate_arg_dims(
             want = _stream_input_hint.dimensions
         if got is None or want is None:
             continue                      # reference stream not visible here
+        if got.is_dimensionless and not want.is_dimensionless:
+            # The decided case: accepted, and read as the signal's own unit.
+            # Only this direction warns. A dimensioned value against a
+            # dimensionless signal (`midpoint: 5 uV` on a ratio derive) says
+            # something, it is just wrong — but it is not what the corpus is
+            # full of, and turning it into an error is a separate decision.
+            _warn(
+                f"{spec.name}({param}: ...) is a bare number, and the signal it "
+                f"is compared against is {want}; it is read as {want}. Write the "
+                f"unit to say so.",
+                loc,
+            )
+            continue
         if got.is_dimensionless or want.is_dimensionless:
             continue                      # polymorphic — see the docstring
         if got != want:
@@ -3540,6 +3637,64 @@ def _binop_type(op: str, left: IRExpr, right: IRExpr, loc: Loc | None) -> Stream
     raise ResolveError(f"unknown binary operator {op!r}", loc=loc)
 
 
+def _fold_arithmetic(
+    op: str,
+    left: IRExpr,
+    right: IRExpr,
+    result_type: StreamType,
+    loc: Loc | None,
+) -> IRNumberLit | None:
+    """Collapse arithmetic over two numeric literals to one literal, or
+    return None when either side is not a literal.
+
+    Every slot that wants a compile-time constant — `sigmoid(steepness:)`,
+    `absolute(value:)`, `smooth(tau:)`, a control default — reads an
+    `IRNumberLit` and nothing else. `steepness: 0 - 3` therefore resolved
+    cleanly and then died in the evaluator on an `IRBinaryOp` it had no way
+    to reduce (refrain#94). Folding at resolve means the arithmetic never
+    reaches a slot that cannot hold it, and a host serializing the IR sees
+    the number the author meant rather than a tree it would have to
+    re-evaluate.
+
+    `result_type` already carries the dimensions `_binop_type` worked out,
+    so this only has to decide the *surface* unit, which exists for the
+    printer. It is kept only where it is unambiguous; dimensions remain
+    authoritative either way.
+    """
+    if not (isinstance(left, IRNumberLit) and isinstance(right, IRNumberLit)):
+        return None
+    if op == "+":
+        value = left.value + right.value
+    elif op == "-":
+        value = left.value - right.value
+    elif op == "*":
+        value = left.value * right.value
+    elif op == "/":
+        if right.value == 0.0:
+            raise ResolveError("division by zero", loc=loc)
+        value = left.value / right.value
+    else:
+        # Comparisons fold to a boolean, not a number. No slot needs that,
+        # and `mode == "x"` conditionals are already folded upstream by
+        # `_fold_mode_conditionals`.
+        return None
+
+    if op in ("+", "-"):
+        # Dimensions had to match to get here, so either side's unit names
+        # the result.
+        unit = left.unit or right.unit
+    elif op == "*":
+        # `2 * 250 ms` is ms; `3 uV * 2 uV` is uV2, which the printer can
+        # spell, but deriving that spelling from two operands is more
+        # guessing than it is worth.
+        unit = right.unit if left.unit is None else (left.unit if right.unit is None else None)
+    else:
+        # `60 s / 2` is seconds; `1 uV / 1 s` has no surface spelling.
+        unit = left.unit if right.unit is None else None
+
+    return IRNumberLit(value=value, dims=result_type.dimensions, unit=unit, loc=loc)
+
+
 def _collect_member_path(expr: A.Expr) -> tuple[str, ...] | None:
     """Flatten a chain of MemberAccess back to `(root_name, m1, m2, ...)`.
     Returns None if the root isn't a NameRef."""
@@ -3596,6 +3751,11 @@ def _control_kind_dims(kind: str, loc: Loc | None) -> Dimensions:
         return TIME
     if kind == "voltage":
         return VOLTAGE
+    if kind == "temperature":
+        # Degrees Celsius. A thermal protocol's target rise is the quantity a
+        # practitioner actually sets, and before this kind existed it had to be
+        # declared `voltage` and labelled "(deg C)" in prose.
+        return TEMPERATURE
     if kind == "percent":
         return DIMENSIONLESS
     if kind == "number":

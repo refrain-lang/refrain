@@ -17,13 +17,22 @@ thermopile, from the Coherence Recorder, 2026-10-04. Supplied alongside
 Two things make it valuable as corpus material and both are worth knowing
 before reading it:
 
-- **Every temperature in it is written `uV` and means °C.** Refrain's type
-  system has two base dimensions, time and voltage; there is no temperature
-  dimension and no `C` unit, so the file type-checks while lying. The
-  resolver prints `default = 1.5 uV` under a control labelled "Target rise
-  (deg C)". Its author says as much in a header comment and would rather not
-  ship it that way. That is the units gap (G1 in their report), not a defect
-  in the file.
+- **Every temperature in it is written `uV` and means °C.** The file is kept
+  as it was filed, so it still reads that way and its header comment still
+  explains why: when it was written Refrain had two base dimensions, time and
+  voltage, with no temperature dimension and no `C` unit, so it type-checked
+  while lying and the resolver printed `default = 1.5 uV` under a control
+  labelled "Target rise (deg C)". That was the units gap (G1 in their
+  report), not a defect in the file.
+
+  **The gap is closed as of refrain#98's first tranche.** Temperature is a
+  base dimension, `C` is a surface unit, `temperature { }` is a control kind,
+  and an input declares what its channels hold: `input "skin" { montage =
+  bipolar(plus: "TH", minus: "T1"); unit = "C" }`. The honest version of this
+  protocol types in Celsius from the input to the threshold, and
+  `tests/test_resolve_dimensions.py` resolves exactly that shape. The fixture
+  is left alone because its value here is as the record of what a downstream
+  consumer actually sent.
 
 - **It runs at 15 Hz with a DC-coupled differential sensor montage.** Nothing
   else in `examples/` or `bench/protocols/` is shaped like that — every other

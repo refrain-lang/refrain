@@ -5,10 +5,11 @@
 Two compactly-defined layers:
 
   1. `Dimensions` — exponent tuple over the base dimensions Refrain
-     v0.0r1 uses (time and voltage). Surface units (`Hz`, `ms`, `min`,
-     `s`, `uV`, `uV2`, `%`, dimensionless) map onto Dimensions instances
-     via `unit_dims()`. Arithmetic on Dimensions (`__mul__`, `__truediv__`,
-     `__pow__`) is exponent addition.
+     uses (time, voltage and temperature). Surface units (`Hz`, `ms`,
+     `min`, `s`, `uV`, `uV2`, `C`, `%`, dimensionless) map onto Dimensions
+     instances via `unit_dims()`. Arithmetic on Dimensions (`__mul__`,
+     `__truediv__`, `__pow__`) is exponent addition; `dims_sqrt()` is
+     exponent halving, which only some dimensions admit.
 
   2. `StreamType` — a stream's value-kind (`scalar` / `vector` / `boolean`
      / `event` / `complex`) plus its dimensions and (optional) vector size.
@@ -57,28 +58,43 @@ from typing import Literal
 
 @dataclass(frozen=True, slots=True)
 class Dimensions:
-    """Exponent vector over (time, voltage). Two Dimensions are equal
-    iff every exponent matches. Hz = Dimensions(time=-1).
+    """Exponent vector over (time, voltage, temperature). Two Dimensions
+    are equal iff every exponent matches. Hz = Dimensions(time=-1).
+
+    Temperature is a base dimension of its own rather than a unit of
+    voltage, because a thermopile reading and an electrode reading are not
+    the same physical quantity and nothing converts between them. Before it
+    existed, a skin-temperature protocol wrote every target in `uV` and
+    meant degrees Celsius — it type-checked while lying.
     """
 
     time: int = 0
     voltage: int = 0
+    temperature: int = 0
 
     def __mul__(self, other: Dimensions) -> Dimensions:
-        return Dimensions(self.time + other.time, self.voltage + other.voltage)
+        return Dimensions(
+            self.time + other.time,
+            self.voltage + other.voltage,
+            self.temperature + other.temperature,
+        )
 
     def __truediv__(self, other: Dimensions) -> Dimensions:
-        return Dimensions(self.time - other.time, self.voltage - other.voltage)
+        return Dimensions(
+            self.time - other.time,
+            self.voltage - other.voltage,
+            self.temperature - other.temperature,
+        )
 
     def __pow__(self, n: int) -> Dimensions:
-        return Dimensions(self.time * n, self.voltage * n)
+        return Dimensions(self.time * n, self.voltage * n, self.temperature * n)
 
     def __str__(self) -> str:
         return _dims_str(self)
 
     @property
     def is_dimensionless(self) -> bool:
-        return self.time == 0 and self.voltage == 0
+        return self.time == 0 and self.voltage == 0 and self.temperature == 0
 
 
 # Canonical dimensions.
@@ -88,6 +104,7 @@ FREQUENCY = Dimensions(time=-1)  # Hz
 VOLTAGE = Dimensions(voltage=1)
 VOLTAGE_SQ = Dimensions(voltage=2)
 VOLTAGE_PER_TIME = Dimensions(time=-1, voltage=1)
+TEMPERATURE = Dimensions(temperature=1)
 
 
 def _dims_str(d: Dimensions) -> str:
@@ -104,9 +121,13 @@ def _dims_str(d: Dimensions) -> str:
         return "uV2"
     if d == VOLTAGE_PER_TIME:
         return "uV/s"
+    if d == TEMPERATURE:
+        return "C"
     parts: list[str] = []
     if d.voltage:
         parts.append(f"uV^{d.voltage}")
+    if d.temperature:
+        parts.append(f"C^{d.temperature}")
     if d.time:
         parts.append(f"s^{d.time}")
     return "*".join(parts) or "dimensionless"
@@ -120,6 +141,11 @@ _UNIT_TO_DIMS: dict[str, Dimensions] = {
     "min": TIME,
     "uV": VOLTAGE,
     "uV2": VOLTAGE_SQ,
+    # Degrees Celsius. The one surface spelling for temperature, deliberately:
+    # `ms`/`s`/`min` interconvert by a scale factor, and Fahrenheit does not —
+    # it needs an offset as well, which an exponent vector cannot express. A
+    # host that wants to show Fahrenheit converts for display.
+    "C": TEMPERATURE,
     "%": DIMENSIONLESS,
 }
 
@@ -216,6 +242,20 @@ def dims_compatible_for_div(a: Dimensions, b: Dimensions) -> tuple[bool, Dimensi
     return True, a / b
 
 
+def dims_sqrt(d: Dimensions) -> Dimensions | None:
+    """Halve every exponent, or `None` when one of them is odd.
+
+    `sqrt(uV2)` is `uV` and `sqrt(dimensionless)` is dimensionless, but
+    `sqrt(uV)` has no representable dimension — these exponents are integers,
+    so there is no half-power of a volt to return. `None` says "this root has
+    no unit"; the resolver turns that into an error naming the stream, rather
+    than this layer inventing a fractional exponent nothing else can read.
+    """
+    if d.time % 2 or d.voltage % 2 or d.temperature % 2:
+        return None
+    return Dimensions(d.time // 2, d.voltage // 2, d.temperature // 2)
+
+
 __all__ = [
     "Dimensions",
     "StreamType",
@@ -226,6 +266,7 @@ __all__ = [
     "VOLTAGE",
     "VOLTAGE_SQ",
     "VOLTAGE_PER_TIME",
+    "TEMPERATURE",
     "BOOLEAN_STREAM",
     "EVENT_STREAM",
     "scalar_stream",
@@ -235,4 +276,5 @@ __all__ = [
     "dims_compatible_for_add",
     "dims_compatible_for_mul",
     "dims_compatible_for_div",
+    "dims_sqrt",
 ]

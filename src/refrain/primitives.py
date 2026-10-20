@@ -35,6 +35,7 @@ from .types_ import (
     Dimensions,
     StreamType,
     complex_stream,
+    dims_sqrt,
     scalar_stream,
 )
 
@@ -163,6 +164,42 @@ def _rectify_output(args: dict[str, ResolvedArg]) -> StreamType:
     return _magnitude_output(args)
 
 
+def _sqrt_output(args: dict[str, ResolvedArg]) -> StreamType:
+    """`sqrt(T^2)` -> `T`. Every exponent of the input must be even.
+
+    Both failure modes raise `ValueError`, which `_output_type` in the
+    resolver turns into a `ResolveError` carrying the call's location.
+
+    The other output factories fall back to `scalar_stream(VOLTAGE)` when they
+    cannot see their input, because for them the input's dimensions pass
+    straight through and the fallback is only ever a guess about a uV corpus.
+    This one *changes* its input's dimensions, so a fallback would be a wrong
+    unit asserted confidently: `sqrt("env")` on a uV stream would type as uV
+    and read as an amplitude when it is a root of an amplitude. Refusing is
+    the only safe answer, and it also closes the "resolves, then dies at the
+    first chunk" shape — a bare `sqrt()` with nothing to root used to reach
+    the evaluator and fail there.
+    """
+    inp = args.get("__input__") or args.get("signal") or args.get("input")
+    if inp is None or inp.stream_type is None:
+        raise ValueError(
+            "sqrt() cannot see the stream it is rooting, so it cannot say what "
+            "unit it returns. Use it as a pipeline stage, where the previous "
+            'stage is its input: `derive "rms" { from = "mean_square"; '
+            "pipeline = [ sqrt() ] }`."
+        )
+    dims = inp.stream_type.dimensions
+    halved = dims_sqrt(dims)
+    if halved is None:
+        raise ValueError(
+            f"sqrt() needs a stream whose dimensions are all even powers, got "
+            f"{scalar_stream(dims)}: there is no half-power of {dims} to return. "
+            f"Square the signal first (`\"x\" * \"x\"` is uV2), or take the root "
+            f"of a power stream such as `bandpower`."
+        )
+    return scalar_stream(halved)
+
+
 def _smooth_output(args: dict[str, ResolvedArg]) -> StreamType:
     return _identity_input(args)
 
@@ -264,6 +301,20 @@ _PASSTHROUGH = PrimitiveSpec(
     name="passthrough",
     category="signal",
     signatures=(
+        # Identity over an already-derived stream. How an `inhibit` names one
+        # derive as its metric: the metric has to be a primitive call, so the
+        # stream needs a wrapper, and this is the wrapper that leaves the
+        # value alone. Listed FIRST because `_pick_signature` returns the
+        # first signature whose required named params are supplied, and the
+        # montage form's empty param list matches everything.
+        #
+        # The output type has to follow the input's — a rate-of-change derive
+        # read this way is uV/s, and reporting it as uV would let a threshold
+        # in the wrong units type-check.
+        Signature(
+            params=(ParamSpec("input", "stream_ref"),),
+            output=_identity_input,
+        ),
         # Identity montage: no args. Emits the source's single channel
         # verbatim (no re-referencing). The sanctioned replacement for the
         # `referential(reference: "device")` single-channel workaround.
@@ -483,6 +534,16 @@ _RECTIFY = PrimitiveSpec(
     ),
     budget=ResourceBudget(state_kb=0, worst_case_us=5),
     doc="Absolute value of a real-valued stream.",
+)
+
+_SQRT = PrimitiveSpec(
+    name="sqrt",
+    category="signal",
+    signatures=(
+        Signature(params=(), output=_sqrt_output),
+    ),
+    budget=ResourceBudget(state_kb=0, worst_case_us=5),
+    doc="Square root of a squared quantity — the root in RMS, SD and CV.",
 )
 
 _SMOOTH = PrimitiveSpec(
@@ -808,6 +869,7 @@ _REGISTRY: dict[str, PrimitiveSpec] = {
         _DIFFERENTIATE,
         _MAGNITUDE,
         _RECTIFY,
+        _SQRT,
         _SMOOTH,
         _AUTO_RANGE,
         _SIGMOID,

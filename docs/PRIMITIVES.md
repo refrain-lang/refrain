@@ -146,6 +146,7 @@ input "raw_19ch" {
 
 ```
 passthrough() -> stream<scalar uV>
+passthrough(input: stream<scalar T>) -> stream<scalar T>
 ```
 
 Identity montage: carries a **single** raw channel through unchanged, with no
@@ -159,6 +160,24 @@ input "tachogram" {        // 4 Hz cardiac tachogram, single channel
   montage = passthrough()
 }
 ```
+
+The `input:` form is an identity over a stream rather than over a raw channel.
+It exists because an `inhibit`'s `metric` has to be a primitive call, so naming
+one derive as the metric means wrapping it in something; `passthrough` is the
+wrapper that leaves the value alone. (`rectify` is the other call used this
+way, and it takes the absolute value — which is wrong whenever the sign of the
+metric matters.)
+
+```refrain
+inhibit "contact_loss" {
+  metric    = passthrough(input: "skin_rate")
+  threshold = absolute(value: 0.5 uV)
+  action    = mute(release: 500 ms)
+}
+```
+
+> `backend="rust"` does not accept the `input:` form — see
+> `docs/MIGRATING-TO-RUST-BACKEND.md` §2.
 
 ### `select_channel` *(planned; not in the v0.22.0 registry)*
 
@@ -434,6 +453,56 @@ pipeline = [
 ]
 ```
 
+### `sqrt`
+
+```
+sqrt() -> stream<scalar T^(1/2)>
+```
+
+Square root of a squared quantity. Every exponent of the input's dimension
+must be even, or the protocol is refused at resolve: `sqrt(uV2)` is `uV`,
+`sqrt(dimensionless)` is dimensionless, and `sqrt(uV)` has no unit to return
+because these exponents are integers.
+
+Mean-square and variance already composed out of `*` and `smooth`; this is the
+root that was missing, so it makes RMS, standard deviation and the coefficient
+of variation expressible together. Coefficient of variation is the headline
+diagnostic in the pelvic-floor sEMG tradition.
+
+```refrain
+derive "square"      { formula  = "raw" * "raw" }                      // uV2
+derive "mean_square" { from = "square"; pipeline = [ smooth(tau: 250 ms) ] }
+derive "rms"         { from = "mean_square"; pipeline = [ sqrt() ] }    // uV
+```
+
+Standard deviation is the same shape with the mean removed:
+
+```refrain
+derive "mean"     { from = "raw"; pipeline = [ smooth(tau: 250 ms) ] }
+derive "variance" { formula = "mean_square" - "mean" * "mean" }        // uV2
+derive "sd"       { from = "variance"; pipeline = [ sqrt() ] }          // uV
+```
+
+**Negative input is clamped to zero, not rooted.** That is the defined
+behaviour on both backends, not defensive rounding. The dimension rule means
+the input is a squared quantity whose true value cannot be negative — but
+`mean_square - mean*mean` on a steady signal cancels to a few float epsilons
+either side of zero, and a NaN there would travel down the whole feedback path
+and silence the session. Zero is the one honest answer.
+
+Rooting a *power* measure back into the amplitude a practitioner reads is the
+other common use: `bandpower` returns `uV2`, so `bandpower(...) -> sqrt()` is
+a band amplitude.
+
+**Pipeline stage only.** `sqrt()` has to see the stream it is rooting in order
+to say what unit it returns, and a `formula` call hands its argument to a
+primitive that has no parameter slot for it. So `formula = sqrt("mean_square")`
+is refused at resolve, with a message naming the spelling above. Nothing is
+lost — the two are the same computation — but the refusal is deliberate rather
+than incidental: every other zero-parameter primitive falls back to `uV` in
+that position, which is harmless for `rectify` and a silently wrong unit for a
+root.
+
 ### `decimate` *(planned; not in the v0.22.0 registry — would be compiler-inserted)*
 
 ```
@@ -478,6 +547,7 @@ change the protocol IR. See `docs/EMBEDDING.md`.
 
 ```
 absolute(value: T) -> threshold_type
+absolute(value: stream<scalar T>) -> threshold_type
 ```
 
 Fixed threshold. `value` carries the dimensions of the signal the enclosing
@@ -489,6 +559,23 @@ bare positional form `absolute(8 uV)` and the named form
 ```refrain
 threshold "smr_t" { signal = "smr_envelope"; type = absolute(8 uV) }
 ```
+
+`value` may instead name an **input or derive**, which makes the threshold
+track that stream sample for sample rather than sit at a constant — one
+envelope compared against a slower version of itself, say. The dimension check
+is the same: the named stream has to match the signal's units.
+
+```refrain
+derive "slow" { from = "raw"; pipeline = [ smooth(tau: 4 s) ] }
+threshold "rising" { signal = "env"; type = absolute(value: "slow") }
+```
+
+A `threshold` is **not** a legal target here: thresholds are evaluated in
+declaration order and nothing topologically sorts them, so a forward reference
+would have no value to read. Use a `derive` as the intermediate.
+
+> `backend="rust"` does not accept the stream form — see
+> `docs/MIGRATING-TO-RUST-BACKEND.md` §2.
 
 ### `percentile`
 
@@ -504,6 +591,21 @@ threshold "smr_t" {
   type   = percentile(target_pct: 70, window: 2 min)
 }
 ```
+
+It is also a **derive pipeline stage**, which makes a running percentile a
+signal in its own right — the form occupational-EMG work needs, where the
+10th/50th/90th percentiles of an exposure over a shift are each a measure
+rather than a trigger level.
+
+```refrain
+derive "emg_p90" {
+  from = "emg_envelope"
+  pipeline = [ percentile(target_pct: 90, window: 60 s) ]
+}
+```
+
+> `backend="rust"` does not accept the pipeline-stage form — see
+> `docs/MIGRATING-TO-RUST-BACKEND.md` §2.
 
 ### `autocorr`
 

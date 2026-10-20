@@ -8,6 +8,53 @@ bumps are additive; major bumps may break compatibility.
 ## [Unreleased]
 
 ### Added
+- **`sqrt()`.** Square root of a squared quantity, which makes RMS, standard
+  deviation and the coefficient of variation expressible — mean-square and
+  variance already composed out of `*` and `smooth`, and only the root was
+  missing. One primitive, three measures, and the coefficient of variation is
+  the headline diagnostic in the pelvic-floor sEMG tradition. Every exponent of
+  the input's dimension must be even: `sqrt(uV2)` is `uV`, `sqrt(uV)` is a
+  resolve error naming the stream, because there is no half-power of a volt to
+  return. Negative input is clamped to zero rather than rooted — defined
+  behaviour on both backends, because `mean_square - mean*mean` on a steady
+  signal cancels to a few float epsilons either side of zero and a NaN there
+  would travel down the whole feedback path. It is a pipeline stage only: a
+  `formula = sqrt("x")` call hands its argument to a primitive with no
+  parameter slot for it, so the stage cannot see what it is rooting, and every
+  other zero-parameter primitive silently falls back to `uV` in that position
+  — harmless for `rectify`, a wrong unit asserted confidently for a root. That
+  shape is refused at resolve naming the pipeline spelling, which also closes
+  the "resolves, then dies at the first chunk" variant. Python and Rust, held
+  to sample-for-sample parity by the drift gate. Additive in IR-JSON: a
+  pipeline stage is a call with a callee name, so no schema field and no
+  version bump.
+
+- **A temperature dimension, spelled `C`.** Temperature is now a base
+  dimension of its own rather than a unit of voltage, with three pieces that
+  only work together: the `C` surface unit, a `temperature { }` control kind,
+  and `unit = "<surface unit>"` on an `input`. The last one is what makes the
+  dimension reachable — every montage returns microvolts, which is right for
+  an electrode and wrong for a thermopile, so a shipped skin-temperature
+  protocol had to write every target in `uV` and mean degrees Celsius. It
+  type-checked while lying, and the resolver printed `default = 1.5 uV` under a
+  control labelled "Target rise (deg C)". That protocol can now type in
+  Celsius from the input through to the threshold, and mixing Celsius with
+  microvolts is caught by the dimension checks Refrain already had. An input
+  without a `unit` field is microvolts exactly as before, and the temperature
+  exponent is omitted from IR-JSON when it is zero, so no existing protocol's
+  wire form moves. Fahrenheit is deliberately *not* a unit: Celsius and
+  Fahrenheit differ by an offset as well as a scale, which an exponent vector
+  cannot express, so conversion is the host's job.
+
+  The protocol editor refuses an input that carries a `unit` declaration, as
+  out-of-subset. An `input` round-trips through the editor as its montage
+  alone, so the declaration would be dropped on render and the signal would
+  come back as microvolts with every number unchanged — measured: the
+  input's dimensions went C to uV and the derive's behind it, and nothing in
+  the rendered file looked wrong. An out-of-subset protocol is visible to the
+  author; a retyped signal is not. Teaching the editor to carry the unit, and
+  to render a `temperature` control, is the follow-up.
+
 - **The protocol editor can now author the flagship EEG protocols.** `smr`,
   `alpha_up`, `beta_attention` and `high_beta_down` were outside the editor's
   describable subset, so the editor silently refused the four protocols the
@@ -34,7 +81,93 @@ bumps are additive; major bumps may break compatibility.
   type, so a bug reads as a bug. Two of the six fixes above were hidden by
   exactly that ambiguity.
 
+### Changed
+- **A bare number where a dimension belongs now warns at resolve, and still
+  resolves.** `sigmoid("<uV stream>", midpoint: 5.0)` means 5 µV and reads as
+  "five of something"; the resolver now says which unit it read it as, at the
+  source line, through a new `ResolveWarning`. Deliberately a warning and not
+  an error (refrain#95): 23 of the 26 `midpoint:` values the corpus ships are
+  bare, so requiring the unit means editing every protocol file for no new
+  capability, and a corpus-wide edit is itself a way for mistakes to enter.
+  Three shipped bench protocols warn — `micro_09_inhibit`,
+  `micro_11_control_expr` and `micro_12_control_param_slots` — and are left as
+  they are, which is the whole point of the decision. A literal carrying the
+  *wrong* unit stays an error, and a bare number against a genuinely
+  dimensionless signal (`midpoint: 1.0` on a ratio derive) says nothing and
+  warns about nothing.
+- **Unary minus.** `steepness: -3` parses. `-3` folds in the parser to a single
+  negative literal, so every slot that reads a compile-time constant accepts it
+  and the unparser round-trips (it had always *emitted* `-3` for a negative
+  value; re-parsing that output used to fail). `-x` on anything that is not a
+  literal desugars to `-1 * x` rather than `0 - x`, because `-` is
+  dimension-checked and a bare zero does not share dimensions with a microvolt
+  stream. SPEC §3's EBNF still has to grow the production; DESIGN-NOTES §1.3
+  records the divergence.
+### Changed
+- **`refrain check` now parses, resolves and steps one chunk, and says so.**
+  It used to parse and stop, and print a bare `OK`. `OK` was read as a verdict
+  on the protocol rather than on the parser, and that is how a protocol that
+  had never run reached a downstream repository: `refrain check` said `OK`,
+  `refrain fuzz` said `SKIPPED (unsupported)`, and production crashed on the
+  first chunk. Parsing was not even the whole of what it claimed — it printed
+  `OK` for protocols the resolver rejects on the next line. `check` now runs
+  the per-file form of the property the corpus is held to in
+  `tests/test_resolves_implies_runs.py`: anything that resolves must survive
+  `step_chunk`, with no third outcome. Its verdict line names all three stages
+  and the rate and channel count it stepped at, and there are now three
+  distinct failures — `parse failed`, `resolve failed`, and `resolves but does
+  not run`, the last carrying the evaluator's own message, which is the only
+  thing that says which primitive refused. `check` takes `--amp` and
+  `--library` like `resolve`, since resolving a protocol with an `extends`
+  needs the library search path. (#97)
+
+
 ### Fixed
+- **Four protocol shapes passed `refrain check` and then crashed when the
+  evaluator was built** (refrain#94). Each one is the evaluator ignoring
+  something the resolver had already worked out correctly, and each had been
+  reproduced by a checked-in `xfail(strict=True)`:
+
+  - `sigmoid(..., steepness: 0 - 3)`. Down-training wants a decreasing
+    sigmoid, and with no unary minus in the grammar `0 - 3` was the only
+    spelling available. It reached `SigmoidImpl` as an `IRBinaryOp` in a slot
+    that reads only a literal. **Arithmetic over two numeric literals now
+    folds at resolve**, so it never reaches such a slot, and the IR a host
+    serializes holds the number the author meant instead of a tree the host
+    would have to evaluate. (Both halves landed: see unary minus above.)
+  - `absolute(value: "<a derive>")` — a threshold whose level tracks another
+    stream rather than sitting at a constant. The resolver put the right
+    reference in the IR; `_instantiate_call` discarded it and tried to
+    `float()` it.
+  - `percentile(target_pct:, window:)` as a **derive pipeline stage**, which
+    makes a running percentile a signal in its own right. The resolver threads
+    a stage's input in positionally, exactly as it does for `auto_range`;
+    `percentile` classified that input as a static argument and then called
+    `.step()` with nothing. This turns the 10th/50th/90th-percentile exposure
+    measures occupational EMG work needs into first-class derives.
+  - `inhibit { metric = passthrough(input: "<a derive>") }` — reading one
+    derive as an inhibit's metric. An inhibit's metric has to be a primitive
+    call, so there is no way to name the derive without wrapping it, and
+    `passthrough` is the only wrapper that leaves the value alone (`rectify`,
+    the other call the corpus uses this way, takes the absolute value). It
+    resolved cleanly, with `arg input -> IRStreamRef derive/skin_rate` in the
+    IR, and then died on `passthrough() requires a single-channel source (got
+    3 channels)` — because the primitive was built as a *montage* over the raw
+    multi-channel source rather than as an identity over the stream the
+    reference names. Found while spiking a declarative contact-loss detector,
+    which was built outside the protocol language instead of waiting.
+
+  Rejecting these at resolve was considered and declined: three of the four
+  are ordinary things to write, and for the `passthrough` one there is no
+  other spelling, so refusing it would have removed a capability rather than
+  caught a mistake.
+
+  **Backend coverage:** the fold is resolve-time and therefore backend-neutral
+  — `steepness: -3` and `steepness: 0 - 3` produce identical IR-JSON and run on
+  both backends. The other three run under `backend="python"` only; the Rust
+  core refuses them at evaluator construction with a catchable `RuntimeError`
+  naming the fallback. See `docs/MIGRATING-TO-RUST-BACKEND.md` §2.
+
 - **The editor could render a protocol that the language then refused.** A
   placement control with `allowed` omitted — legal, and meaning any channel —
   was described as `allowed: []` and rendered back as `allowed = []`, which
@@ -165,6 +298,29 @@ bumps are additive; major bumps may break compatibility.
   now, and the robust property — the filter sits at `x[0] * H(1)` from
   sample one, to 1e-15 relative on every version and architecture tried — is
   its own test.
+- **The golden-vector drift gate can now fail.** `check_equivalence.py` ran
+  `gen_fixtures.py` over the committed fixtures and then pointed `cargo test`
+  at the result, so the regeneration overwrote the baseline the comparison was
+  supposed to read. Python↔Rust parity was still proven; the golden property —
+  today matches a known-good past — was not, because the expected values were
+  regenerated in the same run meant to check them. Nothing read the committed
+  contents, and they drifted: fifteen fixtures carried a
+  `sample_rate_chosen_hz` of 2048 Hz, a rate no amp profile in the tree
+  supports, across several releases with the local gate and the
+  `rust-equivalence` CI job green throughout. (The field itself was corrected
+  in passing by #103; the hole that hid it was not.) Regeneration and
+  comparison are now separate: `gen_fixtures.py --out-dir DIR` is the
+  regenerate mode, the new `verify_fixtures.py` is the verify mode, and it
+  regenerates into a throwaway directory so the committed fixtures stay on
+  disk to be compared against — and to be what `cargo test` is held to. CI
+  gains a `fixture-drift` job so a stale baseline and a disagreeing Rust core
+  are told apart at a glance, and `git status` is clean after a local gate run
+  instead of training people to ignore a dirty fixture directory. Fixtures
+  compare within the parity bar `equivalence.rs` already uses (atol 1e-6,
+  rtol 1e-4) for floats, since they are scipy output committed from one
+  machine and regenerated on another, and exactly for everything else —
+  including integers, which is what the 2048 was. (#100)
+
 
 ## [0.23.0] — 2026-10-17
 

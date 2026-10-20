@@ -3,11 +3,13 @@
 """Reproductions for the nine defects in the Coherence Recorder's external
 report against v0.22.0 (`refrain-biosignal-modality-gaps.md` §3, D1-D9).
 
-Each test asserts the behaviour Refrain *should* have and is marked
-``xfail(strict=True)``. So today a reproduced defect shows as XFAIL — green,
-but on the record — and the moment someone fixes it the test XPASSes, which
-``strict=True`` turns into a failure. That forces the marker off in the same
-commit as the fix, which is the ratchet the reporter asked for.
+Each test asserts the behaviour Refrain *should* have. While the defect is
+still open the test carries ``xfail(strict=True)``, so it shows as XFAIL —
+green, but on the record — and the moment someone fixes it the test XPASSes,
+which ``strict=True`` turns into a failure. That forces the marker off in the
+same commit as the fix, which is the ratchet the reporter asked for. A fixed
+one keeps its test, loses its marker, and says so in a ``FIXED. Was:``
+docstring; several tests here are now in that state.
 
 (The brief said "assert the current, broken behaviour, marked
 xfail(strict=True)". Those two halves contradict each other: a test that
@@ -31,10 +33,18 @@ import numpy as np
 import pytest
 
 from refrain import parse
+from refrain.amp_profile import load_amp_profile
 from refrain.eval_ import Evaluator
+from refrain.ir import IRNumberLit, IRStreamRef
 from refrain.ir_json import ir_to_json_obj
-from refrain.resolver import ResolveError, resolve
+from refrain.resolver import ResolveError, ResolveWarning, resolve
 from refrain.synthetic import channels_for_synthetic
+
+# The EmotiBit MD ancillary preset, the amp D9.5's shape was found on.
+_EMOTIBIT_AMP = (
+    pathlib.Path(__file__).resolve().parent / "fixtures" / "external"
+    / "emotibit_md_ancillary.json"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -432,16 +442,20 @@ def test_d4_absolute_threshold_dimension_check():
 
 
 def test_d4_dimensionless_literal_against_a_dimensioned_stream_still_resolves():
-    """The deliberate limit of the fix.
+    """The deliberate limit of the fix, now with a warning on it.
 
     `sigmoid("smr_envelope", midpoint: 5.0, steepness: 0.5)` in
     bench/protocols/micro_09_inhibit.refrain means 5 uV, and bare unit-less
     numbers are how the whole corpus spells a threshold. Binary `>` *does*
-    reject `"env" > 5`, so this is not yet full parity — requiring the unit is
-    a language decision with corpus-wide churn, not a bug fix. Filed
-    separately; this test pins what was deliberately left alone.
+    reject `"env" > 5`, so this is not full parity — and it is deliberately
+    not going to be. Decided 2026-10-19 (refrain#95): requiring the unit means
+    editing 23 of the 26 `midpoint:` values the corpus ships for no new
+    capability, and a corpus-wide edit is itself a way for mistakes to enter.
+    So the literal keeps resolving, and the resolver says out loud what it was
+    read as. The full behaviour lives in test_resolve_dimensions.py.
     """
-    ir = resolve_src(env_protocol("""
+    with pytest.warns(ResolveWarning, match="read as uV"):
+        ir = resolve_src(env_protocol("""
   reward { continuous = sigmoid("env", midpoint: 5.0, steepness: 0.5) }
   output { audio_gain = reward.continuous }
 """))
@@ -767,35 +781,81 @@ def test_d8_correctly_marked_siblings_stay_marked():
 
 
 # ---------------------------------------------------------------------------
-# D9 — four more shapes that resolve and then crash
+# D9 — five more shapes that resolve and then crash
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="D9.1: 'sigmoid(..., steepness: 0 - 3) -> TypeError. Matters because "
-           "down-training wants a decreasing sigmoid and the grammar has no "
-           "unary minus, so 0 - 3 is the only spelling available.' Fails as "
-           "TypeError: float() argument must be ... not 'IRBinaryOp'.",
-)
 def test_d9_1_sigmoid_constant_folded_steepness():
+    """FIXED. Was: 'sigmoid(..., steepness: 0 - 3) -> TypeError. Matters
+    because down-training wants a decreasing sigmoid and the grammar has no
+    unary minus, so 0 - 3 is the only spelling available.'
+
+    Both halves are now true: arithmetic over two literals folds at resolve,
+    and the grammar has unary minus — so the spelling an author reaches for
+    first is also available.
+    """
     src = env_protocol("""
   reward { continuous = sigmoid("env", midpoint: 1.0, steepness: 0 - 3) }
   output { audio_gain = reward.continuous }
 """)
-    try:
-        ir = resolve_src(src)
-    except ResolveError:
-        return
+    ir = resolve_src(src)
+    steepness = next(
+        a.value for a in ir.reward.continuous.args if a.name == "steepness"
+    )
+    assert isinstance(steepness, IRNumberLit), (
+        f"steepness should have folded to a literal, got {type(steepness).__name__}"
+    )
+    assert steepness.value == -3.0
     step_once(ir, fs=256.0)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="D9.2: 'absolute(value: <derive ref>) -> TypeError.' Fails as "
-           "TypeError: float() argument must be ... not 'IRStreamRef'.",
-)
+def test_d9_1_a_negative_steepness_really_does_decrease():
+    """The point of the defect, not just its symptom: a negative steepness
+    has to produce a sigmoid that falls as the signal rises. A fold that
+    dropped the sign would still resolve and still run."""
+    ir = resolve_src(env_protocol("""
+  reward { continuous = sigmoid("env", midpoint: 1.0, steepness: -3) }
+  output { audio_gain = reward.continuous }
+"""))
+    fs = 256.0
+    chans, quiet = drive(ir, fs=fs, signal=1.0 * np.sin(
+        2 * np.pi * 13.5 * np.arange(int(fs)) / fs))
+    _chans, loud = drive(ir, fs=fs, signal=40.0 * np.sin(
+        2 * np.pi * 13.5 * np.arange(int(fs)) / fs))
+
+    def settled_gain(block):
+        ev = Evaluator(ir, sample_rate_hz=fs, channel_names=chans)
+        for _ in range(8):
+            events = ev.step_chunk(block)
+        return [e.value for e in events if e.channel == "audio_gain"][-1]
+
+    assert settled_gain(loud) < settled_gain(quiet), (
+        "a negative steepness must make the curve decreasing"
+    )
+
+
+def test_d9_1_unary_minus_and_the_zero_minus_spelling_agree():
+    """`-3` and `0 - 3` must land on the same IR, or the workaround and the
+    spelling that replaces it drift apart."""
+    body = """
+  reward {{ continuous = sigmoid("env", midpoint: 1.0, steepness: {}) }}
+  output {{ audio_gain = reward.continuous }}
+"""
+    unary = resolve_src(env_protocol(body.format("-3")))
+    worked_around = resolve_src(env_protocol(body.format("0 - 3")))
+    assert (
+        ir_to_json_obj(unary, sample_rate_hz=256.0)["reward"]
+        == ir_to_json_obj(worked_around, sample_rate_hz=256.0)["reward"]
+    )
+
+
 def test_d9_2_absolute_with_a_derive_reference():
+    """FIXED. Was: 'absolute(value: <derive ref>) -> TypeError.'
+
+    A threshold whose level is another stream rather than a constant. The
+    resolver always got this right; `_instantiate_call` discarded the
+    reference and tried to `float()` it.
+    """
     src = """
 protocol "d92" {
   requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
@@ -811,22 +871,92 @@ protocol "d92" {
   output { audio_chime = reward.event }
 }
 """
-    try:
-        ir = resolve_src(src)
-    except ResolveError:
-        return
+    ir = resolve_src(src)
     step_once(ir, fs=256.0)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="D9.3: 'percentile(target_pct:, window:) as a derive pipeline stage "
-           "-> TypeError. It resolves to stream<scalar uV>; it would have given "
-           "occupational EMG its 10th/50th/90th-percentile exposure measures as "
-           "first-class signals.' Fails as PercentileImpl.step() missing 1 "
-           "required positional argument: 'x'.",
+def test_d9_2_the_threshold_tracks_the_stream_it_names():
+    """A threshold that silently sat at its own signal's value — the shape the
+    pre-fix `else` branch would have produced — would make every comparison
+    against it false and never raise. So assert the recorded threshold stream
+    equals the derive it names, sample for sample."""
+    src = """
+protocol "d92b" {
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "env" {
+    from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude(),
+                 smooth(tau: 250 ms) ]
+  }
+  derive "slow" { from = "raw"; pipeline = [ smooth(tau: 4 s) ] }
+  threshold "t" { signal = "env"; type = absolute(value: "slow") }
+  reward { continuous = sigmoid("env", midpoint: 1.0, steepness: 3) }
+  output { audio_gain = reward.continuous }
+}
+"""
+    ir = resolve_src(src)
+    fs = 256.0
+    chans, block = drive(ir, fs=fs, n=1024, seed=3)
+    rec = run_recorded(ir, fs=fs, block=block, chans=chans, chunk=256)
+    assert np.allclose(rec["t"], rec["slow"])
+    assert not np.allclose(rec["t"], rec["env"])
+
+
+_D9_2_INHIBIT_TPL = """
+protocol "d92c" {{
+  requires {{ sample_rate = ">= 256 Hz"; channels = ["Cz"] }}
+  input "raw" {{ montage = referential(active: "Cz", reference: "linked_ears") }}
+  derive "hot" {{ from = "raw"; pipeline = [ rectify() ] }}
+  derive "level" {{ formula = "hot" * {factor} }}
+  inhibit "guard" {{
+    metric    = rectify("hot")
+    threshold = absolute(value: "level")
+    action    = mute(release: 10 ms)
+  }}
+  reward {{ continuous = 1.0 }}
+  output {{ audio_gain = reward.continuous }}
+}}
+"""
+
+
+@pytest.mark.parametrize(
+    "factor, expected_gain",
+    [("0.5", 0.0), ("2", 1.0)],
+    ids=["level-below-the-metric-mutes", "level-above-it-passes"],
 )
+def test_d9_2_an_inhibit_level_can_also_be_a_stream(factor, expected_gain):
+    """An inhibit reaches its threshold constructor by a different path from a
+    `threshold` block, so it needs its own case.
+
+    Both halves matter. Had the stream-valued `absolute` fallen through to the
+    ordinary branch, the inhibit would have been handed its own metric as the
+    level — `metric > metric` is never true, so it would *never* fire and
+    never raise either. The half-the-metric row catches that. The
+    twice-the-metric row catches the opposite mistake of always firing.
+    """
+    ir = resolve_src(_D9_2_INHIBIT_TPL.format(factor=factor))
+    fs = 256.0
+    rng = np.random.default_rng(1)
+    chans, block = drive(
+        ir, fs=fs, signal=1.0 + np.abs(rng.standard_normal(int(fs))))
+    ev = Evaluator(ir, sample_rate_hz=fs, channel_names=chans)
+    for _ in range(3):
+        events = ev.step_chunk(block)
+    gain = [e.value for e in events if e.channel == "audio_gain"]
+    assert gain == [expected_gain]
+
+
 def test_d9_3_percentile_as_a_pipeline_stage():
+    """FIXED. Was: 'percentile(target_pct:, window:) as a derive pipeline
+    stage -> TypeError. It resolves to stream<scalar uV>; it would have given
+    occupational EMG its 10th/50th/90th-percentile exposure measures as
+    first-class signals.'
+
+    The resolver threads a pipeline stage's input in positionally, exactly as
+    it does for `auto_range`; `percentile` classified that input as a static
+    argument and then called `.step()` with nothing.
+    """
     src = """
 protocol "d93" {
   requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
@@ -839,11 +969,145 @@ protocol "d93" {
   output { audio_gain = 0 }
 }
 """
-    try:
-        ir = resolve_src(src)
-    except ResolveError:
-        return
+    ir = resolve_src(src)
     step_once(ir, fs=256.0)
+
+
+def test_d9_3_the_pipeline_stage_tracks_its_own_input():
+    """Two percentile stages over one envelope, at the 10th and the 90th. The
+    90th must sit above the 10th — which it cannot do unless each stage is
+    actually being fed the envelope."""
+    src = """
+protocol "d93b" {
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "env" {
+    from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude() ]
+  }
+  derive "p10" { from = "env"; pipeline = [ percentile(target_pct: 10, window: 2 s) ] }
+  derive "p90" { from = "env"; pipeline = [ percentile(target_pct: 90, window: 2 s) ] }
+  output { audio_gain = 0 }
+}
+"""
+    ir = resolve_src(src)
+    fs = 256.0
+    chans, block = drive(ir, fs=fs, n=2048, seed=5)
+    rec = run_recorded(ir, fs=fs, block=block, chans=chans, chunk=256)
+    tail = slice(-256, None)
+    assert np.all(rec["p90"][tail] > rec["p10"][tail])
+    assert np.all(rec["p90"][tail] <= rec["env"].max())
+
+
+# D9.5 — the fourth crashing shape, reported as a comment on refrain#94 on
+# 2026-10-19 while spiking a declarative contact-loss detector. Same family as
+# D9.1-D9.3 (the evaluator ignoring what the resolver worked out) but a
+# distinct mechanism: those three assume a numeric literal, this one assumes a
+# raw source.
+D9_5_SRC = """
+protocol "d95" {
+  requires { coupling = "dc"; sample_rate = ">= 7 Hz"; channels = ["TH", "T1"] }
+  input "skin" { montage = bipolar(plus: "TH", minus: "T1") }
+  derive "skin_rate" { from = "skin"; pipeline = [ smooth(tau: 2 s) ] }
+  inhibit "contact_loss" {
+    metric    = passthrough(input: "skin_rate")
+    threshold = absolute(value: 0.5 uV)
+    action    = mute(release: 500 ms)
+  }
+  reward { continuous = sigmoid("skin_rate", midpoint: 0.0, steepness: 1) }
+  output { audio_gain = reward.continuous }
+}
+"""
+
+# The EmotiBit ancillary preset the shape was found on: three channels, only
+# two of which the protocol names. That third channel is what made the arity
+# check fire.
+_D9_5_CHANNELS = ("EDA", "T1", "TH")
+
+
+def test_d9_5_an_inhibit_can_read_a_derive_through_passthrough():
+    """FIXED. Was: `inhibit { metric = passthrough(input: "<a derive>") }`
+    resolved cleanly — the IR holds `arg input -> IRStreamRef derive/skin_rate`
+    — and then died building the evaluator with `passthrough() requires a
+    single-channel source (got 3 channels: ['EDA', 'T1', 'TH'])`, because
+    `_instantiate_call` built the primitive as a montage over the raw source
+    instead of as an identity over the stream the reference names.
+
+    An inhibit's metric must be a primitive call, so wrapping the derive in
+    something is the only way to name it, and `passthrough` is the one wrapper
+    that does not also change the value (`rectify`, the other call the corpus
+    uses this way, takes the absolute value).
+    """
+    ir = resolve_src(D9_5_SRC, load_amp_profile(_EMOTIBIT_AMP))
+    metric = ir.inhibits["contact_loss"].metric
+    assert metric.callee == "passthrough"
+    arg = next(a for a in metric.args if a.name == "input")
+    assert isinstance(arg.value, IRStreamRef)
+    assert arg.value.target == "derive/skin_rate"
+
+    ev = Evaluator(ir, sample_rate_hz=15.0, channel_names=_D9_5_CHANNELS)
+    block = np.zeros((15, len(_D9_5_CHANNELS)), dtype=np.float64)
+    block[:, _D9_5_CHANNELS.index("TH")] = 30.0
+    block[:, _D9_5_CHANNELS.index("T1")] = 29.0
+    ev.step_chunk(block)
+
+
+def test_d9_5_the_inhibit_gates_on_the_derive_it_names():
+    """The metric has to be the derive's value, not something that merely
+    has the right shape. Hold the differential below the inhibit's 0.5
+    threshold and audio passes; drive it above and the inhibit mutes."""
+    ir = resolve_src(D9_5_SRC, load_amp_profile(_EMOTIBIT_AMP))
+    fs = 15.0
+    th = _D9_5_CHANNELS.index("TH")
+    t1 = _D9_5_CHANNELS.index("T1")
+
+    def settled_gain(differential_c: float) -> float:
+        ev = Evaluator(ir, sample_rate_hz=fs, channel_names=_D9_5_CHANNELS)
+        block = np.zeros((15, len(_D9_5_CHANNELS)), dtype=np.float64)
+        block[:, t1] = 29.0
+        block[:, th] = 29.0 + differential_c
+        for _ in range(40):   # long enough for smooth(tau: 2 s) to settle
+            events = ev.step_chunk(block)
+        return [e.value for e in events if e.channel == "audio_gain"][-1]
+
+    assert settled_gain(0.1) > 0.0, "below the inhibit threshold, audio passes"
+    assert settled_gain(4.0) == 0.0, "above it, the inhibit mutes the output"
+
+
+def test_d9_5_the_metric_carries_the_derives_units():
+    """`passthrough(input:)` has to report the referenced stream's type, not a
+    flat uV. The shape that found this bug was a *rate* of change, so getting
+    this wrong would let a threshold in the wrong units type-check — a silent
+    30×-class error in the middle of a fix for a crash.
+
+    Adding `differentiate()` makes the derive uV/s while the inhibit's
+    threshold stays `0.5 uV`, which is exactly the mismatch that has to be
+    refused.
+    """
+    rate_src = D9_5_SRC.replace(
+        "pipeline = [ smooth(tau: 2 s) ]",
+        "pipeline = [ smooth(tau: 2 s), differentiate() ]",
+    )
+    assert rate_src != D9_5_SRC, "expected to make the derive a rate of change"
+    with pytest.raises(ResolveError, match="uV/s"):
+        resolve_src(rate_src, load_amp_profile(_EMOTIBIT_AMP))
+
+
+def test_d9_5_the_identity_montage_still_resolves_without_an_input():
+    """`passthrough` now has two signatures and the montage form is the second
+    one, so assert the overload resolution did not quietly break the form the
+    five bench protocols use."""
+    ir = resolve_src("""
+protocol "d95b" {
+  requires { sample_rate = ">= 4 Hz"; channels = ["tachogram"] }
+  input "tach" { montage = passthrough() }
+  derive "env" { from = "tach"; pipeline = [ rectify() ] }
+  reward { continuous = "env" }
+  output { audio_gain = reward.continuous }
+}
+""")
+    assert ir.inputs["tach"].montage.callee == "passthrough"
+    assert ir.inputs["tach"].stream_type.value_kind == "scalar"
 
 
 D9_4_SRC = """

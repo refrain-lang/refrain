@@ -16,6 +16,10 @@
 //     prior draft grammar additionally defined `&&` and `||`; those are
 //     dropped here since they are not in the spec — boolean composition
 //     flows through `all_of` / `any_of` primitives.
+//   - SPEC §3 EBNF has no unary minus either, and this grammar adds one
+//     (the `neg` production below). Without it `steepness: -3` had to be
+//     written `steepness: 0 - 3`, which resolved and then crashed the
+//     evaluator. See DESIGN-NOTES §1.3; SPEC §3 still has to grow it.
 //   - SPEC §2.3 allows hyphens inside identifiers (for electrode-position
 //     tokens like `T3-T4`), with `binary - requires whitespace` as the
 //     disambiguator. Implementing whitespace-sensitive operators in Lark
@@ -63,7 +67,8 @@ remove_decl: "remove" DECL_KW string_lit ";"?
 assignment: NAME "=" expression ";"?
 
 // Expression precedence (loosest to tightest):
-//   ternary > comparison > add/sub > mul/div > member-access > atom.
+//   ternary > comparison > add/sub > mul/div > unary minus >
+//   member-access > atom.
 //
 // `?`-prefixed rules inline single-child trees, so simple expressions
 // pass through without a wrapper Tree.
@@ -78,8 +83,16 @@ COMP_OP: "==" | "!=" | "<=" | ">=" | "<" | ">"
 ?arith: term (ADD_OP term)*
 ADD_OP: "+" | "-"
 
-?term: factor (MUL_OP factor)*
+?term: unary (MUL_OP unary)*
 MUL_OP: "*" | "/"
+
+// Unary minus — the production DESIGN-NOTES §1.3 proposed and SPEC §3's
+// EBNF still lacks. Without it `steepness: -3` had to be spelled
+// `steepness: 0 - 3`, which every constant-reading slot then choked on.
+// Earley disambiguates by position: in `a - 1` the `-` follows a complete
+// term and is binary; in `(-1, 1)` nothing precedes it, so it is unary.
+?unary: neg | factor
+neg: "-" unary
 
 ?factor: atom member_chain?
 member_chain: ("." NAME)+
@@ -114,7 +127,7 @@ name_ref: NAME
 
 literal: number_with_unit | string_lit | bool_lit
 number_with_unit: NUMBER UNIT?
-UNIT: "uV2" | "Hz" | "ms" | "min" | "s" | "uV" | "%"
+UNIT: "uV2" | "Hz" | "ms" | "min" | "s" | "uV" | "C" | "%"
 string_lit: STRING
 bool_lit: BOOL
 BOOL.2: "true" | "false"

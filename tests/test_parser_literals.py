@@ -39,6 +39,7 @@ def _value_of(src_expr: str) -> A.Expr:
         ("30 s", 30.0, "s"),
         ("8 uV", 8.0, "uV"),
         ("64 uV2", 64.0, "uV2"),
+        ("1.5 C", 1.5, "C"),
         ("95 %", 95.0, "%"),
     ],
 )
@@ -56,6 +57,78 @@ def test_unknown_unit_rejected():
     # a UNIT terminal and `42 dB` cannot parse as two expressions.
     with pytest.raises(ParseError):
         parse('protocol "P" { meta { x = 42 dB } }')
+
+
+def test_fahrenheit_is_not_a_unit():
+    """`C` is the one temperature spelling. Celsius and Fahrenheit differ by
+    an offset as well as a scale, which Refrain's exponent vector cannot
+    express, so `F` must not lex as a unit either."""
+    with pytest.raises(ParseError):
+        parse('protocol "P" { meta { x = 98.6 F } }')
+
+
+def test_a_single_letter_unit_does_not_eat_identifiers():
+    """`C` is a one-character UNIT terminal sitting next to the identifier
+    pattern. A name that merely starts with it — a channel-ish `Cz`, a control
+    named `Cz_gain` — must still lex as a name."""
+    n = _value_of("Cz_gain")
+    assert isinstance(n, A.NameRef) and n.name == "Cz_gain"
+
+
+# ---------------------------------------------------------------------------
+# Unary minus (DESIGN-NOTES §1.3; absent from SPEC §3's EBNF)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "src, expected_value, expected_unit",
+    [
+        ("-3", -3.0, None),
+        ("- 3", -3.0, None),
+        ("-0.5", -0.5, None),
+        ("-1.5e3", -1500.0, None),
+        ("-3 uV", -3.0, "uV"),
+        ("-200 ms", -200.0, "ms"),
+        ("-(-3)", 3.0, None),
+    ],
+)
+def test_negated_literal_is_one_literal(src, expected_value, expected_unit):
+    """A negated numeric literal folds in the parser, so every slot that reads
+    a constant sees a `NumberLit` and nothing has to learn a new node."""
+    n = _value_of(src)
+    assert isinstance(n, A.NumberLit)
+    assert n.value == expected_value
+    assert n.unit == expected_unit
+
+
+def test_binary_minus_still_binds_as_binary():
+    """The reason SPEC §3 left unary minus out was the ambiguity. `a - b` must
+    stay a subtraction, and `a - -b` must be a subtraction of a negative."""
+    b = _value_of("1 - 2")
+    assert isinstance(b, A.BinaryOp) and b.op == "-"
+    assert b.left == A.NumberLit(value=1.0, unit=None, loc=b.left.loc)
+    assert b.right.value == 2.0
+
+    c = _value_of("1 - -2")
+    assert isinstance(c, A.BinaryOp) and c.op == "-"
+    assert c.right.value == -2.0
+
+
+def test_negated_tuple_elements():
+    """`range: (-1, 1)` — the TOUR §7 spelling DESIGN-NOTES §1.3 called out as
+    unparseable."""
+    t = _value_of("(-1, 1)")
+    assert isinstance(t, A.Tuple)
+    assert [e.value for e in t.elements] == [-1.0, 1.0]
+
+
+def test_negating_a_non_literal_preserves_its_dimensions():
+    """A stream cannot fold, so it desugars. `0 - x` would be dimension-
+    checked against a bare zero and refused; `-1 * x` is not."""
+    e = _value_of('-"env"')
+    assert isinstance(e, A.BinaryOp) and e.op == "*"
+    assert e.left.value == -1.0 and e.left.unit is None
+    assert isinstance(e.right, A.StringLit) and e.right.value == "env"
 
 
 # ---------------------------------------------------------------------------
