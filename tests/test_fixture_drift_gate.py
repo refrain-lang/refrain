@@ -36,6 +36,13 @@ REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / "refrain-core" / "tools"
 FIXTURES = REPO / "refrain-core" / "tests" / "fixtures"
 
+# A floor on how many committed fixtures the emitter must rewrite during a
+# verify run, so adding one does not break the build but a `--out-dir` that
+# stopped working does. Measured: 52 of the 60 committed files are regenerated;
+# the other 8 (`seed_run.ir.json` and the seven `output_dwell*`) have no
+# generator in the tree at all.
+MIN_REGENERATED = 20
+
 # The tools/ directory is a scripts directory, not an installed package —
 # `gen_fixtures.py` reaches its sibling `advisor_scenarios` the same way. A hard
 # import rather than `importorskip`: the tool is in this repo, so an absent one
@@ -212,9 +219,24 @@ def test_regenerating_for_the_verify_step_leaves_the_committed_fixtures_alone(tm
     assert after == before, "regenerating for the verify step rewrote the committed tree"
     assert not _git_dirty(FIXTURES), _git_dirty(FIXTURES)
 
-    # And it really did regenerate: the emitted set is the committed set.
     emitted = {p.name for p in fresh.iterdir() if p.is_file()}
     assert emitted >= set(before), sorted(set(before) - emitted)
+
+    # And it really did regenerate. This is the vacuity guard that matters: the
+    # throwaway directory starts as a copy of the committed one, so a
+    # `--out-dir` that was quietly ignored would leave `compare_dirs` comparing
+    # a copy against its own source — always green, which is the unfailable
+    # gate all over again. `shutil.copytree` preserves mtimes, so a fixture the
+    # emitter wrote is strictly newer than the committed file it came from.
+    rewritten = [
+        name for name in sorted(emitted & set(before))
+        if (fresh / name).stat().st_mtime > (FIXTURES / name).stat().st_mtime
+    ]
+    assert len(rewritten) >= MIN_REGENERATED, (
+        f"only {len(rewritten)} fixtures were actually written by the emitter "
+        f"({sorted(rewritten)}) — the rest are the seeded copy, so the verify "
+        f"step would be comparing a copy against its own source"
+    )
 
 
 def test_the_regenerate_mode_is_reachable_from_the_command_line():

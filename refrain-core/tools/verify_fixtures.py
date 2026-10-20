@@ -12,9 +12,9 @@ tree supports — across several releases with both the local gate and the
 What it does:
   1. Copy the committed fixtures into a throwaway directory. The copy is not
      decoration — `_gen_advisor_fixtures()` globs `*.ir.json` to build the
-     advisor traces, and four committed fixtures (`seed_run`, the three
-     `output_dwell*`) have no generator in the tree, so a bare directory would
-     emit a trace file missing four entries and report it as drift.
+     advisor traces, and eight committed files (`seed_run.ir.json` and the
+     seven `output_dwell*`) have no generator in the tree, so a bare directory
+     would emit a trace file missing those entries and report it as drift.
   2. Regenerate into that directory via `gen_fixtures.py --out-dir`.
   3. Compare, file by file, and report what moved.
 
