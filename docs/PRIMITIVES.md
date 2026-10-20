@@ -428,6 +428,56 @@ pipeline = [
 ]
 ```
 
+### `sqrt`
+
+```
+sqrt() -> stream<scalar T^(1/2)>
+```
+
+Square root of a squared quantity. Every exponent of the input's dimension
+must be even, or the protocol is refused at resolve: `sqrt(uV2)` is `uV`,
+`sqrt(dimensionless)` is dimensionless, and `sqrt(uV)` has no unit to return
+because these exponents are integers.
+
+Mean-square and variance already composed out of `*` and `smooth`; this is the
+root that was missing, so it makes RMS, standard deviation and the coefficient
+of variation expressible together. Coefficient of variation is the headline
+diagnostic in the pelvic-floor sEMG tradition.
+
+```refrain
+derive "square"      { formula  = "raw" * "raw" }                      // uV2
+derive "mean_square" { from = "square"; pipeline = [ smooth(tau: 250 ms) ] }
+derive "rms"         { from = "mean_square"; pipeline = [ sqrt() ] }    // uV
+```
+
+Standard deviation is the same shape with the mean removed:
+
+```refrain
+derive "mean"     { from = "raw"; pipeline = [ smooth(tau: 250 ms) ] }
+derive "variance" { formula = "mean_square" - "mean" * "mean" }        // uV2
+derive "sd"       { from = "variance"; pipeline = [ sqrt() ] }          // uV
+```
+
+**Negative input is clamped to zero, not rooted.** That is the defined
+behaviour on both backends, not defensive rounding. The dimension rule means
+the input is a squared quantity whose true value cannot be negative — but
+`mean_square - mean*mean` on a steady signal cancels to a few float epsilons
+either side of zero, and a NaN there would travel down the whole feedback path
+and silence the session. Zero is the one honest answer.
+
+Rooting a *power* measure back into the amplitude a practitioner reads is the
+other common use: `bandpower` returns `uV2`, so `bandpower(...) -> sqrt()` is
+a band amplitude.
+
+**Pipeline stage only.** `sqrt()` has to see the stream it is rooting in order
+to say what unit it returns, and a `formula` call hands its argument to a
+primitive that has no parameter slot for it. So `formula = sqrt("mean_square")`
+is refused at resolve, with a message naming the spelling above. Nothing is
+lost — the two are the same computation — but the refusal is deliberate rather
+than incidental: every other zero-parameter primitive falls back to `uV` in
+that position, which is harmless for `rectify` and a silently wrong unit for a
+root.
+
 ### `decimate` *(planned; not in the v0.22.0 registry — would be compiler-inserted)*
 
 ```

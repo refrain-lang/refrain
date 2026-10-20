@@ -19,7 +19,7 @@ use crate::advisor::{Advisor, ChunkFacts};
 use crate::dsp::{
     control_cell, smooth_alpha_from_tau_ms, AutoRange, Autocorr, BandEnvelope, Bandpower, Biquad,
     Coherence, ControlCell,
-    Differentiate, Dwell, DwellRearm, HilbertFir, Magnitude, Percentile, Signal, Smooth, Stage, TrackerState,
+    Differentiate, Dwell, DwellRearm, HilbertFir, Magnitude, Percentile, Signal, Smooth, Sqrt, Stage, TrackerState,
 };
 use crate::ir::{Coeffs, Expr, Protocol};
 
@@ -2207,6 +2207,7 @@ fn is_dsp(callee: &str) -> bool {
             | "hilbert"
             | "magnitude"
             | "rectify"
+            | "sqrt"
             | "smooth"
             | "differentiate"
             | "auto_range"
@@ -2306,6 +2307,7 @@ fn build_stage(
             ))
         }
         "magnitude" | "rectify" => Box::new(Magnitude),
+        "sqrt" => Box::new(Sqrt),
         "smooth" => {
             // Initial alpha is baked (from the default tau). If `tau` is a
             // control-ref, bind it so a live retune recomputes alpha from the

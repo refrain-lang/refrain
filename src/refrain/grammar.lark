@@ -114,7 +114,7 @@ name_ref: NAME
 
 literal: number_with_unit | string_lit | bool_lit
 number_with_unit: NUMBER UNIT?
-UNIT: "uV2" | "Hz" | "ms" | "min" | "s" | "uV" | "%"
+UNIT: "uV2" | "Hz" | "ms" | "min" | "s" | "uV" | "C" | "%"
 string_lit: STRING
 bool_lit: BOOL
 BOOL.2: "true" | "false"

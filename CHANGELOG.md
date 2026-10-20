@@ -8,6 +8,44 @@ bumps are additive; major bumps may break compatibility.
 ## [Unreleased]
 
 ### Added
+- **`sqrt()`.** Square root of a squared quantity, which makes RMS, standard
+  deviation and the coefficient of variation expressible — mean-square and
+  variance already composed out of `*` and `smooth`, and only the root was
+  missing. One primitive, three measures, and the coefficient of variation is
+  the headline diagnostic in the pelvic-floor sEMG tradition. Every exponent of
+  the input's dimension must be even: `sqrt(uV2)` is `uV`, `sqrt(uV)` is a
+  resolve error naming the stream, because there is no half-power of a volt to
+  return. Negative input is clamped to zero rather than rooted — defined
+  behaviour on both backends, because `mean_square - mean*mean` on a steady
+  signal cancels to a few float epsilons either side of zero and a NaN there
+  would travel down the whole feedback path. It is a pipeline stage only: a
+  `formula = sqrt("x")` call hands its argument to a primitive with no
+  parameter slot for it, so the stage cannot see what it is rooting, and every
+  other zero-parameter primitive silently falls back to `uV` in that position
+  — harmless for `rectify`, a wrong unit asserted confidently for a root. That
+  shape is refused at resolve naming the pipeline spelling, which also closes
+  the "resolves, then dies at the first chunk" variant. Python and Rust, held
+  to sample-for-sample parity by the drift gate. Additive in IR-JSON: a
+  pipeline stage is a call with a callee name, so no schema field and no
+  version bump.
+
+- **A temperature dimension, spelled `C`.** Temperature is now a base
+  dimension of its own rather than a unit of voltage, with three pieces that
+  only work together: the `C` surface unit, a `temperature { }` control kind,
+  and `unit = "<surface unit>"` on an `input`. The last one is what makes the
+  dimension reachable — every montage returns microvolts, which is right for
+  an electrode and wrong for a thermopile, so a shipped skin-temperature
+  protocol had to write every target in `uV` and mean degrees Celsius. It
+  type-checked while lying, and the resolver printed `default = 1.5 uV` under a
+  control labelled "Target rise (deg C)". That protocol can now type in
+  Celsius from the input through to the threshold, and mixing Celsius with
+  microvolts is caught by the dimension checks Refrain already had. An input
+  without a `unit` field is microvolts exactly as before, and the temperature
+  exponent is omitted from IR-JSON when it is zero, so no existing protocol's
+  wire form moves. Fahrenheit is deliberately *not* a unit: Celsius and
+  Fahrenheit differ by an offset as well as a scale, which an exponent vector
+  cannot express, so conversion is the host's job.
+
 - **The protocol editor can now author the flagship EEG protocols.** `smr`,
   `alpha_up`, `beta_attention` and `high_beta_down` were outside the editor's
   describable subset, so the editor silently refused the four protocols the
@@ -33,6 +71,21 @@ bumps are additive; major bumps may break compatibility.
   `_NotInSubset` message as-is and prefixes anything else with its exception
   type, so a bug reads as a bug. Two of the six fixes above were hidden by
   exactly that ambiguity.
+
+### Changed
+- **A bare number where a dimension belongs now warns at resolve, and still
+  resolves.** `sigmoid("<uV stream>", midpoint: 5.0)` means 5 µV and reads as
+  "five of something"; the resolver now says which unit it read it as, at the
+  source line, through a new `ResolveWarning`. Deliberately a warning and not
+  an error (refrain#95): 23 of the 26 `midpoint:` values the corpus ships are
+  bare, so requiring the unit means editing every protocol file for no new
+  capability, and a corpus-wide edit is itself a way for mistakes to enter.
+  Three shipped bench protocols warn — `micro_09_inhibit`,
+  `micro_11_control_expr` and `micro_12_control_param_slots` — and are left as
+  they are, which is the whole point of the decision. A literal carrying the
+  *wrong* unit stays an error, and a bare number against a genuinely
+  dimensionless signal (`midpoint: 1.0` on a ratio derive) says nothing and
+  warns about nothing.
 
 ### Fixed
 - **The editor could render a protocol that the language then refused.** A

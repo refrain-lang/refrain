@@ -242,6 +242,26 @@ impl Stage for Magnitude {
     }
 }
 
+/// `sqrt()` — `sqrt(max(x, 0))` for a real stream.
+///
+/// The clamp is not defensive rounding, it is the defined behaviour, and it
+/// matches `SqrtImpl` in the Python evaluator sample for sample. The resolver
+/// only admits a stream whose dimensions are even powers, so the input is a
+/// squared quantity that cannot truly be negative — but `mean_square -
+/// mean*mean`, which is how a protocol spells variance, cancels to a few
+/// float epsilons either side of zero on a steady signal, and a NaN there
+/// would travel down the whole feedback path.
+pub struct Sqrt;
+
+impl Stage for Sqrt {
+    fn process(&mut self, input: Signal) -> Signal {
+        match input {
+            Signal::Real(x) => Signal::Real(x.iter().map(|v| v.max(0.0).sqrt()).collect()),
+            Signal::Complex(..) => panic!("sqrt: expects a real stream"),
+        }
+    }
+}
+
 /// `smooth(tau)` — one-pole IIR low-pass `y[n] = a*x[n] + (1-a)*y[n-1]`,
 /// with the baked coefficient `a` and zero initial state, matching
 /// `SmoothImpl` (lfilter with `zi = state*(1-a)`, state starting at 0).
