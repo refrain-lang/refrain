@@ -206,8 +206,8 @@
         },
         "coeffs": {
           "window_samples": 512,
-          "nperseg": 64,
-          "noverlap": 32
+          "nperseg": 192,
+          "noverlap": 96
         }
       },
       "upstream": [

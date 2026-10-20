@@ -300,10 +300,12 @@ explicitly only to widen it. Above 2× accuracy is flat, so the declared
 latency is the only thing that sets it.
 
 **Cold start.** The filter needs its full span of history before its output
-means anything — about 0.8 s for a 250 ms latency at 250 Hz. This makes the
-cold-start behaviour tracked in #93 slightly worse: like every filter in the
-library it starts from zero state, so the first samples are an artifact rather
-than a measurement. A protocol with a warmup phase absorbs this for free
+means anything — about 0.8 s for a 250 ms latency at 250 Hz, and its FIR delay
+line starts zero-filled, so the first samples are an artifact rather than a
+measurement. #93's warm start fixed the IIR stages (`bandpass`, `bandpower`,
+`smooth` now seed their state from their first sample); the FIR delay lines
+here and in `hilbert` still fill from zero, which is why this primitive wants
+a warmup phase even though those no longer do. A protocol with a warmup phase absorbs this for free
 (`phase "warmup" { ... }`), and the EEG protocols all have one. A protocol
 **without** a warmup phase will show a rising envelope for the first second
 of the session, so give the primitive one.
@@ -360,11 +362,15 @@ derive "alpha_coh" {
 
 The signature uses `input_a` / `input_b` rather than `channel_a` / `channel_b` because the operands are streams (potentially already montaged, filtered, or otherwise derived), not raw electrode channels.
 
-**Window choice matters.** Coherence requires multi-segment Welch averaging to produce meaningful values — a single-segment MSC reduces to `1.0` trivially regardless of input. The implementation uses ~250 ms segments at 50% overlap; `window` must be at least 500 ms (~2 segments) and produces meaningful coherence estimates only after the buffer fills. A 1-second window yields ~7 segments of averaging; 2 seconds yields ~15.
+**Window choice matters.** Coherence requires multi-segment Welch averaging to produce meaningful values — a single-segment MSC reduces to `1.0` trivially regardless of input. Segments overlap 50%, and their length comes from `band` (see below), so the shortest usable `window` does too: two segments' worth. For the 4 Hz-wide alpha band that is 750 ms segments and so a 1.5 s minimum window, of which a 2 s window holds four. A `window` too short for two band-resolving segments is **refused at resolve time**, naming the window it would need and the band width that would fit the window you asked for.
 
-**Frequency resolution** is `sample_rate / nperseg`, not `1 / window`. With default settings (~250 ms `nperseg`), that's ~4 Hz resolution — coarse for the 4 Hz–wide alpha band, where a single FFT bin will dominate the band's MSC. For narrow-band coherence work, longer `window` does NOT improve resolution (it only adds more segments); the only way to tighten resolution is to use a higher sample rate.
+**Frequency resolution** is `sample_rate / nperseg`, not `1 / window`, and `nperseg` is derived from `band`: long enough that at least **three** bin centres land inside it, so "the average over the band" is an average rather than one bin wearing a band's name. Three bins in a 4 Hz band needs 1.33 Hz resolution, i.e. 750 ms segments.
 
-**Warm-up** behavior: returns `0.0` until the buffer accumulates ≥ 2 segments of data. Approximately 500 ms at typical NF sample rates. Downstream `above` / `dwell` / threshold comparisons handle this correctly (a zero coherence reading is not above any positive threshold).
+The floor is the historical 250 ms (~4 Hz resolution), so a band wider than about 12 Hz is unaffected and keeps the numbers it always had. Narrower bands get longer segments, and that trade is real in both directions: finer bins, but fewer of them to average over. For the alpha band in a 2 s window the segment count goes from fifteen to four, which raises the independent-noise floor from about 1/15 to about 1/4 — coherence estimates are correspondingly noisier. Lengthen `window` to buy the segments back.
+
+Before #92 `nperseg` was `max(8, sample_rate // 4)` regardless of the band. At 250 Hz the 8–12 Hz band held one bin (8.06 Hz) and at 256 Hz it held two, both of them the band edges with nothing between; a band narrower than the 4 Hz spacing and falling between bin centres returned exactly `0.0`, indistinguishable from "no coupling".
+
+**Warm-up** behavior: returns `0.0` until the buffer accumulates ≥ 2 segments of data — 1.5 × the segment length, so about 1.1 s for the alpha band at 250 Hz (it was ~370 ms when segments were a fixed 250 ms). Downstream `above` / `dwell` / threshold comparisons handle this correctly (a zero coherence reading is not above any positive threshold).
 
 **Pre-filter or not?** Coherence operates on time-domain signals. You can pass raw referential channels directly (recommended for most NF use cases), or pre-bandpass the streams if you want to isolate a specific frequency before computing coherence. The `band` parameter inside `coherence` is the *analysis* band (which frequencies to average MSC over), not a pre-filter.
 

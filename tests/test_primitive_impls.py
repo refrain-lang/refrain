@@ -225,14 +225,57 @@ def test_smooth_step_response_settles_to_input_value():
 
 
 def test_smooth_at_one_tau_reaches_63pct():
-    """One time constant → output reaches (1 - 1/e) ≈ 0.632 of input."""
+    """One time constant → output reaches (1 - 1/e) ≈ 0.632 of a step.
+
+    The step has to start from the signal's own resting level, not from the
+    filter's: `smooth` warm-starts its state to the first sample it sees, so
+    feeding a bare `ones` array means the filter is already at 1.0 and there
+    is no step to respond to. A leading 0 makes it an honest 0 → 1 step.
+    """
     tau_ms = 100.0
     impl = SmoothImpl(tau_ms=tau_ms, sample_rate_hz=SR)
     n_samples_one_tau = int(tau_ms / 1000.0 * SR)
-    y = impl.step(np.ones(n_samples_one_tau))
+    y = impl.step(np.concatenate([[0.0], np.ones(n_samples_one_tau)]))
     # Expected value at exactly one tau, for one-pole IIR with α = 1−exp(−1/Nτ),
     # is ~0.632. Tolerance for discretisation noise.
+    assert y[0] == 0.0, "warm start should hold the pre-step level"
     assert 0.55 < y[-1] < 0.68, f"one-tau response = {y[-1]:.3f}, expected ~0.632"
+
+
+def test_smooth_warm_starts_to_the_first_sample():
+    """A constant input is its own steady state, so there is no ramp."""
+    impl = SmoothImpl(tau_ms=5000.0, sample_rate_hz=SR)
+    y = impl.step(np.full(128, 33.0))
+    assert np.allclose(y, 33.0), f"smooth ramped from 0: y[0] = {y[0]}"
+
+
+def test_bandpass_warm_starts_so_a_standing_offset_reads_zero():
+    """A bandpass rejects DC. Cold-started it rang its way down to zero over
+    seconds; warm-started the standing level is gone immediately."""
+    impl = BandpassImpl(band=(0.05, 5.0), order=4, sample_rate_hz=15.0)
+    y = impl.step(np.full(int(15.0 * 60), 33.0))
+    assert np.abs(y).max() < 1e-9, f"bandpass rang to {np.abs(y).max()} on DC"
+
+
+def test_sos_unit_zi_matches_scipy():
+    """`_sos_unit_zi` is `scipy.signal.sosfilt_zi` written out so the Rust core
+    can mirror it from the same baked `sos`. It has to agree with SciPy, or
+    the two engines warm-start differently and the drift gate fails."""
+    from scipy import signal as scisig
+
+    from refrain.primitive_impls import _sos_unit_zi
+
+    cases = [
+        scisig.butter(4, [8 / 128.0, 12 / 128.0], btype="band", output="sos"),
+        scisig.butter(2, [0.05 / 7.5, 5.0 / 7.5], btype="band", output="sos"),
+        scisig.butter(4, [0.0159 / 7.5, 5.0 / 7.5], btype="band", output="sos"),
+        scisig.bessel(6, [12 / 125.0, 15 / 125.0], btype="band", output="sos",
+                      norm="phase"),
+        scisig.cheby2(4, 40.0, [1 / 125.0, 30 / 125.0], btype="band", output="sos"),
+    ]
+    for sos in cases:
+        assert np.allclose(_sos_unit_zi(sos), scisig.sosfilt_zi(sos),
+                           rtol=1e-12, atol=1e-14)
 
 
 def test_differentiate_constant_is_zero():
@@ -431,16 +474,36 @@ def test_coherence_identical_signals_yields_one():
 
 
 def test_coherence_independent_noise_is_low():
-    """Independent white noise in both channels should give low MSC —
-    the 7-segment averaging noise floor is approximately 1/n_segments."""
-    rng = np.random.default_rng(0)
-    impl = CoherenceImpl(band=(8.0, 12.0), window_ms=2000.0, sample_rate_hz=SR)
-    a = rng.standard_normal(4096)
-    b = rng.standard_normal(4096)
-    out = impl.step(a, b)
-    assert out[-1] < 0.4, (
-        f"MSC for independent noise should be < 0.4 with 7-segment averaging, "
-        f"got {out[-1]:.3f}"
+    """Independent white noise reads near the Welch averaging noise floor,
+    which is about 1/n_segments.
+
+    The segment length comes from the band now, so a 4 Hz band in a 2 s
+    window at 256 Hz is four 750 ms segments where it used to be fifteen
+    250 ms ones. That puts the floor near 0.25 instead of near 0.07 — the
+    price of resolving the band, measured here rather than assumed, which is
+    why the bound is stated per-segment and over several draws instead of as
+    one fixed number on one seed.
+    """
+    shape = CoherenceImpl(band=(8.0, 12.0), window_ms=2000.0, sample_rate_hz=SR)
+    n_seg = 1 + (shape.window_samples - shape.nperseg) // (
+        shape.nperseg - shape.noverlap
+    )
+    floor = 1.0 / n_seg
+    vals = []
+    for seed in range(20):
+        rng = np.random.default_rng(seed)
+        impl = CoherenceImpl(band=(8.0, 12.0), window_ms=2000.0, sample_rate_hz=SR)
+        vals.append(
+            float(impl.step(rng.standard_normal(4096), rng.standard_normal(4096))[-1])
+        )
+    mean = float(np.mean(vals))
+    assert mean < 2 * floor, (
+        f"independent noise averages MSC {mean:.3f} over {n_seg} segments; "
+        f"the averaging floor is ~{floor:.3f}"
+    )
+    assert max(vals) < 0.8, (
+        f"independent noise reached MSC {max(vals):.3f}, which would read as "
+        f"coupling"
     )
 
 
@@ -520,10 +583,47 @@ def test_coherence_band_outside_nyquist_rejected():
 
 def test_coherence_window_too_short_rejected():
     """Window must accommodate ≥ 2 segments of multi-segment Welch.
-    With nperseg = SR/4 (~62 samples at SR=250), the minimum is ~500 ms.
-    A 100 ms window must be rejected with a clear diagnostic."""
-    with pytest.raises(ValueError, match="window must be"):
+
+    The segment length comes from the band, so the minimum window does too:
+    a 4 Hz band needs 1.33 Hz resolution, i.e. 750 ms segments, i.e. a 1.5 s
+    window. A 100 ms one must be rejected with a diagnostic that names the
+    band, the segment length and both ways out."""
+    with pytest.raises(ValueError, match="window must be") as exc:
         CoherenceImpl(band=(8.0, 12.0), window_ms=100.0, sample_rate_hz=SR)
+    msg = str(exc.value)
+    assert "3 Welch bins" in msg
+    assert "1500 ms" in msg
+    assert "widen" in msg and "window" in msg
+
+
+def test_coherence_segment_length_comes_from_the_band():
+    """The shipped `band: (8 Hz, 12 Hz)` at both rates the two coherence
+    protocols declare. Used to be 62 samples at 250 Hz (one bin inside the
+    band, at 8.06 Hz) and 64 at 256 Hz (two bins, both of them band edges)."""
+    from refrain.primitive_impls import (
+        MIN_BINS_IN_BAND,
+        coherence_bins_in_band,
+    )
+
+    for fs, want_nperseg, want_bins in ((250.0, 188, 3), (256.0, 192, 4)):
+        impl = CoherenceImpl(band=(8.0, 12.0), window_ms=2000.0, sample_rate_hz=fs)
+        assert impl.nperseg == want_nperseg, f"{fs} Hz -> {impl.nperseg}"
+        bins = coherence_bins_in_band((8.0, 12.0), fs, impl.nperseg)
+        assert len(bins) == want_bins >= MIN_BINS_IN_BAND, f"{fs} Hz -> {bins}"
+        # Two segments minimum, and the 2 s window these protocols declare
+        # holds four at 50% overlap.
+        n_seg = 1 + (impl.window_samples - impl.nperseg) // (
+            impl.nperseg - impl.noverlap
+        )
+        assert n_seg == 4, f"{fs} Hz -> {n_seg} segments"
+
+
+def test_coherence_wide_band_keeps_the_historical_segment_length():
+    """The band only ever lengthens the segment. A band wide enough to be
+    well resolved at 250 ms keeps exactly the numbers it had, so this change
+    moves narrow-band protocols and nothing else."""
+    impl = CoherenceImpl(band=(1.0, 40.0), window_ms=2000.0, sample_rate_hz=SR)
+    assert impl.nperseg == max(8, int(SR // 4))
 
 
 # ---------------------------------------------------------------------------

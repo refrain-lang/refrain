@@ -48,6 +48,64 @@ bumps are additive; major bumps may break compatibility.
   without some of the fixes when a protocol is held out by a second,
   unrelated obstacle.
 
+- **`coherence()` reported a single bin as a band average** (#92). The Welch
+  segment length was `max(8, sample_rate // 4)` — a quarter-second whatever
+  band was asked for, so about 4 Hz between bins at any rate at or above
+  32 Hz. For the shipped `band: (8 Hz, 12 Hz)` that was **one** bin inside the
+  band at 250 Hz (8.06 Hz) and **two** at 256 Hz, both of them the band edges
+  with nothing between. A band narrower than the spacing and falling between
+  bin centres returned exactly `0.0`, which reads as "no coupling" rather than
+  "cannot be computed" — the repo's own `test_d2_narrow_eeg_bands_also_collapse`
+  had this checked in for SMR (13, 15) Hz and narrow alpha (9, 11) Hz.
+
+  The segment length now comes from the band: long enough for at least three
+  bin centres inside it, floored at the historical 250 ms. A 4 Hz band needs
+  1.33 Hz resolution, so 750 ms segments, of which the 2 s window both shipped
+  coherence protocols declare holds four — clearing the existing two-segment
+  minimum without touching either protocol file or widening any band. Bands
+  wider than about 12 Hz are unaffected.
+
+  **This moves recorded numbers.** Measured on a matched input, the alpha MSC
+  of a coherent pair moves from 0.922 to 0.880 at 250 Hz and from 0.932 to
+  0.832 at 256 Hz, and in either direction depending on where in the band the
+  coupling actually is — a pair coupled at 11 Hz reads 0.782 → 0.886 at
+  250 Hz, one coupled at 8.5 Hz reads 0.887 → 0.521. Fewer segments also mean
+  a noisier estimate: independent noise averages MSC 0.26 over four segments
+  where it averaged 0.08 over fifteen. Warm-up lengthens with the segment
+  (~370 ms → ~1.1 s at 250 Hz). Python-only: `nperseg` has been baked into the
+  IR since v0.1 and the Rust core reads the baked value, so no schema change
+  and no IR version bump.
+
+- **Filters cold-started at zero, so a signal with a standing offset read
+  wrong for seconds** (#93). `SmoothImpl` set `_state = 0.0` and `BandpassImpl`
+  / `BandpowerImpl` zeroed their `sosfilt` state, so every filter's output
+  began at zero and climbed to wherever the signal was. Harmless-ish for
+  zero-mean EEG; wrong for skin temperature, skin conductance or a respiration
+  belt, where a "phasic" derive written as `signal - smooth(signal)` reported
+  most of the tonic level as a phantom response. On a constant 33 °C input at
+  15 Hz that phantom read 23.6 at t = 1 s and took 15 s to fall within 1% (276 s
+  at τ = 60 s); a 4th-order 0.05 Hz high-pass rang above the standing level
+  itself for 37 s.
+
+  All three now seed their state on the first sample to the steady state that
+  sample's level would hold, so a constant input gives its steady-state
+  response from sample one and those transients are gone, not bounded.
+  Mirrored in the Rust core (`Biquad`, `Smooth`), because the two engines have
+  to warm-start identically or the drift gate fails. The report that prompted
+  this issue gave settling figures roughly 30× too long; the measured ones are
+  in `test_d7_cold_start_magnitudes_as_measured`.
+
+### Changed
+- **`coherence()` refuses a band too narrow to average, at resolve time**
+  (#92). When the window cannot hold two segments long enough to put three
+  Welch bins inside the band, the protocol is rejected with a message naming
+  the band, the segment length it implies, the window it would need and the
+  band width that would fit the window as written. Both shipped coherence
+  protocols satisfy it; `coherence(band: (13 Hz, 15 Hz), window: 2 s)`, which
+  used to be accepted and return `0.0`, now errors. The refusal ships in the
+  same commit as the adaptive segment length deliberately: on its own it would
+  reject the two protocols it exists to protect.
+
 ## [0.23.0] — 2026-10-17
 
 ### Added

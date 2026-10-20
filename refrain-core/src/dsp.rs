@@ -61,13 +61,50 @@ pub enum TrackerState {
     Percentile { value: f64, target_pct: f64, n_eff: u64 },
 }
 
+/// `scipy.signal.sosfilt_zi(sos)` — the `sosfilt` state that holds a
+/// unit-step input at its steady-state response. Multiply by a sample's level
+/// to warm-start the cascade at that level.
+///
+/// Mirrors `refrain.primitive_impls._sos_unit_zi`, which is itself SciPy's
+/// routine written out: per second-order section `lfilter_zi` reduces to the
+/// 2x2 solve `[[1 + a1, -1], [a2, 1]] @ zi = [b1 - b0*a1, b2 - b0*a2]`, and
+/// the sections compose by carrying each one's DC gain `H(1)` forward as a
+/// scale. The two engines must agree here or the drift gate fails.
+fn sos_unit_zi(sos: &[[f64; 6]]) -> Vec<(f64, f64)> {
+    let mut out = Vec::with_capacity(sos.len());
+    let mut scale = 1.0_f64;
+    for sec in sos {
+        let a0 = sec[3];
+        let (b0, b1, b2) = (sec[0] / a0, sec[1] / a0, sec[2] / a0);
+        let (a1, a2) = (sec[4] / a0, sec[5] / a0);
+        let rhs0 = b1 - b0 * a1;
+        let rhs1 = b2 - b0 * a2;
+        let det = 1.0 + a1 + a2;
+        out.push((
+            scale * (rhs0 + rhs1) / det,
+            scale * ((1.0 + a1) * rhs1 - a2 * rhs0) / det,
+        ));
+        scale *= (b0 + b1 + b2) / det;
+    }
+    out
+}
+
 /// IIR bandpass/bandpower as a cascade of second-order sections, in
 /// Direct-Form-II-Transposed — matching `scipy.signal.sosfilt`'s per-section
 /// state recurrence and its `(n_sections, 2)` state layout.
+///
+/// Warm-started on the first sample, matching `BandpassImpl` /
+/// `BandpowerImpl`: state is seeded to the steady state that sample's level
+/// would hold, so a signal arriving at a standing offset (skin temperature,
+/// skin conductance, a respiration belt) reads its steady-state response
+/// immediately instead of settling through the whole standing level first.
 pub struct Biquad {
     sos: Vec<[f64; 6]>, // [b0, b1, b2, a0, a1, a2] per section (a0 == 1)
     z1: Vec<f64>,
     z2: Vec<f64>,
+    /// `sosfilt_zi(sos)`, scaled by the first sample when it arrives.
+    unit_zi: Vec<(f64, f64)>,
+    primed: bool,
 }
 
 impl Biquad {
@@ -77,10 +114,20 @@ impl Biquad {
             .map(|s| [s[0], s[1], s[2], s[3], s[4], s[5]])
             .collect();
         let n = sections.len();
-        Biquad { sos: sections, z1: vec![0.0; n], z2: vec![0.0; n] }
+        let unit_zi = sos_unit_zi(&sections);
+        Biquad { sos: sections, z1: vec![0.0; n], z2: vec![0.0; n], unit_zi, primed: false }
     }
 
     fn run(&mut self, x: &[f64]) -> Vec<f64> {
+        if !self.primed {
+            if let Some(&first) = x.first() {
+                for (s, &(a, b)) in self.unit_zi.iter().enumerate() {
+                    self.z1[s] = a * first;
+                    self.z2[s] = b * first;
+                }
+                self.primed = true;
+            }
+        }
         let mut out = Vec::with_capacity(x.len());
         for &xin in x {
             let mut w = xin;
@@ -243,25 +290,32 @@ impl Stage for Magnitude {
 }
 
 /// `smooth(tau)` — one-pole IIR low-pass `y[n] = a*x[n] + (1-a)*y[n-1]`,
-/// with the baked coefficient `a` and zero initial state, matching
-/// `SmoothImpl` (lfilter with `zi = state*(1-a)`, state starting at 0).
+/// with the baked coefficient `a`, matching `SmoothImpl` (lfilter with
+/// `zi = state*(1-a)`).
+///
+/// Warm-started: `prev` is seeded to the first sample, which is the steady
+/// state of a one-pole low-pass for a constant input at that level, so a
+/// tonic/phasic pair (`x - smooth(x)`) reads ~0 phasic from sample one rather
+/// than reporting the standing level as a response. `SmoothImpl` does the
+/// same; they must, or the drift gate fails.
 pub struct Smooth {
     /// Smoothing coefficient, shared with the `set_control` registry so a live
     /// `tau` retune (which recomputes `alpha`) takes effect without resetting
     /// `prev`. Read once per `process` call (per chunk).
     alpha: ControlCell,
     prev: f64,
+    primed: bool,
 }
 
 impl Smooth {
     pub fn new(alpha: f64) -> Self {
-        Smooth { alpha: control_cell(alpha), prev: 0.0 }
+        Smooth { alpha: control_cell(alpha), prev: 0.0, primed: false }
     }
 
     /// Construct over an existing shared `alpha` cell so the evaluator can keep
     /// a clone in its control registry.
     pub fn from_cell(alpha: ControlCell) -> Self {
-        Smooth { alpha, prev: 0.0 }
+        Smooth { alpha, prev: 0.0, primed: false }
     }
 }
 
@@ -269,6 +323,12 @@ impl Stage for Smooth {
     fn process(&mut self, input: Signal) -> Signal {
         let x = input.into_real();
         let alpha = *self.alpha.lock().unwrap();
+        if !self.primed {
+            if let Some(&first) = x.first() {
+                self.prev = first;
+                self.primed = true;
+            }
+        }
         let mut out = vec![0.0; x.len()];
         for (slot, &v) in out.iter_mut().zip(&x) {
             let y = alpha * v + (1.0 - alpha) * self.prev;
@@ -804,7 +864,7 @@ impl DwellRearm {
 
 #[cfg(test)]
 mod tests {
-    use super::Percentile;
+    use super::{control_cell, Biquad, Percentile, Signal, Smooth, Stage};
 
     #[test]
     fn ingest_skips_nonfinite_and_value_at_matches() {
@@ -813,5 +873,35 @@ mod tests {
         assert_eq!(p.n_eff(), 4);
         // linear percentile of [1,2,3,4] at 70 == 3.1 (NumPy 'linear')
         assert!((p.value_at(70.0) - 3.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn biquad_warm_starts_so_a_standing_offset_reads_zero() {
+        // butter(4, [0.05/7.5, 5.0/7.5], btype="band", output="sos") at 15 Hz
+        // — the 0.05 Hz high-pass whose cold-start ringing ran for 37 s on a
+        // constant input, as measured for #93.
+        #[rustfmt::skip]
+        let sos = vec![
+            vec![0.22715093943767742, 0.45430187887535484, 0.22715093943767742,
+                 1.0, 0.5460107373802591, 0.1094037376799148],
+            vec![1.0, 2.0, 1.0, 1.0, 0.7508908646387135, 0.5057096314747951],
+            vec![1.0, -2.0, 1.0, 1.0, -1.9612785066793454, 0.9617177779874133],
+            vec![1.0, -2.0, 1.0, 1.0, -1.9837978083289831, 0.9842344985346861],
+        ];
+        let mut f = Biquad::new(&sos);
+        let y = f.process(Signal::Real(vec![33.0; 900])).into_real();
+        let peak = y.iter().cloned().fold(0.0f64, |m, v| m.max(v.abs()));
+        assert!(peak < 1e-9, "bandpass rang to {peak} on a 33.0 standing level");
+    }
+
+    #[test]
+    fn smooth_warm_starts_to_the_first_sample() {
+        let mut s = Smooth::from_cell(control_cell(0.001));
+        let y = s.process(Signal::Real(vec![33.0; 128])).into_real();
+        assert!(
+            y.iter().all(|v| (v - 33.0).abs() < 1e-12),
+            "smooth ramped from 0: y[0] = {}",
+            y[0]
+        );
     }
 }

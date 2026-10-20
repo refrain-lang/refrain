@@ -1,8 +1,8 @@
 """Idiomatic baseline for micro_02_bandpass.
 
 Pipeline: linked-ears referential montage -> butter SOS bandpass (12-15 Hz,
-order 4), mirroring refrain's BandpassImpl (zero initial state, sosfilt
-axis=0). Output binding `audio_gain = 0` -> constant-zero stream.
+order 4), mirroring refrain's BandpassImpl (state warm-started from the
+first sample via sosfilt_zi, sosfilt axis=0). Output binding `audio_gain = 0` -> constant-zero stream.
 """
 
 from __future__ import annotations
@@ -19,9 +19,16 @@ class Baseline:
         nyq = sample_rate_hz / 2.0
         self.sos = scisig.butter(4, [12.0 / nyq, 15.0 / nyq], btype="band", output="sos")
         self.zi = np.zeros((self.sos.shape[0], 2), dtype=np.float64)
+        self.unit_zi = scisig.sosfilt_zi(self.sos)
+        self.primed = False
 
     def step(self, raw_chunk: np.ndarray) -> dict[str, np.ndarray]:
         raw = linked_ears_montage(raw_chunk, self.channel_names)
+        # Warm start (BandpassImpl): seed the state to the steady state of
+        # the first sample's level instead of starting from silence.
+        if not self.primed and raw.shape[0]:
+            self.zi = self.unit_zi * float(raw[0])
+            self.primed = True
         smr_bp, self.zi = scisig.sosfilt(self.sos, raw, zi=self.zi, axis=0)
         n = raw_chunk.shape[0]
         return {"raw": raw, "smr_bp": smr_bp, "output/audio_gain": np.zeros(n, dtype=np.float64)}
