@@ -46,6 +46,15 @@ bumps are additive; major bumps may break compatibility.
   Fahrenheit differ by an offset as well as a scale, which an exponent vector
   cannot express, so conversion is the host's job.
 
+  The protocol editor refuses an input that carries a `unit` declaration, as
+  out-of-subset. An `input` round-trips through the editor as its montage
+  alone, so the declaration would be dropped on render and the signal would
+  come back as microvolts with every number unchanged — measured: the
+  input's dimensions went C to uV and the derive's behind it, and nothing in
+  the rendered file looked wrong. An out-of-subset protocol is visible to the
+  author; a retyped signal is not. Teaching the editor to carry the unit, and
+  to render a `temperature` control, is the follow-up.
+
 - **The protocol editor can now author the flagship EEG protocols.** `smr`,
   `alpha_up`, `beta_attention` and `high_beta_down` were outside the editor's
   describable subset, so the editor silently refused the four protocols the
