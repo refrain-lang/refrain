@@ -146,6 +146,7 @@ input "raw_19ch" {
 
 ```
 passthrough() -> stream<scalar uV>
+passthrough(input: stream<scalar T>) -> stream<scalar T>
 ```
 
 Identity montage: carries a **single** raw channel through unchanged, with no
@@ -159,6 +160,24 @@ input "tachogram" {        // 4 Hz cardiac tachogram, single channel
   montage = passthrough()
 }
 ```
+
+The `input:` form is an identity over a stream rather than over a raw channel.
+It exists because an `inhibit`'s `metric` has to be a primitive call, so naming
+one derive as the metric means wrapping it in something; `passthrough` is the
+wrapper that leaves the value alone. (`rectify` is the other call used this
+way, and it takes the absolute value — which is wrong whenever the sign of the
+metric matters.)
+
+```refrain
+inhibit "contact_loss" {
+  metric    = passthrough(input: "skin_rate")
+  threshold = absolute(value: 0.5 uV)
+  action    = mute(release: 500 ms)
+}
+```
+
+> `backend="rust"` does not accept the `input:` form — see
+> `docs/MIGRATING-TO-RUST-BACKEND.md` §2.
 
 ### `select_channel` *(planned; not in the v0.22.0 registry)*
 
@@ -522,6 +541,7 @@ change the protocol IR. See `docs/EMBEDDING.md`.
 
 ```
 absolute(value: T) -> threshold_type
+absolute(value: stream<scalar T>) -> threshold_type
 ```
 
 Fixed threshold. `value` carries the dimensions of the signal the enclosing
@@ -533,6 +553,23 @@ bare positional form `absolute(8 uV)` and the named form
 ```refrain
 threshold "smr_t" { signal = "smr_envelope"; type = absolute(8 uV) }
 ```
+
+`value` may instead name an **input or derive**, which makes the threshold
+track that stream sample for sample rather than sit at a constant — one
+envelope compared against a slower version of itself, say. The dimension check
+is the same: the named stream has to match the signal's units.
+
+```refrain
+derive "slow" { from = "raw"; pipeline = [ smooth(tau: 4 s) ] }
+threshold "rising" { signal = "env"; type = absolute(value: "slow") }
+```
+
+A `threshold` is **not** a legal target here: thresholds are evaluated in
+declaration order and nothing topologically sorts them, so a forward reference
+would have no value to read. Use a `derive` as the intermediate.
+
+> `backend="rust"` does not accept the stream form — see
+> `docs/MIGRATING-TO-RUST-BACKEND.md` §2.
 
 ### `percentile`
 
@@ -548,6 +585,21 @@ threshold "smr_t" {
   type   = percentile(target_pct: 70, window: 2 min)
 }
 ```
+
+It is also a **derive pipeline stage**, which makes a running percentile a
+signal in its own right — the form occupational-EMG work needs, where the
+10th/50th/90th percentiles of an exposure over a shift are each a measure
+rather than a trigger level.
+
+```refrain
+derive "emg_p90" {
+  from = "emg_envelope"
+  pipeline = [ percentile(target_pct: 90, window: 60 s) ]
+}
+```
+
+> `backend="rust"` does not accept the pipeline-stage form — see
+> `docs/MIGRATING-TO-RUST-BACKEND.md` §2.
 
 ### `autocorr`
 

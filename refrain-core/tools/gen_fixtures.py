@@ -9,10 +9,19 @@ For each protocol we emit:
 This is the Phase-4 golden-vector strategy: capture (input, IR, output) from
 the canonical Python implementation; the Rust core reproduces it. Run from
 the worktree venv:  ./.venv/bin/python refrain-core/tools/gen_fixtures.py
+
+This script is the REGENERATE half of the golden-vector gate: running it is a
+deliberate act that moves the baseline, and the result is meant to be read in
+`git diff` and committed. The VERIFY half is `verify_fixtures.py`, which asks
+whether the committed baseline still matches what this script emits — it drives
+this script with `--out-dir` so the committed fixtures stay on disk to be
+compared against. The gate used to regenerate in place and then compare, which
+meant the committed contents were never read by anything (refrain#100).
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -337,6 +346,23 @@ def _gen_advice_session(stem: str = "autopilot_alpha_theta", *, seconds: int = 8
 
 
 if __name__ == "__main__":
+    _ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    _ap.add_argument(
+        "--out-dir",
+        metavar="DIR",
+        default=None,
+        help=(
+            "Write fixtures here instead of refrain-core/tests/fixtures. "
+            "`verify_fixtures.py` uses this to regenerate into a throwaway "
+            "directory, leaving the committed baseline intact."
+        ),
+    )
+    _args = _ap.parse_args()
+    if _args.out_dir is not None:
+        # Rebinding the module global is enough: every writer looks `FIX` up at
+        # call time, including the `*.ir.json` glob `_gen_advisor_fixtures()`
+        # reads the advisor traces from.
+        FIX = Path(_args.out_dir).resolve()
     FIX.mkdir(parents=True, exist_ok=True)
     # realistic_smr now covered: its percentile thresholds use control-ref
     # target_pct, which the emitter resolves to the control default (and

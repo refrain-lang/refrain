@@ -31,16 +31,14 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 from refrain import parse_file
 from refrain.amp_profile import load_amp_profile
 from refrain.compose import filesystem_loader
 from refrain.eval_ import Evaluator
-from refrain.ir_json import effective_channels
 from refrain.resolver import ResolveError, resolve
-from refrain.synthetic import channels_for_synthetic
+from refrain.synthetic import channels_for_smoke, smoke_step
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -113,53 +111,19 @@ def _resolve_one(path: Path):
     return resolve(parse_file(path), amp, parent_loader=loader)
 
 
-def _channels_for(ir) -> tuple[str, ...]:
-    """The channel list to hand the Evaluator.
-
-    `channels_for_synthetic` appends A1/A2 so `linked_ears` resolves, which is
-    right for a referential montage and wrong for `passthrough()` — that
-    primitive requires a single-channel source and raises on a three-channel
-    one. The five passthrough protocols in bench/ are a host-metric-channel
-    shape (a tachogram, an externally computed envelope), where the runtime
-    supplies exactly the declared channel. `effective_channels` is what the
-    runtime acquires, so prefer it whenever a montage cannot take the padding.
-
-    Getting this wrong is how a conformance harness reports its own bugs as
-    the subject's: the first run of this file produced five "RESOLVES BUT DOES
-    NOT RUN" failures that were all the padding.
-    """
-    if any(inp.montage.callee == "passthrough" for inp in ir.inputs.values()):
-        return effective_channels(ir)
-    return channels_for_synthetic(ir)
+# The channel selection and the step itself now live in `refrain.synthetic`,
+# because `refrain check` makes the same step per invocation (refrain#97) and
+# two copies of "which channels does a passthrough montage want" is how one of
+# them goes wrong. The reasoning that was written here is in their docstrings:
+# padding with A1/A2 for `linked_ears` is right for a referential montage and
+# fatal for `passthrough()`, and getting it wrong made this file's first run
+# report five of its own bugs as the corpus's.
+_channels_for = channels_for_smoke
 
 
 def _step_one(ir, *, chunks: int = 3, backend: str | None = None) -> None:
-    """Push a few chunks of noise through a fresh Evaluator.
-
-    Noise rather than zeros because a constant input makes several primitives
-    degenerate (coherence returns NaN on zero variance and is coerced to 0,
-    percentile trackers see no spread), and a protocol that only survives a
-    flat line is not really running. More than one chunk because some impls
-    only bind state on a later call.
-
-    Built through `Evaluator.live`, not `Evaluator(...)`, because the bare
-    constructor hard-codes `self._backend = "python"` — only the `live`
-    factory wires up the Rust core. A version of this file that constructed
-    the evaluator directly and relied on `REFRAIN_EVAL_BACKEND` would run the
-    Python engine under both settings and report that as parity.
-    """
-    fs = float(ir.requires.sample_rate_chosen_hz or 256)
-    chans = _channels_for(ir)
-    rng = np.random.default_rng(7)
-    n = max(8, int(round(fs / 4)))
-    ev = Evaluator.live(
-        ir,
-        sample_rate_hz=fs,
-        channel_names=chans,
-        backend=backend or EVAL_BACKEND,
-    )
-    for _ in range(chunks):
-        ev.step_chunk(rng.standard_normal((n, len(chans))) * 5.0)
+    """Push a few chunks of noise through a fresh Evaluator."""
+    smoke_step(ir, chunks=chunks, backend=backend or EVAL_BACKEND)
 
 
 # ---------------------------------------------------------------------------
@@ -289,19 +253,31 @@ protocol "canary_threshold_in_formula" {
 """
 
 # A second canary for the other half of the property: a shape that resolves and
-# then dies inside the evaluator. `percentile` as a pipeline stage (D9.3) is
-# still exactly that, so if this one ever resolves AND runs, either it was
-# implemented — delete the canary — or the harness stopped looking.
-CANARY_PERCENTILE_PIPELINE_STAGE = """
-protocol "canary_percentile_stage" {
+# then dies inside the evaluator. `percentile` as a pipeline stage (D9.3) used
+# to be this canary and is now implemented, which is exactly the signal the
+# canary exists to give — it failed, loudly, in the commit that fixed it.
+#
+# Its replacement is the nearest shape still unimplemented: a threshold whose
+# level tracks *another threshold*. `absolute(value: "<a derive>")` now works
+# (D9.2), but only for an input or derive — the evaluator reads the level as a
+# constant unless the slot holds an `IRStreamRef`, and a threshold name
+# resolves to an `IRThresholdRef`, so this still dies on `float()`.
+#
+# It was left that way deliberately rather than by oversight. Thresholds are
+# evaluated in declaration order and nothing topologically sorts them, so
+# accepting a threshold here would run for a backward reference and raise
+# KeyError for a forward one — trading a clear crash for an order-dependent
+# one. If this canary ever resolves AND runs, either that ordering question
+# was answered — delete the canary — or the harness stopped looking.
+CANARY_THRESHOLD_TRACKING_A_THRESHOLD = """
+protocol "canary_threshold_tracks_threshold" {
   requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
   input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
-  derive "env" {
-    from = "raw"
-    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude(),
-                 percentile(target_pct: 90, window: 60 s) ]
-  }
-  output { audio_gain = 0 }
+  derive "env" { from = "raw"; pipeline = [ smooth(tau: 250 ms) ] }
+  threshold "floor" { signal = "env"; type = absolute(value: 8 uV) }
+  threshold "ceiling" { signal = "env"; type = absolute(value: "floor") }
+  reward { event = dwell(condition: above("env", "ceiling"), duration: 250 ms) }
+  output { audio_chime = reward.event }
 }
 """
 
@@ -310,7 +286,7 @@ protocol "canary_percentile_stage" {
     "src,label",
     [
         (CANARY_THRESHOLD_IN_FORMULA, "threshold referenced from a formula derive"),
-        (CANARY_PERCENTILE_PIPELINE_STAGE, "percentile as a pipeline stage"),
+        (CANARY_THRESHOLD_TRACKING_A_THRESHOLD, "a threshold tracking another threshold"),
     ],
 )
 def test_canary_the_harness_still_catches_a_known_bad_shape(src, label, tmp_path):

@@ -530,10 +530,10 @@ def test_rust_panic_surfaces_as_catchable_runtimeerror():
     panic take down the process. Regression for the panic-catchability gap
     surfaced by the coherence bug report.
 
-    The resolver rejects unsupported constructs up front, so it won't *emit* a
-    panic-triggering protocol; we exercise the PyO3 guard directly by corrupting a
-    valid IR-JSON's primitive callee to one the Rust core has no impl for (which
-    hits an "unsupported DSP primitive" panic during the core's build)."""
+    Corrupting a valid IR-JSON's primitive callee to one the Rust core has no
+    impl for exercises the PyO3 guard directly, without depending on which
+    constructs are Python-only today (for those, see
+    `test_python_only_shapes_fall_back_cleanly_on_rust` below)."""
     refrain_core = pytest.importorskip("refrain_core", reason="refrain_core wheel not installed")
     from refrain.ir_json import ir_to_json
 
@@ -591,6 +591,100 @@ def test_rust_backend_refuses_unsupported_ir_version(smr_ir):
     msg = str(excinfo.value)
     assert "99.0" in msg, f"diagnostic must name the offending version, got: {msg}"
     assert "refrain_ir_version" in msg, f"diagnostic must name the field, got: {msg}"
+
+
+# ---------------------------------------------------------------------------
+# Python-only shapes
+#
+# Three of the four shapes fixed for refrain#94 are Python-only: the Rust core
+# has no stream-valued `absolute` threshold, no `percentile` as a pipeline
+# stage and no `passthrough` identity over a stream. That is the documented
+# arrangement (MIGRATING-TO-RUST-BACKEND §2 — anything outside the Rust
+# core's set stays `backend="python"`), but it is a *new* instance of it: these
+# protocols now resolve and run on Python where before they crashed on both.
+#
+# So pin the only property a host actually needs — the refusal is a catchable
+# RuntimeError naming the fallback, not a process-killing panic — and pin it
+# as a ratchet. When the Rust core grows one of these, its row fails here and
+# has to be deleted in the same commit, which is what stops the divergence
+# becoming permanent by inattention.
+# ---------------------------------------------------------------------------
+
+_PY_ONLY_PREAMBLE = """
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "env" {
+    from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude(),
+                 smooth(tau: 250 ms) ]
+  }
+"""
+
+_PY_ONLY_SHAPES = {
+    "absolute-tracking-a-derive": f"""
+protocol "py_only_absolute" {{
+  {_PY_ONLY_PREAMBLE}
+  derive "slow" {{ from = "raw"; pipeline = [ smooth(tau: 4 s) ] }}
+  threshold "t" {{ signal = "env"; type = absolute(value: "slow") }}
+  reward {{ event = dwell(condition: above("env", "t"), duration: 250 ms) }}
+  output {{ audio_chime = reward.event }}
+}}
+""",
+    "percentile-as-a-pipeline-stage": """
+protocol "py_only_percentile" {
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "env" {
+    from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude(),
+                 percentile(target_pct: 90, window: 60 s) ]
+  }
+  reward { continuous = sigmoid("env", midpoint: 1.0, steepness: 3) }
+  output { audio_gain = reward.continuous }
+}
+""",
+    "passthrough-reading-a-derive": f"""
+protocol "py_only_passthrough" {{
+  {_PY_ONLY_PREAMBLE}
+  inhibit "guard" {{
+    metric    = passthrough(input: "env")
+    threshold = absolute(value: 20 uV)
+    action    = mute(release: 200 ms)
+  }}
+  reward {{ continuous = sigmoid("env", midpoint: 1.0, steepness: 3) }}
+  output {{ audio_gain = reward.continuous }}
+}}
+""",
+}
+
+
+@pytest.mark.parametrize("label", sorted(_PY_ONLY_SHAPES))
+def test_python_only_shapes_fall_back_cleanly_on_rust(label):
+    pytest.importorskip("refrain_core", reason="refrain_core wheel not installed")
+    ir = resolve(parse(_PY_ONLY_SHAPES[label]))
+    chunk = _make_chunk()
+
+    # Python runs it. If this half ever fails the shape regressed, not the
+    # Rust core.
+    py = Evaluator.live(
+        ir, sample_rate_hz=float(SAMPLE_RATE), channel_names=list(CHANNELS),
+        backend="python",
+    )
+    py.step_chunk(chunk)
+
+    # Rust refuses it the way a host can recover from: `except Exception`
+    # catches it, and the message says what to do.
+    with pytest.raises(Exception) as excinfo:   # noqa: PT011 — asserted below
+        Evaluator.live(
+            ir, sample_rate_hz=float(SAMPLE_RATE), channel_names=list(CHANNELS),
+            backend="rust",
+        ).step_chunk(chunk)
+    assert isinstance(excinfo.value, RuntimeError), (
+        f"{label}: a panic that is not a RuntimeError would take the host down"
+    )
+    assert 'backend="python"' in str(excinfo.value), (
+        f"{label}: the refusal must name the fallback, got: {excinfo.value}"
+    )
 
 
 # ---------------------------------------------------------------------------

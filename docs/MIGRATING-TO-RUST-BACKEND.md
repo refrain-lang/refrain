@@ -57,6 +57,23 @@ wheel.
   covered, but anything outside it — custom Python primitives (SPEC §4.11) or a
   non-default `hilbert(kind=...)` — is not in the Rust core; those protocols must
   stay `backend="python"`. See `docs/CONFORMANCE.md` for the covered set.
+- **Three positions a covered primitive can appear in, but the Rust core does
+  not accept.** Each one is a stdlib primitive the Rust core implements —
+  somewhere else:
+  - `absolute(value: "<a derive>")`, a threshold whose level tracks another
+    stream instead of sitting at a constant. The Rust core's `absolute` takes
+    a number or a `control_ref`.
+  - `percentile(target_pct:, window:)` as a **derive pipeline stage**. The Rust
+    core has `percentile` as a threshold constructor and as a baseline-seed
+    buffer, not as a stage in a `pipeline = [...]`.
+  - `passthrough(input: "<a derive>")`, the way an `inhibit` names one derive
+    as its metric. The Rust core has `passthrough` only as the identity
+    *montage* over a single-channel source.
+
+  All three resolve and run under `backend="python"`. Under `backend="rust"`
+  they are refused at evaluator construction with a `RuntimeError` naming the
+  fallback — catchable with `except Exception`, so a host can retry on Python.
+  Pinned by `tests/test_eval_rust_backend.py::test_python_only_shapes_fall_back_cleanly_on_rust`.
 
 ## 3. Verify parity before you flip
 

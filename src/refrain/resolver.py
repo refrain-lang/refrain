@@ -2992,10 +2992,13 @@ class _Resolver:
             loc=loc,
         )
 
-    def _resolve_binary(self, expr: A.BinaryOp) -> IRBinaryOp:
+    def _resolve_binary(self, expr: A.BinaryOp) -> IRExpr:
         left = self._resolve_stream_expr(expr.left)
         right = self._resolve_stream_expr(expr.right)
         result_type = _binop_type(expr.op, left, right, expr.loc)
+        folded = _fold_arithmetic(expr.op, left, right, result_type, expr.loc)
+        if folded is not None:
+            return folded
         return IRBinaryOp(op=expr.op, left=left, right=right, stream_type=result_type, loc=expr.loc)
 
     def _resolve_conditional(self, expr: A.Conditional) -> IRConditional:
@@ -3539,6 +3542,64 @@ def _binop_type(op: str, left: IRExpr, right: IRExpr, loc: Loc | None) -> Stream
             )
         return BOOLEAN_STREAM
     raise ResolveError(f"unknown binary operator {op!r}", loc=loc)
+
+
+def _fold_arithmetic(
+    op: str,
+    left: IRExpr,
+    right: IRExpr,
+    result_type: StreamType,
+    loc: Loc | None,
+) -> IRNumberLit | None:
+    """Collapse arithmetic over two numeric literals to one literal, or
+    return None when either side is not a literal.
+
+    Every slot that wants a compile-time constant — `sigmoid(steepness:)`,
+    `absolute(value:)`, `smooth(tau:)`, a control default — reads an
+    `IRNumberLit` and nothing else. `steepness: 0 - 3` therefore resolved
+    cleanly and then died in the evaluator on an `IRBinaryOp` it had no way
+    to reduce (refrain#94). Folding at resolve means the arithmetic never
+    reaches a slot that cannot hold it, and a host serializing the IR sees
+    the number the author meant rather than a tree it would have to
+    re-evaluate.
+
+    `result_type` already carries the dimensions `_binop_type` worked out,
+    so this only has to decide the *surface* unit, which exists for the
+    printer. It is kept only where it is unambiguous; dimensions remain
+    authoritative either way.
+    """
+    if not (isinstance(left, IRNumberLit) and isinstance(right, IRNumberLit)):
+        return None
+    if op == "+":
+        value = left.value + right.value
+    elif op == "-":
+        value = left.value - right.value
+    elif op == "*":
+        value = left.value * right.value
+    elif op == "/":
+        if right.value == 0.0:
+            raise ResolveError("division by zero", loc=loc)
+        value = left.value / right.value
+    else:
+        # Comparisons fold to a boolean, not a number. No slot needs that,
+        # and `mode == "x"` conditionals are already folded upstream by
+        # `_fold_mode_conditionals`.
+        return None
+
+    if op in ("+", "-"):
+        # Dimensions had to match to get here, so either side's unit names
+        # the result.
+        unit = left.unit or right.unit
+    elif op == "*":
+        # `2 * 250 ms` is ms; `3 uV * 2 uV` is uV2, which the printer can
+        # spell, but deriving that spelling from two operands is more
+        # guessing than it is worth.
+        unit = right.unit if left.unit is None else (left.unit if right.unit is None else None)
+    else:
+        # `60 s / 2` is seconds; `1 uV / 1 s` has no surface spelling.
+        unit = left.unit if right.unit is None else None
+
+    return IRNumberLit(value=value, dims=result_type.dimensions, unit=unit, loc=loc)
 
 
 def _collect_member_path(expr: A.Expr) -> tuple[str, ...] | None:
