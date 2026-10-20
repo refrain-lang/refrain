@@ -70,15 +70,55 @@ jobs:
           refrain fuzz bench/protocols examples \
             --library examples --max-scenarios 4
 
+  # Half one of the golden-vector gate: are the COMMITTED fixtures what the
+  # Python emitter produces today?  Its own job rather than a step of
+  # `rust-equivalence` so the two failures are told apart at a glance — "the
+  # baseline is stale" and "the Rust core disagrees with the baseline" have
+  # different causes and different fixes.  Needs no Rust toolchain, so it is
+  # the fast one and reports first.
+  #
+  # Until #100 this comparison did not exist: the gate regenerated the
+  # fixtures in place and then pointed cargo test at the result, so the
+  # committed contents were never read by anything.  Fifteen of them carried a
+  # sample rate of 2048 Hz, which no amp profile in the tree supports, across
+  # several releases with CI green throughout.
+  fixture-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package + eval extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[eval,dev]"
+
+      - name: Verify committed golden vectors are current
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python refrain-core/tools/verify_fixtures.py
+
+  # Half two: the Rust core against the committed fixtures.
+  #
   # NOTE: This job cannot be validated locally — it requires a real GitHub
   # Actions runner with network access to download the Rust toolchain and
   # Python packages.  The toolchain wiring must be confirmed on first CI push.
-  # The gate (check_equivalence.py) now runs four steps proving one canonical
-  # transformation across both backends: (a) regenerates golden-vector fixtures
-  # from the current Python evaluator, (b) runs cargo test (Rust equivalence +
-  # events + taps + ir_deser), (c) builds the refrain_core wheel from current
-  # Rust source, and (d) runs the behavioral evaluator suite under
-  # REFRAIN_EVAL_BACKEND=rust — enforcing Python↔Rust parity at every level.
+  # The gate (check_equivalence.py) runs five steps proving one canonical
+  # transformation across both backends: (a) verifies the committed
+  # golden-vector fixtures match what the Python evaluator emits, regenerating
+  # into a throwaway directory so the committed vectors survive into (b), which
+  # runs cargo test (Rust equivalence + events + taps + ir_deser) against them,
+  # (c) builds the refrain_core wheel from current Rust source, (d) runs the
+  # behavioral evaluator suite under REFRAIN_EVAL_BACKEND=rust — enforcing
+  # Python↔Rust parity at every level — and (e) validates the IR-JSON vectors
+  # against the published schema.  Step (a) overlaps `fixture-drift` by ~10
+  # seconds of fixture generation, which is the price of the local gate staying
+  # a single command.
   rust-equivalence:
     runs-on: ubuntu-latest
     # Run on a single Python version; the equivalence gate is about Rust/Python
