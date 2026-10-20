@@ -77,3 +77,99 @@ def test_conditional_threshold_missing_branch_fails():
     }]
     with pytest.raises(jsonschema.ValidationError):
         validate_model(m)
+
+
+def test_carried_through_expression_slot_validates():
+    """`{"expr": "<source text>"}` is a slot the editor preserves rather than
+    models — a mode-gated conditional, or arithmetic over controls.
+
+    #109 introduced the shape and made the four flagship EEG protocols
+    describable, but did not widen `$defs.slotValue`, and nothing validated a
+    flagship model. The result shipped: every one of the four describes to a
+    model that `validate_model` rejects, so a host that validates before
+    rendering refuses exactly the protocols #109 existed to admit.
+    """
+    m = dict(_GOOD)
+    m["inhibits"] = [{
+        "name": "artifact", "block": "inhibit.bandpower_relative", "from": "raw",
+        "slots": {
+            "band": {"expr": "(hbeta_lo_hz, hbeta_hi_hz)"},
+            "target_pct": {"expr": 'artifact_guard == "on" ? artifact_strictness : 100'},
+        },
+    }]
+    validate_model(m)
+
+
+def test_an_unknown_object_slot_shape_is_still_rejected():
+    """The companion: widening for `expr` must not turn the slot into `any`.
+    `additionalProperties: false` on each branch is what keeps a typo from
+    validating."""
+    m = dict(_GOOD)
+    m["inhibits"] = [{
+        "name": "artifact", "block": "inhibit.bandpower_relative", "from": "raw",
+        "slots": {"target_pct": {"expresion": "typo"}},
+    }]
+    with pytest.raises(jsonschema.ValidationError):
+        validate_model(m)
+    m["inhibits"][0]["slots"] = {"target_pct": {"expr": "ok", "bind": "also"}}
+    with pytest.raises(jsonschema.ValidationError):
+        validate_model(m)
+
+
+def test_every_flagship_protocol_describes_to_a_valid_model():
+    """The gap that let the above ship: no test validated a model produced by
+    `describe_protocol` from a real protocol, only hand-written ones.
+
+    Inline rather than read from the corpus, because the protocol library is a
+    separate repository and is not available here. This is the artifact-inhibit
+    shape all four flagships share, which is the one that was rejected.
+    """
+    from refrain.editor import describe_protocol
+
+    src = '''
+protocol "flagship_shape" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["sensorimotor_sleep"] }
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "env" { from = "raw"
+    pipeline = [ band_envelope(band: (12 Hz, 15 Hz), latency: 360 ms) ] }
+  threshold "env_t" { signal = "env"; type = percentile(target_pct: 70, window: 2 min) }
+  inhibit "emg" {
+    metric    = bandpower(input: "raw", band: (hb_lo_hz, hb_hi_hz), window: 100 ms)
+    threshold = percentile(
+      target_pct: guard == "on" ? strictness : 100,
+      window: 2 min
+    )
+    action    = mute(release: 200 ms)
+  }
+  reward { event = dwell(condition: above("env", "env_t"), duration: 250 ms)
+           continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+  output { audio_chime = reward.event; audio_gain = reward.event.holds ? reward.continuous : 0 }
+  controls {
+    hb_lo_hz   = frequency { default = 20 Hz; range = (18 Hz, 24 Hz); label = "HB low" }
+    hb_hi_hz   = frequency { default = 30 Hz; range = (26 Hz, 34 Hz); label = "HB high" }
+    strictness = number { default = 95; range = (80, 99); label = "Strictness" }
+    guard      = mode { choices = ["on", "off"]; default = "on"; label = "Guard" }
+  }
+}
+'''
+    d = describe_protocol(src)
+    assert d["in_subset"] is True, d.get("reason")
+    # The shape that was rejected must actually be present, or this passes
+    # vacuously the next time a matcher stops producing it. Walked rather than
+    # read from a known key: in this subset the artifact inhibit is modelled
+    # as a reward component, not under `inhibits`, and hard-coding the key is
+    # how the assertion would quietly stop checking anything.
+    def _exprs(node):
+        if isinstance(node, dict):
+            if "expr" in node and len(node) == 1:
+                yield node
+            for v in node.values():
+                yield from _exprs(v)
+        elif isinstance(node, list):
+            for v in node:
+                yield from _exprs(v)
+
+    found = list(_exprs(d["model"]))
+    assert found, "no carried-through expression in the model — test is vacuous"
+    validate_model(d["model"])
