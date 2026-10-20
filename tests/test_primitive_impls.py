@@ -257,25 +257,95 @@ def test_bandpass_warm_starts_so_a_standing_offset_reads_zero():
     assert np.abs(y).max() < 1e-9, f"bandpass rang to {np.abs(y).max()} on DC"
 
 
-def test_sos_unit_zi_matches_scipy():
-    """`_sos_unit_zi` is `scipy.signal.sosfilt_zi` written out so the Rust core
-    can mirror it from the same baked `sos`. It has to agree with SciPy, or
-    the two engines warm-start differently and the drift gate fails."""
+def _warm_start_sos_cases():
+    from scipy import signal as scisig
+
+    return [
+        ("alpha 8-12 Hz at 256 Hz",
+         scisig.butter(4, [8 / 128.0, 12 / 128.0], btype="band", output="sos")),
+        ("0.05-5 Hz at 15 Hz",
+         scisig.butter(2, [0.05 / 7.5, 5.0 / 7.5], btype="band", output="sos")),
+        ("0.0159-5 Hz at 15 Hz, order 4",
+         scisig.butter(4, [0.0159 / 7.5, 5.0 / 7.5], btype="band", output="sos")),
+        ("bessel 12-15 Hz at 250 Hz",
+         scisig.bessel(6, [12 / 125.0, 15 / 125.0], btype="band", output="sos",
+                       norm="phase")),
+        ("cheby2 1-30 Hz at 250 Hz",
+         scisig.cheby2(4, 40.0, [1 / 125.0, 30 / 125.0], btype="band",
+                       output="sos")),
+    ]
+
+
+@pytest.mark.parametrize("label,sos", _warm_start_sos_cases(),
+                         ids=[c[0] for c in _warm_start_sos_cases()])
+def test_warm_start_holds_a_standing_level(label, sos):
+    """The property the warm start exists for, asserted on behaviour rather
+    than on state: seeded with `_sos_unit_zi * x[0]`, a filter fed a constant
+    sits at its steady-state response `x[0] * H(1)` from the first sample,
+    with no settling at all.
+
+    `H(1)` is ~1e-16 for a Butterworth or Bessel bandpass, which is why a
+    standing offset reads zero — but it is exactly 0.01 for the Chebyshev
+    type II case here, because 40 dB of stopband attenuation *is* a DC gain
+    of 0.01. The property is "immediately at the steady state", not
+    "immediately zero".
+
+    This is the robust half of the pair below. A near-DC corner puts a
+    section's poles close to the unit circle, which makes the *state* badly
+    conditioned (see `test_sos_unit_zi_matches_scipy`), but the
+    ill-conditioning cancels once the filter runs: measured at 1e-15 relative
+    across SciPy 1.17 and 1.18 and both architectures.
+    """
     from scipy import signal as scisig
 
     from refrain.primitive_impls import _sos_unit_zi
 
-    cases = [
-        scisig.butter(4, [8 / 128.0, 12 / 128.0], btype="band", output="sos"),
-        scisig.butter(2, [0.05 / 7.5, 5.0 / 7.5], btype="band", output="sos"),
-        scisig.butter(4, [0.0159 / 7.5, 5.0 / 7.5], btype="band", output="sos"),
-        scisig.bessel(6, [12 / 125.0, 15 / 125.0], btype="band", output="sos",
-                      norm="phase"),
-        scisig.cheby2(4, 40.0, [1 / 125.0, 30 / 125.0], btype="band", output="sos"),
-    ]
-    for sos in cases:
-        assert np.allclose(_sos_unit_zi(sos), scisig.sosfilt_zi(sos),
-                           rtol=1e-12, atol=1e-14)
+    sos = np.asarray(sos)
+    dc_gain = float(
+        np.prod([(s[0] + s[1] + s[2]) / (s[3] + s[4] + s[5]) for s in sos])
+    )
+    for level in (8.0, 33.0):
+        x = np.full(2000, level)
+        y, _ = scisig.sosfilt(sos, x, zi=_sos_unit_zi(sos) * x[0], axis=0)
+        steady = level * dc_gain
+        err = float(np.abs(y - steady).max())
+        assert err < 1e-12 * level, (
+            f"{label}: a constant {level} should sit at {steady:.6g} "
+            f"(H(1) = {dc_gain:.6g}) from sample one; it strays by "
+            f"{err:.3e}, so the warm start is not holding it"
+        )
+
+
+@pytest.mark.parametrize("label,sos", _warm_start_sos_cases(),
+                         ids=[c[0] for c in _warm_start_sos_cases()])
+def test_sos_unit_zi_matches_scipy(label, sos):
+    """`_sos_unit_zi` is `scipy.signal.sosfilt_zi` written out so the Rust core
+    can mirror it from the same baked `sos`. It has to agree with SciPy, or
+    the two engines warm-start differently and the drift gate fails.
+
+    The tolerance is derived, not chosen. Per second-order section the solve
+    is `[[1 + a1, -1], [a2, 1]] @ zi = rhs`, whose determinant is
+    `1 + a1 + a2` — the denominator of the section's DC gain, and tiny
+    whenever a pole sits near DC (4.4e-5 for the 0.0159 Hz corner above).
+    Double-precision agreement between any two correct implementations is
+    therefore bounded by about `eps / det`, and SciPy reaches that bound by a
+    different route (a LAPACK solve) than this closed form does. A fixed
+    `rtol=1e-12` passed on SciPy 1.18 / arm64 and failed on 1.15 / x86-64 for
+    that one case at 1.5e-12, which is the conditioning talking and not a
+    defect. What a real formula error looks like is O(1).
+    """
+    from scipy import signal as scisig
+
+    from refrain.primitive_impls import _sos_unit_zi
+
+    det = min(abs(1.0 + s[4] / s[3] + s[5] / s[3]) for s in np.asarray(sos))
+    rtol = max(1e-13, 100 * float(np.finfo(np.float64).eps) / det)
+    mine, ref = _sos_unit_zi(sos), scisig.sosfilt_zi(sos)
+    assert np.allclose(mine, ref, rtol=rtol, atol=1e-15), (
+        f"{label}: min|1+a1+a2| = {det:.3e} allows rtol {rtol:.3e}; got "
+        f"max rel err "
+        f"{np.max(np.abs(mine - ref) / np.maximum(np.abs(ref), 1e-300)):.3e}"
+    )
 
 
 def test_differentiate_constant_is_zero():

@@ -16,6 +16,23 @@ struct Io {
     sample_rate_hz: f64,
     channels: Vec<String>,
     chunk_size: usize,
+    /// Leading samples whose *values* neither engine can be held to, for the
+    /// reason `equivalence.rs` already skips them: the filters are still
+    /// establishing themselves, so a derive's value there is the filter's own
+    /// settling rather than a measurement. Since the filters warm-start (#93)
+    /// a bandpass fed a standing level reads its steady-state zero from
+    /// sample one — correct, and numerically degenerate: the first samples of
+    /// an envelope are rounding dust around 1e-23, and `micro_05_reward`
+    /// divides one such dust value by another (`sigmoid("env" / "t")`). The
+    /// ratio of two numbers that are both zero-to-rounding is whatever the
+    /// platform's last bits say, so it differs between SciPy's `sosfilt` and
+    /// this crate's recurrence, and between macOS and Linux. Event identity
+    /// — count, channel, kind, timestamp — is still pinned everywhere.
+    ///
+    /// Absent from the authored-pulse fixtures (`output_dwell_*`), which run
+    /// no filter at all, so zero is the right default for them.
+    #[serde(default)]
+    warmup_samples: usize,
     input: Vec<Vec<f64>>,
 }
 
@@ -66,8 +83,10 @@ fn run_events(stem: &str) {
         want.len()
     );
 
+    let warmup_s = io.warmup_samples as f64 / io.sample_rate_hz;
     let mut max_ts = 0.0_f64;
     let mut max_val = 0.0_f64;
+    let mut skipped = 0_usize;
     for (i, (g, w)) in got.iter().zip(&want).enumerate() {
         assert_eq!(g.channel, w.channel, "{stem}: event {i} channel mismatch");
         assert_eq!(g.kind, w.kind, "{stem}: event {i} kind mismatch");
@@ -81,6 +100,10 @@ fn run_events(stem: &str) {
         max_ts = max_ts.max(dts);
 
         match (g.value, w.value) {
+            // Inside the warmup window a value is the filters' own settling,
+            // not a measurement — see `Io::warmup_samples`. Identity above is
+            // still asserted; only the number is let go.
+            (Some(_), Some(_)) if g.timestamp_s < warmup_s => skipped += 1,
             (Some(gv), Some(wv)) => {
                 let dv = (gv - wv).abs();
                 assert!(
@@ -94,6 +117,11 @@ fn run_events(stem: &str) {
             (gv, wv) => panic!("{stem}: event {i} value None-ness mismatch (got {gv:?}, want {wv:?})"),
         }
     }
+    assert!(
+        skipped < got.len(),
+        "{stem}: every event fell inside the {warmup_s} s warmup window, so no \
+         value was actually compared"
+    );
 
     // Report the per-channel/kind breakdown so the harness output is legible.
     let mut breakdown: BTreeMap<(String, String), usize> = BTreeMap::new();
@@ -102,7 +130,8 @@ fn run_events(stem: &str) {
     }
     eprintln!(
         "  {stem} :: {} events matched; breakdown = {breakdown:?}; \
-         max|ts diff| = {max_ts:e}; max|value diff| = {max_val:e}",
+         max|ts diff| = {max_ts:e}; max|value diff| = {max_val:e} \
+         ({skipped} value(s) inside the {warmup_s} s warmup window not compared)",
         got.len()
     );
 }
