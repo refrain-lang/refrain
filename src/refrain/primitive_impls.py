@@ -82,8 +82,17 @@ def _sos_unit_zi(sos: np.ndarray) -> np.ndarray:
     per second-order section, `lfilter_zi` reduces to a 2x2 solve
     `[[1 + a1, -1], [a2, 1]] @ zi = [b1 - b0*a1, b2 - b0*a2]`, and the
     sections compose by carrying each one's DC gain `H(1)` forward as a
-    scale. Verified against `scipy.signal.sosfilt_zi` to ~1e-15 in
-    `tests/test_primitive_impls.py`.
+    scale.
+
+    `det` is that DC gain's denominator, so it is tiny whenever a pole sits
+    near DC (4.4e-5 for a 0.0159 Hz corner at 15 Hz) and the solve is badly
+    conditioned there: no two correct implementations of this agree better
+    than about `eps / det`, which is why
+    `tests/test_primitive_impls.py::test_sos_unit_zi_matches_scipy` derives
+    its tolerance from `det` rather than fixing one. The conditioning is in
+    the state and not in the behaviour — seeded and run, the filter sits at
+    `x[0] * H(1)` to 1e-15 relative, which is what
+    `test_warm_start_holds_a_standing_level` pins.
     """
     sos = np.asarray(sos, dtype=np.float64)
     zi = np.empty((sos.shape[0], 2), dtype=np.float64)
@@ -286,9 +295,12 @@ class BandpassImpl(_WarmStartSos, PrimitiveImpl):
             )
         else:
             raise ValueError(f"bandpass: unknown kind {kind!r}")
-        # Warm-started on the first sample (see `_sos_unit_zi`): a bandpass
-        # rejects DC, so a signal arriving at a standing level reads ~0
-        # straight away instead of ringing down to it.
+        # Warm-started on the first sample (see `_sos_unit_zi`): the output
+        # is the steady-state response to that level straight away instead of
+        # ringing its way there. For a Butterworth or Bessel bandpass that
+        # response is ~0, because they reject DC outright; a `chebyshev2`
+        # keeps `10 ** (-attenuation_db / 20)` of it (0.01 at the default
+        # 40 dB), which is the filter doing what it was asked to.
         self._init_warm_start(self.sos)
 
     def step(self, x: np.ndarray) -> np.ndarray:
