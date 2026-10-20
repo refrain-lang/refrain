@@ -31,16 +31,14 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 from refrain import parse_file
 from refrain.amp_profile import load_amp_profile
 from refrain.compose import filesystem_loader
 from refrain.eval_ import Evaluator
-from refrain.ir_json import effective_channels
 from refrain.resolver import ResolveError, resolve
-from refrain.synthetic import channels_for_synthetic
+from refrain.synthetic import channels_for_smoke, smoke_step
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -113,53 +111,19 @@ def _resolve_one(path: Path):
     return resolve(parse_file(path), amp, parent_loader=loader)
 
 
-def _channels_for(ir) -> tuple[str, ...]:
-    """The channel list to hand the Evaluator.
-
-    `channels_for_synthetic` appends A1/A2 so `linked_ears` resolves, which is
-    right for a referential montage and wrong for `passthrough()` — that
-    primitive requires a single-channel source and raises on a three-channel
-    one. The five passthrough protocols in bench/ are a host-metric-channel
-    shape (a tachogram, an externally computed envelope), where the runtime
-    supplies exactly the declared channel. `effective_channels` is what the
-    runtime acquires, so prefer it whenever a montage cannot take the padding.
-
-    Getting this wrong is how a conformance harness reports its own bugs as
-    the subject's: the first run of this file produced five "RESOLVES BUT DOES
-    NOT RUN" failures that were all the padding.
-    """
-    if any(inp.montage.callee == "passthrough" for inp in ir.inputs.values()):
-        return effective_channels(ir)
-    return channels_for_synthetic(ir)
+# The channel selection and the step itself now live in `refrain.synthetic`,
+# because `refrain check` makes the same step per invocation (refrain#97) and
+# two copies of "which channels does a passthrough montage want" is how one of
+# them goes wrong. The reasoning that was written here is in their docstrings:
+# padding with A1/A2 for `linked_ears` is right for a referential montage and
+# fatal for `passthrough()`, and getting it wrong made this file's first run
+# report five of its own bugs as the corpus's.
+_channels_for = channels_for_smoke
 
 
 def _step_one(ir, *, chunks: int = 3, backend: str | None = None) -> None:
-    """Push a few chunks of noise through a fresh Evaluator.
-
-    Noise rather than zeros because a constant input makes several primitives
-    degenerate (coherence returns NaN on zero variance and is coerced to 0,
-    percentile trackers see no spread), and a protocol that only survives a
-    flat line is not really running. More than one chunk because some impls
-    only bind state on a later call.
-
-    Built through `Evaluator.live`, not `Evaluator(...)`, because the bare
-    constructor hard-codes `self._backend = "python"` — only the `live`
-    factory wires up the Rust core. A version of this file that constructed
-    the evaluator directly and relied on `REFRAIN_EVAL_BACKEND` would run the
-    Python engine under both settings and report that as parity.
-    """
-    fs = float(ir.requires.sample_rate_chosen_hz or 256)
-    chans = _channels_for(ir)
-    rng = np.random.default_rng(7)
-    n = max(8, int(round(fs / 4)))
-    ev = Evaluator.live(
-        ir,
-        sample_rate_hz=fs,
-        channel_names=chans,
-        backend=backend or EVAL_BACKEND,
-    )
-    for _ in range(chunks):
-        ev.step_chunk(rng.standard_normal((n, len(chans))) * 5.0)
+    """Push a few chunks of noise through a fresh Evaluator."""
+    smoke_step(ir, chunks=chunks, backend=backend or EVAL_BACKEND)
 
 
 # ---------------------------------------------------------------------------

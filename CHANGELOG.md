@@ -42,6 +42,24 @@ bumps are additive; major bumps may break compatibility.
   dimension-checked and a bare zero does not share dimensions with a microvolt
   stream. SPEC §3's EBNF still has to grow the production; DESIGN-NOTES §1.3
   records the divergence.
+### Changed
+- **`refrain check` now parses, resolves and steps one chunk, and says so.**
+  It used to parse and stop, and print a bare `OK`. `OK` was read as a verdict
+  on the protocol rather than on the parser, and that is how a protocol that
+  had never run reached a downstream repository: `refrain check` said `OK`,
+  `refrain fuzz` said `SKIPPED (unsupported)`, and production crashed on the
+  first chunk. Parsing was not even the whole of what it claimed — it printed
+  `OK` for protocols the resolver rejects on the next line. `check` now runs
+  the per-file form of the property the corpus is held to in
+  `tests/test_resolves_implies_runs.py`: anything that resolves must survive
+  `step_chunk`, with no third outcome. Its verdict line names all three stages
+  and the rate and channel count it stepped at, and there are now three
+  distinct failures — `parse failed`, `resolve failed`, and `resolves but does
+  not run`, the last carrying the evaluator's own message, which is the only
+  thing that says which primitive refused. `check` takes `--amp` and
+  `--library` like `resolve`, since resolving a protocol with an `extends`
+  needs the library search path. (#97)
+
 
 ### Fixed
 - **Four protocol shapes passed `refrain check` and then crashed when the
@@ -101,6 +119,30 @@ bumps are additive; major bumps may break compatibility.
   fixture count cannot do that job, because the total is reached with or
   without some of the fixes when a protocol is held out by a second,
   unrelated obstacle.
+
+- **The golden-vector drift gate can now fail.** `check_equivalence.py` ran
+  `gen_fixtures.py` over the committed fixtures and then pointed `cargo test`
+  at the result, so the regeneration overwrote the baseline the comparison was
+  supposed to read. Python↔Rust parity was still proven; the golden property —
+  today matches a known-good past — was not, because the expected values were
+  regenerated in the same run meant to check them. Nothing read the committed
+  contents, and they drifted: fifteen fixtures carried a
+  `sample_rate_chosen_hz` of 2048 Hz, a rate no amp profile in the tree
+  supports, across several releases with the local gate and the
+  `rust-equivalence` CI job green throughout. (The field itself was corrected
+  in passing by #103; the hole that hid it was not.) Regeneration and
+  comparison are now separate: `gen_fixtures.py --out-dir DIR` is the
+  regenerate mode, the new `verify_fixtures.py` is the verify mode, and it
+  regenerates into a throwaway directory so the committed fixtures stay on
+  disk to be compared against — and to be what `cargo test` is held to. CI
+  gains a `fixture-drift` job so a stale baseline and a disagreeing Rust core
+  are told apart at a glance, and `git status` is clean after a local gate run
+  instead of training people to ignore a dirty fixture directory. Fixtures
+  compare within the parity bar `equivalence.rs` already uses (atol 1e-6,
+  rtol 1e-4) for floats, since they are scipy output committed from one
+  machine and regenerated on another, and exactly for everything else —
+  including integers, which is what the 2048 was. (#100)
+
 
 ## [0.23.0] — 2026-10-17
 

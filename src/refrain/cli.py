@@ -3,7 +3,9 @@
 """Refrain command-line interface.
 
 v0.0r1 subcommands:
-  - `refrain check FILE`                       — parse-only validation
+  - `refrain check FILE [--amp AMP.json]`      — parse + resolve + step one
+                                                 chunk of synthetic data
+                                                 through the evaluator
   - `refrain resolve FILE [--amp AMP.json]`    — parse + resolve + type check;
                                                  print the resolved IR or
                                                  a CRED-nf supplement
@@ -40,28 +42,85 @@ from .cost import estimate_cost
 from .ir_print import print_cred_nf, print_ir
 from .parser import ParseError, parse_file
 from .resolver import ResolveError, resolve
-from .synthetic import channels_for_synthetic
+from .synthetic import channels_for_synthetic, smoke_step
 
 if TYPE_CHECKING:
     from .ir import IRProtocol
 
 
 def _cmd_check(args: argparse.Namespace) -> int:
-    """Parse the file. Exit 0 with a one-line OK; exit 1 with a diagnostic
-    that includes line/col when the parser can extract them."""
+    """Parse, resolve, and step one chunk of synthetic data through the
+    evaluator. Exit 0 with a one-line OK naming all three stages; exit 1 with a
+    diagnostic that includes line/col when the parser can extract them.
+
+    `check` used to parse and stop, and print a bare `OK`. That read as a
+    verdict on the protocol rather than on the parser, and a protocol that had
+    never run reached a downstream repository on the strength of it: `check` said
+    OK, `fuzz` said SKIPPED, production crashed on the first chunk
+    (refrain#97). Three stages, so three ways to fail, each named for what it
+    was: `parse failed`, `resolve failed`, `resolves but does not run`.
+
+    The step is the per-file form of the property
+    `tests/test_resolves_implies_runs.py` asserts over the whole corpus — a
+    protocol that resolves must survive `step_chunk`, with no third outcome.
+    """
     path = Path(args.file)
     if not path.exists():
         print(f"error: {path}: no such file", file=sys.stderr)
         return 2
+
+    amp = None
+    if args.amp is not None:
+        amp_path = Path(args.amp)
+        if not amp_path.exists():
+            print(f"error: {amp_path}: no such amp-profile file", file=sys.stderr)
+            return 2
+        try:
+            amp = load_amp_profile(amp_path)
+        except AmpProfileError as exc:
+            print(f"error: {amp_path}: {exc}", file=sys.stderr)
+            return 1
+
+    # Resolving is part of `check` now, so `check` needs the same library search
+    # path `resolve` has — without it every protocol with an `extends` becomes a
+    # false failure.
+    library_dirs = [Path(d) for d in (args.library or [])] + default_library_dirs()
+    loader = filesystem_loader(library_dirs) if library_dirs else None
+
     try:
         file_ast = parse_file(path)
     except ParseError as exc:
         print(f"error: {path}: parse failed", file=sys.stderr)
         print(str(exc), file=sys.stderr)
         return 1
+
+    try:
+        ir = resolve(file_ast, amp, parent_loader=loader)
+    except ResolveError as exc:
+        print(f"error: {path}: resolve failed", file=sys.stderr)
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    try:
+        sample_rate_hz, channels = smoke_step(ir)
+    except Exception as exc:  # noqa: BLE001 — any exception means it cannot run
+        # Deliberately broad. The evaluator refuses in whatever way the
+        # offending primitive refuses — `ValueError` from a single-channel
+        # guard, `KeyError` from a missing stream — and narrowing this would
+        # re-admit exactly the class of silence the issue is about.
+        print(f"error: {path}: resolves but does not run", file=sys.stderr)
+        print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
     n_stmts = len(file_ast.protocol.body)
     n_imports = len(file_ast.imports)
-    print(f"OK: {path}: protocol {file_ast.protocol.name!r} ({n_imports} imports, {n_stmts} top-level statements)")
+    plural = "" if len(channels) == 1 else "s"
+    print(
+        f"OK: parses, resolves and steps one chunk — {path}: "
+        f"protocol {file_ast.protocol.name!r} "
+        f"({n_imports} imports, {n_stmts} top-level statements; "
+        f"stepped at {sample_rate_hz:g} Hz on {len(channels)} channel{plural})"
+    )
     return 0
 
 
@@ -215,8 +274,31 @@ def _build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"refrain {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
 
-    check = sub.add_parser("check", help="Parse a .refrain file and report status.")
+    check = sub.add_parser(
+        "check",
+        help="Parse, resolve and step one chunk; report what passed.",
+    )
     check.add_argument("file", help="Path to the .refrain protocol file.")
+    check.add_argument(
+        "--amp",
+        default=None,
+        help=(
+            "Path to an amp-profile JSON file. "
+            "If omitted, hardware checks are skipped and the chosen sample "
+            "rate falls back to the protocol's minimum."
+        ),
+    )
+    check.add_argument(
+        "--library",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help=(
+            "Directory to search for `extends`-referenced parent protocols. "
+            "Repeatable; first match wins. The REFRAIN_LIBRARY_PATH env var "
+            "is also consulted (`:`-separated, like PATH)."
+        ),
+    )
     check.set_defaults(func=_cmd_check)
 
     resolve_cmd = sub.add_parser(

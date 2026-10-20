@@ -1,14 +1,17 @@
-"""Drift gate: regenerate golden-vector fixtures, run Rust equivalence tests,
-build the refrain_core wheel, run the behavioral evaluator suite through
-the Rust backend, and validate IR-JSON golden vectors against the published
-JSON Schema.
+"""Drift gate: verify the committed golden-vector fixtures are current, run the
+Rust equivalence tests against them, build the refrain_core wheel, run the
+behavioral evaluator suite through the Rust backend, and validate IR-JSON
+golden vectors against the published JSON Schema.
 
 Usage (from worktree root):
     PYTHONPATH="$PWD" ./.venv/bin/python refrain-core/tools/check_equivalence.py
 
 Exits 0 only when ALL FIVE steps succeed:
-  1. gen_fixtures.py regenerates all fixtures from the current Python evaluator.
-  2. `cargo test` (equivalence + events + taps + ir_deser) passes in refrain-core/.
+  1. verify_fixtures.py confirms the COMMITTED fixtures are what the current
+     Python evaluator emits — regenerating into a throwaway directory, so the
+     committed vectors survive into step 2.
+  2. `cargo test` (equivalence + events + taps + ir_deser) passes in
+     refrain-core/ against those committed vectors.
   3. The refrain_core wheel is built and installed from current source.
   4. The behavioral evaluator suite (tests/test_eval_*.py) passes under
      REFRAIN_EVAL_BACKEND=rust — proving Python↔Rust behavioral parity.
@@ -16,9 +19,17 @@ Exits 0 only when ALL FIVE steps succeed:
      published JSON Schema matching each vector's `refrain_ir_version`
      (src/refrain/schema/ir-json-v0.1.schema.json or ir-json-v0.2.schema.json).
 
-REUSE: calls the existing gen_fixtures.py as a subprocess; does not duplicate
-       fixture-generation logic.  The Rust tests already exist in
-       refrain-core/tests/equivalence.rs — this script just drives them.
+Step 1 used to BE `gen_fixtures.py`, run in place, which overwrote the
+committed fixtures before step 2 read them. Python↔Rust parity was still
+proven; the golden property — today matches a known-good past — was not, since
+the expected values were regenerated in the same run meant to check them
+(refrain#100). Regeneration is now a separate, deliberate act:
+`gen_fixtures.py`, read the diff, commit.
+
+REUSE: drives the existing gen_fixtures.py (via verify_fixtures.py) as a
+       subprocess; does not duplicate fixture-generation or comparison logic.
+       The Rust tests already exist in refrain-core/tests/equivalence.rs —
+       this script just drives them.
 """
 
 from __future__ import annotations
@@ -29,7 +40,7 @@ from pathlib import Path
 
 WORKTREE = Path(__file__).resolve().parents[2]   # repo / worktree root
 REFRAIN_CORE = WORKTREE / "refrain-core"
-GEN_FIXTURES = WORKTREE / "refrain-core" / "tools" / "gen_fixtures.py"
+VERIFY_FIXTURES = WORKTREE / "refrain-core" / "tools" / "verify_fixtures.py"
 
 
 def _run(label: str, cmd: list[str], *, cwd: Path, extra_env: dict[str, str] | None = None) -> bool:
@@ -61,20 +72,23 @@ def _run(label: str, cmd: list[str], *, cwd: Path, extra_env: dict[str, str] | N
 def main() -> int:
     results: dict[str, bool] = {}
 
-    # Step 1 — regenerate fixtures from the current Python evaluator.
-    # REUSE: delegates entirely to the existing gen_fixtures.py; no logic here.
-    results["gen_fixtures"] = _run(
-        "Regenerate golden-vector fixtures (gen_fixtures.py)",
-        [sys.executable, str(GEN_FIXTURES)],
+    # Step 1 — the committed fixtures must be what the emitter produces now.
+    # REUSE: delegates to verify_fixtures.py, which drives gen_fixtures.py into
+    # a throwaway directory; no generation or comparison logic here. The
+    # committed tree is not written to, which is what makes step 2 a comparison
+    # against a baseline rather than against its own output.
+    results["verify_fixtures"] = _run(
+        "Verify committed golden vectors are current (verify_fixtures.py)",
+        [sys.executable, str(VERIFY_FIXTURES)],
         cwd=WORKTREE,
         extra_env={"PYTHONPATH": str(WORKTREE)},
     )
 
-    # Step 2 — all Rust tests against the freshly regenerated fixtures
-    # (equivalence, events, taps, ir_deser). Running the whole suite makes
-    # the gate catch drift in every golden-vector family, not just streams.
+    # Step 2 — all Rust tests against the COMMITTED fixtures (equivalence,
+    # events, taps, ir_deser). Running the whole suite makes the gate catch
+    # drift in every golden-vector family, not just streams.
     results["cargo_test"] = _run(
-        "Rust tests vs. regenerated golden vectors (cargo test)",
+        "Rust tests vs. committed golden vectors (cargo test)",
         ["cargo", "test"],
         cwd=REFRAIN_CORE,
     )
@@ -124,7 +138,7 @@ def main() -> int:
 
     print(f"{'='*60}")
     if all_ok:
-        print("RESULT: PASS — fixtures current, Rust core equivalent, wheel built, dual-backend parity confirmed, IR-JSON schema valid.")
+        print("RESULT: PASS — committed fixtures current, Rust core equivalent to them, wheel built, dual-backend parity confirmed, IR-JSON schema valid.")
     else:
         print("RESULT: FAIL — see step output above for details.")
     print(f"{'='*60}")
