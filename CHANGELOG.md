@@ -34,6 +34,25 @@ bumps are additive; major bumps may break compatibility.
   type, so a bug reads as a bug. Two of the six fixes above were hidden by
   exactly that ambiguity.
 
+### Changed
+- **`refrain check` now parses, resolves and steps one chunk, and says so.**
+  It used to parse and stop, and print a bare `OK`. `OK` was read as a verdict
+  on the protocol rather than on the parser, and that is how a protocol that
+  had never run reached a downstream repository: `refrain check` said `OK`,
+  `refrain fuzz` said `SKIPPED (unsupported)`, and production crashed on the
+  first chunk. Parsing was not even the whole of what it claimed — it printed
+  `OK` for protocols the resolver rejects on the next line. `check` now runs
+  the per-file form of the property the corpus is held to in
+  `tests/test_resolves_implies_runs.py`: anything that resolves must survive
+  `step_chunk`, with no third outcome. Its verdict line names all three stages
+  and the rate and channel count it stepped at, and there are now three
+  distinct failures — `parse failed`, `resolve failed`, and `resolves but does
+  not run`, the last carrying the evaluator's own message, which is the only
+  thing that says which primitive refused. `check` takes `--amp` and
+  `--library` like `resolve`, since resolving a protocol with an `extends`
+  needs the library search path. (#97)
+
+
 ### Fixed
 - **The editor could render a protocol that the language then refused.** A
   placement control with `allowed` omitted — legal, and meaning any channel —

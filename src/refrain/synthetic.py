@@ -36,7 +36,8 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.signal import butter, sosfilt
 
-from .ir_json import montage_channels
+from .eval_ import Evaluator
+from .ir_json import effective_channels, montage_channels
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,10 +313,68 @@ def channels_for_synthetic(ir) -> tuple[str, ...]:
     return tuple(channels)
 
 
+def channels_for_smoke(ir) -> tuple[str, ...]:
+    """Channels to hand an `Evaluator` for a smoke step.
+
+    `channels_for_synthetic` appends A1/A2 so `linked_ears` references resolve,
+    which is right for a referential montage and wrong for `passthrough()` —
+    that primitive requires a single-channel source and raises on a
+    three-channel one. The passthrough protocols in `bench/` are a host-metric
+    shape (a tachogram, an externally computed envelope) where the runtime
+    supplies exactly the declared channel, and `effective_channels` is what the
+    runtime acquires, so prefer it whenever a montage cannot take the padding.
+
+    Getting this wrong is how a conformance harness reports its own bugs as the
+    subject's: the first run of `tests/test_resolves_implies_runs.py` produced
+    five "RESOLVES BUT DOES NOT RUN" failures that were all the padding.
+    """
+    if any(inp.montage.callee == "passthrough" for inp in ir.inputs.values()):
+        return effective_channels(ir)
+    return channels_for_synthetic(ir)
+
+
+def smoke_step(
+    ir, *, chunks: int = 3, backend: str = "python", seed: int = 7
+) -> tuple[float, tuple[str, ...]]:
+    """Push a few chunks of noise through a fresh `Evaluator`.
+
+    This is the "resolving implies running" check — any protocol that resolves
+    must survive `step_chunk`, with no third outcome — reduced to one protocol
+    so `refrain check` can run it per invocation. Raises whatever the evaluator
+    raises; returns the rate and channels it ran at, which is what a caller
+    reports so the step it made is checkable.
+
+    Noise rather than zeros because a constant input makes several primitives
+    degenerate (coherence returns NaN on zero variance and is coerced to 0,
+    percentile trackers see no spread), and a protocol that only survives a
+    flat line is not really running. More than one chunk because some impls
+    only bind state on a later call.
+
+    Built through `Evaluator.live`, not `Evaluator(...)`, because the bare
+    constructor hard-codes the Python backend — only the `live` factory wires
+    up the Rust core.
+    """
+    sample_rate_hz = float(ir.requires.sample_rate_chosen_hz or 256)
+    channels = channels_for_smoke(ir)
+    ev = Evaluator.live(
+        ir,
+        sample_rate_hz=sample_rate_hz,
+        channel_names=channels,
+        backend=backend,
+    )
+    rng = np.random.default_rng(seed)
+    n = max(8, int(round(sample_rate_hz / 4)))
+    for _ in range(chunks):
+        ev.step_chunk(rng.standard_normal((n, len(channels))) * 5.0)
+    return sample_rate_hz, channels
+
+
 __all__ = [
     "BandSegmentBurst",
     "SignalGenerator",
     "SMRBurst",
+    "channels_for_smoke",
     "channels_for_synthetic",
     "render_scenario",
+    "smoke_step",
 ]
