@@ -165,16 +165,54 @@ def test_a_protocol_the_resolver_rejects_is_not_ok(tmp_path, capsys):
     assert "OK" not in cap.out
 
 
-def test_a_protocol_that_resolves_but_cannot_be_stepped_is_not_ok(tmp_path, capsys):
+def test_a_protocol_that_resolves_but_cannot_be_stepped_is_not_ok(
+    tmp_path, capsys, monkeypatch
+):
     """The resolve-then-crash class. `check` must report the evaluator's own
     message, because that message is the only thing that says which primitive
-    refused."""
-    code = main(["check", _write(tmp_path, RESOLVES_BUT_CANNOT_RUN_SRC)])
+    refused.
+
+    The step failure is injected rather than written in Refrain. This test used
+    to resolve `RESOLVES_BUT_CANNOT_RUN_SRC` — an inhibit reading a derive
+    through `passthrough()` — and rely on it dying at the first chunk. That was
+    one of the four shapes #94 set out to fix, and #111 fixed it, so the
+    protocol now runs and `check` correctly says OK. Both PRs were green alone
+    and red together: #110 pinned a bug as a fixture while #111 removed it.
+
+    What is worth pinning is `check`'s own behaviour — it must surface a
+    step-time failure as exit 1 naming the stage, whatever the failure is and
+    whether or not the language currently has a way to reach it. Injecting the
+    exception says that and cannot rot the next time a primitive is fixed.
+    """
+    import refrain.cli as cli_mod
+
+    def _explode(_ir):
+        raise ValueError("synthetic_primitive() refused the chunk")
+
+    monkeypatch.setattr(cli_mod, "smoke_step", _explode)
+
+    code = main(["check", _write(tmp_path, OK_SRC)])
     cap = capsys.readouterr()
     assert code == 1, cap.out
     assert "resolves but does not run" in cap.err, cap.err
-    assert "passthrough() requires a single-channel source" in cap.err, cap.err
+    # The evaluator's own message, not a message `check` invented for it.
+    assert "synthetic_primitive() refused the chunk" in cap.err, cap.err
+    assert "ValueError" in cap.err, cap.err
     assert "OK" not in cap.out
+
+
+def test_the_formerly_uncheckable_protocol_now_runs(tmp_path, capsys):
+    """The companion to the above, and the reason it had to change.
+
+    `RESOLVES_BUT_CANNOT_RUN_SRC` reads a derive from an inhibit via
+    `passthrough()`. That crashed at the first chunk until #111; it is ordinary
+    and correct now, so `check` says OK. Kept as a regression pin: if this goes
+    back to exit 1, the #111 fix has been lost.
+    """
+    code = main(["check", _write(tmp_path, RESOLVES_BUT_CANNOT_RUN_SRC)])
+    cap = capsys.readouterr()
+    assert code == 0, cap.err
+    assert "OK" in cap.out
 
 
 def test_a_missing_file_is_still_exit_2(tmp_path, capsys):
