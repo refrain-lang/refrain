@@ -490,3 +490,194 @@ def test_rendering_a_mode_folded_control_keeps_its_seed_block():
     again = describe_protocol(out)
     assert again["in_subset"] is True
     assert again["model"] == d["model"]
+
+
+# Band edges as PAIRED frequency controls — `bandpass(band: (lo_hz, hi_hz))`.
+# This is how the flagship protocols are written (smr.refrain:113), and it is
+# why five of them sat outside the editor subset: the four-stage matcher
+# demanded A.NumberLit for both edges.
+BOUND_EDGES = '''
+protocol "smr_bound_edges_cz" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["sensorimotor_sleep"] }
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "env" { from = "raw"
+    pipeline = [ bandpass(band: (smr_lo_hz, smr_hi_hz), order: 4),
+                 hilbert(), magnitude(), smooth(tau: 250 ms) ] }
+  threshold "env_t" { signal = "env"; type = percentile(target_pct: reward_pct, window: 2 min) }
+  reward { event = dwell(condition: above("env", "env_t"), duration: 250 ms)
+           continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+  output { audio_chime = reward.event; audio_gain = reward.event.holds ? reward.continuous : 0 }
+  controls {
+    smr_lo_hz = frequency { default = 12 Hz; range = (10 Hz, 14 Hz); label = "SMR low edge" }
+    smr_hi_hz = frequency { default = 15 Hz; range = (13 Hz, 18 Hz); label = "SMR high edge" }
+    reward_pct = percent { default = 70; range = (50, 90); label = "Target reward %"; live_tunable = true }
+  }
+  session { phases = [ phase { name = "training"; duration = 30 min; mode = timed_with_floor } ] }
+}
+'''
+
+
+def test_control_bound_band_edges_are_in_subset():
+    d = describe_protocol(BOUND_EDGES)
+    assert d["ok"], d.get("diagnostics")
+    assert d["in_subset"] is True
+
+
+def test_control_bound_band_edges_describe_as_bindings():
+    d = describe_protocol(BOUND_EDGES)
+    env = next(b for b in d["model"]["derives"] if b["name"] == "env")
+    assert env["block"] == "derive.envelope_band"
+    assert env["slots"]["band_low_hz"] == {"bind": "smr_lo_hz"}
+    assert env["slots"]["band_high_hz"] == {"bind": "smr_hi_hz"}
+
+
+def test_control_bound_band_edges_round_trip():
+    d = describe_protocol(BOUND_EDGES)
+    assert _ir(BOUND_EDGES) == _ir(render_protocol(d["model"]))
+
+
+# The artifact-rejection inhibit as the flagship protocols write it
+# (smr.refrain:181): a mode-gated conditional for target_pct, and — once the
+# band edges above are bindable — the same literal-only assumption one
+# function away in _match_reward_component.
+ARTIFACT_INHIBIT = BOUND_EDGES.replace(
+    '  reward {',
+    '''  inhibit "emg" {
+    metric    = bandpower(input: "raw", band: (emg_lo_hz, emg_hi_hz), window: 100 ms)
+    threshold = percentile(
+      target_pct: artifact_guard == "on" ? artifact_strictness : 100,
+      window: 2 min
+    )
+    action    = mute(release: 200 ms)
+  }
+  reward {''').replace(
+    '    reward_pct = percent',
+    '''    emg_lo_hz = frequency { default = 50 Hz; range = (30 Hz, 70 Hz); label = "EMG low edge" }
+    emg_hi_hz = frequency { default = 100 Hz; range = (80 Hz, 120 Hz); label = "EMG high edge" }
+    artifact_guard = mode { choices = ["on", "off"]; default = "on"; label = "Artifact guard (EMG)" }
+    artifact_strictness = percent { default = 95; range = (50, 99); label = "Guard strictness"; live_tunable = true }
+    reward_pct = percent''')
+
+
+def _component(d, name):
+    return next(c for c in d["model"]["reward_components"] if c["name"] == name)
+
+
+def test_artifact_inhibit_with_conditional_target_is_in_subset():
+    d = describe_protocol(ARTIFACT_INHIBIT)
+    assert d["ok"], d.get("diagnostics")
+    assert d["in_subset"] is True
+
+
+def test_artifact_inhibit_keeps_the_conditional_verbatim():
+    slots = _component(describe_protocol(ARTIFACT_INHIBIT), "emg")["slots"]
+    assert slots["target_pct"] == {
+        "expr": 'artifact_guard == "on" ? artifact_strictness : 100'}
+
+
+def test_artifact_inhibit_band_edges_are_bindable():
+    # Same literal-only bug as the derive matcher, one function away.
+    slots = _component(describe_protocol(ARTIFACT_INHIBIT), "emg")["slots"]
+    assert slots["band_low_hz"] == {"bind": "emg_lo_hz"}
+    assert slots["band_high_hz"] == {"bind": "emg_hi_hz"}
+
+
+def test_artifact_inhibit_round_trips():
+    d = describe_protocol(ARTIFACT_INHIBIT)
+    assert _ir(ARTIFACT_INHIBIT) == _ir(render_protocol(d["model"]))
+
+
+# A placement control that OMITS `allowed` (smr.refrain:223). The language
+# treats three spellings differently — omitted is legal (resolver.py:2050),
+# "any" is legal (:2051), `[]` RAISES (:2053) — and describe/render between
+# them turned the legal omission into the illegal empty list.
+OMITTED_ALLOWED = BOUND_EDGES.replace(
+    '    reward_pct = percent',
+    '''    site = placement { kind = "active"; default = "Cz"; label = "Training site" }
+    reward_pct = percent''')
+
+
+def test_placement_without_allowed_does_not_render_an_empty_list():
+    out = render_protocol(describe_protocol(OMITTED_ALLOWED)["model"])
+    assert "allowed = []" not in out
+
+
+def test_placement_without_allowed_still_resolves_after_rendering():
+    # The real gate: _ir() resolves. Comparing rendered text to rendered text
+    # would have passed throughout, which is how this shipped.
+    d = describe_protocol(OMITTED_ALLOWED)
+    assert _ir(OMITTED_ALLOWED) == _ir(render_protocol(d["model"]))
+
+
+# A placement declared AFTER the plain controls (smr.refrain:223, under an
+# "Advanced: site" comment). render.py emitted every placement at the TOP of
+# the controls block, so the authored position was lost — and the resolver's
+# topological_order is source-position-sensitive, exactly as
+# _mode_decls_by_name's docstring warns for modes.
+TRAILING_PLACEMENT = BOUND_EDGES.replace(
+    '  }\n  session {',
+    '''    site = placement { kind = "active"; default = "Cz"; label = "Training site" }
+  }
+  session {''')
+
+
+def test_trailing_placement_keeps_its_source_position():
+    d = describe_protocol(TRAILING_PLACEMENT)
+    assert d["in_subset"] is True
+    assert _ir(TRAILING_PLACEMENT) == _ir(render_protocol(d["model"]))
+
+
+def test_leading_placement_still_keeps_its_source_position():
+    # The 37 protocols that already round-tripped declare placements first.
+    # Fixing the trailing case must not break the leading one.
+    d = describe_protocol(OMITTED_ALLOWED)
+    assert _ir(OMITTED_ALLOWED) == _ir(render_protocol(d["model"]))
+
+
+# The declared-latency envelope primitive (refrain v0.23.0). One stage in place
+# of bandpass -> hilbert -> magnitude -> smooth. Band edges stay bindable
+# because the flagship protocols drive them from paired frequency controls and
+# migration must not take those sliders away; `latency` does not, because it
+# sizes the filter whose coefficients are baked at resolve time.
+DECLARED = BOUND_EDGES.replace(
+    '''    pipeline = [ bandpass(band: (smr_lo_hz, smr_hi_hz), order: 4),
+                 hilbert(), magnitude(), smooth(tau: 250 ms) ] }''',
+    '''    pipeline = [ band_envelope(band: (smr_lo_hz, smr_hi_hz), latency: 360 ms) ] }''')
+
+
+def test_declared_envelope_is_in_subset():
+    d = describe_protocol(DECLARED)
+    assert d["ok"], d.get("diagnostics")
+    assert d["in_subset"] is True
+
+
+def test_declared_envelope_block_and_slots():
+    env = next(b for b in describe_protocol(DECLARED)["model"]["derives"]
+               if b["name"] == "env")
+    assert env["block"] == "derive.envelope_declared"
+    assert env["slots"] == {
+        "band_low_hz": {"bind": "smr_lo_hz"},
+        "band_high_hz": {"bind": "smr_hi_hz"},
+        "latency_ms": 360.0,
+    }
+
+
+def test_declared_envelope_round_trips():
+    d = describe_protocol(DECLARED)
+    assert _ir(DECLARED) == _ir(render_protocol(d["model"]))
+
+
+def test_declared_envelope_with_literal_edges_round_trips():
+    src = DECLARED.replace("band: (smr_lo_hz, smr_hi_hz)", "band: (12 Hz, 15 Hz)")
+    d = describe_protocol(src)
+    assert d["in_subset"] is True
+    assert _ir(src) == _ir(render_protocol(d["model"]))
+
+
+def test_declared_envelope_with_explicit_taps_is_not_in_subset():
+    # `taps` sizes the filter and the block has no slot for it, so accepting
+    # the protocol would silently drop it and change the filter. Refuse rather
+    # than round-trip something that is not what was authored.
+    src = DECLARED.replace("latency: 360 ms)", "latency: 360 ms, taps: ratio(2.5))")
+    assert describe_protocol(src)["in_subset"] is False

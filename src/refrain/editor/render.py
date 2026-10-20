@@ -83,11 +83,58 @@ def _render_placement(p: dict) -> str:
         a = "[" + ", ".join(site(s) for s in allowed) + "]"
     else:  # bipolar | pair — site pairs
         d, a = pair(default), "[" + ", ".join(pair(t) for t in allowed) + "]"
-    parts = [f'kind = "{kind}"', f"default = {d}", f"allowed = {a}"]
+    parts = [f'kind = "{kind}"', f"default = {d}"]
+    # An omitted `allowed` is legal and means "any channel" (resolver.py:2050);
+    # an EMPTY one is a resolve error (:2053). describe() cannot tell the two
+    # apart — both arrive here as [] — so emitting it unconditionally turned
+    # a legal omission into source the language rejects. Omit it instead.
+    if allowed:
+        parts.append(f"allowed = {a}")
     if kind == "set":
         parts += [f"min = {_fmt_num(p['set_min'])}", f"max = {_fmt_num(p['set_max'])}"]
     parts.append(f'label = "{p["label"]}"')
     return f'{p["name"]} = placement {{ {"; ".join(parts)} }}'
+
+
+_MISSING = object()
+
+
+def _render_controls_section(model: dict) -> list[str]:
+    """Emit `controls` entries with each placement at its authored position.
+
+    A placement carries `insert_before`: the plain control it was declared
+    above, or None if it trailed them all (see `_placement_anchors` in
+    describe.py). The resolver's `topological_order` is source-position-
+    sensitive, so emitting every placement at the top — as this did — gave a
+    different IR for any protocol that declares one further down.
+
+    A model with no `insert_before` key at all predates that field (an older
+    fixture, or a mirror that has not added it yet); those render exactly as
+    before, placements first, so old corpora stay byte-identical.
+    """
+    placements = list(model.get("placements", []))
+    legacy = [pl for pl in placements if pl.get("insert_before", _MISSING) is _MISSING]
+    anchored: dict[str, list[dict]] = {}
+    trailing = []
+    for pl in placements:
+        anchor = pl.get("insert_before", _MISSING)
+        if anchor is _MISSING:
+            continue
+        if anchor is None:
+            trailing.append(pl)
+        else:
+            anchored.setdefault(anchor, []).append(pl)
+
+    out = [_render_placement(pl) for pl in legacy]
+    for c in model["controls"]:
+        out.extend(_render_placement(pl) for pl in anchored.pop(c["name"], []))
+        out.append(_render_control(c))
+    # An anchor naming a control that is not in the list cannot be placed;
+    # keep it rather than drop it, in declaration order, before the trailers.
+    for group in anchored.values():
+        out.extend(_render_placement(pl) for pl in group)
+    out.extend(_render_placement(pl) for pl in trailing)
+    return out
 
 
 def _render_phase(p: dict) -> str:
@@ -196,8 +243,7 @@ def render_protocol(model: dict, catalog: Catalog | None = None) -> str:
 
     if model["controls"] or model.get("placements"):
         L.append("  controls {")
-        L.extend("    " + _render_placement(pl) for pl in model.get("placements", []))
-        L.extend("    " + _render_control(c) for c in model["controls"])
+        L.extend("    " + s for s in _render_controls_section(model))
         L.append("  }")
 
     for blk in model.get("blocks", []):           # staged: per-phase threshold sets

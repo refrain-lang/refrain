@@ -5,7 +5,7 @@ from refrain.editor.catalog import render_slot
 
 def test_catalog_loads_and_indexes_by_id():
     cat = load_catalog()
-    assert cat.version == "1"
+    assert cat.version == "2"
     env = cat.block("derive.envelope")
     assert env["kind"] == "derive"
     assert [s["name"] for s in env["slots"]] == ["center", "ratio", "smooth_tau_ms"]

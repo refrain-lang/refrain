@@ -154,6 +154,13 @@ def _slot_from_expr(expr):
         return {"bind": expr.name}
     if isinstance(expr, A.MemberAccess):           # pair placement member, e.g. coh.a
         return {"bind": f"{expr.target.name}.{expr.member}"}
+    if isinstance(expr, (A.Conditional, A.BinaryOp)):
+        # A mode-gated value, e.g. `artifact_guard == "on" ? strictness : 100`.
+        # The editor cannot offer this as a slider, so it carries the source
+        # text through unchanged and renders it back verbatim; that keeps the
+        # protocol authorable in the editor without the editor pretending to
+        # understand the expression.
+        return {"expr": _expr_to_str(expr)}
     raise _NotInSubset(f"unsupported slot expr {type(expr).__name__}")
 
 
@@ -256,15 +263,33 @@ def _match_derive(decl: A.NamedDecl) -> dict:
                     "slots": {"center": _slot_from_expr(center),
                               "ratio": bw.args[0].value.value,
                               "smooth_tau_ms": _to_ms(_arg(sm, "tau"))}}
-        if isinstance(band, (A.Tuple, A.Array)) and len(band.elements) == 2 \
-                and all(isinstance(e, A.NumberLit) for e in band.elements):  # explicit-edge form
+        if isinstance(band, (A.Tuple, A.Array)) and len(band.elements) == 2:
+            # Edges may be literals OR paired `frequency` controls — the
+            # flagship protocols bind them (smr.refrain:113), so let
+            # _slot_from_expr decide what an edge may hold rather than
+            # repeating a type list that would drift from it.
             order = _arg(bp, "order")
             return {"name": decl.name, "block": "derive.envelope_band", "from": bm["from"].value,
-                    "slots": {"band_low_hz": band.elements[0].value,
-                              "band_high_hz": band.elements[1].value,
+                    "slots": {"band_low_hz": _slot_from_expr(band.elements[0]),
+                              "band_high_hz": _slot_from_expr(band.elements[1]),
                               "order": order.value if order is not None else 4,
                               "smooth_tau_ms": _to_ms(_arg(sm, "tau"))}}
         raise _NotInSubset("envelope needs center + bandwidth: ratio(R), or band: (lo, hi)")
+    if names == ["band_envelope"] and len(calls) == 1:   # declared-latency envelope
+        be = calls[0]
+        band = _arg(be, "band")
+        if not (isinstance(band, (A.Tuple, A.Array)) and len(band.elements) == 2):
+            raise _NotInSubset("band_envelope needs band: (lo, hi)")
+        if _arg(be, "taps") is not None:
+            # `taps` sizes the filter and this block has no slot for it, so
+            # accepting the derive would drop it on render and quietly change
+            # the filter. Out of subset is the honest answer.
+            raise _NotInSubset("band_envelope with explicit taps not in subset")
+        return {"name": decl.name, "block": "derive.envelope_declared",
+                "from": bm["from"].value,
+                "slots": {"band_low_hz": _slot_from_expr(band.elements[0]),
+                          "band_high_hz": _slot_from_expr(band.elements[1]),
+                          "latency_ms": _to_ms(_arg(be, "latency"))}}
     if names == ["bandpass", "rectify", "smooth"] and len(calls) == 3:  # low-Fs envelope (HRV)
         bp, sm = calls[0], calls[2]
         band = _arg(bp, "band")
@@ -287,10 +312,10 @@ def _match_reward_component(decl: A.NamedDecl) -> dict:
         band = _arg(metric, "band")
         return {"name": decl.name, "kind": decl.keyword, "block": "inhibit.artifact",
                 "slots": {"input": _arg(metric, "input").value,
-                          "band_low_hz": band.elements[0].value,
-                          "band_high_hz": band.elements[1].value,
+                          "band_low_hz": _slot_from_expr(band.elements[0]),
+                          "band_high_hz": _slot_from_expr(band.elements[1]),
                           "metric_window_ms": _to_ms(_arg(metric, "window")),
-                          "target_pct": _arg(thr, "target_pct").value,
+                          "target_pct": _slot_from_expr(_arg(thr, "target_pct")),
                           "thr_window_ms": _to_ms(_arg(thr, "window")),
                           "release_ms": _to_ms(_arg(action, "release"))}}
     sig = bm.get("signal")
@@ -420,6 +445,38 @@ def _mode_decls_by_name(p: A.Protocol) -> dict:
                 "final": bool(getattr(fields.get("final"), "value", False)),
                 "insert_before": insert_before,
             }
+    return out
+
+
+def _placement_anchors(p: A.Protocol) -> dict:
+    """Map placement-control name -> the next plain-kind control declared after
+    it in source, or None if it trails them all.
+
+    Same anchor, and the same reason, as `_mode_decls_by_name`: the resolver's
+    `topological_order` is source-position-sensitive, and `render.py` emits
+    `model["placements"]` as its own group. A placement authored *after* the
+    plain controls (`smr.refrain:223`, under "Advanced: site") therefore came
+    back out at the top of the block, resolving fine but producing a different
+    IR. Four of the flagship protocols do exactly that.
+
+    Placements are kept in their own model list rather than folded into
+    `controls` the way modes are, because consumers read `model["placements"]`
+    directly; this carries the position as data instead of moving the view.
+    """
+    out: dict = {}
+    for stmt in p.body:
+        if not (isinstance(stmt, A.SectionBlock) and stmt.keyword == "controls"):
+            continue
+        assigns = [a for a in stmt.body if isinstance(a, A.Assignment)]
+        for i, a in enumerate(assigns):
+            if not (isinstance(a.value, A.BlockExpr) and a.value.name == "placement"):
+                continue
+            out[a.target] = next(
+                (later.target for later in assigns[i + 1:]
+                 if isinstance(later.value, A.BlockExpr)
+                 and later.value.name not in ("mode", "placement")),
+                None,
+            )
     return out
 
 
@@ -597,6 +654,11 @@ def _build_model(ast, controls, placements=(), modes=()) -> dict:
             else:
                 raise _NotInSubset(f"section '{stmt.keyword}' not in subset")
 
+    # Carry each placement's authored position so render.py can put it back
+    # where it was written (see `_placement_anchors`).
+    anchors = _placement_anchors(p)
+    placements = [{**pl, "insert_before": anchors.get(pl["name"])} for pl in placements]
+
     # Fold every declared mode control into the control list at its original
     # source position, using the very same `insert_before` anchor computed
     # for the conditional-threshold case (`_mode_decls_by_name` is not
@@ -630,12 +692,14 @@ def describe_protocol(source: str, *, amp: Any = None) -> dict:
         ast = refrain.parse(source)
     except Exception as e:
         return {"ok": False, "diagnostics": [_diag(e)], "meta": {},
-                "in_subset": False, "controls": [], "placements": [], "modes": [], "model": None}
+                "in_subset": False, "reason": f"{type(e).__name__}: {e}",
+                "controls": [], "placements": [], "modes": [], "model": None}
     try:
         ir = resolve(ast, amp)
     except Exception as e:
         return {"ok": False, "diagnostics": [_diag(e)], "meta": _meta_from_ast(ast),
-                "in_subset": False, "controls": [], "placements": [], "modes": [], "model": None}
+                "in_subset": False, "reason": f"{type(e).__name__}: {e}",
+                "controls": [], "placements": [], "modes": [], "model": None}
 
     controls, placements, modes = [], [], []
     ast_seeds = _ast_control_seeds(ast)
@@ -647,13 +711,20 @@ def describe_protocol(source: str, *, amp: Any = None) -> dict:
         else:
             controls.append(_control_view(name, ctl, ast_seeds.get(name)))
 
+    reason = None
     try:
         model = _build_model(ast, controls, placements, modes)
         in_subset = True
-    except (_NotInSubset, KeyError, AttributeError, TypeError, IndexError):
+    except (_NotInSubset, KeyError, AttributeError, TypeError, IndexError) as e:
         # Intentional out-of-subset, or a matcher hit an unexpected AST shape:
         # either way degrade gracefully — never crash on a resolvable protocol.
+        # `reason` keeps the two distinguishable: a _NotInSubset is a decision
+        # and carries its own message, anything else is a bug in a matcher and
+        # is named by its exception type. Without this the caller sees the same
+        # silent False either way, which is how two of the editor-subset fixes
+        # stayed hidden behind a passing fixture count.
         model, in_subset = None, False
+        reason = str(e) if isinstance(e, _NotInSubset) else f"{type(e).__name__}: {e}"
     return {"ok": True, "diagnostics": [], "meta": _meta_from_ast(ast),
-            "in_subset": in_subset, "controls": controls,
+            "in_subset": in_subset, "reason": reason, "controls": controls,
             "placements": placements, "modes": modes, "model": model}
