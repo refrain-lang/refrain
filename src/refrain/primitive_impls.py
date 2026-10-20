@@ -750,6 +750,27 @@ class PercentileThresholdImpl(PercentileImpl):
     contexts where it's used as a threshold constructor."""
 
 
+class IdentityImpl(PrimitiveImpl):
+    """Carries its input chunk through unchanged.
+
+    What a primitive reduces to once one of its slots turns out to hold a
+    reference to another stream rather than a constant — see
+    `eval_._REFERENCE_SLOTS`. Two spellings reach it:
+
+      `absolute(value: "<a derive>")` — a threshold that tracks another
+      stream instead of sitting at a fixed level.
+
+      `passthrough(input: "<a derive>")` — an inhibit reading one derive.
+      An inhibit's metric has to be a primitive call, so there is no way to
+      name the derive without wrapping it in something, and this is that
+      something. Distinct from the *montage* form `passthrough()`, which
+      selects the single channel of a raw source (`PassthroughImpl`).
+    """
+
+    def step(self, x: np.ndarray) -> np.ndarray:
+        return x
+
+
 # ---------------------------------------------------------------------------
 # Conditions (boolean output)
 # ---------------------------------------------------------------------------
@@ -1427,6 +1448,7 @@ __all__ = [
     "FreezeAction",
     "HilbertFirImpl",
     "HilbertIirAllpassImpl",
+    "IdentityImpl",
     "InsideImpl",
     "LinearImpl",
     "MagnitudeImpl",

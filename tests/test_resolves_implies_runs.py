@@ -253,19 +253,31 @@ protocol "canary_threshold_in_formula" {
 """
 
 # A second canary for the other half of the property: a shape that resolves and
-# then dies inside the evaluator. `percentile` as a pipeline stage (D9.3) is
-# still exactly that, so if this one ever resolves AND runs, either it was
-# implemented — delete the canary — or the harness stopped looking.
-CANARY_PERCENTILE_PIPELINE_STAGE = """
-protocol "canary_percentile_stage" {
+# then dies inside the evaluator. `percentile` as a pipeline stage (D9.3) used
+# to be this canary and is now implemented, which is exactly the signal the
+# canary exists to give — it failed, loudly, in the commit that fixed it.
+#
+# Its replacement is the nearest shape still unimplemented: a threshold whose
+# level tracks *another threshold*. `absolute(value: "<a derive>")` now works
+# (D9.2), but only for an input or derive — the evaluator reads the level as a
+# constant unless the slot holds an `IRStreamRef`, and a threshold name
+# resolves to an `IRThresholdRef`, so this still dies on `float()`.
+#
+# It was left that way deliberately rather than by oversight. Thresholds are
+# evaluated in declaration order and nothing topologically sorts them, so
+# accepting a threshold here would run for a backward reference and raise
+# KeyError for a forward one — trading a clear crash for an order-dependent
+# one. If this canary ever resolves AND runs, either that ordering question
+# was answered — delete the canary — or the harness stopped looking.
+CANARY_THRESHOLD_TRACKING_A_THRESHOLD = """
+protocol "canary_threshold_tracks_threshold" {
   requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
   input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
-  derive "env" {
-    from = "raw"
-    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude(),
-                 percentile(target_pct: 90, window: 60 s) ]
-  }
-  output { audio_gain = 0 }
+  derive "env" { from = "raw"; pipeline = [ smooth(tau: 250 ms) ] }
+  threshold "floor" { signal = "env"; type = absolute(value: 8 uV) }
+  threshold "ceiling" { signal = "env"; type = absolute(value: "floor") }
+  reward { event = dwell(condition: above("env", "ceiling"), duration: 250 ms) }
+  output { audio_chime = reward.event }
 }
 """
 
@@ -274,7 +286,7 @@ protocol "canary_percentile_stage" {
     "src,label",
     [
         (CANARY_THRESHOLD_IN_FORMULA, "threshold referenced from a formula derive"),
-        (CANARY_PERCENTILE_PIPELINE_STAGE, "percentile as a pipeline stage"),
+        (CANARY_THRESHOLD_TRACKING_A_THRESHOLD, "a threshold tracking another threshold"),
     ],
 )
 def test_canary_the_harness_still_catches_a_known_bad_shape(src, label, tmp_path):

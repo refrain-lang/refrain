@@ -264,6 +264,20 @@ _PASSTHROUGH = PrimitiveSpec(
     name="passthrough",
     category="signal",
     signatures=(
+        # Identity over an already-derived stream. How an `inhibit` names one
+        # derive as its metric: the metric has to be a primitive call, so the
+        # stream needs a wrapper, and this is the wrapper that leaves the
+        # value alone. Listed FIRST because `_pick_signature` returns the
+        # first signature whose required named params are supplied, and the
+        # montage form's empty param list matches everything.
+        #
+        # The output type has to follow the input's — a rate-of-change derive
+        # read this way is uV/s, and reporting it as uV would let a threshold
+        # in the wrong units type-check.
+        Signature(
+            params=(ParamSpec("input", "stream_ref"),),
+            output=_identity_input,
+        ),
         # Identity montage: no args. Emits the source's single channel
         # verbatim (no re-referencing). The sanctioned replacement for the
         # `referential(reference: "device")` single-channel workaround.
