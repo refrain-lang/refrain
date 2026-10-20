@@ -65,9 +65,12 @@ The unit is part of the value's type. Operations between incompatible units are 
 | `ms`, `s`, `min` | time | freely interconvertible |
 | `uV` | microvolts | |
 | `uV2` | microvolts squared | for power |
+| `C` | degrees Celsius | the only temperature spelling — see below |
 | `%` | dimensionless ratio (0–100) | |
 
-Unit-less numbers are dimensionless scalars.
+Unit-less numbers are dimensionless scalars. Where one appears in a slot that is compared against a dimensioned signal — `sigmoid("<uV stream>", midpoint: 5.0)` — it is accepted and read as the signal's own unit, with a warning at resolve time naming what it was read as. A literal carrying the *wrong* unit is an error.
+
+There is one surface unit per base dimension and no conversion between units of the same dimension, except time, where `ms`/`s`/`min` differ by a scale factor. Fahrenheit is therefore absent: Celsius and Fahrenheit differ by an offset as well as a scale, which an exponent vector cannot express. A host that displays Fahrenheit converts for display.
 
 ### 2.6 Boolean literals
 
@@ -511,7 +514,7 @@ controls {
 }
 ```
 
-Control types: `frequency`, `duration`, `voltage`, `percent`, `number`, `enum`, `boolean`, and `placement` (see below). Each value declared in `controls` is referenceable by name (e.g., `orf` in §4.4). `number` is a **unitless scalar** (dimensionless, value used as-is) — the right kind for relative weights and gains; prefer it over `percent` when the value is not actually a percentage (a host renders `percent` with a "%" unit, `number` with none).
+Control types: `frequency`, `duration`, `voltage`, `temperature`, `percent`, `number`, `enum`, `boolean`, and `placement` (see below). Each value declared in `controls` is referenceable by name (e.g., `orf` in §4.4). `number` is a **unitless scalar** (dimensionless, value used as-is) — the right kind for relative weights and gains; prefer it over `percent` when the value is not actually a percentage (a host renders `percent` with a "%" unit, `number` with none).
 
 #### `placement` control type
 
@@ -938,7 +941,16 @@ Units are first-class in the type system. The compiler enforces:
 - `Hz + ms` is an error.
 - `differentiate(uV)` produces `uV/s` (first derivative units).
 - `square(uV)` produces `uV²`.
+- `sqrt(uV²)` produces `uV`; `sqrt(uV)` is an error, since every exponent must halve to an integer.
 - Comparisons require unit-compatible operands.
+
+Every montage returns microvolts, which is right for an electrode and wrong for the other channels a biosignal amplifier carries. An `input` may say what its channels actually hold:
+
+```refrain
+input "skin" { montage = bipolar(plus: "TH", minus: "T1"); unit = "C" }
+```
+
+The declared unit replaces the montage's own, and derives propagate it, so the whole chain downstream types in that unit. Omitting the field leaves the input in microvolts. The value is a surface unit name from §2.5.
 
 ### 5.4 References
 

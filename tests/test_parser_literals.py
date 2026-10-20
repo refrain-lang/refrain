@@ -39,6 +39,7 @@ def _value_of(src_expr: str) -> A.Expr:
         ("30 s", 30.0, "s"),
         ("8 uV", 8.0, "uV"),
         ("64 uV2", 64.0, "uV2"),
+        ("1.5 C", 1.5, "C"),
         ("95 %", 95.0, "%"),
     ],
 )
@@ -56,6 +57,22 @@ def test_unknown_unit_rejected():
     # a UNIT terminal and `42 dB` cannot parse as two expressions.
     with pytest.raises(ParseError):
         parse('protocol "P" { meta { x = 42 dB } }')
+
+
+def test_fahrenheit_is_not_a_unit():
+    """`C` is the one temperature spelling. Celsius and Fahrenheit differ by
+    an offset as well as a scale, which Refrain's exponent vector cannot
+    express, so `F` must not lex as a unit either."""
+    with pytest.raises(ParseError):
+        parse('protocol "P" { meta { x = 98.6 F } }')
+
+
+def test_a_single_letter_unit_does_not_eat_identifiers():
+    """`C` is a one-character UNIT terminal sitting next to the identifier
+    pattern. A name that merely starts with it — a channel-ish `Cz`, a control
+    named `Cz_gain` — must still lex as a name."""
+    n = _value_of("Cz_gain")
+    assert isinstance(n, A.NameRef) and n.name == "Cz_gain"
 
 
 # ---------------------------------------------------------------------------

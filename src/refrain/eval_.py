@@ -92,6 +92,7 @@ _DYNAMIC_ARG_KEYS: dict[str, tuple[str, ...]] = {
     "hilbert": ("_pos_0",),
     "magnitude": ("_pos_0",),
     "rectify": ("_pos_0",),
+    "sqrt": ("_pos_0",),
     "smooth": ("_pos_0",),
     "differentiate": ("_pos_0",),
     # `signal` is the threshold-type form; `_pos_0` the pipeline-stage form,

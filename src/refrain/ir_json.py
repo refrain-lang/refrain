@@ -205,7 +205,14 @@ class _EmitCtx:
 
 
 def _emit_dims(d: Dimensions) -> dict:
-    return {"time": d.time, "voltage": d.voltage}
+    # `temperature` is omitted when zero, so every protocol that uses no
+    # temperature emits the wire form it emitted before the dimension existed.
+    # That keeps the golden vectors and any deployed consumer byte-identical;
+    # absent reads as zero, which is what an exponent vector means by absent.
+    out = {"time": d.time, "voltage": d.voltage}
+    if d.temperature:
+        out["temperature"] = d.temperature
+    return out
 
 
 def _emit_stream_type(st: StreamType) -> dict:

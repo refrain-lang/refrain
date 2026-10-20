@@ -505,6 +505,22 @@ class RectifyImpl(PrimitiveImpl):
         return np.abs(x)
 
 
+class SqrtImpl(PrimitiveImpl):
+    """`sqrt()` — `sqrt(max(x, 0))` for a real stream.
+
+    Negative input is clamped rather than passed to the root. The resolver
+    only admits a stream whose dimensions are even powers, so the input is a
+    squared quantity whose true value cannot be negative — but the usual
+    spelling of variance, `mean_square - mean*mean`, cancels to a few float
+    epsilons either side of zero on a steady signal, and a NaN there would
+    travel down the whole feedback path and silence the session. Clamping
+    keeps the one honest answer, 0.
+    """
+
+    def step(self, x: np.ndarray) -> np.ndarray:
+        return np.sqrt(np.maximum(np.asarray(x, dtype=np.float64), 0.0))
+
+
 class SmoothImpl(PrimitiveImpl):
     """`smooth(tau)` — one-pole IIR low-pass.
 
@@ -1323,6 +1339,8 @@ def make_filter_impl(
         return MagnitudeImpl()
     if callee == "rectify":
         return RectifyImpl()
+    if callee == "sqrt":
+        return SqrtImpl()
     if callee == "smooth":
         return SmoothImpl(
             tau_ms=static_args["tau_ms"],
@@ -1460,6 +1478,7 @@ __all__ = [
     "ReferentialImpl",
     "SigmoidImpl",
     "SmoothImpl",
+    "SqrtImpl",
     "make_action",
     "make_filter_impl",
 ]

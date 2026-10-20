@@ -37,7 +37,7 @@ from refrain.amp_profile import load_amp_profile
 from refrain.eval_ import Evaluator
 from refrain.ir import IRNumberLit, IRStreamRef
 from refrain.ir_json import ir_to_json_obj
-from refrain.resolver import ResolveError, resolve
+from refrain.resolver import ResolveError, ResolveWarning, resolve
 from refrain.synthetic import channels_for_synthetic
 
 # The EmotiBit MD ancillary preset, the amp D9.5's shape was found on.
@@ -369,16 +369,20 @@ def test_d4_absolute_threshold_dimension_check():
 
 
 def test_d4_dimensionless_literal_against_a_dimensioned_stream_still_resolves():
-    """The deliberate limit of the fix.
+    """The deliberate limit of the fix, now with a warning on it.
 
     `sigmoid("smr_envelope", midpoint: 5.0, steepness: 0.5)` in
     bench/protocols/micro_09_inhibit.refrain means 5 uV, and bare unit-less
     numbers are how the whole corpus spells a threshold. Binary `>` *does*
-    reject `"env" > 5`, so this is not yet full parity — requiring the unit is
-    a language decision with corpus-wide churn, not a bug fix. Filed
-    separately; this test pins what was deliberately left alone.
+    reject `"env" > 5`, so this is not full parity — and it is deliberately
+    not going to be. Decided 2026-10-19 (refrain#95): requiring the unit means
+    editing 23 of the 26 `midpoint:` values the corpus ships for no new
+    capability, and a corpus-wide edit is itself a way for mistakes to enter.
+    So the literal keeps resolving, and the resolver says out loud what it was
+    read as. The full behaviour lives in test_resolve_dimensions.py.
     """
-    ir = resolve_src(env_protocol("""
+    with pytest.warns(ResolveWarning, match="read as uV"):
+        ir = resolve_src(env_protocol("""
   reward { continuous = sigmoid("env", midpoint: 5.0, steepness: 0.5) }
   output { audio_gain = reward.continuous }
 """))

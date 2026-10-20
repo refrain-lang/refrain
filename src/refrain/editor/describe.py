@@ -190,7 +190,15 @@ def _expr_to_str(e) -> str:
 
 
 def _match_input(decl: A.NamedDecl) -> dict:
-    montage = _body_map(decl).get("montage")
+    body = _body_map(decl)
+    # An `input` carries nothing but its montage through the editor, so a
+    # `unit = "<surface unit>"` declaration would be dropped on render and the
+    # signal would silently revert to microvolts — a Celsius protocol coming
+    # back as a microvolt one with the same numbers. Refuse the protocol
+    # instead: out-of-subset is visible, a retyped signal is not.
+    if "unit" in body:
+        raise _NotInSubset('input carries an explicit unit')
+    montage = body.get("montage")
     if isinstance(montage, A.Call) and montage.callee == "referential":
         return {"name": decl.name, "block": "montage.referential",
                 "slots": {"active": _slot_from_expr(_arg(montage, "active")),
