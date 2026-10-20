@@ -92,12 +92,13 @@ class Envelope:
         sample_rate_hz: float,
         order: int = 4,
     ):
-        # --- bandpass (BandpassImpl): butter SOS, zero initial state ---
+        # --- bandpass (BandpassImpl): butter SOS, warm-started ---
         nyq = sample_rate_hz / 2.0
         self.sos = scisig.butter(
             order, [band[0] / nyq, band[1] / nyq], btype="band", output="sos"
         )
         self.bp_zi = np.zeros((self.sos.shape[0], 2), dtype=np.float64)
+        self.bp_unit_zi = scisig.sosfilt_zi(self.sos)
 
         # --- hilbert (HilbertFirImpl): FIR Hilbert transformer ---
         self.h = design_hilbert_fir(65)
@@ -111,7 +112,16 @@ class Envelope:
         self.alpha = 1.0 - np.exp(-1.0 / (tau_s * float(sample_rate_hz)))
         self.smooth_state = 0.0
 
+        # Both IIR stages warm-start on the first sample they see
+        # (BandpassImpl, SmoothImpl), so neither climbs from silence.
+        self.primed = False
+        self._smooth_primed = False
+
     def step(self, signal_1d: np.ndarray) -> np.ndarray:
+        if not self.primed and signal_1d.shape[0]:
+            self.bp_zi = self.bp_unit_zi * float(signal_1d[0])
+            self.primed = True
+
         # bandpass
         bp, self.bp_zi = scisig.sosfilt(self.sos, signal_1d, zi=self.bp_zi, axis=0)
 
@@ -123,7 +133,12 @@ class Envelope:
         # magnitude
         mag = np.abs(analytic)
 
-        # smooth: one-pole IIR via lfilter (mirrors SmoothImpl.step)
+        # smooth: one-pole IIR via lfilter (mirrors SmoothImpl.step). Its
+        # own warm start is the first magnitude sample, not the first input
+        # sample — SmoothImpl sees the magnitude stream, not the raw one.
+        if not self._smooth_primed and mag.shape[0]:
+            self.smooth_state = float(mag[0])
+            self._smooth_primed = True
         b = np.array([self.alpha])
         a = np.array([1.0, -(1.0 - self.alpha)])
         zi = np.array([self.smooth_state * (1.0 - self.alpha)])

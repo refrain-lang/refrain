@@ -33,6 +33,26 @@ def _feed(ev, seconds, val=1.0):
         pushed += n
 
 
+def _feed_tone(ev, seconds, freq, amp=20.0, phase=0.0):
+    """Feed a sinusoid on Cz, continuous across calls.
+
+    A constant-valued feed used to produce a real envelope only because the
+    filters cold-started and rang; they warm-start now, so a constant input
+    is rejected by the bandpass as the DC it is. Any test that needs an
+    envelope has to supply content in the band it is measuring.
+    """
+    total = int(seconds * SR)
+    start = getattr(ev, "_tone_n", 0)
+    pushed = 0
+    while pushed < total:
+        n = min(64, total - pushed)
+        idx = np.arange(start + pushed, start + pushed + n)
+        block = (amp * np.sin(2 * np.pi * freq * idx / SR + phase)).reshape(n, 1)
+        ev.step_chunk(block)
+        pushed += n
+    ev._tone_n = start + total
+
+
 def test_phases_run_in_order_to_stopped():
     ev = _live(TIMED)
     # Before any chunk, the snapshot is the initial phase.
@@ -177,14 +197,20 @@ def test_active_block_selects_reward_bundle():
     # audio = reward.continuous. During b1 it must track the beta bundle; during
     # b2 the alpha bundle. With at=500 uV the alpha sigmoid sits near 0, so the
     # two blocks produce clearly different audio.
+    #
+    # Fed a 16 Hz tone: inside beta_up's 15-18 Hz band and outside alpha_up's
+    # 8-12 Hz one, so the beta envelope is large and the alpha envelope is
+    # small on the signal's own merits. This used to feed a constant and rely
+    # on the filters' cold-start ringing for an envelope at all, which stopped
+    # working once they warm-started — and was never measuring the protocol.
     ev = _live(HET_DIFF)
-    _feed(ev, 1.0)                 # warm -> b1
-    _feed(ev, 0.5)                 # processing b1 (beta bundle active)
+    _feed_tone(ev, 1.0, freq=16.0)   # warm -> b1
+    _feed_tone(ev, 0.5, freq=16.0)   # processing b1 (beta bundle active)
     assert ev.current_phase()["name"] == "b1"
     beta_audio = ev.last_taps()["output/audio"]
-    ev.advance_phase()             # b1 -> rest
-    ev.advance_phase()             # rest -> b2
-    _feed(ev, 0.5)                 # processing b2 (alpha bundle active)
+    ev.advance_phase()               # b1 -> rest
+    ev.advance_phase()               # rest -> b2
+    _feed_tone(ev, 0.5, freq=16.0)   # processing b2 (alpha bundle active)
     assert ev.current_phase()["name"] == "b2"
     alpha_audio = ev.last_taps()["output/audio"]
     assert beta_audio != alpha_audio          # different bundle drives audio

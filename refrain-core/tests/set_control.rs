@@ -28,6 +28,14 @@ struct Io {
     sample_rate_hz: f64,
     channels: Vec<String>,
     chunk_size: usize,
+    /// Leading samples whose values neither engine can be held to — the same
+    /// window `equivalence.rs`, `events.rs` and `taps.rs` skip, and for the
+    /// same reason: inside it a derive's value is the filters' own settling,
+    /// which since #93's warm start is a steady-state zero surrounded by
+    /// rounding dust. Event identity and tap key sets are still asserted
+    /// across the whole run, warmup included.
+    #[serde(default)]
+    warmup_samples: usize,
     input: Vec<Vec<f64>>,
 }
 
@@ -109,8 +117,10 @@ fn realistic_smr_setcontrol_events_equivalent() {
         want.len()
     );
 
+    let warmup_s = io.warmup_samples as f64 / io.sample_rate_hz;
     let mut max_ts = 0.0_f64;
     let mut max_val = 0.0_f64;
+    let mut skipped = 0_usize;
     for (i, (g, w)) in got.iter().zip(&want).enumerate() {
         assert_eq!(g.channel, w.channel, "{STEM}_setcontrol: event {i} channel mismatch");
         assert_eq!(g.kind, w.kind, "{STEM}_setcontrol: event {i} kind mismatch");
@@ -120,6 +130,7 @@ fn realistic_smr_setcontrol_events_equivalent() {
         max_ts = max_ts.max(dts);
 
         match (g.value, w.value) {
+            (Some(_), Some(_)) if g.timestamp_s < warmup_s => skipped += 1,
             (Some(gv), Some(wv)) => {
                 let dv = (gv - wv).abs();
                 assert!(
@@ -136,8 +147,14 @@ fn realistic_smr_setcontrol_events_equivalent() {
         }
     }
 
+    assert!(
+        skipped < got.len(),
+        "{STEM}_setcontrol: every event fell inside the warmup window"
+    );
+
     eprintln!(
-        "  {STEM}_setcontrol :: {} events matched; set_control @ chunk {} ({} knobs); \
+        "  {STEM}_setcontrol :: {} events matched ({skipped} value(s) inside the \
+         {warmup_s} s warmup window not compared); set_control @ chunk {} ({} knobs); \
          max|ts diff| = {max_ts:e}; max|value diff| = {max_val:e}",
         got.len(),
         schedule.at_chunk,
@@ -169,7 +186,10 @@ fn realistic_smr_setcontrol_taps_equivalent() {
         want.len()
     );
 
+    let warmup_chunks = io.warmup_samples.div_ceil(io.chunk_size);
+    assert!(warmup_chunks < chunks.len(), "{STEM}_setcontrol: all chunks in warmup");
     let mut max_diff = 0.0_f64;
+    let mut skipped = 0_usize;
     for (ci, (chunk, w)) in chunks.iter().zip(&want).enumerate() {
         if ci == schedule.at_chunk {
             for c in &schedule.changes {
@@ -187,6 +207,11 @@ fn realistic_smr_setcontrol_taps_equivalent() {
             "{STEM}_setcontrol: chunk {ci} tap key-set mismatch"
         );
 
+        if ci < warmup_chunks {
+            skipped += 1;
+            continue;
+        }
+
         for (k, &wv) in w {
             let gv = got[k];
             let d = (gv - wv).abs();
@@ -199,7 +224,8 @@ fn realistic_smr_setcontrol_taps_equivalent() {
     }
 
     eprintln!(
-        "  {STEM}_setcontrol taps :: {} chunks matched; max|value diff| = {max_diff:e}",
+        "  {STEM}_setcontrol taps :: {} chunks matched ({skipped} inside the warmup \
+         window, values not compared); max|value diff| = {max_diff:e}",
         want.len()
     );
 }

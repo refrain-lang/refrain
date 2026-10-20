@@ -6,8 +6,9 @@
 //! events; this pins the host-facing tap snapshot — the canonical-prefixed
 //! last-sample (or `any`) values a clinician observation window reads after
 //! each chunk. The KEY SET must match exactly (a missing or extra tap key is a
-//! failure) and every float value within 1e-6. All load the same IR / IO
-//! fixtures emitted by `tools/gen_fixtures.py`.
+//! failure) and every float value within 1e-6, outside the fixture's warmup
+//! window. All load the same IR / IO fixtures emitted by
+//! `tools/gen_fixtures.py`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,6 +21,21 @@ struct Io {
     sample_rate_hz: f64,
     channels: Vec<String>,
     chunk_size: usize,
+    /// Leading samples whose tap *values* neither engine can be held to, for
+    /// the reason `equivalence.rs` already skips them and `events.rs` now
+    /// does: the filters are still establishing themselves, so a derive's
+    /// value there is the filter's own settling rather than a measurement.
+    /// Since they warm-start (#93) a bandpass fed a standing level reads its
+    /// steady-state zero from sample one — correct, and numerically
+    /// degenerate: the first samples of an envelope are rounding dust around
+    /// 1e-23, and a protocol that divides one dust value by another gets
+    /// whatever the platform's last bits say. The tap KEY SET is still
+    /// asserted on every chunk, warmup included.
+    ///
+    /// Absent from the authored-pulse fixtures, which run no filter at all,
+    /// so zero is the right default for them.
+    #[serde(default)]
+    warmup_samples: usize,
     input: Vec<Vec<f64>>,
 }
 
@@ -62,7 +78,16 @@ fn run_taps(stem: &str) {
         want.len()
     );
 
+    // Chunks wholly inside the warmup window: values not compared, keys are.
+    let warmup_chunks = io.warmup_samples.div_ceil(io.chunk_size);
+    assert!(
+        warmup_chunks < chunks.len(),
+        "{stem}: the whole run is inside the warmup window, so no tap value \
+         would actually be compared"
+    );
+
     let mut max_diff = 0.0_f64;
+    let mut skipped = 0_usize;
     for (ci, (chunk, w)) in chunks.iter().zip(&want).enumerate() {
         ev.step_chunk_events(chunk);
         let got = ev.last_taps();
@@ -77,6 +102,11 @@ fn run_taps(stem: &str) {
             got_keys.difference(&want_keys).collect::<Vec<_>>()
         );
 
+        if ci < warmup_chunks {
+            skipped += 1;
+            continue;
+        }
+
         for (k, &wv) in w {
             let gv = got[k];
             let d = (gv - wv).abs();
@@ -90,7 +120,8 @@ fn run_taps(stem: &str) {
 
     let keyset: Vec<&String> = want.last().map(|m| m.keys().collect()).unwrap_or_default();
     eprintln!(
-        "  {stem} :: {} chunks; {} tap keys matched exactly; max|value diff| = {max_diff:e}\n    keys = {keyset:?}",
+        "  {stem} :: {} chunks ({skipped} inside the warmup window, values not \
+         compared); {} tap keys matched exactly; max|value diff| = {max_diff:e}\n    keys = {keyset:?}",
         want.len(),
         keyset.len(),
     );

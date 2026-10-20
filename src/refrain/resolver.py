@@ -3107,6 +3107,8 @@ class _Resolver:
         _validate_arg_dims(spec, arg_map, call.loc, _stream_input_hint)
         # Nyquist, before anything is emitted (was evaluator-construction only).
         self._validate_band_nyquist(spec, resolved_args, call.loc)
+        # `coherence`: a band too narrow to average, same stage, same reason.
+        self._validate_coherence_bins(spec, resolved_args, call.loc)
 
         # Account budget.
         self._state_kb += spec.budget.state_kb
@@ -3170,6 +3172,97 @@ class _Resolver:
             high = center + (bandwidth / 2.0 if bandwidth is not None else 0.0)
             if high >= nyq:
                 _complain(high, "implied band high edge")
+
+    def _validate_coherence_bins(self, spec: P.PrimitiveSpec, args: list[IRArg],
+                                 loc: Loc | None) -> None:
+        """Refuse a `coherence` band too narrow to average, at resolve time.
+
+        `coherence()` averages the Welch bins that fall inside the band. The
+        segment length is derived from the band so at least
+        `MIN_BINS_IN_BAND` land there — but that needs a window long enough
+        to hold two such segments, and when it is not, the honest answer is
+        an error. The alternative is what used to happen: a band holding one
+        bin (or none, which returned exactly 0.0, indistinguishable from "no
+        coupling") reported as a band average.
+
+        The impl raises on this too, but only once an evaluator is built, so
+        a protocol would resolve, type-check and emit IR-JSON first. This
+        check is the one an author sees. Imported lazily because the
+        resolver otherwise pulls in no NumPy/SciPy.
+        """
+        if spec.name != "coherence":
+            return
+        fs = self.sample_rate_chosen_hz
+        if fs is None:
+            return
+
+        from .primitive_impls import (
+            MIN_BINS_IN_BAND,
+            coherence_bins_in_band,
+            coherence_default_window_ms,
+            coherence_nperseg,
+        )
+
+        named = {a.name: a.value for a in args if a.name is not None}
+        band = named.get("band")
+        if not (isinstance(band, IRTuple) and len(band.elements) == 2):
+            return
+        edges = []
+        for e in band.elements:
+            if not (isinstance(e, IRNumberLit) and e.dims == FREQUENCY):
+                return  # a control ref or expression — nothing static to check
+            edges.append(float(e.value))
+        low, high = edges
+        if not 0 <= low < high:
+            return  # a different complaint; `_validate_band_nyquist` owns it
+
+        window = named.get("window")
+        if window is None:
+            # Omitted: the impl's own band-derived default, which is never
+            # short enough to trip this check. Computed through the same
+            # helper so the two cannot drift apart.
+            window_ms = coherence_default_window_ms((low, high), fs)
+        elif isinstance(window, IRNumberLit) and window.dims == TIME:
+            scale = {"ms": 1.0, "s": 1000.0, "min": 60_000.0}.get(window.unit)
+            if scale is None:
+                return  # an unrecognised duration unit; not this check's call
+            window_ms = window.value * scale
+        else:
+            return  # a control ref or expression — nothing static to check
+
+        nperseg = coherence_nperseg((low, high), fs)
+        n_bins = len(coherence_bins_in_band((low, high), fs, nperseg))
+        window_samples = max(1, int(round(window_ms / 1000.0 * fs)))
+        if window_samples >= nperseg * 2 and n_bins >= MIN_BINS_IN_BAND:
+            return
+
+        seg_ms = nperseg / fs * 1000.0
+        min_window_ms = 2 * seg_ms
+        # The band width whose derived segment would fit twice in this
+        # window. Only worth suggesting when the window could hold two
+        # segments at all, which the 250 ms floor also bounds.
+        widest_band_hz = 2.0 * MIN_BINS_IN_BAND * fs / window_samples
+        can_widen = window_samples >= 2 * coherence_nperseg((0.0, fs / 2.0), fs)
+        way_out = (
+            f"Lengthen `window` to {min_window_ms:.0f} ms or more"
+            + (
+                f", or widen `band` to at least {widest_band_hz:.3g} Hz so the "
+                f"existing window resolves it"
+                if can_widen
+                else ""
+            )
+        )
+        raise ResolveError(
+            f"coherence: averaging the ({low:g}, {high:g}) Hz band needs at "
+            f"least {MIN_BINS_IN_BAND} Welch frequency bins inside it, which "
+            f"at this protocol's {fs:g} Hz sample rate means {seg_ms:.0f} ms "
+            f"segments and so a window of at least {min_window_ms:.0f} ms; "
+            f"`window: {window_ms:g} ms` holds "
+            f"{'only one such segment' if window_samples >= nperseg else 'none'}"
+            f", and a single-segment Welch returns MSC = 1.0 for any input. "
+            f"{way_out}",
+            loc=loc,
+        )
 
     def _lower_pipeline(self, from_expr: A.StringLit, pipeline: A.Array) -> IRExpr:
         """Desugar `derive "X" { from = "Y"; pipeline = [p1, p2, ...] }`

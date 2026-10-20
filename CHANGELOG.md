@@ -181,6 +181,123 @@ bumps are additive; major bumps may break compatibility.
   without some of the fixes when a protocol is held out by a second,
   unrelated obstacle.
 
+- **`coherence()` reported a single bin as a band average** (#92). The Welch
+  segment length was `max(8, sample_rate // 4)` — a quarter-second whatever
+  band was asked for, so about 4 Hz between bins at any rate at or above
+  32 Hz. For the shipped `band: (8 Hz, 12 Hz)` that was **one** bin inside the
+  band at 250 Hz (8.06 Hz) and **two** at 256 Hz, both of them the band edges
+  with nothing between. A band narrower than the spacing and falling between
+  bin centres returned exactly `0.0`, which reads as "no coupling" rather than
+  "cannot be computed" — the repo's own `test_d2_narrow_eeg_bands_also_collapse`
+  had this checked in for SMR (13, 15) Hz and narrow alpha (9, 11) Hz.
+
+  The segment length now comes from the band: the **shortest** segment that
+  really holds three bin centres inside it, floored at the historical 250 ms.
+  Shortest matters, because every sample of segment costs segments — a
+  `window` holds `window / (nperseg / 2)` of them at 50% overlap, and MSC
+  averaged over `n` segments has a noise floor of about `1/n`, so a longer
+  segment buys frequency resolution with dynamic range.
+
+  **Counted, not bounded**, and the distinction is worth 1.5x the segments.
+  `spacing <= W / 3` is *sufficient* — it holds whatever the alignment — but
+  not *necessary*: three centres need two gaps, so `nperseg >= 2 * fs / W` is
+  the weakest a segment can be, and between `2 * fs / W` and `3 * fs / W` only
+  counting can say whether the bins land in the band. For the shipped
+  `(8 Hz, 12 Hz)` the sufficient bound gives 188 samples at 250 Hz — 752 ms,
+  first bin 0.021 Hz *below* the 8 Hz edge, 4 segments in the declared 2 s
+  window. Counting gives 125 — 500 ms, bins exactly on **8, 10 and 12 Hz**,
+  and 6 segments. At 256 Hz it is 128 samples, 500 ms, the same three bins,
+  7 segments. So the band reported is the band the author declared, and the
+  estimate is quieter. Bands wider than about 12 Hz are unaffected and keep
+  their existing numbers and segment count.
+
+  **This moves recorded numbers.** Measured on a matched input against the
+  shipped behaviour (250 ms segments, one bin inside the band at 250 Hz and
+  two band edges at 256 Hz):
+
+  | scenario | 250 Hz | 256 Hz |
+  |---|---|---|
+  | alpha coherent across the band | 0.922 → 0.927 | 0.932 → 0.933 |
+  | coupled at 11 Hz only | 0.782 → 0.726 | 0.828 → 0.752 |
+  | coupled at 8.5 Hz only | 0.887 → 0.675 | 0.782 → 0.646 |
+
+  The broadband case barely moves; the single-frequency cases move a lot and
+  in both directions, which is the point — a one-bin average could not tell
+  where in the band the coupling was. Segments per window go 15 → 6 (250 Hz)
+  and 15 → 7 (256 Hz), so the floor rises: independent noise averages MSC
+  0.160 at 250 Hz and 0.147 at 256 Hz, tracking `1/n`. Warm-up lengthens with
+  the segment, to ~750 ms at 250 Hz. Python-only: `nperseg` has been baked
+  into the IR since v0.1 and the Rust core reads the baked value, so no schema
+  change and no IR version bump.
+
+- **Filters cold-started at zero, so a signal with a standing offset read
+  wrong for seconds** (#93). `SmoothImpl` set `_state = 0.0` and `BandpassImpl`
+  / `BandpowerImpl` zeroed their `sosfilt` state, so every filter's output
+  began at zero and climbed to wherever the signal was. Harmless-ish for
+  zero-mean EEG; wrong for skin temperature, skin conductance or a respiration
+  belt, where a "phasic" derive written as `signal - smooth(signal)` reported
+  most of the tonic level as a phantom response. On a constant 33 °C input at
+  15 Hz that phantom read 23.6 at t = 1 s and took 15 s to fall within 1% (276 s
+  at τ = 60 s); a 4th-order 0.05 Hz high-pass rang above the standing level
+  itself for 37 s.
+
+  All three now seed their state on the first sample to the steady state that
+  sample's level would hold, so a constant input gives its steady-state
+  response from sample one and those transients are gone, not bounded.
+  Mirrored in the Rust core (`Biquad`, `Smooth`), because the two engines have
+  to warm-start identically or the drift gate fails. The report that prompted
+  this issue gave settling figures roughly 30× too long; the measured ones are
+  in `test_d7_cold_start_magnitudes_as_measured`.
+
+### Changed
+- **`coherence()` refuses a band too narrow to average, at resolve time**
+  (#92). When the window cannot hold two segments long enough to put three
+  Welch bins inside the band, the protocol is rejected with a message naming
+  the band, the segment length it implies, the window it would need and the
+  band width that would fit the window as written. Both shipped coherence
+  protocols satisfy it; `coherence(band: (13 Hz, 15 Hz), window: 2 s)`, which
+  used to be accepted and return `0.0`, now errors. The refusal ships in the
+  same commit as the adaptive segment length deliberately: on its own it would
+  reject the two protocols it exists to protect.
+
+- **`coherence()`'s default `window` follows the band** (#92). `window` is
+  optional and defaulted to a flat 1 s, which held four 250 ms segments. With
+  the segment derived from the band a flat 1 s is *shorter than the minimum*
+  for any band narrower than about 5 Hz, so a protocol that simply omitted
+  `window` would have resolved and then refused to build — the
+  resolves-then-crashes shape (#94) this release is trying to remove. The
+  default is now the band's own minimum where that exceeds 1 s: 2000 ms for a
+  2 Hz band at 256 Hz, and still 1000 ms for a 4 Hz band and anything wider,
+  because counting the bins makes a 4 Hz band's segment 500 ms and two of
+  those fit a flat second exactly. No corpus protocol omits `window`, so no
+  recorded number moves.
+
+- **Three equivalence tests compared values the framework already knew were
+  not comparable.** `equivalence.rs` has always skipped the fixtures'
+  `warmup_samples` window; `events.rs`, `taps.rs` and `set_control.rs` never
+  read that field. Inside it a derive's value is the filters' own settling,
+  and with the warm start a bandpass fed a standing level sits at its
+  steady-state zero from sample one — correctly, and to within rounding,
+  which leaves the first samples of any envelope downstream as numerical
+  dust (`micro_05_reward`'s reads 1.1e-23 at sample 1). That protocol's
+  reward divides one dust value by another, so its warmup values differ
+  between SciPy's `sosfilt` and the Rust recurrence, and between
+  architectures. Event identity — count, channel, kind, timestamp — and the
+  whole tap key set are still asserted across the entire run; only values
+  inside the window are let go, and a guard refuses a run where every value
+  would be skipped.
+
+- **`test_sos_unit_zi_matches_scipy` used a fixed tolerance against an
+  ill-conditioned reference.** Per second-order section the warm-start state
+  solves a 2x2 system whose determinant `1 + a1 + a2` is the denominator of
+  the section's DC gain — 4.4e-5 for a 0.0159 Hz corner — so agreement
+  between any two correct implementations is bounded by about `eps / det`,
+  and SciPy reaches that bound by a LAPACK solve where the closed form
+  reaches it by Cramer's rule. Measured: 1.2e-15 at det 3.9e-2, 1.4e-13 at
+  4.4e-4, 1.5e-12 at 4.4e-5. The tolerance is derived from the determinant
+  now, and the robust property — the filter sits at `x[0] * H(1)` from
+  sample one, to 1e-15 relative on every version and architecture tried — is
+  its own test.
 - **The golden-vector drift gate can now fail.** `check_equivalence.py` ran
   `gen_fixtures.py` over the committed fixtures and then pointed `cargo test`
   at the result, so the regeneration overwrote the baseline the comparison was

@@ -200,32 +200,22 @@ def _coherence_of_phase_locked_pair(lo, hi, fs, f_sig, secs=120):
                               chunk=int(fs))["co"].max())
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="D2: 'A tachogram perfectly phase-locked to a 0.1 Hz breath returns "
-           "exactly zero, byte-identical to unrelated signals.' nperseg = "
-           "max(8, int(fs // 4)), so the Welch bins are ~4 Hz apart and a band "
-           "containing no bin centre falls through to msc = 0.0. NOTE: this is "
-           "not confined to sub-1 Hz bands — see "
-           "test_d2_narrow_eeg_bands_also_collapse.",
-)
 def test_d2_coherence_of_phase_locked_hrv_band_is_not_zero():
+    """FIXED. Was: 'A tachogram perfectly phase-locked to a 0.1 Hz breath
+    returns exactly zero, byte-identical to unrelated signals.'
+
+    The segment length was `max(8, int(fs // 4))` — a quarter-second whatever
+    band was asked for — so the Welch bins sat ~4 Hz apart and a band holding
+    no bin centre fell through to msc = 0.0. `coherence_nperseg` now derives
+    it from the band, so a 0.25 Hz-wide band at 4 Hz gets 48-sample (12 s)
+    segments, 0.083 Hz bins, and three bin centres inside it.
+    """
     msc = _coherence_of_phase_locked_pair(0.05, 0.3, fs=4.0, f_sig=0.1, secs=300)
     assert msc > 0.5, (
-        f"two identical 0.1 Hz signals report MSC {msc} over an HRV band at 4 Hz "
-        f"(bin spacing {4.0 / max(8, int(4.0 // 4))} Hz — no bin lands in the band)"
+        f"two identical 0.1 Hz signals report MSC {msc} over an HRV band at 4 Hz"
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="D2 (wider than reported): at 256 Hz the bin spacing is exactly 4 Hz, "
-           "so any band narrower than 4 Hz that falls between multiples of 4 — "
-           "e.g. SMR (13, 15) Hz or narrow alpha (9, 11) Hz — also returns "
-           "exactly 0.0. The report scopes this to 'below about 1 Hz'; it is "
-           "really 'no Welch bin centre inside the band', which bites ordinary "
-           "EEG coherence training too.",
-)
 @pytest.mark.parametrize(
     "lo,hi,f_sig",
     [
@@ -234,11 +224,94 @@ def test_d2_coherence_of_phase_locked_hrv_band_is_not_zero():
     ],
 )
 def test_d2_narrow_eeg_bands_also_collapse(lo, hi, f_sig):
+    """FIXED, and it was wider than the issue title said. Was: at 256 Hz the
+    bin spacing was exactly 4 Hz, so any band narrower than 4 Hz falling
+    between multiples of 4 — SMR (13, 15) Hz, narrow alpha (9, 11) Hz —
+    returned exactly 0.0. The report scoped this to 'below about 1 Hz'; the
+    real condition was 'no Welch bin centre inside the band', which reaches
+    ordinary EEG coherence training.
+
+    Kept parametrised as the record of the two bands the repo measured.
+    """
     msc = _coherence_of_phase_locked_pair(lo, hi, fs=256.0, f_sig=f_sig)
     assert msc > 0.5, (
         f"two identical {f_sig} Hz signals report MSC {msc} over ({lo}, {hi}) Hz "
-        f"at 256 Hz; the 4 Hz Welch grid puts no bin inside the band"
+        f"at 256 Hz"
     )
+
+
+COH_WINDOW_SRC = """
+protocol "cohw" {
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz", "Pz"] }
+  input "a" { montage = referential(active: "Cz", reference: "linked_ears") }
+  input "b" { montage = referential(active: "Pz", reference: "linked_ears") }
+  derive "co" { formula = coherence("a", "b", band: (%(lo)s Hz, %(hi)s Hz), window: %(win)s) }
+  output { audio_gain = 0 }
+}
+"""
+
+
+def test_d2_band_too_narrow_for_the_window_is_refused_at_resolve():
+    """The guard behind the fix: when the window cannot hold two segments long
+    enough to resolve the band, say so instead of averaging one bin.
+
+    This refusal and the adaptive segment length have to ship together — on
+    its own it would reject both shipped coherence protocols, which held one
+    and two bins until the segment length started coming from the band.
+    """
+    # A 2 Hz band at 256 Hz needs 1 s segments, so a 1 s window holds one.
+    with pytest.raises(ResolveError) as exc:
+        resolve_src(COH_WINDOW_SRC % dict(lo=13, hi=15, win="1 s"))
+    msg = str(exc.value)
+    assert "3 Welch frequency bins" in msg
+    assert "2000 ms" in msg          # the window it would need
+    assert "1000 ms" in msg          # the segments that implies
+    assert "widen `band`" in msg and "lengthen `window`" in msg.lower()
+
+
+def test_d2_a_1_s_window_now_resolves_the_alpha_band():
+    """Counting the bins rather than bounding them shortened alpha's segment
+    from 750 ms to 500 ms, so the 1 s window this guard used to refuse holds
+    two of them and is accepted.
+
+    Pinned because it is the user-visible half of the segment-length change:
+    the guard did not get weaker, the segment got shorter.
+    """
+    ir = resolve_src(COH_WINDOW_SRC % dict(lo=8, hi=12, win="1 s"))
+    step_once(ir, fs=256.0)
+
+
+def test_d2_the_shipped_band_and_window_still_resolve():
+    """The two shipped protocols declare `band: (8 Hz, 12 Hz), window: 2 s`.
+    The guard must not reject that — 2 s holds seven 500 ms segments."""
+    ir = resolve_src(COH_WINDOW_SRC % dict(lo=8, hi=12, win="2 s"))
+    step_once(ir, fs=256.0)
+
+
+def test_d2_omitting_window_still_resolves_and_runs():
+    """`window` is optional, and its default used to be a flat 1 s — four
+    250 ms segments. Band-derived segments make a flat 1 s *shorter than the
+    minimum* for any band under about 5 Hz, so a protocol that simply left
+    `window` out would resolve and then refuse to build. The default follows
+    the band now, which is the whole point of the change."""
+    ir = resolve_src("""
+protocol "cohdef" {
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz", "Pz"] }
+  input "a" { montage = referential(active: "Cz", reference: "linked_ears") }
+  input "b" { montage = referential(active: "Pz", reference: "linked_ears") }
+  derive "co" { formula = coherence("a", "b", band: (8 Hz, 12 Hz)) }
+  output { audio_gain = 0 }
+}
+""")
+    step_once(ir, fs=256.0)
+
+
+def test_d2_refusal_does_not_suggest_widening_when_that_cannot_help():
+    """Below the 250 ms segment floor no band width fits two segments in the
+    window, so the message offers only the lengthen-the-window way out."""
+    with pytest.raises(ResolveError) as exc:
+        resolve_src(COH_WINDOW_SRC % dict(lo=8, hi=12, win="300 ms"))
+    assert "widen" not in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
@@ -551,16 +624,15 @@ def test_d6_threshold_refs_still_work_where_they_are_evaluated_in_order():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="D7: 'SmoothImpl sets _state = 0.0; BandpassImpl zeroes _zi. "
-           "Harmless for zero-mean EEG. For any DC-offset modality the filter "
-           "must settle through the entire standing level.' Measured here at "
-           "15 Hz (the rate the reporter's own EmotiBit profile declares) the "
-           "transient is real but the report's figures do not reproduce — see "
-           "test_d7_cold_start_magnitudes_as_measured.",
-)
 def test_d7_smooth_warm_starts_from_the_first_sample():
+    """FIXED. Was: 'SmoothImpl sets _state = 0.0; BandpassImpl zeroes _zi.
+    Harmless for zero-mean EEG. For any DC-offset modality the filter must
+    settle through the entire standing level.'
+
+    Both now seed their state from the first sample. The report's own figures
+    for how long that took never reproduced — the magnitudes that did are in
+    test_d7_cold_start_magnitudes_as_measured.
+    """
     from refrain.primitive_impls import SmoothImpl
 
     fs = 15.0
@@ -575,13 +647,25 @@ def test_d7_smooth_warm_starts_from_the_first_sample():
 
 
 def test_d7_cold_start_magnitudes_as_measured():
-    """Characterisation of the actual transient at 15 Hz, recorded because the
-    report's numbers do not reproduce and any resolver-side settling check would
-    be calibrated against them.
+    """The transient the warm start removed, at 15 Hz, on a constant input.
 
-    Report: 'a phasic derive reads 6.95 uS at t = 1 s and takes ~70 s to fall
-    below 0.01 uS. At bandpass order 4 the settling is 57 s; at the
-    polygraph-standard 0.0159 Hz it is 176 s.'
+    This test used to characterise the cold-start transient, because the
+    report's numbers did not reproduce and a resolver-side settling check
+    would have been calibrated against them. Warm-starting removes the
+    transient rather than bounding it, so there is nothing left to calibrate
+    and the test now pins the absence. The figures are kept here so the
+    record of what was measured survives the fix:
+
+    | | report | measured, cold | now |
+    |---|---|---|---|
+    | phasic at t = 1 s, tau = 3.18 s | — | 5.72 | 0 |
+    | phasic at t = 1 s, tau = 60 s | 6.95 | 7.86 | 0 |
+    | bandpass settling, 0.05 Hz high-pass | 57 s | 1.8 s | none |
+    | bandpass settling, 0.0159 Hz high-pass | 176 s | 5.5 s | none |
+
+    Settling means `|y|` first falling below 1% of the standing level. The
+    report's bandpass figures were off by a factor of about 30, in the
+    direction that made the problem look worse than it was.
     """
     from refrain.primitive_impls import BandpassImpl, SmoothImpl
 
@@ -589,20 +673,33 @@ def test_d7_cold_start_magnitudes_as_measured():
     n = int(fs * 400)
     const = np.full(n, 8.0)
 
-    for tau_s, expected_at_1s in ((3.18, 5.72), (60.0, 7.86)):
+    # A tonic/phasic pair on a constant input: the tonic IS the input, so the
+    # phasic is identically zero from the first sample. Cold-started it read
+    # 5.72 (tau 3.18 s) and 7.86 (tau 60 s) at t = 1 s.
+    for tau_s in (3.18, 60.0):
         phasic = const - SmoothImpl(tau_ms=tau_s * 1000.0, sample_rate_hz=fs).step(const)
-        assert float(phasic[int(fs)]) == pytest.approx(expected_at_1s, abs=0.05), (
-            f"tau={tau_s} s: phasic at t=1 s is {phasic[int(fs)]}, not the "
-            f"report's 6.95"
+        assert np.abs(phasic).max() < 1e-9, (
+            f"tau={tau_s} s: a phasic derive on a constant input peaks at "
+            f"{np.abs(phasic).max()}, so smooth() is not warm-starting"
         )
 
-    # Settling of a 4th-order bandpass to within 1% of the standing level:
-    # 1.8 s at 0.05 Hz and 5.5 s at 0.0159 Hz, not 57 s and 176 s.
-    for f_hp, expected_s in ((0.05, 1.8), (0.0159, 5.5)):
+    # A bandpass rejects DC, so a constant input reads ~0 immediately. Cold
+    # it rang for 1.8 s (0.05 Hz high-pass) and 5.5 s (0.0159 Hz), peaking
+    # above the standing level itself.
+    for f_hp in (0.05, 0.0159):
         y = BandpassImpl(band=(f_hp, 5.0), order=4, sample_rate_hz=fs).step(const)
-        settled = np.where(np.abs(y) < 0.08)[0]
-        assert settled.size, f"bandpass({f_hp} Hz) never settles within 400 s"
-        assert settled[0] / fs == pytest.approx(expected_s, abs=0.3)
+        assert np.abs(y).max() < 1e-9, (
+            f"bandpass({f_hp} Hz) on a constant 8.0 peaks at {np.abs(y).max()}, "
+            f"so its state is not warm-starting"
+        )
+
+    # The motivating signal: skin temperature at a 33 degC standing level.
+    warm = np.full(n, 33.0)
+    phasic = warm - SmoothImpl(tau_ms=3180.0, sample_rate_hz=fs).step(warm)
+    assert np.abs(phasic).max() < 1e-9, (
+        f"a phasic derive on 33 degC peaks at {np.abs(phasic).max()}; "
+        f"cold-started it read 23.6 at t = 1 s"
+    )
 
 
 # ---------------------------------------------------------------------------

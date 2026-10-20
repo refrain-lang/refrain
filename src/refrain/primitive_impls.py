@@ -50,6 +50,88 @@ class PrimitiveImpl:
 
 
 # ---------------------------------------------------------------------------
+# Warm-starting IIR filter state
+# ---------------------------------------------------------------------------
+#
+# Every IIR stage used to begin with zeroed state, which means its output
+# starts at 0 and climbs to wherever the signal actually is. For zero-mean
+# EEG that climb is short and small. For a signal with a standing offset —
+# skin temperature sitting at 33 °C, skin conductance, a respiration belt —
+# the filter has to settle through the whole standing level first, so a
+# "phasic" derive written as `signal - smooth(signal)` reports most of the
+# tonic level as a phantom response for as long as the settling lasts.
+#
+# Instead, each stage seeds its state on its very first sample to the steady
+# state that sample's level would produce. A constant input then yields that
+# input's steady-state response immediately, with no transient at all. The
+# first sample is the only information available at that point, which is why
+# the seed is scaled by it.
+#
+# `_sos_unit_zi` is the state for a unit-step input; multiply by the first
+# sample. It is `scipy.signal.sosfilt_zi`, kept as a closed form so the Rust
+# core (refrain-core/src/dsp.rs) can compute the same numbers from the same
+# baked `sos` without a linear-algebra dependency — the two engines have to
+# warm-start identically or the drift gate fails.
+
+
+def _sos_unit_zi(sos: np.ndarray) -> np.ndarray:
+    """`scipy.signal.sosfilt_zi(sos)` — the `sosfilt` state that holds a
+    unit-step input at its steady-state response.
+
+    Written out rather than called so `refrain-core` can mirror it exactly:
+    per second-order section, `lfilter_zi` reduces to a 2x2 solve
+    `[[1 + a1, -1], [a2, 1]] @ zi = [b1 - b0*a1, b2 - b0*a2]`, and the
+    sections compose by carrying each one's DC gain `H(1)` forward as a
+    scale.
+
+    `det` is that DC gain's denominator, so it is tiny whenever a pole sits
+    near DC (4.4e-5 for a 0.0159 Hz corner at 15 Hz) and the solve is badly
+    conditioned there: no two correct implementations of this agree better
+    than about `eps / det`, which is why
+    `tests/test_primitive_impls.py::test_sos_unit_zi_matches_scipy` derives
+    its tolerance from `det` rather than fixing one. The conditioning is in
+    the state and not in the behaviour — seeded and run, the filter sits at
+    `x[0] * H(1)` to 1e-15 relative, which is what
+    `test_warm_start_holds_a_standing_level` pins.
+    """
+    sos = np.asarray(sos, dtype=np.float64)
+    zi = np.empty((sos.shape[0], 2), dtype=np.float64)
+    scale = 1.0
+    for s in range(sos.shape[0]):
+        b0, b1, b2, a0, a1, a2 = (float(v) for v in sos[s])
+        b0, b1, b2, a1, a2 = b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0
+        rhs0 = b1 - b0 * a1
+        rhs1 = b2 - b0 * a2
+        det = 1.0 + a1 + a2
+        zi[s, 0] = scale * (rhs0 + rhs1) / det
+        zi[s, 1] = scale * ((1.0 + a1) * rhs1 - a2 * rhs0) / det
+        scale *= (b0 + b1 + b2) / det
+    return zi
+
+
+class _WarmStartSos:
+    """Mixin: one-shot seeding of `sosfilt` state from the first sample.
+
+    Holds `_zi` (live state), `_unit_zi` (the unit-step steady state) and
+    `_primed`. Call `_warm_start(x)` at the top of `step` before filtering.
+    """
+
+    _zi: np.ndarray
+    _unit_zi: np.ndarray
+    _primed: bool
+
+    def _init_warm_start(self, sos: np.ndarray) -> None:
+        self._unit_zi = _sos_unit_zi(sos)
+        self._zi = np.zeros((np.asarray(sos).shape[0], 2), dtype=np.float64)
+        self._primed = False
+
+    def _warm_start(self, x: np.ndarray) -> None:
+        if not self._primed and x.shape[0]:
+            self._zi = self._unit_zi * float(x[0])
+            self._primed = True
+
+
+# ---------------------------------------------------------------------------
 # Acquisition (applied to raw multi-channel input by the evaluator)
 # ---------------------------------------------------------------------------
 
@@ -179,7 +261,7 @@ class PassthroughImpl(PrimitiveImpl):
 # ---------------------------------------------------------------------------
 
 
-class BandpassImpl(PrimitiveImpl):
+class BandpassImpl(_WarmStartSos, PrimitiveImpl):
     """`bandpass` over a scalar stream. Supports `kind` of butterworth,
     bessel, or chebyshev2."""
 
@@ -213,10 +295,16 @@ class BandpassImpl(PrimitiveImpl):
             )
         else:
             raise ValueError(f"bandpass: unknown kind {kind!r}")
-        # Zero initial state (warm-up phase fills it).
-        self._zi = np.zeros((self.sos.shape[0], 2), dtype=np.float64)
+        # Warm-started on the first sample (see `_sos_unit_zi`): the output
+        # is the steady-state response to that level straight away instead of
+        # ringing its way there. For a Butterworth or Bessel bandpass that
+        # response is ~0, because they reject DC outright; a `chebyshev2`
+        # keeps `10 ** (-attenuation_db / 20)` of it (0.01 at the default
+        # 40 dB), which is the filter doing what it was asked to.
+        self._init_warm_start(self.sos)
 
     def step(self, x: np.ndarray) -> np.ndarray:
+        self._warm_start(x)
         y, self._zi = scisig.sosfilt(self.sos, x, zi=self._zi, axis=0)
         return y
 
@@ -527,6 +615,11 @@ class SmoothImpl(PrimitiveImpl):
     α = 1 − exp(−1 / (τ · rate)). State: previous output value.
     Supports live retuning of `tau` via `update_control`; the running
     output value carries across to avoid an audible step.
+
+    Warm-started: `_state` is seeded to the first sample, which is the
+    steady state of a one-pole low-pass for a constant input at that level.
+    A tonic/phasic pair (`x - smooth(x)`) therefore reads ~0 phasic from
+    sample one rather than reporting the standing level as a response.
     """
 
     def __init__(self, *, tau_ms: float, sample_rate_hz: float):
@@ -534,7 +627,8 @@ class SmoothImpl(PrimitiveImpl):
             raise ValueError("smooth: tau must be positive")
         self._sample_rate_hz = float(sample_rate_hz)
         self._set_tau(tau_ms)
-        self._state = 0.0  # initialised lazily on first sample
+        self._state = 0.0
+        self._primed = False
 
     def _set_tau(self, tau_ms: float) -> None:
         tau_s = tau_ms / 1000.0
@@ -542,6 +636,9 @@ class SmoothImpl(PrimitiveImpl):
         self.alpha = 1.0 - np.exp(-1.0 / (tau_s * self._sample_rate_hz))
 
     def step(self, x: np.ndarray) -> np.ndarray:
+        if not self._primed and x.shape[0]:
+            self._state = float(x[0])
+            self._primed = True
         b = np.array([self.alpha])
         a = np.array([1.0, -(1.0 - self.alpha)])
         zi = np.array([self._state * (1.0 - self.alpha)])
@@ -1071,7 +1168,7 @@ class FlagAction:
 # ---------------------------------------------------------------------------
 
 
-class BandpowerImpl(PrimitiveImpl):
+class BandpowerImpl(_WarmStartSos, PrimitiveImpl):
     """`bandpower(input, band, window)` — sliding-window total power
     in a frequency band.
 
@@ -1079,6 +1176,11 @@ class BandpowerImpl(PrimitiveImpl):
     sliding-window RMS computation. Welch's method would be more
     accurate; this is the cheap streaming approximation that clinical
     NF software typically uses for EMG-style artifact gates.
+
+    The internal bandpass is warm-started on the first sample for the same
+    reason `BandpassImpl` is, and it has to be: the Rust core's `Bandpower`
+    is built on the same `Biquad` as its `bandpass`, so leaving this one
+    cold would make the two engines disagree.
     """
 
     def __init__(
@@ -1096,13 +1198,14 @@ class BandpowerImpl(PrimitiveImpl):
         self.sos = scisig.butter(
             4, [low / nyq, high / nyq], btype="band", output="sos"
         )
-        self._zi = np.zeros((self.sos.shape[0], 2), dtype=np.float64)
+        self._init_warm_start(self.sos)
         self.window_samples = max(1, int(round(window_ms / 1000.0 * sample_rate_hz)))
         self._buffer: deque[float] = deque(maxlen=self.window_samples)
 
     def step(self, x: np.ndarray) -> np.ndarray:
         # Filter to the band, then compute squared values; sliding-window
         # mean = power. Returned in the input unit's square.
+        self._warm_start(x)
         filtered, self._zi = scisig.sosfilt(self.sos, x, zi=self._zi, axis=0)
         out = np.empty(x.shape[0], dtype=np.float64)
         sq = filtered ** 2
@@ -1115,6 +1218,133 @@ class BandpowerImpl(PrimitiveImpl):
 # ---------------------------------------------------------------------------
 # Coherence — magnitude-squared coherence between two streams
 # ---------------------------------------------------------------------------
+#
+# Welch segment length used to be `max(8, sample_rate // 4)` — a 250 ms
+# segment whatever band was asked for, so about 4 Hz between bins at any
+# rate at or above 32 Hz. "Band average" then meant "the mean of however
+# many bins happened to land inside", which for the shipped
+# `band: (8 Hz, 12 Hz)` was one bin at 8.06 Hz at 250 Hz, and two bins at
+# 256 Hz that were the band edges themselves with nothing in between. A band
+# narrower than the bin spacing and falling between two bin centres got
+# exactly 0.0, which reads as "no coupling" rather than "cannot be measured".
+#
+# The segment length is now derived from the band instead: long enough to put
+# at least `MIN_BINS_IN_BAND` bins inside it, never shorter than the old
+# 250 ms default (a longer segment buys frequency resolution at the cost of
+# fewer segments to average over, so there is no reason to coarsen a band
+# that was already well resolved). Bands wider than
+# `MIN_BINS_IN_BAND * 4 Hz` keep exactly the numbers they had.
+#
+# Where the window cannot hold two segments that long, that is a protocol
+# that cannot measure what it claims to measure, and it is refused — here as
+# a backstop and at resolve time in `resolver._validate_coherence_bins`,
+# which is what an author actually sees.
+
+# The fewest Welch bins that make "the average over the band" mean anything.
+# Two is the band edges with nothing between them; one is a single bin
+# wearing a band's name.
+MIN_BINS_IN_BAND = 3
+
+# The segment length the primitive used before the band drove it: 250 ms,
+# i.e. about 4 Hz between bins. Kept as a floor so a well-resolved wide band
+# keeps its existing numbers and its existing segment count.
+_DEFAULT_NPERSEG_DIVISOR = 4
+
+
+def coherence_nperseg(band: tuple[float, float], sample_rate_hz: float) -> int:
+    """Welch segment length for `band` at `sample_rate_hz`, in samples.
+
+    The shortest segment that really holds `MIN_BINS_IN_BAND` bin centres
+    inside the band, floored at the historical 250 ms default so a
+    well-resolved wide band keeps its existing numbers and segment count.
+
+    Shortest, because every sample of segment costs segments: a `window` holds
+    `window / (nperseg / 2)` of them at 50% overlap, and magnitude-squared
+    coherence averaged over `n` segments has a noise floor of about `1/n`. A
+    longer segment buys frequency resolution with dynamic range.
+
+    **Counted, not bounded.** `spacing <= W / MIN_BINS` is *sufficient* — it
+    guarantees the bins regardless of where the grid falls — but it is not
+    *necessary*, and the gap is not small. Three bin centres need two gaps
+    between them, so `spacing <= W / 2`, i.e. `nperseg >= 2 * fs / W`, is the
+    weakest a segment can possibly be; between `2 * fs / W` and
+    `3 * fs / W` whether the bins land in the band depends on the grid, which
+    only counting can tell. Alpha at 250 Hz is the case that matters: the
+    sufficient bound gives 188 samples (752 ms, the first bin 0.021 Hz below
+    the 8 Hz edge, 4 segments in a 2 s window), and counting gives 125 (500 ms,
+    bins exactly on 8, 10 and 12 Hz, 7 segments). Same three bins, 1.75x the
+    segments, and the band it reports is the band the author declared.
+
+    The scan is bounded both ways and so always terminates: it starts at the
+    necessary bound, where nothing shorter can qualify, and ends at the
+    sufficient one, which always does.
+    """
+    low, high = float(band[0]), float(band[1])
+    width = high - low
+    default = max(8, int(sample_rate_hz // _DEFAULT_NPERSEG_DIVISOR))
+    if width <= 0:
+        return default
+    # Necessary: below this the spacing exceeds W/2 and at most two centres
+    # fit, whatever the alignment. Sufficient: at this the floor argument
+    # holds regardless of alignment.
+    necessary = int(math.ceil((MIN_BINS_IN_BAND - 1) * sample_rate_hz / width))
+    sufficient = int(math.ceil(MIN_BINS_IN_BAND * sample_rate_hz / width))
+    lo = max(8, default, necessary)
+    hi = max(8, default, sufficient)
+    for nperseg in range(lo, hi):
+        if len(coherence_bins_in_band(band, sample_rate_hz, nperseg)) >= MIN_BINS_IN_BAND:
+            return nperseg
+    return hi
+
+
+def coherence_bins_in_band(
+    band: tuple[float, float], sample_rate_hz: float, nperseg: int
+) -> list[float]:
+    """The one-sided Welch bin centres that fall inside `band`.
+
+    Mirrors the mask the impl applies (`f >= low` and `f <= high`) over
+    `scipy.signal.coherence`'s grid `f[k] = k * fs / nperseg`,
+    `k = 0 .. nperseg // 2`. Counted rather than assumed, so the guard
+    reports what the band really holds.
+    """
+    low, high = float(band[0]), float(band[1])
+    spacing = sample_rate_hz / nperseg
+    return [
+        k * spacing
+        for k in range(nperseg // 2 + 1)
+        if low <= k * spacing <= high
+    ]
+
+
+def coherence_min_window_ms(
+    band: tuple[float, float], sample_rate_hz: float
+) -> float:
+    """Shortest `window` that can hold two band-resolving segments, in ms.
+
+    Two segments is the existing floor: a single-segment Welch returns
+    MSC = 1.0 for any input.
+    """
+    nperseg = coherence_nperseg(band, sample_rate_hz)
+    return 2 * nperseg * 1000.0 / sample_rate_hz
+
+
+# `window` is optional on `coherence`. Its default used to be a flat 1 s,
+# which held four 250 ms segments. Now that the segment comes from the band,
+# a flat 1 s would be *shorter than the minimum* for any band narrower than
+# about 5 Hz — so a protocol that simply omitted `window` would resolve and
+# then refuse to build. The default follows the band instead.
+_COHERENCE_DEFAULT_WINDOW_MS = 1000.0
+
+
+def coherence_default_window_ms(
+    band: tuple[float, float], sample_rate_hz: float
+) -> float:
+    """`window` when the author did not write one: the historical 1 s, or the
+    band's own minimum where that is longer."""
+    return max(
+        _COHERENCE_DEFAULT_WINDOW_MS,
+        coherence_min_window_ms(band, sample_rate_hz),
+    )
 
 
 class CoherenceImpl(PrimitiveImpl):
@@ -1135,14 +1365,15 @@ class CoherenceImpl(PrimitiveImpl):
 
     Critical math note: a single-segment Welch returns MSC ≡ 1.0 for
     any input — the formula `|Pxy|^2 = Pxx * Pyy` reduces trivially with
-    one segment. This impl forces `nperseg ≤ window_samples / 2`
-    (typically ~250 ms segments) so multi-segment averaging gives a
-    real coherence estimate.
+    one segment. This impl forces `nperseg ≤ window_samples / 2` so
+    multi-segment averaging gives a real coherence estimate.
 
-    Frequency resolution = `sample_rate / nperseg` ≈ 4 Hz with default
-    settings, which is coarse for narrow clinical bands; use a longer
-    `window` (e.g. 2 s with the same nperseg gives more segments rather
-    than finer frequency bins) for tighter band averaging.
+    Frequency resolution is `sample_rate / nperseg`, and `nperseg` comes
+    from the band (`coherence_nperseg`): long enough for at least
+    `MIN_BINS_IN_BAND` bins inside it, so the band average is an average.
+    A 4 Hz band needs 1.33 Hz resolution, i.e. 750 ms segments, of which a
+    2 s window holds four at 50% overlap. A band too narrow for two such
+    segments to fit the window is refused rather than reported.
     """
 
     def __init__(
@@ -1162,15 +1393,31 @@ class CoherenceImpl(PrimitiveImpl):
         self.band = (low, high)
         self.sample_rate_hz = float(sample_rate_hz)
         self.window_samples = max(1, int(round(window_ms / 1000.0 * sample_rate_hz)))
-        # 250 ms segments by default. nperseg MUST be < window_samples
-        # for multi-segment Welch to produce meaningful MSC.
-        self.nperseg = max(8, int(sample_rate_hz // 4))
+        # Segment length from the band, not from the sample rate — see
+        # `coherence_nperseg`. nperseg MUST be <= window_samples / 2 for
+        # multi-segment Welch to produce meaningful MSC.
+        self.nperseg = coherence_nperseg(self.band, self.sample_rate_hz)
         min_window_ms = 2 * self.nperseg * 1000.0 / sample_rate_hz
         if self.window_samples < self.nperseg * 2:
             raise ValueError(
-                f"coherence: window must be ≥ {min_window_ms:.0f} ms at this "
-                f"sample rate (got {window_ms} ms). A single-segment Welch "
-                f"returns MSC = 1.0 trivially and cannot be used."
+                f"coherence: averaging the ({low:g}, {high:g}) Hz band needs "
+                f"at least {MIN_BINS_IN_BAND} Welch bins inside it, which at "
+                f"{sample_rate_hz:g} Hz means {self.nperseg}-sample "
+                f"({self.nperseg / sample_rate_hz * 1000.0:.0f} ms) segments, "
+                f"so window must be ≥ {min_window_ms:.0f} ms (got "
+                f"{window_ms:g} ms). A single-segment Welch returns MSC = 1.0 "
+                f"trivially and cannot be used. Lengthen `window` or widen "
+                f"`band`."
+            )
+        bins = coherence_bins_in_band(self.band, self.sample_rate_hz, self.nperseg)
+        if len(bins) < MIN_BINS_IN_BAND:
+            # Defensive: the derivation above guarantees this, so reaching
+            # here means the arithmetic is wrong rather than the protocol.
+            raise ValueError(
+                f"coherence: the ({low:g}, {high:g}) Hz band holds only "
+                f"{len(bins)} Welch bin(s) at {sample_rate_hz:g} Hz with "
+                f"{self.nperseg}-sample segments ({MIN_BINS_IN_BAND} needed to "
+                f"average); averaging it would report a single bin as a band."
             )
         self.noverlap = self.nperseg // 2
         # We need enough samples for ≥ 2 segments before MSC is
@@ -1412,9 +1659,15 @@ def make_filter_impl(
             sample_rate_hz=sample_rate_hz,
         )
     if callee == "coherence":
+        coh_band = tuple(static_args["band"])
         return CoherenceImpl(
-            band=tuple(static_args["band"]),
-            window_ms=float(static_args.get("window_ms", 1000.0)),
+            band=coh_band,
+            window_ms=float(
+                static_args.get(
+                    "window_ms",
+                    coherence_default_window_ms(coh_band, sample_rate_hz),
+                )
+            ),
             sample_rate_hz=sample_rate_hz,
         )
     if callee == "autocorr":
