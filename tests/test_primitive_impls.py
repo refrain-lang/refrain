@@ -672,3 +672,15 @@ def test_autocorr_streaming_matches_single_shot():
     one = a.step(x)
     chunked = np.concatenate([b.step(x[i:i + 64]) for i in range(0, len(x), 64)])
     np.testing.assert_allclose(one, chunked, atol=1e-12)
+
+
+def test_coherence_default_window_follows_the_band():
+    """`window` is optional. Its default was a flat 1 s, which is now shorter
+    than the minimum for any band under ~5 Hz; it tracks the band instead so
+    omitting `window` cannot produce a protocol that resolves and then
+    refuses to build. A wide band keeps the historical 1 s."""
+    from refrain.primitive_impls import coherence_default_window_ms
+
+    assert coherence_default_window_ms((1.0, 40.0), SR) == 1000.0
+    assert coherence_default_window_ms((8.0, 12.0), SR) == 1500.0
+    assert coherence_default_window_ms((13.0, 15.0), SR) == 3000.0

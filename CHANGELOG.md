@@ -106,6 +106,17 @@ bumps are additive; major bumps may break compatibility.
   same commit as the adaptive segment length deliberately: on its own it would
   reject the two protocols it exists to protect.
 
+- **`coherence()`'s default `window` follows the band** (#92). `window` is
+  optional and defaulted to a flat 1 s, which held four 250 ms segments. With
+  the segment derived from the band a flat 1 s is *shorter than the minimum*
+  for any band narrower than about 5 Hz, so a protocol that simply omitted
+  `window` would have resolved and then refused to build — the
+  resolves-then-crashes shape (#94) this release is trying to remove. The
+  default is now the band's own minimum where that exceeds 1 s: 1500 ms for a
+  4 Hz band at 256 Hz, 3000 ms for a 2 Hz one, still 1000 ms for anything
+  wider than ~5 Hz. No corpus protocol omits `window`, so no recorded number
+  moves.
+
 ## [0.23.0] — 2026-10-17
 
 ### Added

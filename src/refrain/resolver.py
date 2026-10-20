@@ -3135,6 +3135,7 @@ class _Resolver:
         from .primitive_impls import (
             MIN_BINS_IN_BAND,
             coherence_bins_in_band,
+            coherence_default_window_ms,
             coherence_nperseg,
         )
 
@@ -3152,11 +3153,18 @@ class _Resolver:
             return  # a different complaint; `_validate_band_nyquist` owns it
 
         window = named.get("window")
-        if not (isinstance(window, IRNumberLit) and window.dims == TIME):
-            return
-        window_ms = window.value * {"ms": 1.0, "s": 1000.0, "min": 60_000.0}.get(
-            window.unit or "ms", 1.0
-        )
+        if window is None:
+            # Omitted: the impl's own band-derived default, which is never
+            # short enough to trip this check. Computed through the same
+            # helper so the two cannot drift apart.
+            window_ms = coherence_default_window_ms((low, high), fs)
+        elif isinstance(window, IRNumberLit) and window.dims == TIME:
+            scale = {"ms": 1.0, "s": 1000.0, "min": 60_000.0}.get(window.unit)
+            if scale is None:
+                return  # an unrecognised duration unit; not this check's call
+            window_ms = window.value * scale
+        else:
+            return  # a control ref or expression — nothing static to check
 
         nperseg = coherence_nperseg((low, high), fs)
         n_bins = len(coherence_bins_in_band((low, high), fs, nperseg))

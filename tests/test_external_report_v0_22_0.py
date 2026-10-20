@@ -265,6 +265,24 @@ def test_d2_the_shipped_band_and_window_still_resolve():
     step_once(ir, fs=256.0)
 
 
+def test_d2_omitting_window_still_resolves_and_runs():
+    """`window` is optional, and its default used to be a flat 1 s — four
+    250 ms segments. Band-derived segments make a flat 1 s *shorter than the
+    minimum* for any band under about 5 Hz, so a protocol that simply left
+    `window` out would resolve and then refuse to build. The default follows
+    the band now, which is the whole point of the change."""
+    ir = resolve_src("""
+protocol "cohdef" {
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz", "Pz"] }
+  input "a" { montage = referential(active: "Cz", reference: "linked_ears") }
+  input "b" { montage = referential(active: "Pz", reference: "linked_ears") }
+  derive "co" { formula = coherence("a", "b", band: (8 Hz, 12 Hz)) }
+  output { audio_gain = 0 }
+}
+""")
+    step_once(ir, fs=256.0)
+
+
 def test_d2_refusal_does_not_suggest_widening_when_that_cannot_help():
     """Below the 250 ms segment floor no band width fits two segments in the
     window, so the message offers only the lengthen-the-window way out."""

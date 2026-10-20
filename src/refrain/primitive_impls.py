@@ -1250,6 +1250,25 @@ def coherence_min_window_ms(
     return 2 * nperseg * 1000.0 / sample_rate_hz
 
 
+# `window` is optional on `coherence`. Its default used to be a flat 1 s,
+# which held four 250 ms segments. Now that the segment comes from the band,
+# a flat 1 s would be *shorter than the minimum* for any band narrower than
+# about 5 Hz — so a protocol that simply omitted `window` would resolve and
+# then refuse to build. The default follows the band instead.
+_COHERENCE_DEFAULT_WINDOW_MS = 1000.0
+
+
+def coherence_default_window_ms(
+    band: tuple[float, float], sample_rate_hz: float
+) -> float:
+    """`window` when the author did not write one: the historical 1 s, or the
+    band's own minimum where that is longer."""
+    return max(
+        _COHERENCE_DEFAULT_WINDOW_MS,
+        coherence_min_window_ms(band, sample_rate_hz),
+    )
+
+
 class CoherenceImpl(PrimitiveImpl):
     """`coherence(input_a, input_b, band, window)` — band-averaged
     magnitude-squared coherence (MSC) between two streams.
@@ -1560,9 +1579,15 @@ def make_filter_impl(
             sample_rate_hz=sample_rate_hz,
         )
     if callee == "coherence":
+        coh_band = tuple(static_args["band"])
         return CoherenceImpl(
-            band=tuple(static_args["band"]),
-            window_ms=float(static_args.get("window_ms", 1000.0)),
+            band=coh_band,
+            window_ms=float(
+                static_args.get(
+                    "window_ms",
+                    coherence_default_window_ms(coh_band, sample_rate_hz),
+                )
+            ),
             sample_rate_hz=sample_rate_hz,
         )
     if callee == "autocorr":
