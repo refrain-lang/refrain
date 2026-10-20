@@ -258,6 +258,33 @@ class _AstBuilder(Transformer):
     def term(self, meta, items):
         return _left_fold_binop(items, _loc(meta))
 
+    def neg(self, meta, items):
+        """Unary minus. Desugars here so no node downstream has to learn
+        about it — the AST, the IR, the unparser, the editor's describe pass
+        and the Rust core all keep the shapes they already handle.
+
+        A negated numeric literal becomes that literal with its sign
+        flipped, which is what makes `-3` and `3` interchangeable in every
+        slot that reads a constant, and what makes the unparser round-trip
+        (`_emit_number` has always rendered a negative value as `-3`; until
+        this production existed, re-parsing that output failed).
+
+        Anything else becomes `-1 * x` rather than `0 - x`, because `-` is
+        dimension-checked and a bare `0` does not share dimensions with a
+        microvolt stream, whereas multiplying by a dimensionless `-1`
+        preserves them.
+        """
+        operand = items[0]
+        loc = _loc(meta)
+        if isinstance(operand, A.NumberLit):
+            return A.NumberLit(value=-operand.value, unit=operand.unit, loc=loc)
+        return A.BinaryOp(
+            op="*",
+            left=A.NumberLit(value=-1.0, unit=None, loc=loc),
+            right=operand,
+            loc=loc,
+        )
+
     def factor(self, meta, items):
         # items: [atom, member_chain]; member_chain is a list of NAME tokens.
         # Each inner MemberAccess gets the same `factor`-level span; this

@@ -94,7 +94,12 @@ _DYNAMIC_ARG_KEYS: dict[str, tuple[str, ...]] = {
     "rectify": ("_pos_0",),
     "smooth": ("_pos_0",),
     "differentiate": ("_pos_0",),
-    "percentile": ("signal",),   # threshold-type form
+    # `signal` is the threshold-type form; `_pos_0` the pipeline-stage form,
+    # where the resolver threads the previous stage in positionally exactly
+    # as it does for `auto_range`. Only one of the two is ever present. The
+    # stage form used to classify the threaded input as a *static* arg and
+    # then call `.step()` with nothing (refrain#94).
+    "percentile": ("signal", "_pos_0"),
     "auto_range": ("_pos_0",),
     "absolute": (),
     "above": ("_pos_0", "_pos_1"),
@@ -119,6 +124,41 @@ _DYNAMIC_ARG_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 
+# Slots that usually hold a compile-time constant (`absolute(value:)`) or
+# nothing at all (`passthrough()`, the identity montage), but which the
+# resolver will also fill with a reference to another stream:
+#
+#   threshold "t" { signal = "env"; type = absolute(value: "slow") }
+#   inhibit "contact_loss" { metric = passthrough(input: "skin_rate") ... }
+#
+# Both are ordinary things to write, and for the second there is no other
+# spelling at all: an inhibit's metric has to be a primitive call, so naming
+# one derive as the metric means wrapping it in something. Both resolved
+# cleanly, and then `_instantiate_call` threw the resolved reference away —
+# `absolute` tried to `float()` it, and `passthrough` was built as a montage
+# over the raw multi-channel source, whose arity check is what actually
+# raised. See refrain#94.
+#
+# When the slot does hold a reference the primitive is an identity over the
+# stream that reference names, so the slot is dynamic rather than static.
+_REFERENCE_SLOTS: dict[str, str] = {
+    "absolute": "value",
+    "passthrough": "input",
+}
+
+
+def _reference_slot(call: IRCall) -> IRExpr | None:
+    """The resolved stream reference filling one of `_REFERENCE_SLOTS`, or
+    None when this call's slot holds a constant (or is absent)."""
+    key = _REFERENCE_SLOTS.get(call.callee)
+    if key is None:
+        return None
+    for arg in call.args:
+        if arg.name == key and isinstance(arg.value, IRStreamRef):
+            return arg.value
+    return None
+
+
 def _classify_call(call: IRCall) -> tuple[dict[str, Any], list[IRExpr]]:
     """Split an IRCall's args into (static_kwargs, dynamic_arg_exprs).
 
@@ -126,6 +166,8 @@ def _classify_call(call: IRCall) -> tuple[dict[str, Any], list[IRExpr]]:
     are IR expressions evaluated per chunk and passed to `.step()`.
     """
     dynamic_keys = _DYNAMIC_ARG_KEYS.get(call.callee, ())
+    if _reference_slot(call) is not None:
+        dynamic_keys = dynamic_keys + (_REFERENCE_SLOTS[call.callee],)
     static: dict[str, Any] = {}
     dynamic: list[IRExpr] = []
 
@@ -775,6 +817,14 @@ class Evaluator:
             return
         if call.callee == "ratio":
             return  # bandwidth constructor; consumed by bandpass
+        if _reference_slot(call) is not None:
+            # The slot holds a resolved reference to another stream, so this
+            # call is an identity over that stream — not a constant to read
+            # and not a montage over the raw source. `_classify_call` has
+            # already moved the reference into the dynamic args, so
+            # `_eval_call` feeds the right chunk in (refrain#94).
+            self._impls[id(call)] = impls.IdentityImpl()
+            return
         impl = impls.make_filter_impl(
             call.callee,
             static,
@@ -1074,6 +1124,15 @@ class Evaluator:
                 setter(not freeze_ingest)
             if isinstance(impl, impls.AbsoluteThresholdImpl):
                 stream_values[t.canonical_name] = impl.step(np.zeros(actual_chunk_size))
+            elif isinstance(impl, impls.IdentityImpl):
+                # `absolute(value: "<a derive>")` — the threshold level IS
+                # another stream, so feed it the reference the resolver
+                # worked out and not this threshold's own signal, which
+                # would make every comparison against it trivially false.
+                stream_values[t.canonical_name] = self._eval_call(
+                    t.threshold_call, stream_values, control_chunks_cache,
+                    actual_chunk_size,
+                )
             else:
                 signal_chunk = stream_values[t.signal]
                 stream_values[t.canonical_name] = impl.step(signal_chunk)
@@ -1087,6 +1146,12 @@ class Evaluator:
             thresh_impl = self._impls[id(ih.threshold)]
             if isinstance(thresh_impl, impls.AbsoluteThresholdImpl):
                 thresh_chunk = thresh_impl.step(np.zeros(actual_chunk_size))
+            elif isinstance(thresh_impl, impls.IdentityImpl):
+                # As above: `absolute(value: "<a derive>")` on an inhibit.
+                thresh_chunk = self._eval_call(
+                    ih.threshold, stream_values, control_chunks_cache,
+                    actual_chunk_size,
+                )
             else:
                 thresh_chunk = thresh_impl.step(metric_chunk)
             inhibit_active[ih.canonical_name] = metric_chunk > thresh_chunk

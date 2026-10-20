@@ -67,13 +67,32 @@ SPEC §3 has no unary minus production. TOUR §7's LZT sketch uses
 `range: (-1, 1)`, but TOUR §7 is itself flagged in SPEC §10 as
 incomplete.
 
-The parser does not accept negative numeric literals. Workaround in
-tests: use positive ranges.
+**Implemented** (refrain#94). The grammar has a `neg` production between
+`term` and `factor`, so unary minus binds tighter than `*` and `/`. The
+Earley parser resolves the `(- expr | expr)` ambiguity by context exactly
+as proposed: in `(a - 1)` the `-` follows a complete term and is binary;
+in `(-1, 1)` nothing precedes it, so it is unary.
 
-**Proposed spec revision:** add unary minus to §3's expression grammar
-with the same `-` token. The Earley parser handles the resulting
-`(- expr | expr)` ambiguity via context: in `(a - 1)`, the `-` is a
-binary operator; in `(-1, 1)` (after `(`, `,` or `=`), it's unary.
+Two notes on how it desugars, because nothing downstream of the parser
+knows about unary minus:
+
+- A negated **literal** folds in the parser to one `NumberLit` with the
+  sign flipped. That is what makes `-3` work in every slot that reads a
+  compile-time constant, and what makes the unparser round-trip —
+  `_emit_number` had always rendered a negative value as `-3`, and before
+  this production existed, re-parsing that output failed.
+- Anything else becomes `-1 * x`, not `0 - x`. `-` is dimension-checked
+  and a bare `0` does not share dimensions with a microvolt stream;
+  multiplying by a dimensionless `-1` preserves them.
+
+Arithmetic over two literals also folds at **resolve** (`_fold_arithmetic`),
+which is what the pre-unary-minus workaround needed: `steepness: 0 - 3`
+reached the evaluator as an `IRBinaryOp` in a slot that only reads
+`IRNumberLit`, resolved cleanly and then raised. Folding at resolve also
+keeps the Rust core out of it — the IR-JSON a host serializes holds the
+number, so both backends see the same thing.
+
+**Remaining spec work:** add the production to SPEC §3's EBNF.
 
 ### 1.4 `block_expr = block` vs the named form
 
@@ -874,7 +893,8 @@ core.*
 - **Hyphenated identifiers** — drop or split into `position_lit`.
 - **§4.11 `custom`** — pick string-form signatures or commit to a
   type-literal extension.
-- **Negative literals** — add unary minus.
+- **Negative literals** — unary minus is implemented (§1.3); SPEC §3's EBNF
+  still has to grow the production.
 - **`block_expr = identifier? block`** — bring §3 in line with usage.
 - **`session.schedule`** — define or remove from §8.
 - **Statement-context restrictions** — tighten §3 or document per §4.

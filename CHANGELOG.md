@@ -34,7 +34,61 @@ bumps are additive; major bumps may break compatibility.
   type, so a bug reads as a bug. Two of the six fixes above were hidden by
   exactly that ambiguity.
 
+- **Unary minus.** `steepness: -3` parses. `-3` folds in the parser to a single
+  negative literal, so every slot that reads a compile-time constant accepts it
+  and the unparser round-trips (it had always *emitted* `-3` for a negative
+  value; re-parsing that output used to fail). `-x` on anything that is not a
+  literal desugars to `-1 * x` rather than `0 - x`, because `-` is
+  dimension-checked and a bare zero does not share dimensions with a microvolt
+  stream. SPEC §3's EBNF still has to grow the production; DESIGN-NOTES §1.3
+  records the divergence.
+
 ### Fixed
+- **Four protocol shapes passed `refrain check` and then crashed when the
+  evaluator was built** (refrain#94). Each one is the evaluator ignoring
+  something the resolver had already worked out correctly, and each had been
+  reproduced by a checked-in `xfail(strict=True)`:
+
+  - `sigmoid(..., steepness: 0 - 3)`. Down-training wants a decreasing
+    sigmoid, and with no unary minus in the grammar `0 - 3` was the only
+    spelling available. It reached `SigmoidImpl` as an `IRBinaryOp` in a slot
+    that reads only a literal. **Arithmetic over two numeric literals now
+    folds at resolve**, so it never reaches such a slot, and the IR a host
+    serializes holds the number the author meant instead of a tree the host
+    would have to evaluate. (Both halves landed: see unary minus above.)
+  - `absolute(value: "<a derive>")` — a threshold whose level tracks another
+    stream rather than sitting at a constant. The resolver put the right
+    reference in the IR; `_instantiate_call` discarded it and tried to
+    `float()` it.
+  - `percentile(target_pct:, window:)` as a **derive pipeline stage**, which
+    makes a running percentile a signal in its own right. The resolver threads
+    a stage's input in positionally, exactly as it does for `auto_range`;
+    `percentile` classified that input as a static argument and then called
+    `.step()` with nothing. This turns the 10th/50th/90th-percentile exposure
+    measures occupational EMG work needs into first-class derives.
+  - `inhibit { metric = passthrough(input: "<a derive>") }` — reading one
+    derive as an inhibit's metric. An inhibit's metric has to be a primitive
+    call, so there is no way to name the derive without wrapping it, and
+    `passthrough` is the only wrapper that leaves the value alone (`rectify`,
+    the other call the corpus uses this way, takes the absolute value). It
+    resolved cleanly, with `arg input -> IRStreamRef derive/skin_rate` in the
+    IR, and then died on `passthrough() requires a single-channel source (got
+    3 channels)` — because the primitive was built as a *montage* over the raw
+    multi-channel source rather than as an identity over the stream the
+    reference names. Found while spiking a declarative contact-loss detector,
+    which was built outside the protocol language instead of waiting.
+
+  Rejecting these at resolve was considered and declined: three of the four
+  are ordinary things to write, and for the `passthrough` one there is no
+  other spelling, so refusing it would have removed a capability rather than
+  caught a mistake.
+
+  **Backend coverage:** the fold is resolve-time and therefore backend-neutral
+  — `steepness: -3` and `steepness: 0 - 3` produce identical IR-JSON and run on
+  both backends. The other three run under `backend="python"` only; the Rust
+  core refuses them at evaluator construction with a catchable `RuntimeError`
+  naming the fallback. See `docs/MIGRATING-TO-RUST-BACKEND.md` §2.
+
 - **The editor could render a protocol that the language then refused.** A
   placement control with `allowed` omitted — legal, and meaning any channel —
   was described as `allowed: []` and rendered back as `allowed = []`, which
