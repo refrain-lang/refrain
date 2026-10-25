@@ -28,11 +28,29 @@ silently paid about 100 ms of dip forgiveness for it.
 So the headline change here is not a new idea. It makes explicit, and
 controllable, a property the engine already had and lost.
 
-The second change is a bug in disguise. Today every mute resets the hold clock,
-because the mute is AND-ed into the hold's condition and a false sample zeroes
-the streak (`src/refrain/eval_.py:1813`). A trainee who swallows mid-burst loses
-the reward they had earned, and cannot tell why — they hear the same gap in the
-tone either way. Paluch 2017 found 7 of 14 beta up-trainers learned to clench;
+The second change is a bug in disguise, and it takes a different shape on each
+of refrain's two hold paths. Of the 45 live protocols, 44 put the hold in
+`reward { event = dwell(...) }`; three also bind holds inside `output { }`
+(`alpha_theta_narrowband`, `alpha_theta_narrowband_melodic`, `smr_classic_cz`).
+
+- **In an `output` binding**, the mute is AND-ed into the hold's condition
+  (`src/refrain/eval_.py:1813`), so a false sample zeroes the streak. A swallow
+  wipes banked progress.
+- **In `reward { event = ... }`**, no eligibility mask is applied at all. That
+  dwell is stepped in `_eval_reward_event` (`eval_.py:1883`) on the raw
+  condition, and that runs *before* `muted` is even computed (`eval_.py:1241`).
+  The clock runs straight through the mute; the event is masked at the output
+  stage instead (`gated_bool = values.astype(bool) & ~muted`, `eval_.py:1308`).
+
+The second case is the one that matters, and it is worse than the first.
+Measured: a genuine 2 s burst with a swallow 100 ms in, 250 ms hold, mute from
+2.80 s to 3.65 s. The rising edge fires at 2.945 s — inside the blind window —
+and the output gate eats it. `dwell` does not re-arm, so that burst never
+produces another event. The trainee loses the reward for two full seconds of
+good work and cannot tell why, because they hear the same gap in the tone
+either way. On the `output`-bound path the same burst rewards at 3.898 s;
+under the proposed pause rule, at 3.797 s. Pausing fixes both paths by moving
+the rising edge out of the window where nobody can hear it. Paluch 2017 found 7 of 14 beta up-trainers learned to clench;
 Bussalb 2019 found signal quality and artifact handling predicted outcome where
 protocol choice did not. Scoring an unreadable moment as a failure both spends
 reward budget we are trying to recover and teaches the wrong thing.
@@ -252,19 +270,32 @@ mute is the opposite case: rising delta means the trainee is falling asleep,
 which is a real state worth scoring against them. Those two should never have
 shared one behaviour, and today they do.
 
-**Implementation.** The mask already exists. `src/refrain/eval_.py:1281` builds
-`_hold_for_eligible` and line 1813 AND-s it into the hold's condition, which is
-why a mute currently zeroes the streak; `refrain-core/src/eval.rs:430-450` is the
-exact Rust twin, with the mask carried as `__hold_for_eligible` (inserted at
-`:1722`, removed at `:1731`). The change is to pass two masks instead of one — a
+**Implementation, on the `output`-bound path.** The mask already exists.
+`src/refrain/eval_.py:1281` builds `_hold_for_eligible` and line 1813 AND-s it
+into the hold's condition; `refrain-core/src/eval.rs:430-450` is the exact Rust
+twin, with the mask carried as `__hold_for_eligible` (inserted at `:1722`,
+removed at `:1731`). The change is to pass two masks instead of one — a
 condition and an observability mask — and have the hold implementations hold
-rather than reset when unobservable. Three primitives, two backends, one shared
-rule.
+rather than reset when unobservable.
 
-**Precedent for pausing.** refrain already treats unobservable time this way
-elsewhere: `reset_held_outputs()` (`src/refrain/eval_.py:607`) is called from
-exactly one place, inside `set_clock_frozen(frozen=True)`, and notably *not*
-from `advance_phase()`.
+**Implementation, on the reward-event path.** This path has no mask today, so it
+needs wiring, not just a semantic change. The ordering cost is small: inhibits
+are already evaluated at `eval_.py:1142-1158`, well before the reward stage at
+`:1200`, so `_compute_muted` can simply move above the reward stage in both
+engines. Rust has the same shape (`refrain-core/src/eval.rs:1700-1725`).
+
+**What absence means on each path.** An unlabelled inhibit must reproduce
+today's behaviour, and today's behaviour differs by path: in an `output`
+binding it resets, and on the reward-event path it does nothing at all. So the
+observability mask reaches the reward stage *only* for inhibits labelled
+`"artifact"`. Unlabelled and `"trained"` inhibits contribute nothing there, as
+now. No existing protocol changes until one is labelled.
+
+**This is a reward change where it applies, and must be recorded as one.** The
+measurement above shows a labelled artifact gate turning a lost reward into a
+delivered one. That is the intended effect and the reason for the release, but
+it means Stage 3's labelling pass moves reward rates on live protocols, and each
+one needs its before-and-after in the protocol header and the PR.
 
 ### 3. Block-boundary re-seeding
 
