@@ -1,0 +1,533 @@
+# Forgiving holds, artifact gates, and block re-seeding
+
+- **Date:** 2026-10-25
+- **Tracking:** REC-23 (the Linear ticket for this work)
+- **Stage:** Stage 2 of the protocol feedback roadmap in refrain-protocols,
+  `docs/superpowers/specs/2026-10-21-protocol-feedback-roadmap-design.md`
+- **Target version:** refrain 0.25.0 (one PR, one release)
+
+## Why this exists
+
+The migration to `band_envelope` made refrain's envelopes much faster and, as a
+side effect, much less forgiving. The roadmap's own table shows what that cost:
+reward time collapsed across the live corpus — `smr_classic_baseline_staged_cz`
+from 27.5 % to 8.9 %, `alpha_theta` from 39.9 % to 0.7 %, `high_beta_down` from
+10.3 % to 0.4 %. Published trials that produced learning sat at 25–40 % reward
+time (Arns 2014; the blinded ADHD trial at ~40 %; Nam & Choi 2020, where only
+the ~80 % group learned). The corpus is now an order of magnitude below the
+range anything is known to work in.
+
+Measurement during design found where a large slice of that went. The old
+four-stage chain (`bandpass -> hilbert -> magnitude -> smooth`) carried an
+implicit dip tolerance nobody declared: with `tau = 250 ms` it would ride
+through roughly 250 ms of total rhythm dropout without the envelope falling
+below half its plateau. `band_envelope` at 360 ms latency rides through about
+150 ms. The migration bought 208 ms of latency (568 ms down to 360 ms) and
+silently paid about 100 ms of dip forgiveness for it.
+
+So the headline change here is not a new idea. It makes explicit, and
+controllable, a property the engine already had and lost.
+
+The second change is a bug in disguise. Today every mute resets the hold clock,
+because the mute is AND-ed into the hold's condition and a false sample zeroes
+the streak (`src/refrain/eval_.py:1813`). A trainee who swallows mid-burst loses
+the reward they had earned, and cannot tell why — they hear the same gap in the
+tone either way. Paluch 2017 found 7 of 14 beta up-trainers learned to clench;
+Bussalb 2019 found signal quality and artifact handling predicted outcome where
+protocol choice did not. Scoring an unreadable moment as a failure both spends
+reward budget we are trying to recover and teaches the wrong thing.
+
+## What ships
+
+Five items. Three add a declaration to the language; two are verification of
+behaviour that already exists.
+
+| # | Item | Shape |
+|---|------|-------|
+| 1 | `tolerance:` on `dwell`, `dwell_rearm`, `hold_for` | new optional argument |
+| 2 | An inhibit declares what kind of inhibit it is; artifact gates pause the hold clock instead of resetting it | new optional field |
+| 3 | A block may re-seed named controls at its boundary | new optional field |
+| 4 | A per-person muscle-mute level seeded at warm-up | already expressible; lock it with fixtures and tests |
+| 5 | A mute silences the continuous output | already implemented; lock it with tests on both backends |
+
+Items 4 and 5 shrank during design, because the capability turned out to be
+present already:
+
+- **Item 5 is done in the engine.** `src/refrain/eval_.py` gates every
+  continuous output channel with `gated = np.where(muted, 0.0, clamped)`, and
+  event channels with `values & ~muted`. What is missing is a test that says so,
+  on both backends, at the `output/<channel>` tap. Note separately that
+  `suppress_on_mute` on a `feedback` layer is carried into the IR JSON and into
+  the Rust IR struct but is acted on by neither engine — it is a declaration for
+  the downstream player, not an engine behaviour. That asymmetry should be
+  documented, not quietly fixed here.
+- **Item 4 needs no new primitive.** An inhibit metric may name a derive
+  (`metric = rectify("emg_envelope")`, as `examples/critical_fluctuation_cue.refrain`
+  does), an inhibit threshold may be an absolute against a control
+  (`threshold = absolute(55 uV2)`, as `bench/protocols/micro_09_inhibit.refrain`
+  does), and a control may carry `seed = percentile { from = "<derive>"; window;
+  target_pct }`. Composing those three gives a per-person, warm-up-seeded,
+  absolute muscle limit today. The autopilot restriction on controls that feed an
+  inhibit (`apply = "auto"` is refused) does not apply to seeding.
+
+## Goals
+
+1. A dip short enough to be an artifact of the envelope rather than a real
+   interruption does not break a hold, and the interrupted burst still earns the
+   one reward it would have earned.
+2. Time the engine could not observe is scored as neither success nor failure.
+3. A protocol can hold a trainee's own measured muscle level as an absolute
+   limit, set once at warm-up.
+4. A protocol can ask for its thresholds to be re-measured at a block boundary,
+   and every such re-measurement is recorded.
+5. Every existing protocol compiles to byte-identical IR and behaves
+   identically. All three new declarations are optional, and absence reproduces
+   today's behaviour exactly.
+6. The Python and Rust engines stay bit-identical, and the IR version gate
+   refuses a document an older engine would silently mis-run.
+
+## Non-goals
+
+Each of these was considered during design and set aside for a stated reason.
+They are not oversights.
+
+| Not doing | Why |
+|-----------|-----|
+| A second, lower threshold line ("two-line threshold", the ticket's "and/or") | Measurement killed it. Through a 360 ms envelope a total dropout of 50 / 100 / 150 ms lands at 81 % / 67 % / 51 % of plateau. A lower line at 0.8 / 0.67 / 0.5 of the upper **is** a 50 / 100 / 150 ms tolerance — the same feature in a worse unit, because the ratio shifts with band and with latency while the time does not. One time parameter expresses it and travels between protocols. |
+| A depth floor on the tolerance (forgive only shallow dips) | Unreachable. Depth follows duration through the envelope, so for the 50–150 ms range we care about, a depth condition is the duration condition with extra parameters. |
+| A spindle-detector primitive, or counting spindles in the engine | Costly and not needed for feedback. The user's position: "I'm not sure I care about being able to report spindles, I care more about effective feedback." |
+| Changing any protocol file | Stage 3. The agreed split is infrastructure now, protocols later. |
+| Shortening declared latency below the bandwidth-time floor | The floor is `1000 / bandwidth` ms, enforced by refrain-protocols' `tests/test_declared_latency.py`. 12–15 Hz gives a 333 ms floor, hence 360 ms. Changing it is a separate argument with its own evidence. |
+| Recorder gain smoothing | Stage 2b. |
+| Picking per-protocol tolerance values | See "The replay, and what it is for" below. |
+
+## Anti-goals
+
+Failure even if it technically works:
+
+- **Changing what counts as a reward as a side effect.** The roadmap states
+  this: "Every reward change is a recorded design decision in the protocol's
+  header and in the PR." This design nearly violated it. An earlier version made
+  the pause-instead-of-reset rule global, which would have altered the reward
+  behaviour of every protocol that pairs a mute with a hold. A sweep found eight:
+  `alpha_theta` (2 mutes, 1 hold), `alpha_theta_narrowband` (2, 4),
+  `alpha_theta_narrowband_melodic` (2, 3), `alpha_up` (1, 1), `beta_attention`
+  (1, 1), `high_beta_down` (1, 1), `smr` (1, 1),
+  `smr_classic_baseline_staged_cz` (1, 1). The slow protocols would have been
+  hit hardest: `alpha_theta` pairs a 1000 ms dwell with a delta mute whose
+  release is 1 s. Hence the label, and hence the default.
+- **A silent threshold change.** A re-seed that a practitioner cannot see
+  afterwards is worse than no re-seed. Sherlin 2011's critique of
+  auto-thresholding is the reason re-seeding is off by default and recorded when
+  on.
+- **Python and Rust drifting.** A tolerance implemented twice with a
+  one-sample difference is worse than no tolerance, because the drift gate is
+  the thing that makes every other number in this repo trustworthy.
+
+## Constraints
+
+From the roadmap and the repo, all still binding:
+
+- Work against `main`. One PR, one release — refrain CI runs 12–28 minutes a
+  round, so changes batch.
+- `legacy/` is frozen. Retire by moving, never deleting.
+- Never widen a band.
+- Every live protocol stays in the editor round-trip subset unless listed in
+  `KNOWN_GAPS`.
+- Capture `pytest`'s exit code immediately, never after a pipe. No `-q` on
+  refrain's suite.
+- refrain and refrain-core are versioned in lockstep; `tests/test_version_lockstep.py`
+  fails the build if the two `pyproject.toml` versions drift.
+
+## Decisions already made
+
+These were settled in conversation and are not open:
+
+1. **Brief dips (~50–150 ms) should be invisible, and the interrupted burst
+   counts as one success** — not two, not zero. (User, in the brief.)
+2. **One time parameter, no depth floor, no second threshold line.** (Follows
+   from the measurements above; accepted.)
+3. **An artifact mute pauses the reward clock rather than resetting it** —
+   option A of the two put to the user, chosen as "I think A makes more sense"
+   and confirmed as "I like A, let's try it for now."
+4. **The behaviour hangs on the inhibit, not on the engine**, as a declaration
+   of what kind of inhibit it is, defaulting to today's behaviour. (Settled after
+   the user raised the risk to the slow protocols: "I don't want to fuck up the
+   slow protocols.")
+5. **A block boundary resets the hold clock explicitly.**
+6. **Block re-seeding is off by default, and every re-seed is recorded.**
+7. **The muscle limit is an absolute, per-person level, seeded at warm-up** —
+   not a rolling percentile. Paluch 2017's finding is about an absolute ceiling
+   that interrupts training.
+8. **Infrastructure in this release, protocol changes later.** (User: "so
+   infrastructure here and actual protocols later.")
+9. **Tolerance defaults belong to a protocol family, not to the primitive.**
+   (Settled after the user's correction that the 12–15 Hz Cz protocol is not a
+   general-purpose "raise 12–15 Hz somewhere" protocol, so one number cannot
+   serve every family.)
+
+## Design
+
+### 1. `tolerance:` on the hold primitives
+
+```
+reward {
+  event = dwell(above("smr"), duration: 250 ms, tolerance: 100 ms)
+}
+```
+
+Accepted on `dwell`, `dwell_rearm` and `hold_for`. A duration, default absent.
+Absent means zero, which is today's behaviour exactly.
+
+**Semantics: forgive, don't credit.** A run of false samples no longer than
+`tolerance` leaves the streak exactly where it was — it neither advances nor
+resets it. When a dip exceeds `tolerance`, the streak resets to zero.
+
+The consequence worth stating plainly: a streak of N samples always means N
+samples genuinely above threshold. The hold's `duration` keeps its literal
+meaning, and reward-time numbers stay comparable with the roadmap's table. The
+alternative — crediting dip samples toward the hold — reads more like "invisible"
+but has a pathology: a condition true for one sample in every 100 ms would
+accrue a 250 ms hold in 250 ms of wall clock on 10 ms of real signal. Under
+forgive-don't-credit the same pattern takes 2.6 s and carries 100 ms of real
+signal, and the invariant below makes that boundary case explicit rather than
+accidental.
+
+**Causality.** The rule needs no lookahead, which is what makes identical Rust
+and Python implementations straightforward. While a dip is in progress the
+streak is held; the moment the dip's length passes `tolerance` the streak is
+zeroed. Nothing is deferred and no latency is added.
+
+**The re-arm clock, and one ding per burst.** For `dwell_rearm`, the re-arm
+countdown is held through a forgiven dip, so a dip cannot re-arm the event and
+hand out a second reward for one burst. When a dip exceeds `tolerance`, the
+re-arm counter is credited with the whole dip so far, counted from the dip's
+first sample — the condition was genuinely false from then, and crediting only
+from the moment tolerance expired would make re-arming slower than it is today.
+
+**Invariants for the fuzzer** (these are the specification, as much as the prose
+is):
+
+- *Monotone in tolerance.* Raising `tolerance` can only move a reward earlier in
+  the sample stream or leave it where it was. It can never move one later or
+  remove one.
+- *No free rewards.* The number of samples genuinely above threshold behind any
+  reward is at least `duration`.
+- *Zero is identity.* `tolerance: 0 ms` produces sample-identical output to the
+  same protocol with no `tolerance` at all.
+- *Idempotent under dip-filling.* A condition stream whose sub-tolerance false
+  runs have been filled in by hand produces the same reward times as the
+  original does with that tolerance.
+
+### 2. An inhibit says what kind of inhibit it is
+
+```
+inhibit "emg" {
+  metric    = rectify("emg_envelope")
+  threshold = absolute(emg_limit_uv)
+  action    = mute(release: 350 ms)
+  kind      = "artifact"
+}
+```
+
+`kind` is optional, with two values:
+
+- `"artifact"` — the signal is unreadable right now. Muted time is unobservable:
+  the hold clock is held, neither advancing nor resetting, exactly as a forgiven
+  dip is held. There is no length limit on this hold; the clock resumes whenever
+  the gate clears.
+- `"trained"` — the trainee is doing the thing this protocol trains away from.
+  Failing it is the point, so it resets the clock. This is today's behaviour.
+
+**Absence is not `"trained"`.** An inhibit with no `kind` behaves exactly as
+today (reset), but is recorded as unlabelled rather than asserted to be a
+trained condition — because most of them are mislabelled artifact gates. The
+catalog should be able to report how many inhibits are still unlabelled, which
+gives Stage 3 a worklist. The compiler may advise on an unlabelled inhibit; it
+must not refuse one.
+
+That distinction is clinical, not bookkeeping. A clench tells you nothing about
+the trainee's SMR, so scoring it is measurement error. `alpha_theta`'s delta
+mute is the opposite case: rising delta means the trainee is falling asleep,
+which is a real state worth scoring against them. Those two should never have
+shared one behaviour, and today they do.
+
+**Implementation.** The mask already exists. `src/refrain/eval_.py:1281` builds
+`_hold_for_eligible` and line 1813 AND-s it into the hold's condition, which is
+why a mute currently zeroes the streak; `refrain-core/src/eval.rs:430-450` is the
+exact Rust twin, with the mask carried as `__hold_for_eligible` (inserted at
+`:1722`, removed at `:1731`). The change is to pass two masks instead of one — a
+condition and an observability mask — and have the hold implementations hold
+rather than reset when unobservable. Three primitives, two backends, one shared
+rule.
+
+**Precedent for pausing.** refrain already treats unobservable time this way
+elsewhere: `reset_held_outputs()` (`src/refrain/eval_.py:607`) is called from
+exactly one place, inside `set_clock_frozen(frozen=True)`, and notably *not*
+from `advance_phase()`.
+
+### 3. Block-boundary re-seeding
+
+```
+block "two" {
+  reseed = ["smr_threshold_uv"]
+}
+```
+
+Absent or empty means no re-seed, which is today's behaviour. Each named control
+must already carry a `seed` rule; the re-seed re-runs that same rule at the
+block boundary, measuring over the rule's trailing `window` ending at the
+boundary, and reusing `PercentileImpl` so the result is bit-exact across
+backends — the same machinery baseline seeding shipped with in v0.15.0.
+
+**Why a trailing window and not a fresh measurement period.** The reason to
+re-seed at all is that the person has drifted over the session, so the best
+estimate at the boundary is the most recent data. Measuring afresh over the
+first N seconds of the new block would leave the threshold stale exactly when a
+fresh one was wanted. The cost is real and should be documented: if blocks train
+materially different states, the trailing window reads the previous block's
+signal. That is a reason for a protocol author to leave re-seeding off, which is
+the default.
+
+**Every re-seed is recorded.** `seed_report()` gains an entry per re-seed
+carrying at least: time, control, old value, new value, source derive, window,
+and percentile. The report is how a practitioner sees that a threshold moved and
+why, and it is what makes a re-seed a recorded decision rather than a silent one.
+
+**A re-seed resets the hold clock** for holds downstream of the re-seeded
+control. A re-seed changes what counts as success, so progress banked against
+the old threshold is not meaningful against the new one.
+
+### 4. The per-person muscle limit
+
+No language change. The deliverable is a worked fixture protocol plus tests
+that lock the composition in place, so Stage 3 can rely on it:
+
+```
+derive "emg_envelope" = bandpower(input: "raw", band: (50 Hz, 100 Hz), window: 100 ms)
+
+controls {
+  emg_limit_uv = voltage {
+    default = 12 uV
+    label   = "Muscle limit (seeded at warm-up)"
+    seed = percentile { from = "emg_envelope"; window = 60 s; target_pct = 95 }
+  }
+}
+
+inhibit "emg" {
+  metric    = rectify("emg_envelope")
+  threshold = absolute(emg_limit_uv)
+  action    = mute(release: 350 ms)
+  kind      = "artifact"
+}
+```
+
+**Verified during design — this composition works end to end today.** The open
+risk was that the seed source is a derive feeding *only* an inhibit, which could
+have been folded out before the seed ever saw it. It is not:
+
+- Every declared derive is evaluated on every chunk, warm-up included, with no
+  reference to who consumes it (`src/refrain/eval_.py:1098-1101`), so the
+  envelope is in `stream_values` for the seed latch to ingest.
+- `_referenced_control_targets()` walks each inhibit's metric *and* threshold
+  (`src/refrain/resolver.py:1561-1562`), so a control referenced only by an
+  inhibit threshold counts as referenced and its seed attaches rather than being
+  dropped as a dead seed (`resolver.py:1618-1620`).
+- `seed.from` must name a declared derive (`resolver.py:1591`), which
+  `derive "emg_envelope"` satisfies.
+- `threshold = absolute(<control>)` on an inhibit is already exercised by
+  `bench/protocols/micro_09_inhibit.refrain`.
+
+So item 4 is fixtures and tests, with no engine change.
+
+**One constraint that Stage 3 must know about, because it is harsh.** A seeded
+control's window has to fit inside a timed, output-muted warm-up phase 0 or the
+compiler refuses the protocol (`resolver.py:1611-1619`), and if the measurement
+does not complete at run time — a short warm-up, or an early advance — the seed
+fails closed by muting the output for the rest of the session
+(`_seed_failed_mute`, `src/refrain/eval_.py:897-898`, applied at `:1108`). A
+trainee whose warm-up got cut short hears nothing at all for the whole session.
+That is defensible for a threshold, and considerably more consequential for a
+muscle limit, which a practitioner might reasonably expect to degrade to a fixed
+default instead. Whether fail-closed is still the right policy for a seeded
+*inhibit* level is a Stage 3 protocol decision, not a Stage 2 engine change, but
+the test suite should pin the current behaviour so that decision is made with
+eyes open rather than discovered in a clinic.
+
+### 5. A mute silences the continuous output
+
+Verification only. Tests on both backends asserting that while a mute is
+active, every continuous `output/<channel>` tap reads 0.0 and every event
+channel reads false, and that the values resume afterwards. Also assert the
+asymmetry noted above — that `suppress_on_mute` on a `feedback` layer reaches
+the IR and the Rust struct but is acted on by neither engine — so the next
+reader does not mistake it for a bug.
+
+## Parity, versioning, and the editor
+
+These carry the same weight as the hold. A tolerance that is right in Python and
+one sample off in Rust is worse than no tolerance at all.
+
+### Dual-backend parity
+
+Every new behaviour gets a case in the backend-parametrized suite (the
+`backend` fixture in `tests/conftest.py`, which threads `python` or `rust` into
+`Evaluator.live`). Minimum coverage:
+
+- A dip exactly at `tolerance`, and one exactly one sample longer. The
+  off-by-one at the boundary is the likely drift, so test both sides of it.
+- A forgiven dip spanning a chunk boundary, since the dip counter is the new
+  carried state and chunk edges are where carried state drifts.
+- `dwell_rearm` with a forgiven dip, asserting one event, and a dip past
+  tolerance, asserting the re-arm counter was credited from the dip's start.
+- An artifact mute spanning a chunk boundary with a hold in progress.
+- A re-seed at a block boundary, asserting the seeded value matches to the last
+  bit and that `seed_report()` agrees across backends.
+- The `muted` tap keyset is pinned by an exact-equality parity test; if any tap
+  is added, it is added to both backends in the same commit.
+
+### IR version and the load-time gate
+
+Per-protocol IR versioning currently reaches `"0.5"`
+(`src/refrain/ir_json.py:151-189`). This release adds `"0.6"`, returned when any
+of the three new declarations is present: a hold with a nonzero `tolerance`, an
+inhibit with a `kind`, or a block with a non-empty `reseed`. A new
+`src/refrain/schema/ir-json-v0.6.schema.json` admits those fields; older schema
+files are untouched, and the load-time refusal of SPEC §9.3 keeps an older
+engine from silently mis-running a 0.6 document.
+
+A protocol using none of the three keeps its current version and emits
+byte-identical JSON. **That should be an explicit test**, not an assumption: the
+whole corpus's IR, before and after, unchanged. It is the single strongest
+guarantee that no protocol's behaviour moved, and it is what makes "infrastructure
+now, protocols later" true rather than hopeful.
+
+Bump both `pyproject.toml` versions to 0.25.0 together.
+
+### The editor, and refrain-editor
+
+- `src/refrain/editor/protocol-model.schema.json` gains the three fields.
+  `validate_model()` (`src/refrain/editor/catalog.py:72`) validates against it;
+  `tests/test_editor_model_schema.py` covers it.
+- Editor round-trip: a protocol carrying all three declarations must survive
+  load, edit and save unchanged, and every live protocol stays in the
+  round-trip subset unless listed in `KNOWN_GAPS`.
+- refrain-editor (checked out adjacent, on `main` at `aa3dae0`): resync
+  `vendor/protocol-model.schema.json` and the parity fixtures via
+  `npm run sync-vendor`.
+- **Fix the gap found during design.** refrain-editor vendors roughly 41
+  protocol models across 123 fixture files, and **not one of them is ever passed
+  through `validateModel`**. `test/validate.test.ts` covers hand-written good and
+  bad cases; `test/describe-export.test.ts` validates a single inline protocol.
+  Add a test that loops every vendored fixture model through `validateModel`.
+  This is what the ticket's "fixtures validated against it" asks for, and it is
+  currently not happening at all.
+
+## The gate
+
+Nothing merges until all of these pass:
+
+1. refrain's full suite, exit code captured immediately and not after a pipe, no `-q`.
+2. The dual-backend drift gate.
+3. Fuzzer scenarios for the new hold, covering the four invariants in §1.
+4. The whole-corpus byte-identical IR test.
+5. An editor round-trip over a protocol using all three declarations.
+6. refrain-editor: vendored schema and fixtures resynced, and every vendored
+   fixture model validated against the vendored schema.
+7. `tests/test_version_lockstep.py` green with both versions at 0.25.0.
+
+## The replay, and what it is for
+
+The ticket asks for the default tolerance to be chosen by replaying sessions
+with refrain-protocols' session report tool (`python -m tools.session_report`).
+Two notes on how that lands here.
+
+**It produces evidence, not a default in the primitive.** The primitive's
+absence-means-zero default is what keeps every existing protocol untouched, and
+one tolerance value cannot serve every family — that was settled after the
+correction that a 12–15 Hz Cz protocol is not a general-purpose band-raising
+protocol. So the Stage 2 deliverable is a committed replay report giving, per
+protocol family, the reward time at a sweep of tolerance values against real
+sessions. Stage 3 writes the chosen numbers into protocol headers as recorded
+decisions. The starting point for the sweep is ~100 ms, which is roughly what
+the old chain was already giving away.
+
+**It has an unmerged dependency.** `tools/session_report/` is not on
+refrain-protocols' `main`. It lives on branch `session-report-plan-a55318f5`
+(commits `d12b360`, `8c6e283`, `55f39a4`, `bcedc8a`, `cda005a`), which added
+`tools/session_report/{__main__,metrics,muscle,truth}.py`. Its `true_episodes()`
+in `truth.py` finds true target episodes for any protocol's reward condition,
+which is the function the sweep needs. Sort out that branch before planning the
+replay.
+
+## Left to the builder
+
+- The exact spelling of the three new declarations, if `tolerance`, `kind` and
+  `reseed` read badly in context. The semantics above are the contract; the
+  surface syntax is not precious. Note that `kind` is already used internally
+  for placement controls and for `action_kind`, though not on an inhibit's DSL
+  surface.
+- Where the dip counter lives in each implementation, and how it is carried
+  across chunk boundaries — as long as both backends carry it identically.
+- Whether the compiler advisory on an unlabelled inhibit is worth the noise in
+  this release, or waits for Stage 3 when there is a worklist to act on.
+- The shape of the committed replay report, and which sessions it covers.
+- Test file placement and naming, following the existing conventions.
+
+## Evidence appendix
+
+All synthetic unless stated, at 256 Hz, 12–15 Hz band, 13.5 Hz carrier, measured
+during design.
+
+**Dip depth follows dip duration** (envelope value as a fraction of plateau,
+after a total rhythm dropout of the given length, through a 360 ms
+`band_envelope`):
+
+| Dropout | 25 ms | 50 ms | 100 ms | 150 ms | 300 ms | 500 ms |
+|---------|-------|-------|--------|--------|--------|--------|
+| Fraction of plateau | 92 % | 81 % | 67 % | 51 % | 17 % | 1 % |
+
+**The old chain's implicit dip tolerance** (longest total dropout that never
+takes the envelope below the stated threshold):
+
+| Configuration | vs 50 % of plateau | vs 70 % of plateau |
+|---------------|--------------------|--------------------|
+| Old chain, `tau = 250 ms` | ~250 ms | ~140 ms |
+| Old chain, `tau = 500 ms` | ~410 ms | ~220 ms |
+| `band_envelope`, 360 ms | ~150 ms | ~80 ms |
+| `band_envelope`, 260 ms | ~110 ms | ~70 ms |
+| `band_envelope`, 160 ms | ~70 ms | ~40 ms |
+
+**Reachable hold per burst** (time a single burst spends above a 50 % threshold):
+at 360 ms latency a 150 ms burst never crosses at all, and a 250 ms burst yields
+exactly 250 ms — zero margin against a 250 ms hold. At 260 ms latency a 150 ms
+burst yields 121 ms; at 160 ms, 148 ms. Rewarding short bursts argues for a
+shorter hold, and possibly for revisiting latency later.
+
+**Worked example, scored both ways** (250 ms hold, 100 ms tolerance, muscle mute
+with a 350 ms release, traces computed by the state machine rather than drawn):
+the pause rule rewards at 2.25 s, 8.79 s and 14.79 s; the reset rule rewards at
+2.25 s and 14.79 s, losing a genuine 900 ms burst that a swallow interrupted.
+Both rules produce an identical tone, sample for sample — the only difference is
+whether the reward arrives. Under both rules, 2.5 s of deliberate clenching
+earns nothing, because the mute fires either way. Protection from the muscle
+learner comes from the mute, never from the reset.
+
+**Literature anchors.** Belinskaya 2020 (latency: a change at 244 ms, none at
+744 ms). Paluch 2017 (7 of 14 beta up-trainers learned to clench; an absolute
+per-person muscle limit that interrupts training). Sherlin 2011 (reward a
+~0.25 s spindle; critique of auto-thresholding). Arns 2014 (25–40 % reward
+time). Nam & Choi 2020 (only the ~80 % group learned). Bussalb 2019 (EEG quality
+and artifact correction predicted outcome; protocol type did not). Goncharova
+2003 (forehead muscle peaks at 20–30 Hz). Whitham 2007 (scalp power above 20 Hz
+falls 10–200x under paralysis). Strehl 2014 (continuous information plus a
+separate reward). Galang 2025 (43 of 45 studies used continuous feedback).
+BrainMaster's sustained-reward default of 500 ms plus a refractory period; patent
+US 11116440, "preferably 100 to 600 milliseconds".
+
+**Open question in the review, unresolved by evidence.** Open question 7 of
+`docs/research/2026-10-21-feedback-design-by-protocol.md` (in refrain-protocols)
+reads: "Mute against inhibit for muscle. No trial compares pausing all feedback
+with withholding reward." No trial settles the pause-versus-reset choice. It was
+made on credit-assignment grounds, and the label in §2 is what keeps it
+reversible per protocol.
