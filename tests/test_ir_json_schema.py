@@ -30,6 +30,7 @@ SCHEMA_BY_VERSION = {
     "0.3": SCHEMA_DIR / "ir-json-v0.3.schema.json",
     "0.4": SCHEMA_DIR / "ir-json-v0.4.schema.json",
     "0.5": SCHEMA_DIR / "ir-json-v0.5.schema.json",
+    "0.6": SCHEMA_DIR / "ir-json-v0.6.schema.json",
 }
 FIXTURES = REPO / "refrain-core" / "tests" / "fixtures"
 IR_JSON_FILES = sorted(FIXTURES.glob("*.ir.json"))
@@ -62,6 +63,13 @@ def test_corpus_covers_both_versions():
     versions = {json.loads(p.read_text()).get("refrain_ir_version") for p in IR_JSON_FILES}
     assert "0.1" in versions, "no v0.1 golden vectors found"
     assert "0.2" in versions, "no v0.2 golden vectors found (composite fixture missing?)"
+
+
+def test_corpus_covers_v06():
+    # Without a v0.6 golden vector the v0.6 schema is declared above and never
+    # exercised — `micro_14_tolerance` is the fixture that exercises it.
+    versions = {json.loads(p.read_text()).get("refrain_ir_version") for p in IR_JSON_FILES}
+    assert "0.6" in versions, "no v0.6 golden vectors found (micro_14_tolerance missing?)"
 
 
 @pytest.mark.parametrize("ir_path", IR_JSON_FILES, ids=lambda p: p.stem)

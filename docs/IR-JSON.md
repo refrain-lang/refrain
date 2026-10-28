@@ -14,19 +14,20 @@ without depending on the Python parser or SciPy.
 |---|---|
 | Baseline version | `"0.1"` (emitted when a protocol uses no composite, staging, or seeding features) |
 | Source constant | `IR_JSON_VERSION = "0.1"` in `src/refrain/ir_json.py` |
-| Schemas | `src/refrain/schema/ir-json-v0.1.schema.json`, `ir-json-v0.2.schema.json`, `ir-json-v0.3.schema.json`, `ir-json-v0.4.schema.json`, `ir-json-v0.5.schema.json` |
+| Schemas | `src/refrain/schema/ir-json-v0.1.schema.json`, `ir-json-v0.2.schema.json`, `ir-json-v0.3.schema.json`, `ir-json-v0.4.schema.json`, `ir-json-v0.5.schema.json`, `ir-json-v0.6.schema.json` |
 
 The emitter tags the wire object with the lowest version whose fields it
 actually used, not a single fixed constant: `"0.1"` for most protocols,
 rising to `"0.2"` for staged/composite-reward protocols, `"0.3"` for a
 protocol with a control baseline-seed rule (§3.1 below), and `"0.4"` for a
 protocol using autopilot or named reward checks (§3.2 below; schema at
-`src/refrain/schema/ir-json-v0.4.schema.json`), and `"0.5"` for a protocol
+`src/refrain/schema/ir-json-v0.4.schema.json`), `"0.5"` for a protocol
 that declares typed feedback, binds a dwell/rearm output, or bakes complex FIR
-taps (§3.3 below covers the last of the three). Each version's schema is a
+taps (§3.3 below covers the last of the three), and `"0.6"` for a protocol
+whose hold forgives a dip (§3.4 below). Each version's schema is a
 superset of the previous one's fields. This document otherwise describes the
-`"0.1"` shape; §3.1, §3.2 and §3.3 cover the `"0.3"`, `"0.4"` and `"0.5"`
-additions.
+`"0.1"` shape; §3.1 through §3.4 cover the `"0.3"`, `"0.4"`, `"0.5"` and
+`"0.6"` additions.
 
 ### Compatibility policy
 
@@ -111,7 +112,7 @@ present in the serialized output (verified against `realistic_smr.ir.json`):
 
 | Key | JSON type | Meaning |
 |---|---|---|
-| `refrain_ir_version` | `"0.1"` \| `"0.2"` \| `"0.3"` \| `"0.4"` \| `"0.5"` (string) | Wire-format version. Emitted by `_protocol_ir_version()` (`src/refrain/ir_json.py`) as the lowest version that represents the protocol: `"0.5"` for complex FIR taps, else `"0.4"` for autopilot/named-check features, else `"0.3"` for a control baseline-seed rule, else `"0.2"` for composite/staging features, else `"0.1"`. Runtimes accept `SUPPORTED_IR_VERSIONS`: `"0.1"`, `"0.2"`, `"0.3"`, `"0.4"`, `"0.5"`. |
+| `refrain_ir_version` | `"0.1"` \| `"0.2"` \| `"0.3"` \| `"0.4"` \| `"0.5"` \| `"0.6"` (string) | Wire-format version. Emitted by `_protocol_ir_version()` (`src/refrain/ir_json.py`) as the lowest version that represents the protocol: `"0.6"` for a hold whose tolerance reaches at least one sample, else `"0.5"` for complex FIR taps, else `"0.4"` for autopilot/named-check features, else `"0.3"` for a control baseline-seed rule, else `"0.2"` for composite/staging features, else `"0.1"`. Runtimes accept `SUPPORTED_IR_VERSIONS`: `"0.1"`, `"0.2"`, `"0.3"`, `"0.4"`, `"0.5"`, `"0.6"`. |
 | `name` | `string \| null` | Protocol name (`smr_cz_v1`, etc.). |
 | `extends` | `string \| null` | Parent protocol name, if any. |
 | `sample_rate_hz` | number | Baked runtime sample rate (host choice, ≥ `requires.sample_rate_min_hz`). |
@@ -323,6 +324,43 @@ A protocol using none of the three v0.5 features keeps a byte-identical
 IR-JSON, `content_hash`, and `refrain_ir_version` to what it emitted before
 v0.5 existed.
 
+### 3.4 Hold dip tolerance (v0.6)
+
+One coefficient field inside a `coeffs` object: `tolerance_samples`, the
+dip-forgiveness window of a `dwell`, `dwell_rearm` or `hold_for`. A false run
+no longer than this many samples leaves the hold's streak exactly where it
+was instead of resetting it, so a momentary dip below threshold does not throw
+away a hold the trainee had earned, and gated audio does not stutter. The
+authored `tolerance` is a duration; the emitter bakes it to samples at the
+session rate, the same way `dwell_samples` is baked, so the runtime never
+converts milliseconds and the two engines cannot round differently.
+
+**The field is emitted only when it is at least 1.** `tolerance_samples` is
+not floored at 1 the way `dwell_samples` is: a tolerance too short to reach a
+whole sample at the session rate forgives nothing, which is what it asked for,
+and flooring it would invent forgiveness. The v0.6 schema states the same
+thing as `"minimum": 1`.
+
+**Version gate.** `_protocol_ir_version()` returns `"0.6"` when some hold's
+*baked* `tolerance_samples` is at least 1 — behaviour at the session rate, not
+syntax. The predicate asks the same `_bake_coeffs` call the emitter asks, so
+the tag and the coefficient can never disagree about what a tolerance bakes
+to. The consequence is worth stating plainly: `tolerance: 1 ms` is `"0.1"` at
+256 Hz and `"0.6"` at 2000 Hz, because at the first rate it rounds to 0
+samples and emits no field at all. Tagging that document `"0.6"` would get it
+refused by a 0.5 engine in exchange for nothing.
+
+The field could not ride v0.5: that schema's `Coeffs` definition sets
+`"additionalProperties": false`, so a document carrying `tolerance_samples`
+does not validate against v0.5 at all. `SUPPORTED_IR_VERSIONS` in
+`refrain-core/src/ir.rs` includes `"0.6"`; an older core refuses a
+`"0.6"`-tagged document at load rather than running a hold that forgives
+nothing while the author believes it forgives a third of a second.
+
+A protocol that declares no `tolerance`, or one whose tolerance bakes to zero
+samples, keeps a byte-identical IR-JSON, `content_hash`, and
+`refrain_ir_version` to what it emitted before v0.6 existed.
+
 ---
 
 ## 4. The `Expr` tagged union
@@ -372,7 +410,10 @@ All fields are optional; which are present depends on the primitive:
 | `alpha` | number | `smooth` (exponential decay coefficient `α = dt / (τ + dt)`). |
 | `dt` | number | `smooth` (sample period in seconds). |
 | `window_samples` | integer | `percentile` (rolling window length in samples). |
+| `lag_samples` | integer | `autocorr` (lag in samples). |
 | `dwell_samples` | integer | `dwell` (minimum dwell duration in samples). |
+| `rearm_samples` | integer | `dwell_rearm` (continuous false interval required before another cue, in samples). |
+| `tolerance_samples` | integer | `dwell`, `dwell_rearm`, `hold_for` (dip-forgiveness window in samples). Emitted only when at least 1; see §3.4. **v0.6+.** |
 | `nperseg` | integer | `coherence` (Welch segment length). |
 | `noverlap` | integer | `coherence` (Welch segment overlap). |
 

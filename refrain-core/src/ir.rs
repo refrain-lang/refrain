@@ -89,7 +89,7 @@ pub struct FeedbackEntry {
 /// misinterpreted. This crate has no `deny_unknown_fields`, so an unknown field
 /// is invisible to serde — without this gate, a newer protocol would run with
 /// its new semantics dropped and no signal to anyone.
-pub const SUPPORTED_IR_VERSIONS: &[&str] = &["0.1", "0.2", "0.3", "0.4", "0.5"];
+pub const SUPPORTED_IR_VERSIONS: &[&str] = &["0.1", "0.2", "0.3", "0.4", "0.5", "0.6"];
 
 /// Refuse a document tagged with an unsupported schema version. Untagged
 /// documents predate versioning and are treated as "0.1".
@@ -371,6 +371,13 @@ pub struct Coeffs {
     pub dwell_samples: Option<usize>,
     #[serde(default)]
     pub rearm_samples: Option<usize>,
+    /// Dip-forgiveness window of a `dwell`/`dwell_rearm`/`hold_for`, in
+    /// samples. New in IR-JSON v0.6. Absent reads as 0 — no forgiveness,
+    /// which is what every pre-v0.6 document means — and the emitter omits
+    /// it whenever it would be 0, so an absent field and a zero one are the
+    /// same document.
+    #[serde(default)]
+    pub tolerance_samples: Option<usize>,
     #[serde(default)]
     pub nperseg: Option<usize>,
     #[serde(default)]

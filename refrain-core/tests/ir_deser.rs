@@ -1,7 +1,7 @@
 //! The Rust core consumes the IR-JSON wire format emitted by the Python
 //! front-end. This test pins that it deserializes a real emitted fixture.
 
-use refrain_core::ir::{check_ir_version, Protocol};
+use refrain_core::ir::{check_ir_version, Protocol, SUPPORTED_IR_VERSIONS};
 
 #[test]
 fn deserializes_feedback_v05_and_rejects_newer_wire_versions() {
@@ -19,7 +19,12 @@ fn deserializes_feedback_v05_and_rejects_newer_wire_versions() {
     assert!(check_ir_version(&p).is_ok());
     let feedback = p.feedback.unwrap();
     assert_eq!(feedback.entries[0].role, "approach");
-    let future: Protocol = serde_json::from_str(&json.replace("0.5", "0.6")).unwrap();
+    // The refusal has to be on a tag this build genuinely does not know.
+    // v0.6 (hold dip tolerance) is supported now, so the gate moved up one;
+    // this assertion fails loudly when the next version lands without
+    // someone moving it again, which is the whole point of the gate.
+    assert_eq!(SUPPORTED_IR_VERSIONS.last(), Some(&"0.6"));
+    let future: Protocol = serde_json::from_str(&json.replace("\"0.5\"", "\"0.7\"")).unwrap();
     assert!(check_ir_version(&future).is_err());
 }
 

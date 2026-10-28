@@ -176,7 +176,10 @@ def _generate_setcontrol(ir) -> None:
 
 # Protocols whose output channels actually emit events (the others are
 # pure-DSP micro corpora with no `output` bindings to compare).
-EVENT_BEARING = frozenset({"micro_05_reward", "realistic_smr", "micro_09_inhibit", "composite_smr_theta"})
+EVENT_BEARING = frozenset({
+    "micro_05_reward", "realistic_smr", "micro_09_inhibit", "composite_smr_theta",
+    "micro_14_tolerance",
+})
 
 # Tap-rich protocols for the `taps.rs` golden-vector compare. `realistic_smr`
 # exercises input/derive/threshold/reward/condition/output taps;
@@ -382,6 +385,7 @@ if __name__ == "__main__":
         "micro_11_control_expr",
         "micro_12_control_param_slots",
         "micro_13_band_envelope",
+        "micro_14_tolerance",
         "realistic_smr",
         "composite_smr_theta",
     ):

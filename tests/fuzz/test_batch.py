@@ -83,10 +83,17 @@ def test_batch_aggregates_multiple_paths(tmp_path, capsys):
     # condition" exactly as its four-stage twin micro_03_envelope does — both
     # declare only `output { audio_gain = 0 }` and no reward at all — so it
     # adds to the skip bucket and leaves `fuzzed` at 8.
+    # +1 total for micro_14_tolerance.refrain (the hold-dip-tolerance golden-
+    # vector bench), which skips as "non-bandpass (coherence) reward signal":
+    # its reward signal is a one-stage band_envelope() derive, and the
+    # fuzzer's `_band_from_call` only reads a literal `bandpass(band: ...)`
+    # stage, so it cannot name the band it would perturb. Nothing to do with
+    # the tolerance itself — micro_13_band_envelope would skip the same way if
+    # it declared a reward. Skip bucket again, `fuzzed` still 8.
     rc = main(["fuzz", "bench/protocols", "examples",
                "--library", "examples", "--max-scenarios", "2"])
     out = "".join(capsys.readouterr())
-    assert "coverage: fuzzed 8 / total 35" in out
+    assert "coverage: fuzzed 8 / total 36" in out
     # Inc1 splits the old generic "single-condition reward" skip into specific,
     # feature-mapped reasons (so the breakdown maps to later increments); the
     # multi-leaf control-absolute fixture adds its own feature-mapped skip.

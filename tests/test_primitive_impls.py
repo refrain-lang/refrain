@@ -878,7 +878,8 @@ def test_an_unobservable_false_sample_does_not_count_against_tolerance():
     observable. Two count against the 3-sample tolerance, so the dip is
     forgiven and the streak completes at index 13. An implementation that
     froze the streak but went on counting the dip would reach 4 at index 12,
-    reset, and fire at 19 — agreeing with every other test here and diverging
+    reset, and need ten fresh true samples — firing at 22, since the trues
+    start at index 13 — agreeing with every other test here and diverging
     only on this input. The `pass` branch has no visible body, which is
     exactly what makes that the easy thing to mis-transcribe.
     """
@@ -968,6 +969,24 @@ def test_every_hold_resets_its_own_dip_counter():
 def test_dwell_rearm_gives_one_event_per_burst_across_a_forgiven_dip():
     impl = DwellRearmImpl(duration_ms=50, rearm_ms=50, sample_rate_hz=200, tolerance_ms=15.0)
     assert impl.step(_c(10, 3, 10)).events.sum() == 1
+
+
+def test_dwell_rearm_forgives_a_dip_in_its_own_streak():
+    """`DwellRearmImpl` keeps its own streak, so it needs its own proof.
+
+    The case above cannot give one: without forgiveness that input still
+    earns exactly one event, just a later one, so it passes either way. Here
+    the nine pre-dip samples are the only way to reach the 10-sample duration
+    at all, so an event at index 12 is proof the streak carried across the
+    dip. Found while transcribing the Rust twin, where the same hole let a
+    `dwell_rearm` that ignored `tolerance` outright pass every case.
+    """
+    cond = _c(9, 3, 1)
+    tol = DwellRearmImpl(duration_ms=50, rearm_ms=50, sample_rate_hz=200, tolerance_ms=15.0)
+    plain = DwellRearmImpl(duration_ms=50, rearm_ms=50, sample_rate_hz=200)
+    r = tol.step(cond)
+    assert r.events.sum() == 1 and int(np.flatnonzero(r.events)[0]) == 12
+    assert plain.step(cond).events.sum() == 0
 
 
 def test_dwell_rearm_credits_the_whole_dip_when_tolerance_is_exceeded():

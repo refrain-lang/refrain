@@ -431,7 +431,11 @@ impl CNode {
                 let clean: Vec<bool> = input.as_b().iter().enumerate().map(|(i, &on)| {
                     on && eligible.map(|mask| mask[i]).unwrap_or(true)
                 }).collect();
-                let (_, holds) = dwell.lock().unwrap().step(&clean);
+                // `observable` is `None` until the artifact-mute work wires a
+                // real mask through: an ineligible sample is already folded into
+                // `clean` as false, which is "scored as not qualifying" rather
+                // than "not observed".
+                let (_, holds) = dwell.lock().unwrap().step(&clean, None);
                 Val::B(holds)
             }
             CNode::DwellEvent { dwell, condition } => {
@@ -440,7 +444,7 @@ impl CNode {
                 let clean: Vec<bool> = input.as_b().iter().enumerate().map(|(i, &on)| {
                     on && eligible.map(|mask| mask[i]).unwrap_or(true)
                 }).collect();
-                let (events, _) = dwell.lock().unwrap().step(&clean);
+                let (events, _) = dwell.lock().unwrap().step(&clean, None);
                 Val::B(events)
             }
             CNode::DwellRearmEvent { dwell, condition } => {
@@ -449,7 +453,7 @@ impl CNode {
                 let clean: Vec<bool> = input.as_b().iter().enumerate().map(|(i, &on)| {
                     on && eligible.map(|mask| mask[i]).unwrap_or(true)
                 }).collect();
-                Val::B(dwell.lock().unwrap().step(&clean))
+                Val::B(dwell.lock().unwrap().step(&clean, None))
             }
             CNode::Sigmoid { midpoint, steepness, input } => {
                 let x = input.eval(env, n).into_f();
@@ -660,7 +664,7 @@ fn step_reward_event(
             SubCombine::Any => sub_streams.iter().any(|s| s[i]),
         })
         .collect();
-    let (events, holds) = re.dwell.step(&condition);
+    let (events, holds) = re.dwell.step(&condition, None);
     (events, holds, sub_lasts, sub_streams)
 }
 
@@ -1671,7 +1675,7 @@ impl Evaluator {
                     SubCombine::Any => sub_streams.iter().any(|s| s[i]),
                 })
                 .collect();
-            let (events, holds) = re.dwell.step(&condition);
+            let (events, holds) = re.dwell.step(&condition, None);
             // `reward/event`: did the dwell fire ANY sample this chunk.
             taps.insert("reward/event".to_string(), bool_f(events.iter().any(|&b| b)));
             // `reward/event.holds`: last sample.
@@ -2448,6 +2452,9 @@ fn build_compute_call(
             let dwell = Arc::new(Mutex::new(DwellRearm::new(
                 c.dwell_samples.expect("dwell_rearm: missing dwell_samples"),
                 c.rearm_samples.expect("dwell_rearm: missing rearm_samples"),
+                // Absent means no forgiveness: the emitter omits the field
+                // whenever it would be 0, so this is not a silent default.
+                c.tolerance_samples.unwrap_or(0),
             )));
             if let Some((_, Some(target))) = num_named_controllable(args, "duration") {
                 ctx.register(&target, Control::DwellRearm {
@@ -2463,6 +2470,7 @@ fn build_compute_call(
         "dwell" => {
             let dwell = Arc::new(Mutex::new(Dwell::new(
                 coeffs.and_then(|c| c.dwell_samples).expect("dwell: missing baked dwell_samples"),
+                coeffs.and_then(|c| c.tolerance_samples).unwrap_or(0),
             )));
             CNode::DwellEvent { dwell, condition: Box::new(build_node(
                 &args.iter().find(|a| a.name.as_deref() == Some("condition"))
@@ -2473,6 +2481,7 @@ fn build_compute_call(
         "hold_for" => {
             let dwell = Arc::new(Mutex::new(Dwell::new(
                 coeffs.and_then(|c| c.dwell_samples).expect("hold_for: missing baked dwell_samples"),
+                coeffs.and_then(|c| c.tolerance_samples).unwrap_or(0),
             )));
             if let Some((_, Some(target))) = num_named_controllable(args, "duration") {
                 ctx.register(&target, Control::HoldFor {
@@ -2759,5 +2768,6 @@ fn build_reward_event(event_expr: &Expr, ctx: &mut BuildCtx) -> RewardEvent {
         _ => (vec![build_node(condition, ctx)], SubCombine::All),
     };
 
-    RewardEvent { dwell: Dwell::new(dwell_samples), sub_conditions, combine }
+    let tolerance_samples = coeffs.as_ref().and_then(|c| c.tolerance_samples).unwrap_or(0);
+    RewardEvent { dwell: Dwell::new(dwell_samples, tolerance_samples), sub_conditions, combine }
 }

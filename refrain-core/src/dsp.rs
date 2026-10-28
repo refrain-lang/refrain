@@ -782,19 +782,62 @@ impl Coherence {
     }
 }
 
-/// `dwell(condition, duration)` rising-edge / holds state machine (mirrors
-/// `DwellImpl`): a streak that increments while the condition holds and
-/// resets otherwise; `holds` once the streak reaches `dwell_samples`, with an
-/// `event` on each rising edge of holding. State persists across chunks.
+/// Refuse an observability mask that does not line up with the condition —
+/// the same contract, and the same message, as Python's
+/// `_require_matching_mask` (`src/refrain/primitive_impls.py`).
+///
+/// Unchecked, a short mask panics on a slice index from inside the hold loop
+/// and a long one is silently accepted with its tail ignored. The two engines
+/// are held bit-identical, so they have to agree on the error case too, not
+/// only the happy path. A panic is how this crate reports a malformed call
+/// (the Python/FFI layer turns it into a `RuntimeError`), and it fires before
+/// any state is read, so a refused call cannot half-advance a hold.
+fn require_matching_mask(name: &str, n: usize, observable: Option<&[bool]>) {
+    if let Some(mask) = observable {
+        assert!(
+            mask.len() == n,
+            "{name}: observable has {} samples but condition has {n}",
+            mask.len()
+        );
+    }
+}
+
+/// `dwell(condition, duration, tolerance)` rising-edge / holds state machine
+/// (mirrors `DwellImpl`): a streak that increments while the condition holds
+/// and resets otherwise, except that a false run no longer than
+/// `tolerance_samples` leaves the streak exactly where it was. `holds` once
+/// the streak reaches `dwell_samples`, with an `event` on each rising edge of
+/// holding. State persists across chunks.
+///
+/// Forgive, don't credit: a forgiven dip never advances the streak, so a
+/// streak of N samples always means N samples genuinely above threshold and
+/// observable. A sample the engine could not observe is scored as neither —
+/// streak and dip counter both freeze.
 pub struct Dwell {
     dwell_samples: usize,
+    tolerance_samples: usize,
     streak: usize,
+    /// Consecutive *observable* false samples in the dip in progress. This is
+    /// an unbounded `int` in Python and grows for the whole length of a false
+    /// run, so it is `usize` here rather than a narrow type that could wrap
+    /// on a long one and silently diverge.
+    dip: usize,
     was_holding: bool,
 }
 
 impl Dwell {
-    pub fn new(dwell_samples: usize) -> Self {
-        Dwell { dwell_samples: dwell_samples.max(1), streak: 0, was_holding: false }
+    pub fn new(dwell_samples: usize, tolerance_samples: usize) -> Self {
+        Dwell {
+            dwell_samples: dwell_samples.max(1),
+            // Deliberately NOT floored at 1, unlike `dwell_samples`: a
+            // tolerance too short to reach one sample at this rate forgives
+            // nothing, which is what it asked for. Flooring it would invent
+            // forgiveness. Python's constructor says the same thing.
+            tolerance_samples,
+            streak: 0,
+            dip: 0,
+            was_holding: false,
+        }
     }
 
     pub fn set_duration_and_reset(&mut self, dwell_samples: usize) {
@@ -804,19 +847,33 @@ impl Dwell {
 
     pub fn reset(&mut self) {
         self.streak = 0;
+        self.dip = 0;
         self.was_holding = false;
     }
 
-    /// Returns `(events, holds)`.
-    pub fn step(&mut self, cond: &[bool]) -> (Vec<bool>, Vec<bool>) {
+    /// Returns `(events, holds)`. `observable == None` means every sample is
+    /// observable, which reproduces the pre-tolerance behaviour exactly.
+    ///
+    /// Transcribed sample for sample from `DwellImpl.step`
+    /// (`src/refrain/primitive_impls.py`): scalar, no lookahead, no
+    /// vectorised shortcut. The drift gate holds the two bit-identical —
+    /// change one and change the other in the same breath.
+    pub fn step(&mut self, cond: &[bool], observable: Option<&[bool]>) -> (Vec<bool>, Vec<bool>) {
         let n = cond.len();
+        require_matching_mask("dwell", n, observable);
         let mut events = vec![false; n];
         let mut holds = vec![false; n];
         for i in 0..n {
-            if cond[i] {
+            if observable.is_some_and(|mask| !mask[i]) {
+                // streak and dip frozen
+            } else if cond[i] {
                 self.streak += 1;
+                self.dip = 0;
             } else {
-                self.streak = 0;
+                self.dip += 1;
+                if self.dip > self.tolerance_samples {
+                    self.streak = 0;
+                }
             }
             let holding = self.streak >= self.dwell_samples;
             holds[i] = holding;
@@ -829,21 +886,30 @@ impl Dwell {
     }
 }
 
-/// Event latch that requires a continuous false interval before rearming.
+/// Event latch that requires a continuous false interval before rearming
+/// (mirrors `DwellRearmImpl`). Carries no `was_holding`, because its event
+/// rule is `holding && armed` rather than a rising edge — Python's does not
+/// either.
 pub struct DwellRearm {
     dwell_samples: usize,
     rearm_samples: usize,
+    tolerance_samples: usize,
     streak: usize,
+    dip: usize,
+    /// Consecutive false samples credited toward rearming. `usize` for the
+    /// same reason as `Dwell::dip`.
     out_streak: usize,
     armed: bool,
 }
 
 impl DwellRearm {
-    pub fn new(dwell_samples: usize, rearm_samples: usize) -> Self {
+    pub fn new(dwell_samples: usize, rearm_samples: usize, tolerance_samples: usize) -> Self {
         Self {
             dwell_samples: dwell_samples.max(1),
             rearm_samples: rearm_samples.max(1),
+            tolerance_samples,
             streak: 0,
+            dip: 0,
             out_streak: 0,
             armed: true,
         }
@@ -851,6 +917,7 @@ impl DwellRearm {
 
     pub fn reset(&mut self) {
         self.streak = 0;
+        self.dip = 0;
         self.out_streak = 0;
         self.armed = true;
     }
@@ -860,22 +927,49 @@ impl DwellRearm {
         self.reset();
     }
 
-    pub fn step(&mut self, cond: &[bool]) -> Vec<bool> {
-        let mut events = vec![false; cond.len()];
-        for (i, &on) in cond.iter().enumerate() {
-            if on {
+    /// Transcribed sample for sample from `DwellRearmImpl.step`: the same
+    /// per-sample rule as `Dwell::step`, plus the re-arm clock. Python's
+    /// returns a `holds` view alongside the events; nothing on the wire binds
+    /// a `dwell_rearm`'s holds, so only the events are built here.
+    pub fn step(&mut self, cond: &[bool], observable: Option<&[bool]>) -> Vec<bool> {
+        let n = cond.len();
+        require_matching_mask("dwell_rearm", n, observable);
+        let mut events = vec![false; n];
+        for i in 0..n {
+            if observable.is_some_and(|mask| !mask[i]) {
+                // streak, dip and out_streak frozen
+            } else if cond[i] {
                 self.streak += 1;
+                self.dip = 0;
                 self.out_streak = 0;
-                if self.streak >= self.dwell_samples && self.armed {
-                    events[i] = true;
-                    self.armed = false;
-                }
             } else {
-                self.streak = 0;
-                self.out_streak += 1;
-                if self.out_streak >= self.rearm_samples {
-                    self.armed = true;
+                self.dip += 1;
+                if self.dip > self.tolerance_samples {
+                    self.streak = 0;
+                    // Credit the whole dip the first time tolerance is
+                    // exceeded, then one sample per false sample after that.
+                    // The condition was genuinely false from the dip's first
+                    // sample, so counting only from the moment tolerance
+                    // expired would make re-arming slower than it is with no
+                    // tolerance — whenever `tolerance` is shorter than
+                    // `rearm`. Where it is not, the forgiven window itself
+                    // delays re-arming; nothing refuses that, and no output
+                    // follows from it, because the streak is frozen through
+                    // the window so no hold can rise while `armed` is false.
+                    self.out_streak += if self.dip == self.tolerance_samples + 1 {
+                        self.dip
+                    } else {
+                        1
+                    };
+                    if self.out_streak >= self.rearm_samples {
+                        self.armed = true;
+                    }
                 }
+            }
+            let holding = self.streak >= self.dwell_samples;
+            if holding && self.armed {
+                events[i] = true;
+                self.armed = false;
             }
         }
         events
@@ -884,7 +978,7 @@ impl DwellRearm {
 
 #[cfg(test)]
 mod tests {
-    use super::{control_cell, Biquad, Percentile, Signal, Smooth, Stage};
+    use super::{control_cell, Biquad, Dwell, DwellRearm, Percentile, Signal, Smooth, Stage};
 
     #[test]
     fn ingest_skips_nonfinite_and_value_at_matches() {
@@ -923,5 +1017,236 @@ mod tests {
             "smooth ramped from 0: y[0] = {}",
             y[0]
         );
+    }
+    // --- Hold dip tolerance -------------------------------------------------
+    //
+    // One Rust case per Python case in `tests/test_primitive_impls.py`, on the
+    // same inputs and expecting the same sample indices. Those cases run at
+    // 200 Hz with `duration = 50 ms` and `tolerance = 15 ms`, which bake to
+    // the `10` and `3` written out here — Rust reads the baked integers off
+    // the wire and never re-derives them from milliseconds, because Python's
+    // banker's rounding and Rust's half-away-from-zero disagree on an exact
+    // `.5`.
+    //
+    // `hold_for` needs no cases of its own: it is built on this same `Dwell`
+    // and returns its `holds`, which the `holds` assertions below cover.
+
+    /// `cond(&[10, 3, 2], true)` is 10 true samples, then 3 false, then 2
+    /// true — the `_c(10, 3, 2)` helper the Python cases use.
+    fn cond(runs: &[usize], start: bool) -> Vec<bool> {
+        let mut out = Vec::new();
+        let mut on = start;
+        for &length in runs {
+            out.extend(std::iter::repeat_n(on, length));
+            on = !on;
+        }
+        out
+    }
+
+    fn fired_at(events: &[bool]) -> Vec<usize> {
+        events.iter().enumerate().filter(|(_, &e)| e).map(|(i, _)| i).collect()
+    }
+
+    #[test]
+    fn tolerance_zero_is_the_pre_tolerance_state_machine() {
+        let c = cond(&[10, 3, 10], true);
+        let (events, holds) = Dwell::new(10, 0).step(&c, None);
+        // The dip resets the streak, so the second burst earns its own event
+        // ten samples in. This is what every pre-v0.6 document means.
+        assert_eq!(fired_at(&events), vec![9, 22]);
+        assert!(!holds[10]);
+    }
+
+    #[test]
+    fn a_dip_at_exactly_tolerance_is_forgiven() {
+        let (events, _) = Dwell::new(10, 3).step(&cond(&[5, 3, 5], true), None);
+        assert_eq!(fired_at(&events), vec![12]);
+    }
+
+    #[test]
+    fn a_dip_one_sample_longer_than_tolerance_resets() {
+        let (events, _) = Dwell::new(10, 3).step(&cond(&[5, 4, 5], true), None);
+        assert_eq!(fired_at(&events), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn a_forgiven_dip_does_not_advance_the_streak() {
+        // Forgive, don't credit: 10 genuinely-true samples are still required,
+        // so the event lands on the single true sample after the dip.
+        let (events, _) = Dwell::new(10, 3).step(&cond(&[9, 3, 1], true), None);
+        assert_eq!(fired_at(&events), vec![12]);
+    }
+
+    #[test]
+    fn a_forgiven_dip_keeps_holds_true() {
+        // A forgiven dip never drops `holds`, so a holds-gated tone keeps
+        // sounding. Index 9 is the first sample that can hold at all.
+        let (_, holds) = Dwell::new(10, 3).step(&cond(&[10, 3, 2], true), None);
+        assert!(holds[9..].iter().all(|&h| h), "holds = {holds:?}");
+    }
+
+    #[test]
+    fn an_unobservable_sample_freezes_the_streak_and_the_dip_counter() {
+        // A 10-sample unobservable window that is ALSO condition-false must
+        // not reset the streak, even though 10 > tolerance.
+        let c = cond(&[9, 10, 1], true);
+        let observable = cond(&[9, 10, 1], true);
+        let (events, _) = Dwell::new(10, 3).step(&c, Some(&observable));
+        assert_eq!(fired_at(&events), vec![19]);
+    }
+
+    #[test]
+    fn an_unobservable_false_sample_does_not_count_against_tolerance() {
+        // Four condition-false samples, only the last two observable. Two
+        // count against the 3-sample tolerance, so the dip is forgiven and
+        // the streak completes at 13. An implementation that froze the streak
+        // but went on counting the dip would reach 4 at index 12, reset, and
+        // fire at 22. The frozen branch has no body, which is exactly what
+        // makes it the easy thing to mis-transcribe.
+        let c = cond(&[9, 4, 10], true);
+        let observable = cond(&[9, 2, 12], true);
+        let (events, _) = Dwell::new(10, 3).step(&c, Some(&observable));
+        assert_eq!(fired_at(&events), vec![13]);
+    }
+
+    #[test]
+    #[should_panic(expected = "dwell: observable has 9 samples but condition has 10")]
+    fn a_short_mask_is_refused_by_dwell() {
+        Dwell::new(10, 3).step(&cond(&[5, 5], true), Some(&vec![true; 9]));
+    }
+
+    #[test]
+    #[should_panic(expected = "dwell: observable has 11 samples but condition has 10")]
+    fn a_long_mask_is_refused_by_dwell() {
+        // A long mask would otherwise be accepted with its tail ignored,
+        // which is a silent disagreement rather than a loud one.
+        Dwell::new(10, 3).step(&cond(&[5, 5], true), Some(&vec![true; 11]));
+    }
+
+    #[test]
+    #[should_panic(expected = "dwell_rearm: observable has 9 samples but condition has 10")]
+    fn a_short_mask_is_refused_by_dwell_rearm() {
+        DwellRearm::new(10, 10, 3).step(&cond(&[5, 5], true), Some(&vec![true; 9]));
+    }
+
+    #[test]
+    fn a_refused_mask_leaves_the_hold_untouched() {
+        // The check runs before any state is read, so a rejected call cannot
+        // half-advance a hold — the same promise Python's makes.
+        let mut d = Dwell::new(10, 3);
+        d.step(&cond(&[5, 2], true), None);
+        assert_eq!(d.dip, 2);
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            d.step(&cond(&[5, 5], true), Some(&vec![true; 9]));
+        }))
+        .is_err());
+        assert_eq!(d.dip, 2);
+        assert_eq!(d.streak, 5);
+    }
+
+    #[test]
+    fn a_dip_is_carried_across_a_step_boundary() {
+        // One dip straddling a chunk edge is one dip, not two shorter ones.
+        // The two chunks hold the same samples as `cond(&[5, 4, 5])`, a
+        // 4-sample dip that exceeds the 3-sample tolerance — so nothing is
+        // earned. An implementation that dropped the counter at the chunk
+        // edge would see two 2-sample dips, forgive both, and fire.
+        let mut chunked = Dwell::new(10, 3);
+        let (ev_a, holds_a) = chunked.step(&cond(&[5, 2], true), None);
+        let (ev_b, holds_b) = chunked.step(&cond(&[2, 5], false), None);
+        assert_eq!(fired_at(&ev_a), Vec::<usize>::new());
+        assert_eq!(fired_at(&ev_b), Vec::<usize>::new());
+
+        // Chunking must not change the answer at all, not just the event count.
+        let (ev_whole, holds_whole) = Dwell::new(10, 3).step(&cond(&[5, 4, 5], true), None);
+        assert_eq!(ev_whole, [ev_a, ev_b].concat());
+        assert_eq!(holds_whole, [holds_a, holds_b].concat());
+    }
+
+    #[test]
+    fn reset_clears_the_dip_counter() {
+        // Asserting on `dip` directly is the point rather than a shortcut: a
+        // cleared streak makes a stale dip inert, so no behavioural case can
+        // tell a `reset()` that clears the counter from one that leaves it.
+        // It is carried state the Python twin mirrors exactly, so it is
+        // pinned here directly. The `== 2` before the reset matters as much
+        // as the `== 0` after: without it the second assertion would hold
+        // against an implementation that never counted a dip at all.
+        let mut d = Dwell::new(10, 3);
+        d.step(&cond(&[5, 2], true), None);
+        assert_eq!(d.dip, 2);
+        d.reset();
+        assert_eq!(d.dip, 0);
+        let (events, _) = d.step(&cond(&[2, 10], false), None);
+        assert_eq!(fired_at(&events), vec![11]);
+    }
+
+    #[test]
+    fn every_hold_resets_its_own_dip_counter() {
+        let mut d = Dwell::new(10, 3);
+        d.step(&cond(&[5, 2], true), None);
+        assert_eq!(d.dip, 2);
+        d.reset();
+        assert_eq!(d.dip, 0);
+
+        let mut r = DwellRearm::new(10, 10, 3);
+        r.step(&cond(&[5, 2], true), None);
+        assert_eq!(r.dip, 2);
+        r.reset();
+        assert_eq!(r.dip, 0);
+    }
+
+    #[test]
+    fn dwell_rearm_gives_one_event_per_burst_across_a_forgiven_dip() {
+        let events = DwellRearm::new(10, 10, 3).step(&cond(&[10, 3, 10], true), None);
+        assert_eq!(fired_at(&events), vec![9]);
+    }
+
+    #[test]
+    fn dwell_rearm_forgives_a_dip_in_its_own_streak() {
+        // `DwellRearm` keeps its own streak, so it needs its own proof that
+        // the streak survives a forgiven dip — the one-cue-per-burst case
+        // below cannot tell: without forgiveness that input still earns one
+        // cue, just a later one. Here the nine pre-dip samples are the only
+        // way to reach the 10-sample duration at all, so the cue at 12 is
+        // proof the streak carried across the dip.
+        let c = cond(&[9, 3, 1], true);
+        assert_eq!(fired_at(&DwellRearm::new(10, 10, 3).step(&c, None)), vec![12]);
+        assert_eq!(
+            fired_at(&DwellRearm::new(10, 10, 0).step(&c, None)),
+            Vec::<usize>::new()
+        );
+    }
+
+    #[test]
+    fn a_forgiven_dip_does_not_count_toward_rearming() {
+        // The sharp case for the re-arm clock, and the only shape in which
+        // it is sharp: `rearm` is as short as `tolerance`, so an engine that
+        // let the forgiven dip tick the re-arm counter would re-arm inside
+        // the dip and hand out a second cue for one burst the moment the
+        // condition came back, at sample 15. Two bursts separated by a real
+        // 15-sample break earn two cues and no more.
+        //
+        // `docs/PRIMITIVES.md` advises keeping `tolerance` shorter than
+        // `rearm`; nothing refuses this combination, and the output it
+        // defines is exactly what is asserted here.
+        let c = cond(&[12, 3, 6, 15, 10], true);
+        let events = DwellRearm::new(10, 3, 3).step(&c, None);
+        assert_eq!(fired_at(&events), vec![9, 45]);
+        // One cue per burst is the promise with or without a tolerance.
+        let plain = DwellRearm::new(10, 3, 0).step(&c, None);
+        assert_eq!(fired_at(&plain), vec![9, 45]);
+    }
+
+    #[test]
+    fn dwell_rearm_credits_the_whole_dip_when_tolerance_is_exceeded() {
+        // A dip past tolerance credits the re-arm counter from the dip's
+        // FIRST sample, so re-arming is never slower than it is with no
+        // tolerance at all.
+        let c = cond(&[10, 12, 10], true); // dip of 12 > tolerance 3, and > rearm 10
+        let forgiving = DwellRearm::new(10, 10, 3).step(&c, None);
+        let plain = DwellRearm::new(10, 10, 0).step(&c, None);
+        assert_eq!(fired_at(&forgiving), fired_at(&plain));
+        assert_eq!(fired_at(&forgiving).len(), 2);
     }
 }

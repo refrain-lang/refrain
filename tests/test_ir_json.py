@@ -24,6 +24,7 @@ from refrain.primitive_impls import BandpassImpl, HilbertFirImpl, SmoothImpl
 from refrain.resolver import resolve
 from tests.conftest_staged import HET as _HET_SRC
 from tests.test_feedback_declaration import resolved as feedback_resolved
+from tests.test_resolver import _dwell_protocol
 
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
@@ -538,3 +539,169 @@ def test_requires_block_echoes_the_declaration_not_the_derived_list():
     obj = ir_to_json_obj(resolve(parse(_NO_REQUIRES_CHANNELS)), sample_rate_hz=250)
     assert obj["requires"]["channels"] == []
     assert obj["channels"] == ["C3", "C4"]
+
+
+# ---------------------------------------------------------------------------
+# Hold dip tolerance (IR-JSON v0.6)
+# ---------------------------------------------------------------------------
+
+
+def _dwell_coeffs(obj: dict) -> dict:
+    """Baked coefficients of `_dwell_protocol`'s single `reward.event` dwell."""
+    return obj["reward"]["event"]["coeffs"]
+
+
+def test_a_hold_with_tolerance_emits_ir_0_6():
+    j = ir_to_json_obj(resolve(parse(_dwell_protocol(tolerance="100 ms"))), sample_rate_hz=256)
+    assert j["refrain_ir_version"] == "0.6"
+
+
+def test_tolerance_bakes_to_samples():
+    j = ir_to_json_obj(resolve(parse(_dwell_protocol(tolerance="100 ms"))), sample_rate_hz=256)
+    assert _dwell_coeffs(j)["tolerance_samples"] == 26  # round(0.100 * 256)
+
+
+def test_a_tolerance_that_bakes_to_zero_samples_does_not_bump_the_version():
+    """`tolerance: 1 ms` at 256 Hz rounds to 0 samples, so it forgives nothing
+    and must not be refused by a 0.24 engine."""
+    j = ir_to_json_obj(resolve(parse(_dwell_protocol(tolerance="1 ms"))), sample_rate_hz=256)
+    assert j["refrain_ir_version"] == "0.1"
+    assert "tolerance_samples" not in _dwell_coeffs(j)
+
+
+def test_the_same_tolerance_bumps_the_version_at_a_rate_where_it_reaches_a_sample():
+    """The predicate is behaviour at the session rate, not syntax: the one
+    document is 0.1 at 256 Hz and 0.6 at 2000 Hz, because `1 ms` is 0 samples
+    at the first rate and 2 at the second."""
+    src = _dwell_protocol(tolerance="1 ms")
+    assert ir_to_json_obj(resolve(parse(src)), sample_rate_hz=2000)["refrain_ir_version"] == "0.6"
+
+
+def test_a_protocol_without_tolerance_emits_no_tolerance_key():
+    j = ir_to_json_obj(resolve(parse(_dwell_protocol())), sample_rate_hz=256)
+    assert "tolerance_samples" not in _dwell_coeffs(j)
+    assert j["refrain_ir_version"] == "0.1"
+
+
+_OUTPUT_HOLD = '''
+protocol "held output" {
+  meta { version = "1.0"; evidence = "clinical"; description = "x" }
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = passthrough() }
+  derive "env" { from = "raw"; pipeline = [rectify()] }
+  threshold "t" { signal = "env"; type = absolute(8 uV) }
+  output { cue = CALL }
+}
+'''
+
+
+def _output_hold(call: str, *, rate: float = 256) -> dict:
+    return ir_to_json_obj(
+        resolve(parse(_OUTPUT_HOLD.replace("CALL", call))), sample_rate_hz=rate
+    )
+
+
+def test_a_dwell_rearm_output_with_tolerance_emits_ir_0_6():
+    """`dwell_rearm` and `hold_for` only ever appear as output bindings, so
+    the predicate has to walk the outputs, not just `reward`."""
+    j = _output_hold(
+        'dwell_rearm(condition: above("env", "t"), duration: 500 ms, '
+        'rearm: 250 ms, tolerance: 100 ms)'
+    )
+    assert j["refrain_ir_version"] == "0.6"
+    assert j["output"]["cue"]["coeffs"]["tolerance_samples"] == 26
+
+
+def test_a_hold_for_output_with_tolerance_emits_ir_0_6():
+    j = _output_hold(
+        'hold_for(condition: above("env", "t"), duration: 500 ms, tolerance: 100 ms)'
+    )
+    assert j["refrain_ir_version"] == "0.6"
+    assert j["output"]["cue"]["coeffs"]["tolerance_samples"] == 26
+
+
+def test_an_output_hold_without_tolerance_keeps_its_version():
+    """`dwell_rearm` in an output position is already a 0.5 feature; the
+    tolerance clause must not drag an untolerant one up to 0.6."""
+    j = _output_hold('dwell_rearm(condition: above("env", "t"), duration: 500 ms, rearm: 250 ms)')
+    assert j["refrain_ir_version"] == "0.5"
+    assert "tolerance_samples" not in j["output"]["cue"]["coeffs"]
+
+
+# A staged protocol whose block-scoped reward bundle carries the tolerance.
+# `cost._all_stream_exprs` does not walk reward bundles, so this is the one
+# shape where the version predicate has to look somewhere the complex-FIR
+# predicate above it never needed to.
+_STAGED_TOLERANCE = _HET_SRC.replace(
+    'reward "br" { continuous = sigmoid("be" / "bt", midpoint: 1.0, steepness: 3) }',
+    'reward "br" { continuous = sigmoid("be" / "bt", midpoint: 1.0, steepness: 3)\n'
+    '               event = dwell(condition: above("be", "bt"), '
+    'duration: 500 ms, tolerance: 100 ms) }',
+)
+
+
+def test_a_tolerance_inside_a_staged_reward_bundle_emits_ir_0_6():
+    j = ir_to_json_obj(resolve(parse(_STAGED_TOLERANCE)), sample_rate_hz=256)
+    assert j["refrain_ir_version"] == "0.6"
+    assert j["reward_bundles"]["br"]["event"]["coeffs"]["tolerance_samples"] == 26
+
+
+def _carries_a_tolerance(obj) -> bool:
+    """True when `tolerance_samples` appears anywhere in an emitted document."""
+    if isinstance(obj, dict):
+        return "tolerance_samples" in obj or any(
+            _carries_a_tolerance(v) for v in obj.values()
+        )
+    if isinstance(obj, list):
+        return any(_carries_a_tolerance(v) for v in obj)
+    return False
+
+
+def test_the_version_tag_and_the_baked_tolerance_never_disagree():
+    """A document carries `tolerance_samples` exactly when it is tagged 0.6.
+
+    The emitter and the version predicate are two separate walks over the
+    same IR, and a disagreement is the failure this release cannot absorb: a
+    document carrying the field under a 0.5 tag loads happily on a 0.5
+    engine, which ignores the field and forgives nothing while the author
+    believes it forgives a third of a second. `test_ir_json_schema.py` is the
+    corpus-wide net for the committed golden vectors (v0.5 closes `Coeffs`,
+    so such a document fails validation outright); this covers the emitter
+    paths no golden vector exercises.
+    """
+    documents = {
+        "reward dwell, 100 ms": _dwell_protocol(tolerance="100 ms"),
+        "reward dwell, 1 ms (bakes to zero samples)": _dwell_protocol(tolerance="1 ms"),
+        "reward dwell, 0 ms": _dwell_protocol(tolerance="0 ms"),
+        "reward dwell, no tolerance": _dwell_protocol(),
+        "staged reward bundle": _STAGED_TOLERANCE,
+        "dwell_rearm output": _OUTPUT_HOLD.replace(
+            "CALL",
+            'dwell_rearm(condition: above("env", "t"), duration: 500 ms, '
+            'rearm: 250 ms, tolerance: 100 ms)',
+        ),
+        "hold_for output": _OUTPUT_HOLD.replace(
+            "CALL",
+            'hold_for(condition: above("env", "t"), duration: 500 ms, tolerance: 100 ms)',
+        ),
+        "hold_for output, no tolerance": _OUTPUT_HOLD.replace(
+            "CALL", 'hold_for(condition: above("env", "t"), duration: 500 ms)'
+        ),
+    }
+    documents["micro_14_tolerance"] = (BENCH_PROTOCOLS / "micro_14_tolerance.refrain").read_text()
+
+    tagged_0_6 = set()
+    for label, src in documents.items():
+        obj = ir_to_json_obj(resolve(parse(src), _AMP), sample_rate_hz=256)
+        carries = _carries_a_tolerance(obj)
+        is_0_6 = obj["refrain_ir_version"] == "0.6"
+        assert carries == is_0_6, (
+            f"{label}: tolerance_samples present={carries} but version="
+            f"{obj['refrain_ir_version']}"
+        )
+        if is_0_6:
+            tagged_0_6.add(label)
+    # Both halves of the invariant must actually be exercised, or the loop
+    # passes over nine documents that all agree trivially.
+    assert len(tagged_0_6) == 5, sorted(tagged_0_6)
+    assert len(documents) - len(tagged_0_6) == 4
