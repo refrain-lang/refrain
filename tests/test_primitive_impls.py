@@ -880,12 +880,39 @@ def test_a_dip_is_carried_across_a_step_boundary():
 
 def test_reset_clears_the_dip_counter():
     """`reset()` clears the dip counter alongside the streak, so a reset
-    implementation forgives from scratch."""
+    implementation forgives from scratch.
+
+    The assertion on `_dip` is the point rather than a shortcut: a cleared
+    streak makes a stale dip inert, so no behavioural case can tell a
+    `reset()` that clears the counter from one that leaves it. The counter is
+    carried state the Rust twin must mirror exactly, so it is pinned here
+    directly.
+    """
     impl = DwellImpl(duration_ms=50, sample_rate_hz=200, tolerance_ms=15.0)
     impl.step(_c(5, 2))
+    assert impl._dip == 2            # mid-dip: 2 of the 3 forgiven samples used
     impl.reset()
+    assert impl._dip == 0
     r = impl.step(_c(2, 10, start=False))
     assert r.events.sum() == 1 and int(np.flatnonzero(r.events)[0]) == 11
+
+
+def test_every_hold_resets_its_own_dip_counter():
+    """All three reset paths must clear `_dip`.
+
+    `DwellRearmImpl` overrides `reset()` and `HoldForImpl` inherits it, so a
+    subclass is exactly where a forgotten counter would hide.
+    """
+    for impl in (
+        DwellImpl(duration_ms=50, sample_rate_hz=200, tolerance_ms=15.0),
+        DwellRearmImpl(duration_ms=50, rearm_ms=50, sample_rate_hz=200, tolerance_ms=15.0),
+        HoldForImpl(duration_ms=50, sample_rate_hz=200, tolerance_ms=15.0),
+    ):
+        name = type(impl).__name__
+        impl.step(_c(5, 2))
+        assert impl._dip == 2, name
+        impl.reset()
+        assert impl._dip == 0, name
 
 
 def test_dwell_rearm_gives_one_event_per_burst_across_a_forgiven_dip():

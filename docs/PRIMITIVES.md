@@ -798,9 +798,12 @@ Rules the compiler enforces:
   resets the hold — which, mid-dip, would zero a streak that was being held.
 - `tolerance` must be shorter than `duration`. A hold that forgives its own
   duration never drops once satisfied, because every dip long enough to end it
-  is first long enough to be forgiven. When `duration` binds a control its
-  value is not knowable at compile time, so that comparison is skipped rather
-  than guessed.
+  is first long enough to be forgiven. The compiler can only check that against
+  a literal `duration`: binding `duration` to a control leaves the comparison
+  unknowable when the protocol compiles, so it is skipped rather than guessed.
+  Keep such a control's range above the tolerance. A `duration` retuned to at
+  or below `tolerance` mid-session gives a hold that never drops once it is
+  satisfied, and gated audio that never stops — nothing will refuse it.
 - `tolerance` converts to samples as `round(tolerance_ms / 1000 × rate)` and is
   **not** floored at 1, unlike `duration`. A tolerance too short to reach one
   sample at the session rate forgives nothing, which is what it asked for.

@@ -975,7 +975,12 @@ A single `event_stream` value can drive both consumption modes within the same p
 duration. It MUST be a literal with a time unit; it MUST NOT bind a control.
 It MUST NOT be negative, and it MUST be shorter than the hold's `duration`
 unless `duration` binds a control, in which case the comparison is not
-knowable at compile time and is not made. Absence is equivalent to `0 ms` and
+knowable at compile time and is not made. Where `duration` binds a control,
+the control's declared range SHOULD stay above the tolerance: a `duration`
+retuned to at or below `tolerance` yields a hold that, once satisfied, never
+drops — every dip long enough to end it is first long enough to be forgiven —
+and therefore gated output that never stops. Implementations are not required
+to refuse that configuration. Absence is equivalent to `0 ms` and
 MUST produce sample-identical output to a hold with no `tolerance` at all.
 
 `tolerance` converts to a whole number of samples as
