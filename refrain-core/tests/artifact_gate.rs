@@ -8,6 +8,17 @@
 //! the whole path on a real protocol, against the streams, events and taps the
 //! Python evaluator produced for the same input (`tools/gen_fixtures.py`).
 //!
+//! The fixture covers BOTH hold paths. `output/video_clarity` is the
+//! `output`-bound `hold_for`; `reward.event` is the reward dwell, which 44 of
+//! the 45 live protocols drive feedback from and which the mask reached one
+//! release later than the output path did. The reward half of the vector is
+//! what `reward_dwell_never_fires_into_a_blind_window` below is about: before
+//! the mask reached this path, three of micro_15's fourteen reward edges fired
+//! inside a mute and were thrown away by the output gate, and `dwell` does not
+//! re-arm, so each of the three was a reward the trainee could never collect.
+//! With the mask, the clock does not reach those edges at all and every edge
+//! the dwell produces is one the patient hears.
+//!
 //! Streams are compared to 1e-9 rather than `equivalence.rs`'s 1e-6/1e-4, for
 //! the same reason `tolerance.rs` does: `output/video_clarity` is a boolean a
 //! held clock switches, so a one-sample disagreement about whether a mute was
@@ -109,7 +120,8 @@ fn micro_15_artifact_gate_streams_equivalent() {
     // fixture channel from quietly reducing this test to a pass over nothing.
     for required in [
         "smr_envelope", "emg_power", "emg_envelope",
-        "reward.event.holds", "output/video_clarity", "output/audio_gain",
+        "reward.event", "reward.event.holds",
+        "output/video_clarity", "output/audio_chime", "output/audio_gain",
     ] {
         assert!(got.contains_key(required), "{STEM}: missing stream {required}");
         assert!(io.streams.contains_key(required), "{STEM}: no reference for {required}");
@@ -127,6 +139,52 @@ fn micro_15_artifact_gate_streams_equivalent() {
          muted on {}/{} chunks",
         muted.iter().filter(|&&m| m).count(), muted.len()
     );
+}
+
+#[test]
+fn reward_dwell_never_fires_into_a_blind_window() {
+    // The reward half of the vector, stated as the property rather than as a
+    // sample index. `audio_chime = reward.event` and the output stage ANDs
+    // `!muted` into every event channel, so an edge the gate swallowed is one
+    // that is set in `reward.event` and clear in `output/audio_chime`. Under
+    // the pause rule the clock cannot reach a rising edge inside a mute, so
+    // the two streams have to agree sample for sample. Three of the fourteen
+    // edges in the pre-mask reference failed exactly this.
+    let p: Protocol = load("ir");
+    let io: Io = load("io");
+    let (got, events, _) = run(&p, &io);
+
+    let raw = &got["reward.event"];
+    let heard = &got["output/audio_chime"];
+    let edges: Vec<usize> = (0..raw.len()).filter(|&i| raw[i] != 0.0).collect();
+    // A run with no reward edges would pass the comparison below vacuously.
+    assert!(
+        edges.len() > 5,
+        "{STEM}: only {} reward edges — not a vector for the reward path",
+        edges.len()
+    );
+    let swallowed: Vec<usize> =
+        edges.iter().copied().filter(|&i| heard[i] == 0.0).collect();
+    assert!(
+        swallowed.is_empty(),
+        "{STEM}: reward edges fired inside a blind window and were discarded \
+         at samples {swallowed:?} — the reward clock ran through a mute"
+    );
+    // And the edges really are the chimes the host receives, so the property
+    // above is about delivered feedback and not an internal stream alone.
+    let chimes = events.iter().filter(|e| e.channel == "audio_chime").count();
+    assert_eq!(
+        chimes, edges.len(),
+        "{STEM}: {} reward edges but {chimes} audio_chime events", edges.len()
+    );
+    // The gate still has to be shutting over part of the run, or there was no
+    // blind window for an edge to fall into in the first place.
+    let clarity = &got["output/video_clarity"];
+    assert!(
+        clarity.iter().any(|&v| v == 0.0) && clarity.iter().any(|&v| v > 0.0),
+        "{STEM}: the output-bound hold never changed state"
+    );
+    eprintln!("  {STEM} :: {} reward edges, none swallowed", edges.len());
 }
 
 #[test]

@@ -471,6 +471,16 @@ class Evaluator:
         self._record_streams: bool = bool(record_streams)
         self._last_streams: dict[str, np.ndarray] = {}
 
+        # The two hold masks for the `output`-bound hold path, set per channel
+        # inside `_process_chunk`'s output loop and dropped the moment it ends
+        # (Rust removes the matching env keys at the same point). Declared
+        # here, as None, so the "is this loop running?" test in `_eval_call` is
+        # a value check rather than a `hasattr` — the attribute used to appear
+        # on the first chunk and then stay, which left a hold nested in a
+        # REWARD condition reading last chunk's masks.
+        self._hold_for_eligible: np.ndarray | None = None
+        self._hold_for_observable: np.ndarray | None = None
+
         # Rust backend delegation (set by Evaluator.live when backend="rust").
         # When not None, all public push-mode methods forward to _rust.
         self._backend: str = "python"
@@ -1159,6 +1169,47 @@ class Evaluator:
                 thresh_chunk = thresh_impl.step(metric_chunk)
             inhibit_active[ih.canonical_name] = metric_chunk > thresh_chunk
 
+        # Active block (from the current phase) selects which reward bundle and
+        # which output/inhibit set are live. All bundles are EVALUATED every
+        # chunk (keeping dwell timers warm); only the active one drives output.
+        # When there is no active block (warmup / rest / blockless protocol),
+        # the default top-level reward results computed below remain in effect.
+        #
+        # This lookup and the two mute gates below used to sit BETWEEN the
+        # reward stage and the output stage. They moved up here so the reward
+        # event's dwell can be handed the observability mask, which it cannot
+        # be if `artifact_muted` does not exist yet. Nothing between here and
+        # the old position touched the phase cursor or any inhibit gate, so
+        # the values are the same ones; `active_channels` and `active_bundle`
+        # are still derived from this same `ph`/`active_block` pair and still
+        # read at their original points below.
+        #
+        # Rust needed no equivalent reorder: `eval_chunk` already reads the
+        # active block at the top and runs its inhibit loop before the reward
+        # stage. That asymmetry is why this task's Python diff is the larger
+        # of the two, and it is not accidental.
+        ph = self._current_phase_ir()
+        active_block = None
+        if ph is not None and ph.block is not None:
+            active_block = self.ir.blocks.get(ph.block)
+        active_bundle = active_block.reward if active_block is not None else None
+
+        # Combined inhibit gate — also exposed as the `muted` tap. Inhibits not
+        # in the active block's `.inhibits` set do not contribute to the gate.
+        muted = self._compute_muted(inhibit_active, actual_chunk_size, active_block)
+        # The same gate restricted to inhibits labelled `kind = "artifact"`:
+        # the samples the engine could not read, as opposed to the samples it
+        # read and scored against the trainee. Must follow `_compute_muted`,
+        # which is what steps each inhibit's gate for this chunk.
+        artifact_muted = self._compute_artifact_muted(
+            inhibit_active, actual_chunk_size, active_block
+        )
+        # The reward event's observability mask. Not per-channel and not
+        # per-block: an artifact is an artifact whichever block is live, which
+        # is why every reward bundle below is stepped with this same mask and
+        # not just the active one.
+        reward_observable = ~artifact_muted
+
         # Reward
         reward_event: impls.DwellResult | None = None
         reward_sub_chunks: list[np.ndarray] = []
@@ -1204,18 +1255,9 @@ class Evaluator:
                 stream_values, control_chunks_cache, actual_chunk_size,
                 reward_composite=reward_composite,
                 reward_component_signals=reward_component_signals,
+                observable=reward_observable,
             )
 
-        # Active block (from the current phase) selects which reward bundle and
-        # which output/inhibit set are live. All bundles are EVALUATED every
-        # chunk (keeping dwell timers warm); only the active one drives output.
-        # When there is no active block (warmup / rest / blockless protocol),
-        # the default top-level reward results computed above remain in effect.
-        ph = self._current_phase_ir()
-        active_block = None
-        if ph is not None and ph.block is not None:
-            active_block = self.ir.blocks.get(ph.block)
-        active_bundle = active_block.reward if active_block is not None else None
         for name, rb in self.ir.reward_bundles.items():
             if rb.continuous is not None:
                 c = self._eval_expr(
@@ -1225,7 +1267,8 @@ class Evaluator:
                     reward_continuous = c
             if rb.event is not None:
                 ev_res, subs = self._eval_reward_event(
-                    rb.event, stream_values, control_chunks_cache, actual_chunk_size
+                    rb.event, stream_values, control_chunks_cache, actual_chunk_size,
+                    observable=reward_observable,
                 )
                 if name == active_bundle:
                     reward_event, reward_sub_chunks = ev_res, subs
@@ -1237,17 +1280,6 @@ class Evaluator:
             active_channels = set(active_block.outputs)
         else:
             active_channels = set(self.ir.output.keys())
-
-        # Combined inhibit gate — also exposed as the `muted` tap. Inhibits not
-        # in the active block's `.inhibits` set do not contribute to the gate.
-        muted = self._compute_muted(inhibit_active, actual_chunk_size, active_block)
-        # The same gate restricted to inhibits labelled `kind = "artifact"`:
-        # the samples the engine could not read, as opposed to the samples it
-        # read and scored against the trainee. Must follow `_compute_muted`,
-        # which is what steps each inhibit's gate for this chunk.
-        artifact_muted = self._compute_artifact_muted(
-            inhibit_active, actual_chunk_size, active_block
-        )
 
         # Feed the autopilot advisor what happened this chunk (SPEC §7.10).
         # Advice is never a tap (global-constraints) — it has its own
@@ -1325,6 +1357,17 @@ class Evaluator:
                 clamped = np.clip(values, 0.0, 1.0)
                 gated = np.where(muted, 0.0, clamped)
                 per_channel_output[channel] = (gated, False)
+        # Both masks are per-channel and per-chunk, so they stop meaning
+        # anything the moment this loop ends. Dropping them matches Rust,
+        # which removes `__hold_for_eligible` / `__hold_for_observable` from
+        # the env at exactly this point (`refrain-core/src/eval.rs`). Left
+        # standing, a `hold_for`/`dwell`/`dwell_rearm` nested inside a REWARD
+        # condition — which is evaluated above, before this loop runs — read
+        # the previous chunk's masks in Python and none at all in Rust: a live
+        # divergence in `reward.event`, and a hard shape error the first time
+        # a chunk arrived shorter than the one before it.
+        self._hold_for_eligible = None
+        self._hold_for_observable = None
 
         # During an output-muted phase (warmup or a mid-session rest) the
         # patient hears nothing: zero the patient-facing output channels so
@@ -1824,7 +1867,8 @@ class Evaluator:
                     reward_composite=reward_composite, reward_component_signals=reward_component_signals,
                 )
             )
-        if call.callee in ("hold_for", "dwell", "dwell_rearm") and hasattr(self, "_hold_for_eligible"):
+        if (call.callee in ("hold_for", "dwell", "dwell_rearm")
+                and self._hold_for_eligible is not None):
             # Two masks, not one AND, and the order between them is the whole
             # point. `_hold_for_eligible` carries the mute, the muted rest and
             # the inactive-channel rules, all of which still zero the streak,
@@ -1849,10 +1893,27 @@ class Evaluator:
         chunk_size: int,
         reward_composite: np.ndarray | None = None,
         reward_component_signals: dict[str, np.ndarray] | None = None,
+        *,
+        observable: np.ndarray | None = None,
     ) -> tuple[impls.DwellResult, list[np.ndarray]]:
         """The reward.event expression's top-level call is `dwell` (or
         another event-producing primitive). Special-cased so we keep the
         DwellResult around for `.events` and `.holds` view access.
+
+        `observable` is the per-sample mask of samples the engine could read:
+        false wherever an inhibit labelled `kind = "artifact"` is gating. The
+        dwell checks it before it looks at the condition, so an artifact-muted
+        sample is neither a success nor a failure and the reward clock pauses
+        instead of running on through a blind window. `None` means every
+        sample is observable, which is what every caller passed before this
+        existed and what a protocol with no `"artifact"` label still gets
+        (the mask is then all-true, same answer either way).
+
+        Note the asymmetry with the `output`-bound hold path in `_eval_call`:
+        there the mute ALSO folds into the condition as a failure, via
+        `_hold_for_eligible`. Here it does not, because this path has never
+        applied an eligibility mask at all and giving it one would change what
+        every existing protocol scores with nothing declared.
 
         Returns (dwell_result, sub_condition_chunks) where
         sub_condition_chunks is a list of per-sub-condition boolean
@@ -1908,7 +1969,7 @@ class Evaluator:
             )
             sub_chunks = [condition_chunk]
 
-        return impl.step(condition_chunk), sub_chunks
+        return impl.step(condition_chunk, observable), sub_chunks
 
     def _component_weight_chunk(
         self, comp, control_chunks: dict[str, np.ndarray], chunk_size: int

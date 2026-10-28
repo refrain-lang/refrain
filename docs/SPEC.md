@@ -1113,8 +1113,13 @@ Per recorder buffer chunk (typical: 64 samples at 256 Hz = 250 ms):
 1. Walk IR in topological order.
 2. For each primitive, call `step(input_chunk, state) → (output_chunk, new_state)`.
 3. Propagate outputs to dependents.
-4. Evaluate reward expression(s).
-5. Evaluate output bindings; emit to recorder bus.
+4. Evaluate every inhibit and step its action's gate, producing the combined
+   mute gate for the chunk. This is ordered **before** the reward stage in both
+   engines, because the reward event's hold is stepped with the observability
+   mask derived from it (§7.4). Each inhibit's gate carries its own `release`
+   hangover and so is stepped exactly once per chunk, whatever reads it.
+5. Evaluate reward expression(s).
+6. Evaluate output bindings; emit to recorder bus.
 
 ### 7.3 Live control mutations
 
@@ -1130,7 +1135,7 @@ effective_output = output_expression * AND(NOT inhibit_i for each muting inhibit
 
 Inhibits with `action = freeze` gate output exactly as `mute` does (zeroed, with the same hangover); with `action = flag` they only emit telemetry.
 
-Inhibits do not modify `reward.continuous` or `reward.event` directly — they modify what the output bindings deliver. This means downstream protocol logic (e.g., a derive that consumes `reward.continuous`) sees the unmodified value, which matters for protocols that compute derived feedback signals from reward.
+Inhibits do not modify `reward.continuous` or `reward.event` directly — they modify what the output bindings deliver. This means downstream protocol logic (e.g., a derive that consumes `reward.continuous`) sees the unmodified value, which matters for protocols that compute derived feedback signals from reward. The one exception is an inhibit labelled `kind = "artifact"`: it pauses the reward event's hold clock while its gate is shut, which changes *when* `reward.event` fires rather than suppressing a value. See "What a hold forgives, and what it does not" below.
 
 While a `mute` or `freeze` inhibit is active (including its `release` hangover), both engines zero every continuous `output/<channel>` and make every event channel false. The `output/<channel>` taps show those gated values. A `feedback { ... }` layer's `suppress_on_mute` flag is different: it is a declaration for the downstream player, carried in the IR and acted on by neither engine. The engines silence a muted output whatever that flag says. `tests/test_eval_mute_gating.py` pins both facts on both backends.
 
@@ -1149,7 +1154,14 @@ Silencing the output is separate from what a hold's clock does with the silenced
 
 A labelled artifact gate is therefore a **reward change** wherever it applies: it turns a reward that was lost inside a blind window into a delivered one. That is the intended effect, and it means labelling an existing protocol moves its reward rate and must be recorded as a design decision in the protocol's header and in the PR, with its before-and-after. An unlabelled inhibit changes nothing, which is what lets every existing protocol land untouched.
 
-What a sample's condition carries differs between the two hold paths, which is what the third row means by "differs by hold path": a hold bound inside `output { }` has the mute gate AND-ed into its condition, while a hold in `reward { event = ... }` is stepped on the raw condition and has its event masked at the output stage instead. The paragraphs above describe the `output`-bound path. `tests/test_eval_inhibit_kind.py` pins one row of the table per case on both backends for that path, and `bench/protocols/micro_15_artifact_gate.refrain` is its golden vector.
+The observability mask reaches both hold paths. What differs between them — and what the third row means by "differs by hold path" — is the *condition*, not the mask:
+
+- A hold bound inside `output { }` has the mute gate AND-ed into its condition, so a muted sample arrives already reading false. Where the mute is labelled `"artifact"` the mask overrides that and the clock holds; where it is labelled `"trained"` or not labelled at all, the false condition stands and the streak resets.
+- A hold in `reward { event = ... }` is stepped on the raw condition: no mute, no muted phase and no inactive block has ever been folded in there, and none is now. Only the observability mask applies. Where the mute is labelled `"artifact"` the reward clock pauses for as long as the gate is shut; where it is labelled `"trained"` or not labelled, nothing applies at all and the clock runs through the mute exactly as it does today, with the resulting event discarded at the output stage. So no existing protocol's reward timing moves until one of its inhibits is labelled.
+
+The mask is not scoped per channel or per reward bundle. An artifact is an artifact whichever block is live, so every reward bundle is stepped with the same mask, not only the active one. It *is* scoped by the active block's `inhibit` set, in the same way the mute gate is: an inhibit the active block has excluded gates no output, and therefore makes nothing unobservable either.
+
+Because the reward event is the path 44 of the 45 protocols in this repository drive feedback from, this is where a labelled gate changes what a session delivers. An edge that fires inside a blind window is discarded by the output gate, and `dwell` does not re-arm, so the burst that produced it pays out nothing at all; with the mask, the clock does not reach that edge and the reward is earned once the gate clears. `bench/protocols/micro_15_artifact_gate.refrain` is the golden vector for both paths, `tests/test_eval_inhibit_kind.py` pins one row of the table per case for the `output`-bound path, and `tests/test_eval_artifact_mask_reward.py` does the same for the reward-event path — both on both backends.
 
 ### 7.5 Reward semantics
 

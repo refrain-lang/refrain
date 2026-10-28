@@ -661,10 +661,21 @@ impl PhaseSnapshot {
 /// `reward/condition[i]` taps). Pure w.r.t. phase state — used for both the
 /// default reward and every reward bundle (all bundles step every chunk so
 /// their dwell timers stay warm).
+///
+/// `observable` is false on each sample an inhibit labelled `kind = "artifact"`
+/// was gating: the dwell checks it before it looks at the condition, so such a
+/// sample is neither a success nor a failure and the reward clock pauses
+/// rather than running on through a blind window. `None` means every sample is
+/// observable, which is what a protocol with no `"artifact"` label gets.
+/// Unlike the `output`-bound hold path, the mute itself is NOT folded into the
+/// condition here: this path has never applied an eligibility mask, and giving
+/// it one would move what every existing protocol scores. Mirrors
+/// `_eval_reward_event` in `src/refrain/eval_.py`.
 fn step_reward_event(
     re: &mut RewardEvent,
     env: &HashMap<String, Val>,
     n: usize,
+    observable: Option<&[bool]>,
 ) -> (Vec<bool>, Vec<bool>, Vec<bool>, Vec<Vec<bool>>) {
     let mut sub_streams: Vec<Vec<bool>> = Vec::with_capacity(re.sub_conditions.len());
     let mut sub_lasts: Vec<bool> = Vec::with_capacity(re.sub_conditions.len());
@@ -679,7 +690,7 @@ fn step_reward_event(
             SubCombine::Any => sub_streams.iter().any(|s| s[i]),
         })
         .collect();
-    let (events, holds) = re.dwell.step(&condition, None);
+    let (events, holds) = re.dwell.step(&condition, observable);
     (events, holds, sub_lasts, sub_streams)
 }
 
@@ -1618,6 +1629,17 @@ impl Evaluator {
         // inhibits (the all-false vector's last sample).
         taps.insert("muted".to_string(), bool_f(muted.last().copied().unwrap_or(false)));
 
+        // The reward event's observability mask. Nothing moved to get it here:
+        // this loop and the active-block lookup at the top of `eval_chunk`
+        // already ran before the reward stage below. Python had to REORDER for
+        // this — its `muted` / `artifact_muted` pair and its active-block
+        // lookup used to sit between the reward stage and the output stage —
+        // so the Python diff for this change is the larger of the two and that
+        // is not accidental. Not per-channel and not per-block: an artifact is
+        // an artifact whichever block is live, which is why every reward
+        // bundle below is stepped with this same mask, not just the active one.
+        let reward_observable: Vec<bool> = artifact_muted.iter().map(|&b| !b).collect();
+
         // Weighted composite (v0.2). Computed BEFORE reward.continuous /
         // reward.event so that `continuous = reward.composite` and a
         // `dwell(condition: above(reward.composite, …))` can reference it.
@@ -1687,6 +1709,9 @@ impl Evaluator {
             // Evaluate each sub-condition (the `all_of`/`any_of` elements, or a
             // single condition exposed as `[0]`) and tap its last sample, then
             // recombine into the dwell's input — identical to `_eval_reward_event`.
+            // The dwell is stepped with `reward_observable`, so artifact-gated
+            // samples pause the reward clock instead of running it on through a
+            // window the engine could not read. See `step_reward_event`.
             let mut sub_streams: Vec<Vec<bool>> = Vec::with_capacity(re.sub_conditions.len());
             for (i, sub) in re.sub_conditions.iter_mut().enumerate() {
                 let s = sub.eval(&env, n).as_b().to_vec();
@@ -1701,7 +1726,7 @@ impl Evaluator {
                     SubCombine::Any => sub_streams.iter().any(|s| s[i]),
                 })
                 .collect();
-            let (events, holds) = re.dwell.step(&condition, None);
+            let (events, holds) = re.dwell.step(&condition, Some(&reward_observable));
             // `reward/event`: did the dwell fire ANY sample this chunk.
             taps.insert("reward/event".to_string(), bool_f(events.iter().any(|&b| b)));
             // `reward/event.holds`: last sample.
@@ -1728,7 +1753,8 @@ impl Evaluator {
                 }
             }
             if let Some(re) = bundle.event.as_mut() {
-                let (events, holds, sub_lasts, sub_streams) = step_reward_event(re, &env, n);
+                let (events, holds, sub_lasts, sub_streams) =
+                    step_reward_event(re, &env, n, Some(&reward_observable));
                 if is_active {
                     for (i, &last) in sub_lasts.iter().enumerate() {
                         taps.insert(format!("reward/condition[{i}]"), bool_f(last));
