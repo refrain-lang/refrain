@@ -425,19 +425,27 @@ impl CNode {
                 let parts: Vec<Val> = items.iter_mut().map(|c| c.eval(env, n)).collect();
                 Val::B((0..n).map(|i| parts.iter().any(|p| p.as_b()[i])).collect())
             }
-            // The three `output`-bound hold arms. Each takes TWO masks, and
-            // the order between them is the point. `__hold_for_eligible`
-            // carries the mute, the muted rest and the inactive-channel
-            // rules, all of which still zero the streak, so it folds into
-            // `clean` as false. `__hold_for_observable` carries only the
-            // artifact label, and `Dwell`/`DwellRearm` check it FIRST, before
-            // the condition is looked at — which is what makes an
-            // artifact-muted sample neither a success nor a failure. An
+            // The three nested-hold arms. Each takes TWO masks, read
+            // independently, and the order between them is the point.
+            // `__hold_for_eligible` carries the mute, the muted rest and the
+            // inactive-channel rules, all of which still zero the streak, so
+            // it folds into `clean` as false. `__hold_for_observable` carries
+            // only the artifact label, and `Dwell`/`DwellRearm` check it
+            // FIRST, before the condition is looked at — which is what makes
+            // an artifact-muted sample neither a success nor a failure. An
             // artifact mute is in `muted` too, so such a sample arrives with
             // `clean` already false; were it merely folded in there, an
             // artifact mute longer than `tolerance` would reset the streak
             // through the dip path and the `kind` label would buy nothing.
-            // Mirrors `_eval_call` in `src/refrain/eval_.py`.
+            //
+            // Neither key implies the other, and which are present says which
+            // stage is evaluating. Inside an `output` binding: both, so a mute
+            // fails the sample and an artifact mute freezes it. Inside a
+            // REWARD condition: only the observability mask, because that
+            // stage has never folded a mute into its condition and doing so
+            // would change what a reward condition means. Anywhere else — a
+            // derive, an inhibit metric: neither, and the hold is stepped
+            // bare. Mirrors `_eval_call` in `src/refrain/eval_.py`.
             CNode::HoldFor { dwell, condition } => {
                 let input = condition.eval(env, n);
                 let eligible = env.get("__hold_for_eligible").map(Val::as_b);
@@ -1629,16 +1637,40 @@ impl Evaluator {
         // inhibits (the all-false vector's last sample).
         taps.insert("muted".to_string(), bool_f(muted.last().copied().unwrap_or(false)));
 
-        // The reward event's observability mask. Nothing moved to get it here:
-        // this loop and the active-block lookup at the top of `eval_chunk`
-        // already ran before the reward stage below. Python had to REORDER for
-        // this — its `muted` / `artifact_muted` pair and its active-block
-        // lookup used to sit between the reward stage and the output stage —
-        // so the Python diff for this change is the larger of the two and that
-        // is not accidental. Not per-channel and not per-block: an artifact is
-        // an artifact whichever block is live, which is why every reward
-        // bundle below is stepped with this same mask, not just the active one.
-        let reward_observable: Vec<bool> = artifact_muted.iter().map(|&b| !b).collect();
+        // The samples the engine could read, as one vector for the whole
+        // chunk. Nothing moved to get it here: this loop and the active-block
+        // lookup at the top of `eval_chunk` already ran before the reward
+        // stage below. Python had to REORDER for this — its `muted` /
+        // `artifact_muted` pair and its active-block lookup used to sit
+        // between the reward stage and the output stage — so the Python diff
+        // for this is the larger of the two and that is not accidental. Not
+        // per-channel and not per-block: an artifact is an artifact whichever
+        // block is live and whichever channel is listening, which is why every
+        // reward bundle below is stepped with this same mask, not just the
+        // active one, and why the output loop reuses the same vector.
+        let artifact_observable: Vec<bool> = artifact_muted.iter().map(|&b| !b).collect();
+
+        // The reward stage's observability mask, in the env for the length of
+        // that stage and removed the moment it ends. A `hold_for` / `dwell` /
+        // `dwell_rearm` written INSIDE a reward condition is evaluated here,
+        // before the output loop runs, so this is the only place it can be
+        // handed one — and it must be, or it banks samples the engine has
+        // declared unreadable, which is what "a streak of N samples means N
+        // samples genuinely above threshold and observable" forbids.
+        //
+        // `__hold_for_eligible` is deliberately NOT inserted. The three hold
+        // arms in `CNode::eval` already `get` the two keys independently, so
+        // with only this one present a nested hold is stepped on its raw
+        // condition with the observability mask applied — which is the rule
+        // this path wants. Eligibility folds a mute into the condition as a
+        // FAILURE; this stage has never applied it, and applying it would
+        // change what a reward condition means for every protocol with nothing
+        // declared. Unobservable freezes; it does not fail. That those arms
+        // need no edit at all is why the Rust half of this change is two lines
+        // and the Python half is a dispatch rewrite — the same asymmetry as
+        // the reorder above, from the same cause.
+        env.insert("__hold_for_observable".to_string(),
+                   Val::B(artifact_observable.clone()));
 
         // Weighted composite (v0.2). Computed BEFORE reward.continuous /
         // reward.event so that `continuous = reward.composite` and a
@@ -1709,7 +1741,7 @@ impl Evaluator {
             // Evaluate each sub-condition (the `all_of`/`any_of` elements, or a
             // single condition exposed as `[0]`) and tap its last sample, then
             // recombine into the dwell's input — identical to `_eval_reward_event`.
-            // The dwell is stepped with `reward_observable`, so artifact-gated
+            // The dwell is stepped with `artifact_observable`, so artifact-gated
             // samples pause the reward clock instead of running it on through a
             // window the engine could not read. See `step_reward_event`.
             let mut sub_streams: Vec<Vec<bool>> = Vec::with_capacity(re.sub_conditions.len());
@@ -1726,7 +1758,7 @@ impl Evaluator {
                     SubCombine::Any => sub_streams.iter().any(|s| s[i]),
                 })
                 .collect();
-            let (events, holds) = re.dwell.step(&condition, Some(&reward_observable));
+            let (events, holds) = re.dwell.step(&condition, Some(&artifact_observable));
             // `reward/event`: did the dwell fire ANY sample this chunk.
             taps.insert("reward/event".to_string(), bool_f(events.iter().any(|&b| b)));
             // `reward/event.holds`: last sample.
@@ -1754,7 +1786,7 @@ impl Evaluator {
             }
             if let Some(re) = bundle.event.as_mut() {
                 let (events, holds, sub_lasts, sub_streams) =
-                    step_reward_event(re, &env, n, Some(&reward_observable));
+                    step_reward_event(re, &env, n, Some(&artifact_observable));
                 if is_active {
                     for (i, &last) in sub_lasts.iter().enumerate() {
                         taps.insert(format!("reward/condition[{i}]"), bool_f(last));
@@ -1770,6 +1802,11 @@ impl Evaluator {
                 }
             }
         }
+        // The reward stage is over, so its mask stops meaning anything. Removed
+        // here for the same reason the output loop's pair is removed below, and
+        // with the same discipline: a mask left in the env is read by whatever
+        // evaluates next. The output loop puts it back for itself.
+        env.remove("__hold_for_observable");
 
         let mut outs: Vec<(String, Val)> = Vec::new();
         for (ch, node, is_event) in self.outputs.iter_mut() {
@@ -1782,10 +1819,11 @@ impl Evaluator {
             // artifact label and does not vary by channel: a mid-session rest
             // and an inactive-block channel are reasons the engine scored a
             // sample, not reasons it could not read one. Inserted beside the
-            // eligibility mask so the two stay visibly one pair.
-            env.insert("__hold_for_observable".to_string(), Val::B(
-                artifact_muted.iter().map(|&blocked| !blocked).collect()
-            ));
+            // eligibility mask so the two stay visibly one pair. The same
+            // vector the reward stage above was given — one answer to "could
+            // the engine read this sample", whichever stage is asking.
+            env.insert("__hold_for_observable".to_string(),
+                       Val::B(artifact_observable.clone()));
             let v = match (node.eval(&env, n), *is_event) {
                 (Val::B(values), false) => Val::F(values.into_iter().map(bool_f).collect()),
                 (value, _) => value,

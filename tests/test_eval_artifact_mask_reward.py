@@ -24,8 +24,16 @@ existing protocol with nothing declared.
 
 The file also covers the two places the mask has to reach that the headline
 measurement does not touch: a reward bundle that is stepped every chunk while
-its block is not live, and a `hold_for` nested inside a reward condition, which
-must get no mask at all.
+its block is not live, and a `hold_for` nested inside a reward condition.
+
+The nested hold is the one case where the two masks part company. It gets the
+observability mask, because "a streak of N samples always means N samples
+genuinely above threshold and observable" does not stop applying when the hold
+is written inside a reward condition. It does not get the eligibility mask,
+because eligibility folds a mute into the condition as a failure and this stage
+has never done that — unobservable freezes, it does not fail. Three distinct
+sample indices separate the two masks from each other and from no mask at all,
+which is what makes those cases able to tell the three apart.
 
 The file name matches `tests/test_eval_*.py` on purpose: that glob is what the
 dual-backend drift gate runs under `REFRAIN_EVAL_BACKEND=rust`.
@@ -43,6 +51,7 @@ from tests._inhibit_fixtures import (  # verified one-inhibit fixtures
     NESTED_HOLD_CONDITION,
     reward_event_protocol,
 )
+from tests.conftest import RUST_BACKEND_ACTIVE
 
 # 256 Hz makes every duration in the fixture a whole number of samples, so no
 # rounding stands between the written source and an asserted sample index: the
@@ -69,10 +78,47 @@ RAW_ANSWER = BURST_START + DWELL_SAMPLES - 1                   # 754, 2.945 s
 # Under the pause rule: 26 samples banked before the gate shut, 38 left to
 # earn once it clears.
 PAUSED_ANSWER = RESUME + (DWELL_SAMPLES - BANKED) - 1          # 972, 3.797 s
-# With a 125 ms hold nested in the reward condition, the nested hold is
-# unmasked (it is not on the output path) so it is already holding when the
-# gate clears; the outer dwell then needs all 64 of its samples from there.
-NESTED_ANSWER = RESUME + DWELL_SAMPLES - 1                     # 998, 3.898 s
+# --- The three answers for a 125 ms hold nested in the reward condition -----
+#
+# A nested hold is reached with ONLY the observability mask: the reward stage
+# has never folded a mute into its condition and still does not, so the
+# eligibility mask stops at the output loop. That gives three distinct sample
+# indices, and keeping them distinct is what lets the cases below tell a frozen
+# nested hold from an unmasked one.
+
+# Each answer is "the sample the nested hold first reads true" plus the outer
+# dwell's 64, counting the first of those 64 as the rise sample itself.
+def _outer_fires_once_nested_holds_at(nested_rise: int) -> int:
+    return nested_rise + DWELL_SAMPLES - 1
+
+
+# Nothing masked. The nested hold banks 32 straight from the burst's opening
+# and holds at 722; the outer dwell then takes its 64 from there. This is what
+# an unlabelled mute, a `"trained"` one, a block-scoped one and no mute at all
+# must all produce.
+NESTED_RISE_UNMASKED = BURST_START + NESTED_HOLD_SAMPLES - 1             # 722
+NESTED_UNMASKED = _outer_fires_once_nested_holds_at(NESTED_RISE_UNMASKED)  # 785
+
+# Outer dwell masked, nested hold NOT. The nested hold banked straight through
+# the blind window and was already holding when the gate cleared, so the outer
+# dwell takes all 64 of its samples from 935. This is what the engine did
+# before the nested hold was masked: a streak built on samples the engine had
+# declared unreadable, which "forgive, don't credit" forbids. It is here as the
+# answer that must NOT come back.
+NESTED_CREDITED = RESUME + DWELL_SAMPLES - 1                              # 998
+
+# Both masked — the correct answer. The nested hold banks 26 of its 32 before
+# the gate shuts, freezes, and needs 6 more once the engine can read again, so
+# it holds at 940; the outer dwell takes its 64 from there.
+NESTED_RISE_FROZEN = RESUME + (NESTED_HOLD_SAMPLES - BANKED) - 1         # 940
+NESTED_FROZEN = _outer_fires_once_nested_holds_at(NESTED_RISE_FROZEN)      # 1003
+
+# What the eligibility mask would have cost, had it been allowed to cross to
+# this path: a mute zeroes a streak rather than freezing it, so the nested hold
+# would lose the 26 samples it banked and need all 32 again from 935.
+NESTED_IF_ELIGIBILITY_CROSSED = _outer_fires_once_nested_holds_at(
+    RESUME + NESTED_HOLD_SAMPLES - 1                                     # 966
+)                                                                          # 1029
 
 
 def _run(
@@ -283,11 +329,18 @@ def test_a_trained_bundle_mute_leaves_the_warm_clock_exactly_as_today(backend):
 
 
 # ---------------------------------------------------------------------------
-# A hold nested inside the reward condition. Python used to leave the output
-# loop's two masks on `self` after the loop ended, so such a hold read the
-# PREVIOUS chunk's masks — while Rust removes both env keys at that point and
-# applied none. A live divergence, plus a hard shape error the first time a
-# chunk arrived shorter than the one before it.
+# A hold nested inside the reward condition. It gets the observability mask and
+# nothing else: a streak must only ever count samples the engine could read, so
+# an artifact-gated sample freezes it; but the reward stage has never folded a
+# mute into its condition as a failure, and still does not, so the eligibility
+# mask stops at the output loop.
+#
+# Two earlier bugs lived here and both are pinned below. The masks used to be
+# left standing on the evaluator after the output loop, so a nested hold read
+# the PREVIOUS chunk's masks in Python and none at all in Rust — a live
+# divergence, plus a hard shape error the first time a chunk arrived shorter
+# than the one before it. Then, once they were cleared, a nested hold got no
+# mask at all and banked samples the engine had declared unreadable.
 # ---------------------------------------------------------------------------
 
 
@@ -320,27 +373,150 @@ def test_a_hold_nested_in_a_reward_condition_ignores_an_unlabelled_mute_entirely
             assert np.array_equal(muted_run[key], clean_run[key]), key
 
 
-def test_a_hold_nested_in_a_reward_condition_is_not_frozen_by_the_artifact_mask(backend):
-    """The mask is the outer dwell's, not the nested hold's.
+def test_a_hold_nested_in_a_reward_condition_freezes_under_an_artifact_mute(backend):
+    """A nested hold must not bank samples the engine could not read.
 
-    The nested `hold_for` is evaluated as part of the reward condition, before
-    any output channel runs, so it gets neither the eligibility mask nor the
-    observability mask — exactly as Rust does. It is therefore already holding
-    when the outer dwell's gate clears, and the outer dwell needs all 64 of
-    its samples from there: 998, not 972.
+    "A streak of N samples always means N samples genuinely above threshold and
+    observable" is unconditional — it does not become optional because the hold
+    happens to be written inside a reward condition rather than inside an
+    `output` binding. Here the nested hold's own 32 samples would complete at
+    722, INSIDE the blind window, on six samples nothing could be read from.
+    Frozen, it banks the 26 real ones, waits out the gate, and holds at 940;
+    the outer dwell then takes its 64 from there.
+
+    Three distinct answers, which is what makes this case able to tell them
+    apart at all:
+
+    * 785 — nothing masked: the nested hold held at 722 and the outer dwell
+      ran straight through the gate too.
+    * 998 — the outer dwell masked but the nested hold not: a streak built on
+      unreadable samples, reporting "held" the instant the gate cleared. This
+      is the answer the engine used to give and the one that must not return.
+    * 1003 — both masked, which is this assertion.
     """
     streams, _ = _run(backend, kind="artifact", condition=NESTED_HOLD_CONDITION)
     assert _muted_span(streams) == list(range(MUTE_START, MUTE_END + 1))
-    assert _first_raw_event_time(streams) == _at(NESTED_ANSWER)
-    assert _first_delivered_event_time(streams) == _at(NESTED_ANSWER)
-    # The nested hold being unmasked is what puts the answer here rather than
-    # at the top-level condition's 972 — three distinct answers, so the test
-    # can tell a frozen nested hold from an unmasked one.
-    assert NESTED_ANSWER != PAUSED_ANSWER != RAW_ANSWER
-    # And the question is live: the nested hold's own 32 samples complete
+    assert _first_raw_event_time(streams) == _at(NESTED_FROZEN)
+    assert _first_delivered_event_time(streams) == _at(NESTED_FROZEN)
+    # The three answers have to stay three, or this case cannot discriminate.
+    assert len({NESTED_UNMASKED, NESTED_CREDITED, NESTED_FROZEN}) == 3
+    assert _first_raw_event_time(streams) not in (
+        _at(NESTED_UNMASKED), _at(NESTED_CREDITED),
+    )
+    # And the question is live: the nested hold's own 32 samples would complete
     # INSIDE the blind window, so whether it is masked decides whether it is
     # holding at all when the gate clears.
     assert MUTE_START <= BURST_START + NESTED_HOLD_SAMPLES - 1 <= MUTE_END
+    # Only the observability mask crossed over. Eligibility would have zeroed
+    # the nested streak on every muted sample instead of freezing it, costing
+    # the 26 samples it had banked and pushing the answer out to 1029.
+    #
+    # This assertion records the arithmetic; it is not what catches the mask
+    # crossing over. Under an artifact label `muted` and `artifact_muted` are
+    # the same vector, so eligibility would zero the streak on exactly the
+    # samples observability freezes — and freezing wins, because the hold
+    # checks it first. The two cancel and the answer stays 1003. The cases
+    # that do catch it are the unlabelled and `"trained"` ones below, where
+    # there is no observability mask to do the cancelling.
+    assert NESTED_FROZEN < NESTED_IF_ELIGIBILITY_CROSSED
+    assert _first_raw_event_time(streams) != _at(NESTED_IF_ELIGIBILITY_CROSSED)
+
+
+@pytest.mark.skipif(
+    RUST_BACKEND_ACTIVE,
+    reason="reads the Python evaluator's own attributes; the Rust twin keeps "
+           "the same pair as env keys and is held to it by the drift gate",
+)
+def test_neither_hold_mask_outlives_the_stage_that_set_it():
+    """Each mask is cleared by the stage that set it, every chunk.
+
+    The masks are per-stage and per-chunk, so one left standing is read by
+    whatever evaluates next — a chunk late, and at the previous chunk's length.
+    That has already gone wrong once here, and this is the invariant rather
+    than one of its symptoms.
+
+    The second protocol writes `output { }` empty — a legal analysis-only
+    document that computes a reward and plays nothing — so the per-channel
+    output loop never runs a single iteration. The clear after it is outside
+    that loop and must still happen; if it is ever moved inside, this is where
+    that shows, and no stream-level case would catch it because a protocol
+    with no outputs has no streams to compare.
+
+    Note what this does NOT pin: the reward stage's own clear. With the clear
+    after the output loop in place, a reward-stage mask left standing is
+    overwritten before anything can read it, in every protocol shape including
+    this one. That clear is correct and deliberate, and no behavioural test can
+    distinguish it — see `task-7b-report.md`.
+    """
+    level = np.full(N_SAMPLES, 0.2)
+    level[BURST_START:BURST_END] = 1.0
+    emg = np.zeros(N_SAMPLES)
+    emg[MUTE_START:MUTE_START + EMG_SAMPLES] = 1.0
+    signal = np.column_stack((level, emg))
+
+    for with_outputs in (True, False):
+        src = reward_event_protocol(
+            kind="artifact", condition=NESTED_HOLD_CONDITION,
+            with_outputs=with_outputs,
+        )
+        ir = resolve(parse(src))
+        assert bool(ir.output) is with_outputs
+        evaluator = Evaluator.live(
+            ir, sample_rate_hz=RATE, channel_names=("Cz", "A1"),
+            record_streams=True, backend="python",
+        )
+        evaluator.start(skip_warmup=True)
+        assert evaluator._hold_for_eligible is None
+        assert evaluator._hold_for_observable is None
+        # Chunk sizes that change mid-session: a leaked mask is the previous
+        # chunk's length as well as its value, so this is where it shows.
+        start = 0
+        for size in (64, 100, 48, 128, 37, 256, 64, 100, 48, 128, 37, 256):
+            evaluator.step_chunk(signal[start:start + size])
+            start += size
+            where = (with_outputs, start)
+            assert evaluator._hold_for_eligible is None, where
+            assert evaluator._hold_for_observable is None, where
+        assert start < N_SAMPLES
+
+
+def test_an_unlabelled_mute_does_not_freeze_a_nested_hold(backend):
+    """Absence changes nothing here either. No label means no mask on this
+    path at all, so the nested hold banks straight through the mute and the
+    answer is the one a run with no mute gives."""
+    streams, _ = _run(backend, kind=None, condition=NESTED_HOLD_CONDITION)
+    assert _muted_span(streams) == list(range(MUTE_START, MUTE_END + 1))
+    assert _first_raw_event_time(streams) == _at(NESTED_UNMASKED)
+    assert _first_raw_event_time(streams) != _at(NESTED_FROZEN)
+
+
+def test_a_trained_mute_does_not_freeze_a_nested_hold(backend):
+    """`"trained"` reads as no label on this path, nested holds included —
+    stream for stream, not merely the same event time."""
+    trained, _ = _run(backend, kind="trained", condition=NESTED_HOLD_CONDITION)
+    unlabelled, _ = _run(backend, kind=None, condition=NESTED_HOLD_CONDITION)
+    assert _first_raw_event_time(trained) == _at(NESTED_UNMASKED)
+    assert sorted(trained) == sorted(unlabelled)
+    for key, values in trained.items():
+        assert np.array_equal(values, unlabelled[key]), key
+
+
+def test_a_block_scoped_artifact_inhibit_does_not_freeze_a_nested_hold(backend):
+    """An inhibit the active block has excluded gates no output, so it makes
+    nothing unobservable — for a nested hold exactly as for the outer dwell.
+    The label is on `"emg"` and `"emg"` fires over the same 186 samples; the
+    block names only `"idle"`, which never fires."""
+    streams, _ = _run(
+        backend, kind="artifact", condition=NESTED_HOLD_CONDITION,
+        mode="block_scoped",
+    )
+    assert _muted_span(streams) == []
+    assert _first_raw_event_time(streams) == _at(NESTED_UNMASKED)
+    assert _first_delivered_event_time(streams) == _at(NESTED_UNMASKED)
+    # Same label, no block around it: 218 samples of the burst become
+    # unreadable and the answer moves.
+    unscoped, _ = _run(backend, kind="artifact", condition=NESTED_HOLD_CONDITION)
+    assert _first_raw_event_time(unscoped) == _at(NESTED_FROZEN)
 
 
 def test_a_hold_nested_in_a_reward_condition_survives_a_changing_chunk_size(backend):
@@ -358,7 +534,7 @@ def test_a_hold_nested_in_a_reward_condition_survives_a_changing_chunk_size(back
     whole, _ = _run(
         backend, kind="artifact", condition=NESTED_HOLD_CONDITION, chunk=64
     )
-    assert _first_raw_event_time(uneven) == _at(NESTED_ANSWER)
+    assert _first_raw_event_time(uneven) == _at(NESTED_FROZEN)
     assert sorted(uneven) == sorted(whole)
     for key, values in uneven.items():
         assert np.array_equal(values, whole[key]), key

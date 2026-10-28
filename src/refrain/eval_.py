@@ -471,13 +471,15 @@ class Evaluator:
         self._record_streams: bool = bool(record_streams)
         self._last_streams: dict[str, np.ndarray] = {}
 
-        # The two hold masks for the `output`-bound hold path, set per channel
-        # inside `_process_chunk`'s output loop and dropped the moment it ends
-        # (Rust removes the matching env keys at the same point). Declared
-        # here, as None, so the "is this loop running?" test in `_eval_call` is
-        # a value check rather than a `hasattr` — the attribute used to appear
-        # on the first chunk and then stay, which left a hold nested in a
-        # REWARD condition reading last chunk's masks.
+        # The two hold masks, each live only for the stage that sets it and
+        # dropped the moment that stage ends (Rust removes the matching env
+        # keys at the same points). The observability mask is set twice per
+        # chunk, once around the reward stage and once per output channel; the
+        # eligibility mask only ever belongs to the output loop. Declared here,
+        # as None, so the "which stage is running?" test in `_eval_call` is a
+        # value check rather than a `hasattr` — the attribute used to appear on
+        # the first chunk and then stay, which left a hold nested in a REWARD
+        # condition reading last chunk's masks.
         self._hold_for_eligible: np.ndarray | None = None
         self._hold_for_observable: np.ndarray | None = None
 
@@ -1204,11 +1206,30 @@ class Evaluator:
         artifact_muted = self._compute_artifact_muted(
             inhibit_active, actual_chunk_size, active_block
         )
-        # The reward event's observability mask. Not per-channel and not
-        # per-block: an artifact is an artifact whichever block is live, which
-        # is why every reward bundle below is stepped with this same mask and
-        # not just the active one.
-        reward_observable = ~artifact_muted
+        # The samples the engine could read, as one array for the whole chunk.
+        # Both hold stages below take this same value: it is not per-channel
+        # and not per-block, because an artifact is an artifact whichever block
+        # is live and whichever channel is listening.
+        artifact_observable = ~artifact_muted
+
+        # The reward stage's observability mask, set here and cleared the
+        # moment the stage ends. A `hold_for`/`dwell`/`dwell_rearm` written
+        # INSIDE a reward condition is evaluated here, before the output loop
+        # runs, so this is the only place it can be handed one — and it must
+        # be, or it banks samples the engine has declared unreadable, which is
+        # what "a streak of N samples means N samples genuinely above threshold
+        # and observable" forbids.
+        #
+        # `_hold_for_eligible` stays None through the whole stage, on purpose.
+        # Eligibility carries the mute, the muted rest and the inactive channel
+        # and folds into the condition as a FAILURE; this path has never
+        # applied it, and applying it would change what a reward condition
+        # means for every protocol with nothing declared. Unobservable freezes;
+        # it does not fail. The two masks are independent and are read
+        # independently, which is exactly the shape `refrain-core/src/eval.rs`
+        # already had — its hold arms each `get` the two env keys separately,
+        # so Rust needed no change to them at all, only the insert and remove.
+        self._hold_for_observable = artifact_observable
 
         # Reward
         reward_event: impls.DwellResult | None = None
@@ -1255,7 +1276,7 @@ class Evaluator:
                 stream_values, control_chunks_cache, actual_chunk_size,
                 reward_composite=reward_composite,
                 reward_component_signals=reward_component_signals,
-                observable=reward_observable,
+                observable=artifact_observable,
             )
 
         for name, rb in self.ir.reward_bundles.items():
@@ -1268,10 +1289,17 @@ class Evaluator:
             if rb.event is not None:
                 ev_res, subs = self._eval_reward_event(
                     rb.event, stream_values, control_chunks_cache, actual_chunk_size,
-                    observable=reward_observable,
+                    observable=artifact_observable,
                 )
                 if name == active_bundle:
                     reward_event, reward_sub_chunks = ev_res, subs
+        # The reward stage is over, so its mask stops meaning anything. Cleared
+        # here for the same reason the output loop's pair is cleared below, and
+        # with the same discipline: a mask left standing on `self` is read by
+        # whatever evaluates next, a chunk late and at the previous chunk's
+        # length. Rust removes `__hold_for_observable` from the env at this
+        # same point.
+        self._hold_for_observable = None
 
         # Active-channel set for output masking: channels NOT in the active
         # block's `.outputs` are forced silent. Empty `.outputs` (or no active
@@ -1325,8 +1353,10 @@ class Evaluator:
             # The second mask. It carries ONLY the artifact label and does not
             # vary by channel: a mid-session rest and an inactive-block
             # channel are reasons the engine scored a sample, not reasons it
-            # could not read one, so neither belongs here.
-            self._hold_for_observable = ~artifact_muted
+            # could not read one, so neither belongs here. The same array the
+            # reward stage above was given — one answer to "could the engine
+            # read this sample", whichever stage is asking.
+            self._hold_for_observable = artifact_observable
             values = self._eval_expr(
                 expr,
                 stream_values, control_chunks_cache, actual_chunk_size,
@@ -1867,13 +1897,15 @@ class Evaluator:
                     reward_composite=reward_composite, reward_component_signals=reward_component_signals,
                 )
             )
-        if (call.callee in ("hold_for", "dwell", "dwell_rearm")
-                and self._hold_for_eligible is not None):
-            # Two masks, not one AND, and the order between them is the whole
-            # point. `_hold_for_eligible` carries the mute, the muted rest and
-            # the inactive-channel rules, all of which still zero the streak,
-            # so it folds into the condition as "false". The observability
-            # mask carries only the artifact label, and the hold
+        if call.callee in ("hold_for", "dwell", "dwell_rearm") and (
+            self._hold_for_eligible is not None
+            or self._hold_for_observable is not None
+        ):
+            # Two masks, read independently, and the order between them is the
+            # whole point. `_hold_for_eligible` carries the mute, the muted
+            # rest and the inactive-channel rules, all of which still zero the
+            # streak, so it folds into the condition as "false". The
+            # observability mask carries only the artifact label, and the hold
             # implementations check it FIRST — before the condition is looked
             # at — which is what makes an artifact-muted sample neither a
             # success nor a failure. An artifact mute appears in `muted` too,
@@ -1881,7 +1913,23 @@ class Evaluator:
             # the mask merely AND-ed in, an artifact mute longer than
             # `tolerance` would reset the streak through the dip path and the
             # `kind` label would buy nothing at all.
-            condition = dynamic_chunks[0].astype(bool) & self._hold_for_eligible
+            #
+            # Neither mask implies the other, which is why each is tested on
+            # its own rather than one standing in for both. A hold inside an
+            # `output` binding is reached with both set. A hold inside a REWARD
+            # condition is reached with only the observability mask: that stage
+            # has never applied eligibility, and giving it eligibility would
+            # turn a muted sample into a failed one and change what a reward
+            # condition means for every protocol with nothing declared. A hold
+            # anywhere else — a derive, an inhibit metric — is reached with
+            # neither and is stepped bare, as before.
+            #
+            # `refrain-core/src/eval.rs` reaches the same three states by
+            # `get`-ting the two env keys separately in each of its hold arms;
+            # this is that code, written out.
+            condition = dynamic_chunks[0].astype(bool)
+            if self._hold_for_eligible is not None:
+                condition = condition & self._hold_for_eligible
             return impl.step(condition, self._hold_for_observable)
         return impl.step(*dynamic_chunks)
 

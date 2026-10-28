@@ -83,11 +83,21 @@ _REWARD_EVENT_BASE = '''protocol "artifact gate on the reward path" {
     threshold = absolute(0.5 uV)
     action    = mute(release: __RELEASE__)__KIND__
   }
-__REWARD__  output {
+__REWARD____OUTPUT____SCOPING__}'''
+
+_OUTPUT = '''  output {
     chime = reward.event
     gain  = 0.5
   }
-__SCOPING__}'''
+'''
+
+# A protocol with no feedback channels at all. Legal, and the resolver accepts
+# it — an analysis-only document that computes a reward and records it without
+# playing anything. It matters here because it is the one shape in which the
+# per-channel output loop never runs, so nothing after the reward stage tidies
+# up behind it.
+_NO_OUTPUT = '''  output { }
+'''
 
 _PLAIN_REWARD = '''  reward { event = dwell(condition: __CONDITION__, duration: 250 ms) }
 '''
@@ -145,6 +155,7 @@ def reward_event_protocol(
     release: str = "125 ms",
     condition: str = 'above("level", "t")',
     mode: str = "plain",
+    with_outputs: bool = True,
 ) -> str:
     """Protocol source whose reward is a 250 ms `dwell` over `condition`.
 
@@ -156,6 +167,10 @@ def reward_event_protocol(
       active block's set.
     - `"staged"`: replaces the top-level reward with two named bundles and a
       session that makes the second one live at 3.5 s.
+
+    `with_outputs=False` writes an empty `output { }`: a legal protocol that
+    computes a reward and plays nothing, and the only shape in which the
+    per-channel output loop never runs.
     """
     label = "" if kind is None else f'\n    kind      = "{kind}"'
     reward, scoping = {
@@ -168,6 +183,7 @@ def reward_event_protocol(
         .replace("__RELEASE__", release)
         .replace("__KIND__", label)
         .replace("__REWARD__", reward)
+        .replace("__OUTPUT__", _OUTPUT if with_outputs else _NO_OUTPUT)
         .replace("__SCOPING__", scoping)
         .replace("__CONDITION__", condition)
     )
