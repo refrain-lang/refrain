@@ -284,7 +284,7 @@ is):
   same protocol with no `tolerance` at all.
 - *Idempotent under dip-filling.* A condition stream that contains no
   sub-tolerance dips is insensitive to `tolerance`: once those dips have been
-  filled in by hand, the reward times are the same whatever the tolerance is.
+  filled in by hand, the reward times are the same as with tolerance 0.
   (The original wording, "the filled stream produces the same reward times as
   the original does with that tolerance", was found false during
   implementation: filling a dip credits it toward the streak, forgiving it does

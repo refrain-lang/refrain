@@ -447,8 +447,14 @@ def _dwell_tolerance_ms_from_ir(ir: IRProtocol) -> float:
     event = ir.reward.event
     if isinstance(event, IRCall) and event.callee == "dwell":
         tol = _arg(event, "tolerance")
+        if tol is None:
+            return 0.0
         if isinstance(tol, IRNumberLit):
             return _ms(tol)
+        # The resolver refuses a non-literal tolerance today, so this is dead.
+        # Silently returning 0 would predict no forgiveness while the engine
+        # forgives, and report false failures against correct code.
+        raise ValueError("surface: dwell tolerance is not a literal time")
     return 0.0
 
 
