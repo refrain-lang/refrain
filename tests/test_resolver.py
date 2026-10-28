@@ -1506,3 +1506,75 @@ def test_reward_unknown_component_access_rejected(amp):
     bad = _COMPONENTS_PROTO.replace("reward.composite }", "reward.nope.signal }")
     with pytest.raises(ResolveError):
         resolve(parse(bad), amp)
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: dip tolerance on the hold primitives
+# ---------------------------------------------------------------------------
+
+
+def _dwell_protocol(*, duration: str = "500 ms", tolerance: str | None = None) -> str:
+    """A minimal protocol whose reward is a single `dwell`.
+
+    `duration` and `tolerance` are written into the call verbatim, so
+    `"100 ms"` is a literal and `"tol_ms"` or `"hold_ms"` binds one of the
+    duration controls declared below. The default `duration` is far longer
+    than any tolerance these tests pass, because a tolerance at or above the
+    duration is itself refused.
+    """
+    tol = "" if tolerance is None else f", tolerance: {tolerance}"
+    return f'''
+        protocol "dwelling" {{
+          meta {{ version = "1.0"; evidence = "clinical"; description = "x" }}
+          controls {{
+            tol_ms  = duration {{ default = 100 ms; range = (0 ms, 500 ms); label = "Dip" }}
+            hold_ms = duration {{ default = 500 ms; range = (100 ms, 2 s); label = "Hold" }}
+          }}
+          input "raw" {{ montage = referential(active: "Cz", reference: "linked_ears") }}
+          derive "env" {{ from = "raw"; pipeline = [smooth(tau: 100 ms)] }}
+          threshold "t" {{ signal = "env"; type = absolute(8 uV) }}
+          reward {{ event = dwell(condition: above("env", "t"), duration: {duration}{tol}) }}
+          output {{ audio_chime = reward.event }}
+        }}
+    '''
+
+
+def test_dwell_protocol_helper_resolves_without_a_tolerance():
+    """The helper itself must be a protocol, or every refusal below is vacuous."""
+    ir = resolve(parse(_dwell_protocol()))
+    assert isinstance(ir.reward.event, IRCall) and ir.reward.event.callee == "dwell"
+
+
+def test_a_tolerance_literal_resolves():
+    ir = resolve(parse(_dwell_protocol(tolerance="100 ms")))
+    tol = next(a.value for a in ir.reward.event.args if a.name == "tolerance")
+    assert isinstance(tol, IRNumberLit) and tol.value == 100.0 and tol.unit == "ms"
+
+
+def test_tolerance_may_not_bind_a_control():
+    with pytest.raises(ResolveError, match="tolerance must be a fixed duration"):
+        resolve(parse(_dwell_protocol(tolerance="tol_ms")))
+
+
+def test_tolerance_at_or_above_duration_is_refused():
+    """Once satisfied, such a hold never drops."""
+    with pytest.raises(ResolveError, match="tolerance .* must be shorter than"):
+        resolve(parse(_dwell_protocol(duration="250 ms", tolerance="250 ms")))
+
+
+def test_tolerance_must_be_a_duration_literal():
+    with pytest.raises(ResolveError, match="tolerance"):
+        resolve(parse(_dwell_protocol(tolerance="100")))
+
+
+def test_a_negative_tolerance_is_refused():
+    """`max(0, ...)` in the impl would silently read it as no tolerance."""
+    with pytest.raises(ResolveError, match="tolerance must not be negative"):
+        resolve(parse(_dwell_protocol(tolerance="-100 ms")))
+
+
+def test_tolerance_under_a_control_bound_duration_is_not_compared():
+    """The comparison is unknowable when `duration` is a live control, so it
+    is skipped rather than guessed."""
+    ir = resolve(parse(_dwell_protocol(duration="hold_ms", tolerance="100 ms")))
+    assert isinstance(ir.reward.event, IRCall)

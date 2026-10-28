@@ -27,8 +27,10 @@ from refrain.primitive_impls import (
     CoherenceImpl,
     DifferentiateImpl,
     DwellImpl,
+    DwellRearmImpl,
     HilbertFirImpl,
     HilbertIirAllpassImpl,
+    HoldForImpl,
     InsideImpl,
     LinearImpl,
     MagnitudeImpl,
@@ -798,3 +800,108 @@ def test_coherence_default_window_follows_the_band():
     assert coherence_default_window_ms((1.0, 40.0), SR) == 1000.0
     assert coherence_default_window_ms((8.0, 12.0), SR) == 1000.0
     assert coherence_default_window_ms((13.0, 15.0), SR) == 2000.0
+
+
+# ---------------------------------------------------------------------------
+# Dip tolerance on the hold primitives
+# ---------------------------------------------------------------------------
+
+
+def _c(*runs: int, start: bool = True) -> np.ndarray:
+    """Alternating runs of booleans, beginning in state `start`.
+
+    `_c(10, 3, 2)` is 10 true, 3 false, 2 true; `_c(1, 5, start=False)` is
+    1 false, then 5 true.
+    """
+    out: list[bool] = []
+    state = start
+    for length in runs:
+        out.extend([state] * length)
+        state = not state
+    return np.array(out, dtype=bool)
+
+
+# Every case below runs at 200 Hz with `duration = 50 ms` and, where it has
+# one, `tolerance = 15 ms` — so the hold needs 10 samples and forgives a dip
+# of up to 3.
+
+
+def test_tolerance_absent_is_identical_to_today():
+    cond = _c(10, 3, 10)  # 10 true, 3 false, 10 true
+    a = DwellImpl(duration_ms=50, sample_rate_hz=200).step(cond)
+    b = DwellImpl(duration_ms=50, sample_rate_hz=200, tolerance_ms=0.0).step(cond)
+    assert np.array_equal(a.events, b.events) and np.array_equal(a.holds, b.holds)
+
+
+def test_a_dip_at_exactly_tolerance_is_forgiven():
+    # 200 Hz: tolerance 15 ms -> 3 samples. A 3-sample dip is forgiven.
+    impl = DwellImpl(duration_ms=50, sample_rate_hz=200, tolerance_ms=15.0)  # dwell 10
+    r = impl.step(_c(5, 3, 5))
+    assert r.events.sum() == 1 and int(np.flatnonzero(r.events)[0]) == 12
+
+
+def test_a_dip_one_sample_longer_than_tolerance_resets():
+    impl = DwellImpl(duration_ms=50, sample_rate_hz=200, tolerance_ms=15.0)
+    r = impl.step(_c(5, 4, 5))
+    assert r.events.sum() == 0
+
+
+def test_a_forgiven_dip_does_not_advance_the_streak():
+    """Forgive, don't credit: 10 genuinely-true samples are still required."""
+    impl = DwellImpl(duration_ms=50, sample_rate_hz=200, tolerance_ms=15.0)
+    r = impl.step(_c(9, 3, 1))
+    assert r.events.sum() == 1 and int(np.flatnonzero(r.events)[0]) == 12
+
+
+def test_a_forgiven_dip_keeps_holds_true():
+    """A dip that is forgiven never drops `holds`, so a holds-gated tone
+    keeps sounding. Index 9 is the first sample that can hold at all."""
+    impl = DwellImpl(duration_ms=50, sample_rate_hz=200, tolerance_ms=15.0)
+    r = impl.step(_c(10, 3, 2))
+    assert r.holds[9:].all()
+
+
+def test_an_unobservable_sample_freezes_the_streak_and_the_dip_counter():
+    """A 10-sample unobservable window that is ALSO condition-false must not
+    reset the streak, even though 10 > tolerance_samples."""
+    impl = DwellImpl(duration_ms=50, sample_rate_hz=200, tolerance_ms=15.0)
+    cond = _c(9, 10, 1)
+    observable = _c(9, 10, 1)  # false exactly over the 10-sample run
+    r = impl.step(cond, observable)
+    assert r.events.sum() == 1 and int(np.flatnonzero(r.events)[0]) == 19
+
+
+def test_a_dip_is_carried_across_a_step_boundary():
+    impl = DwellImpl(duration_ms=50, sample_rate_hz=200, tolerance_ms=15.0)
+    first = impl.step(_c(5, 2))                   # dip in progress, 2 of 3 used
+    second = impl.step(_c(1, 5, start=False))     # 1 more false, then true
+    assert first.events.sum() == 0 and second.events.sum() == 1
+
+
+def test_reset_clears_the_dip_counter():
+    """`reset()` clears the dip counter alongside the streak, so a reset
+    implementation forgives from scratch."""
+    impl = DwellImpl(duration_ms=50, sample_rate_hz=200, tolerance_ms=15.0)
+    impl.step(_c(5, 2))
+    impl.reset()
+    r = impl.step(_c(2, 10, start=False))
+    assert r.events.sum() == 1 and int(np.flatnonzero(r.events)[0]) == 11
+
+
+def test_dwell_rearm_gives_one_event_per_burst_across_a_forgiven_dip():
+    impl = DwellRearmImpl(duration_ms=50, rearm_ms=50, sample_rate_hz=200, tolerance_ms=15.0)
+    assert impl.step(_c(10, 3, 10)).events.sum() == 1
+
+
+def test_dwell_rearm_credits_the_whole_dip_when_tolerance_is_exceeded():
+    """A dip past tolerance credits the re-arm counter from the dip's FIRST
+    sample, so re-arming is never slower than it is today."""
+    tol = DwellRearmImpl(duration_ms=50, rearm_ms=50, sample_rate_hz=200, tolerance_ms=15.0)
+    plain = DwellRearmImpl(duration_ms=50, rearm_ms=50, sample_rate_hz=200)
+    cond = _c(10, 12, 10)  # dip of 12 > tolerance 3, and > rearm 10
+    assert tol.step(cond).events.sum() == plain.step(cond).events.sum() == 2
+
+
+def test_hold_for_forgives_a_dip():
+    impl = HoldForImpl(duration_ms=50, sample_rate_hz=200, tolerance_ms=15.0)
+    assert impl.step(_c(10, 3, 2))[9:].all()

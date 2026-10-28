@@ -720,12 +720,17 @@ _DWELL = PrimitiveSpec(
             params=(
                 ParamSpec("condition", "condition"),
                 ParamSpec("duration", "duration"),
+                ParamSpec("tolerance", "duration", default=None, required=False),
             ),
             output=_event_stream_output,
         ),
     ),
     budget=ResourceBudget(state_kb=2, worst_case_us=5),
-    doc="Emit event when condition has been true for `duration`.",
+    doc=(
+        "Emit event when condition has been true for `duration`. "
+        "`tolerance` forgives a false run no longer than itself: the streak "
+        "is held through such a dip, neither advanced nor reset."
+    ),
 )
 
 _DWELL_REARM = PrimitiveSpec(
@@ -737,12 +742,17 @@ _DWELL_REARM = PrimitiveSpec(
                 ParamSpec("condition", "condition"),
                 ParamSpec("duration", "duration"),
                 ParamSpec("rearm", "duration"),
+                ParamSpec("tolerance", "duration", default=None, required=False),
             ),
             output=_event_stream_output,
         ),
     ),
     budget=ResourceBudget(state_kb=2, worst_case_us=5),
-    doc="Emit once after duration; require a continuous false rearm interval.",
+    doc=(
+        "Emit once after duration; require a continuous false rearm interval. "
+        "`tolerance` forgives a false run no longer than itself, and holds the "
+        "rearm countdown through it, so a dip cannot hand out a second event."
+    ),
 )
 
 _HOLD_FOR = PrimitiveSpec(
@@ -753,12 +763,17 @@ _HOLD_FOR = PrimitiveSpec(
             params=(
                 ParamSpec("condition", "condition"),
                 ParamSpec("duration", "duration"),
+                ParamSpec("tolerance", "duration", default=None, required=False),
             ),
             output=_boolean_stream_output,
         ),
     ),
     budget=ResourceBudget(state_kb=2, worst_case_us=5),
-    doc="True while a condition has held continuously for `duration`.",
+    doc=(
+        "True while a condition has held continuously for `duration`. "
+        "`tolerance` forgives a false run no longer than itself, so the "
+        "result stays true straight through such a dip."
+    ),
 )
 
 
@@ -819,7 +834,7 @@ _FREEZE = PrimitiveSpec(
         ),
     ),
     budget=ResourceBudget(state_kb=0, worst_case_us=0),
-    doc="Hold output at last value, release after `release`.",
+    doc="Gate output to zero exactly as `mute` does; release after `release`.",
 )
 
 _FLAG = PrimitiveSpec(

@@ -969,6 +969,36 @@ Most types are inferred from primitive signatures. Explicit annotation is requir
 
 A single `event_stream` value can drive both consumption modes within the same protocol. The runtime maintains the underlying state once and exposes both views.
 
+#### Dip tolerance
+
+`dwell`, `dwell_rearm` and `hold_for` each accept an optional `tolerance`
+duration. It MUST be a literal with a time unit; it MUST NOT bind a control.
+It MUST NOT be negative, and it MUST be shorter than the hold's `duration`
+unless `duration` binds a control, in which case the comparison is not
+knowable at compile time and is not made. Absence is equivalent to `0 ms` and
+MUST produce sample-identical output to a hold with no `tolerance` at all.
+
+`tolerance` converts to a whole number of samples as
+`round(tolerance_ms / 1000 × rate)`, which MAY be zero. Unlike a hold's
+`duration`, it is not raised to a minimum of one sample.
+
+A run of consecutive samples on which the condition is false, and whose length
+so far does not exceed the tolerance in samples, MUST leave the hold's streak
+unchanged — neither advanced nor reset. On the first sample of such a run
+whose length exceeds the tolerance, the streak MUST reset to zero. The streak
+counts only samples on which the condition was genuinely true, so an
+implementation MUST NOT credit a forgiven sample toward `duration`. Where the
+hold was already satisfied when the run began, `.holds` MUST remain true for
+every forgiven sample of it.
+
+For `dwell_rearm`, the re-arm counter MUST NOT advance on a forgiven sample.
+On the first sample of a false run that exceeds the tolerance, the re-arm
+counter MUST be credited with the whole run so far, counted from its first
+sample; each later false sample of the same run credits one.
+
+The rule requires no lookahead, and conforming implementations MUST produce
+identical output sample for sample.
+
 ---
 
 ## 6. Static validation

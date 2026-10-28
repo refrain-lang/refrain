@@ -3101,6 +3101,9 @@ class _Resolver:
             if isinstance(duration, IRNumberLit) and duration.value <= 0:
                 raise ResolveError("dwell_rearm duration must be positive", loc=call.loc)
 
+        if call.callee in _TOLERANT_HOLDS:
+            self._validate_hold_tolerance(call, resolved_args)
+
         # Per-primitive validation of `kind`-style enumerated string args.
         _validate_kind_args(spec, resolved_args, call.loc)
         # Dimension-check the slots that compare a value against a signal.
@@ -3121,6 +3124,48 @@ class _Resolver:
             stream_type=output_type,
             loc=call.loc,
         )
+
+    def _validate_hold_tolerance(self, call: A.Call, args: list[IRArg]) -> None:
+        """Refuse a `tolerance` the engines could not honour as written.
+
+        Two refusals. First, `tolerance` is a fixed duration literal: a
+        control-bound one makes the IR version gate unknowable at emit time,
+        and `update_control` on these implementations calls `reset()`, which
+        would zero a streak mid-dip. It follows `dwell_rearm`'s `rearm`
+        rather than `dwell`'s `duration` for that reason.
+
+        Second, a tolerance at or above the duration makes a hold that never
+        drops once satisfied: every dip long enough to end the hold is also
+        long enough to have been forgiven first, so `holds` latches true for
+        the rest of the session.
+        """
+        tolerance = next((a.value for a in args if a.name == "tolerance"), None)
+        if tolerance is None:
+            return
+        if not isinstance(tolerance, IRNumberLit) or tolerance.unit not in _TIME_UNITS:
+            raise ResolveError(
+                f"{call.callee} tolerance must be a fixed duration with a time "
+                f"unit, e.g. `tolerance: 100 ms`",
+                loc=call.loc,
+            )
+        if tolerance.value < 0:
+            raise ResolveError(
+                f"{call.callee} tolerance must not be negative", loc=call.loc
+            )
+        duration = next((a.value for a in args if a.name == "duration"), None)
+        # When `duration` binds a control its value is not knowable here — the
+        # host may retune it mid-session — so the comparison is skipped rather
+        # than guessed at against the control's default.
+        if not isinstance(duration, IRNumberLit) or duration.unit not in _TIME_UNITS:
+            return
+        if _to_milliseconds(tolerance) >= _to_milliseconds(duration):
+            raise ResolveError(
+                f"{call.callee} tolerance ({tolerance.value:g} {tolerance.unit}) "
+                f"must be shorter than duration "
+                f"({duration.value:g} {duration.unit}): a hold that forgives its "
+                f"own duration never drops once satisfied",
+                loc=call.loc,
+            )
 
     def _validate_band_nyquist(self, spec: P.PrimitiveSpec, args: list[IRArg],
                                loc: Loc | None) -> None:
@@ -3785,8 +3830,14 @@ _SESSION_FIELDS = frozenset({"phases"})
 # coefficients from it, so an edge at or above Nyquist is unrunnable.
 _NYQUIST_CHECKED = frozenset({"bandpass", "bandpower", "coherence"})
 
+# The hold primitives that accept a dip `tolerance`.
+_TOLERANT_HOLDS = frozenset({"dwell", "dwell_rearm", "hold_for"})
 
-def _to_milliseconds(n: A.NumberLit) -> float:
+# Surface units `_to_milliseconds` below can convert.
+_TIME_UNITS = frozenset({"ms", "s", "min"})
+
+
+def _to_milliseconds(n: A.NumberLit | IRNumberLit) -> float:
     if n.unit == "ms":
         return n.value
     if n.unit == "s":

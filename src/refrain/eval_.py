@@ -272,6 +272,8 @@ def _massage_static_args(callee: str, static: dict[str, Any]) -> dict[str, Any]:
         out["duration_ms"] = out.pop("duration")
     if callee == "dwell_rearm" and "rearm" in out:
         out["rearm_ms"] = out.pop("rearm")
+    if callee in ("dwell", "dwell_rearm", "hold_for") and "tolerance" in out:
+        out["tolerance_ms"] = out.pop("tolerance")
     if callee == "bandpower" and "window" in out:
         out["window_ms"] = out.pop("window")
     if callee == "coherence" and "window" in out:
