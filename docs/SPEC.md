@@ -1073,6 +1073,8 @@ Inhibits with `action = freeze` hold the previous output value; with `action = f
 
 Inhibits do not modify `reward.continuous` or `reward.event` directly — they modify what the output bindings deliver. This means downstream protocol logic (e.g., a derive that consumes `reward.continuous`) sees the unmodified value, which matters for protocols that compute derived feedback signals from reward.
 
+While a `mute` or `freeze` inhibit is active (including its `release` hangover), both engines zero every continuous `output/<channel>` and make every event channel false. The `output/<channel>` taps show those gated values. A `feedback { ... }` layer's `suppress_on_mute` flag is different: it is a declaration for the downstream player, carried in the IR and acted on by neither engine. The engines silence a muted output whatever that flag says. `tests/test_eval_mute_gating.py` pins both facts on both backends.
+
 ### 7.5 Reward semantics
 
 The reward block evaluates per step:
