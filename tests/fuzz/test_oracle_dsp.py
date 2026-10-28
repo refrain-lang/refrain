@@ -48,3 +48,31 @@ def test_settle_time_s_is_at_least_3_tau_plus_filter_decay():
     settle = settle_time_s(sos=sos, tau_s=tau_s, chunk_s=chunk_s, fs=256)
     assert settle >= 3.0 * tau_s + chunk_s
     assert settle < 2.0
+
+
+def _pre_tolerance_fire_samples(truth, dwell):
+    """The dwell loop as it was before `tolerance` existed: any sample that is
+    not robustly True resets the streak. Frozen here, not imported, so the
+    regression below compares against the old behaviour rather than itself."""
+    streak, fires = 0, []
+    for i, t in enumerate(truth):
+        streak = streak + 1 if t is True else 0
+        if streak == dwell:
+            fires.append(i)
+    return fires
+
+
+def test_a_zero_tolerance_changes_no_prediction():
+    import random
+    from refrain.fuzz.oracle import apply_dwell
+
+    for seed in range(40):
+        rng = random.Random(seed)
+        truth = [rng.choice([True, True, False, None]) for _ in range(300)]
+        for dwell in (1, 4, 10):
+            got = apply_dwell(
+                truth, dwell_samples=dwell, fs=200, collar_s=0.0,
+                muted_mask=[False] * len(truth), tolerance_samples=0,
+            )
+            assert got.should_fire_event_samples == \
+                _pre_tolerance_fire_samples(truth, dwell), (seed, dwell)

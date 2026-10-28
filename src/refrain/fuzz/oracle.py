@@ -185,6 +185,13 @@ def _muted_intervals(muted_mask: Sequence[bool], n: int) -> list[DontCareInterva
     return intervals
 
 
+def _tolerance_samples(tolerance_ms: float, fs: int) -> int:
+    """Whole samples of dip the engine forgives. Deliberately NOT floored at 1
+    (unlike the dwell): a tolerance too short to reach one sample at this rate
+    forgives nothing, which is what the evaluator does with it."""
+    return max(0, int(round(tolerance_ms / 1000.0 * fs)))
+
+
 def apply_dwell(
     truth_per_sample: Sequence[bool | None],
     *,
@@ -192,14 +199,19 @@ def apply_dwell(
     fs: int,
     collar_s: float,
     muted_mask: Sequence[bool],
+    tolerance_samples: int = 0,
 ) -> ExpectedTimeline:
     """Predict SHOULD-FIRE events from a per-sample 3-valued condition truth.
 
     Algorithm:
       1. Find runs where condition is robustly TRUE (not None and not False).
-      2. The dwell counter behaves identically to the evaluator's DwellMachine:
-         increment while TRUE, reset otherwise. SHOULD-FIRE at the rising edge
-         where streak == dwell_samples.
+      2. The dwell counter behaves identically to the evaluator's DwellImpl:
+         increment while TRUE; on a robust FALSE, hold the streak where it is
+         until the false run exceeds `tolerance_samples`, then reset. A
+         forgiven dip is never credited toward the streak. A None sample
+         ("the oracle cannot tell") is not a dip: it resets the streak, as it
+         always has, rather than being forgiven. SHOULD-FIRE at the rising
+         edge, where the streak arrives at dwell_samples.
       3. Mask out muted intervals (the output is suppressed there) and mark
          them DON'T-CARE with reason=PHASE_MUTED.
       4. Apply a ±collar DON'T-CARE around every condition transition (so
@@ -214,17 +226,26 @@ def apply_dwell(
     fire_samples: list[int] = []
     dont_care: list[DontCareInterval] = []
     streak = 0
+    dip = 0
     last_t = None
     transitions: list[int] = []
     streak_at: list[int] = [0] * n
     for i, t in enumerate(truth_per_sample):
         if t is True:
             streak += 1
-        else:
+            dip = 0
+            # Only a sample that advances the streak can arrive at the dwell;
+            # a forgiven dip holds it AT the dwell and must not re-fire.
+            if streak == dwell_samples:
+                fire_samples.append(i)
+        elif t is False:
+            dip += 1
+            if dip > tolerance_samples:
+                streak = 0
+        else:  # None: unknown, not a dip - never forgiven
             streak = 0
+            dip = 0
         streak_at[i] = streak
-        if streak == dwell_samples:
-            fire_samples.append(i)
         if last_t is not None and t != last_t:
             transitions.append(i)
         last_t = t
@@ -322,6 +343,7 @@ def predict(scenario: Scenario, surface: LogicalSurface) -> ExpectedTimeline:
         fs=fs,
         collar_s=collar_s,
         muted_mask=muted_mask,
+        tolerance_samples=_tolerance_samples(surface.dwell_tolerance_ms, fs),
     )
 
     # Step 6: merge in pre-window-fill DON'T-CARE intervals for percentile thresholds.

@@ -112,6 +112,9 @@ class LogicalSurface:
     outputs: tuple[OutputBindingSurface, ...]
     controls: tuple[ControlSurface, ...]
     tier: str
+    # A false run no longer than this leaves the reward hold's streak where it
+    # was (SPEC §5.6). 0.0 when the reward event declares no `tolerance`.
+    dwell_tolerance_ms: float = 0.0
 
 
 def reward_leaves(surface_or_node) -> tuple[ConditionLeaf, ...]:
@@ -439,6 +442,16 @@ def _dwell_ms_from_ir(ir: IRProtocol) -> float:
     raise ValueError("surface: reward.event is not a dwell(...) with a duration")
 
 
+def _dwell_tolerance_ms_from_ir(ir: IRProtocol) -> float:
+    """The reward event's optional `tolerance: <time>`; absent means 0."""
+    event = ir.reward.event
+    if isinstance(event, IRCall) and event.callee == "dwell":
+        tol = _arg(event, "tolerance")
+        if isinstance(tol, IRNumberLit):
+            return _ms(tol)
+    return 0.0
+
+
 def _classify_leaf(
     leaf: ConditionLeaf,
     derives: tuple[DeriveSurface, ...],
@@ -586,6 +599,7 @@ def build_surface(ir: IRProtocol) -> LogicalSurface:
         outputs=outputs,
         controls=controls,
         tier=tier,
+        dwell_tolerance_ms=_dwell_tolerance_ms_from_ir(ir),
     )
 
 
