@@ -282,9 +282,14 @@ is):
   reward is at least `duration`.
 - *Zero is identity.* `tolerance: 0 ms` produces sample-identical output to the
   same protocol with no `tolerance` at all.
-- *Idempotent under dip-filling.* A condition stream whose sub-tolerance false
-  runs have been filled in by hand produces the same reward times as the
-  original does with that tolerance.
+- *Idempotent under dip-filling.* A condition stream that contains no
+  sub-tolerance dips is insensitive to `tolerance`: once those dips have been
+  filled in by hand, the reward times are the same whatever the tolerance is.
+  (The original wording, "the filled stream produces the same reward times as
+  the original does with that tolerance", was found false during
+  implementation: filling a dip credits it toward the streak, forgiving it does
+  not. With 8 true, 2 false, 9 true, dwell 10 and tolerance 2 samples, the
+  forgiving stream rewards at index 11 and the hand-filled one at index 9.)
 
 ### 2. An inhibit says what kind of inhibit it is
 
