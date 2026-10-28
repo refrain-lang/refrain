@@ -372,7 +372,7 @@ inhibit "emg" {
 
 Actions:
 - `mute(release: <duration>)` — gate reward to zero, with hangover
-- `freeze(release: <duration>)` — hold reward at last value
+- `freeze(release: <duration>)` — gates output exactly as `mute` does (zero, with hangover); the engines do not hold the last value
 - `flag()` — emit only; do not modify reward (for logging-only inhibits)
 
 ### 4.7 `reward`
@@ -1069,7 +1069,7 @@ Each inhibit produces a boolean stream. Inhibits affect the values that reach th
 effective_output = output_expression * AND(NOT inhibit_i for each muting inhibit i)
 ```
 
-Inhibits with `action = freeze` hold the previous output value; with `action = flag` they only emit telemetry.
+Inhibits with `action = freeze` gate output exactly as `mute` does (zeroed, with the same hangover); with `action = flag` they only emit telemetry.
 
 Inhibits do not modify `reward.continuous` or `reward.event` directly — they modify what the output bindings deliver. This means downstream protocol logic (e.g., a derive that consumes `reward.continuous`) sees the unmodified value, which matters for protocols that compute derived feedback signals from reward.
 
