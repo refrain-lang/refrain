@@ -934,6 +934,24 @@ class AnyOfImpl(PrimitiveImpl):
 # ---------------------------------------------------------------------------
 
 
+def _require_matching_mask(
+    name: str, n: int, observable: np.ndarray | None
+) -> None:
+    """Refuse an observability mask that does not line up with the condition.
+
+    Unchecked, a short mask raises a bare `IndexError` from inside the hold
+    loop in Python and panics in Rust, and a long one is silently accepted
+    with its tail ignored in both. The hold paths are held bit-identical, so
+    they need one defined contract — stated here, before Task 6 starts
+    passing real masks.
+    """
+    if observable is not None and observable.shape[0] != n:
+        raise ValueError(
+            f"{name}: observable has {observable.shape[0]} samples but "
+            f"condition has {n}"
+        )
+
+
 class DwellResult:
     """The two views of an event_stream that primitive instances return.
 
@@ -1002,6 +1020,7 @@ class DwellImpl(PrimitiveImpl):
         change the other in the same breath.
         """
         n = condition.shape[0]
+        _require_matching_mask("dwell", n, observable)
         events = np.zeros(n, dtype=bool)
         holds = np.zeros(n, dtype=bool)
         streak = self._streak
@@ -1073,6 +1092,7 @@ class DwellRearmImpl(DwellImpl):
         never re-arm the event and hand out a second reward for one burst.
         """
         n = condition.shape[0]
+        _require_matching_mask("dwell_rearm", n, observable)
         events = np.zeros(n, dtype=bool)
         holds = np.zeros(n, dtype=bool)
         streak = self._streak
@@ -1094,7 +1114,12 @@ class DwellRearmImpl(DwellImpl):
                     # exceeded, then one sample per false sample after that.
                     # The condition was genuinely false from the dip's first
                     # sample, so counting only from the moment tolerance
-                    # expired would make re-arming slower than it is today.
+                    # expired would make re-arming slower than it is with no
+                    # tolerance — whenever `tolerance` is shorter than
+                    # `rearm`. Where it is not, the forgiven window itself
+                    # delays re-arming; nothing refuses that, and no output
+                    # follows from it, because the streak is frozen through
+                    # the window so no hold can rise while `armed` is false.
                     out_streak += dip if dip == self.tolerance_samples + 1 else 1
                     if out_streak >= self.rearm_samples:
                         armed = True

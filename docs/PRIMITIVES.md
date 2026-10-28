@@ -839,7 +839,16 @@ never re-arm the cue and hand out a second ding for one burst. When a dip does
 exceed `tolerance`, the re-arm counter is credited with the whole dip so far,
 counted from the dip's first sample — the condition was genuinely false from
 then, and counting only from the moment tolerance expired would make re-arming
-slower than it is without a tolerance.
+slower than it is without a tolerance, whenever `tolerance` is shorter than
+`rearm`.
+
+Where `tolerance` is at least as long as `rearm`, the forgiven window itself
+delays re-arming, because the counter does not start until the dip exceeds the
+tolerance. Nothing refuses that combination, and nothing in the output changes
+because of it: the streak is frozen through the forgiven window, so no hold can
+rise while the cue is disarmed. It only means the cue re-arms later than it
+would with no tolerance at all. If that matters for a protocol, keep `tolerance`
+shorter than `rearm`.
 
 ```refrain
 output {

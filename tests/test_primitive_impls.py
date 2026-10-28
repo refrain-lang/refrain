@@ -871,11 +871,61 @@ def test_an_unobservable_sample_freezes_the_streak_and_the_dip_counter():
     assert r.events.sum() == 1 and int(np.flatnonzero(r.events)[0]) == 19
 
 
+def test_an_unobservable_false_sample_does_not_count_against_tolerance():
+    """The other half of the observability rule: the dip counter freezes too.
+
+    Four consecutive condition-false samples, of which only the last two are
+    observable. Two count against the 3-sample tolerance, so the dip is
+    forgiven and the streak completes at index 13. An implementation that
+    froze the streak but went on counting the dip would reach 4 at index 12,
+    reset, and fire at 19 — agreeing with every other test here and diverging
+    only on this input. The `pass` branch has no visible body, which is
+    exactly what makes that the easy thing to mis-transcribe.
+    """
+    impl = DwellImpl(duration_ms=50, sample_rate_hz=200, tolerance_ms=15.0)
+    cond = _c(9, 4, 10)
+    observable = _c(9, 2, 12)     # false over the first 2 of the 4 false samples
+    r = impl.step(cond, observable)
+    assert r.events.sum() == 1 and int(np.flatnonzero(r.events)[0]) == 13
+
+
+def test_a_mask_of_the_wrong_length_is_refused():
+    """Both engines need the same contract before Task 6 passes real masks.
+
+    Unchecked, a short mask raises a bare `IndexError` from inside the loop
+    in Python and panics in Rust, and a long one is silently accepted with
+    its tail ignored in both.
+    """
+    cond = _c(5, 5)
+    for impl in (
+        DwellImpl(duration_ms=50, sample_rate_hz=200, tolerance_ms=15.0),
+        DwellRearmImpl(duration_ms=50, rearm_ms=50, sample_rate_hz=200, tolerance_ms=15.0),
+        HoldForImpl(duration_ms=50, sample_rate_hz=200, tolerance_ms=15.0),
+    ):
+        name = type(impl).__name__
+        for mask_len in (9, 11):
+            with pytest.raises(ValueError, match=f"observable has {mask_len} samples"):
+                impl.step(cond, np.ones(mask_len, dtype=bool))
+            assert impl._dip == 0, f"{name} must not advance state on a refusal"
+
+
 def test_a_dip_is_carried_across_a_step_boundary():
+    """One dip straddling a chunk edge is one dip, not two shorter ones.
+
+    The two chunks hold the same samples as `_c(5, 4, 5)`, a 4-sample dip
+    that exceeds the 3-sample tolerance — so nothing is earned. An
+    implementation that dropped the dip counter at the chunk edge would see
+    two 2-sample dips, forgive both, and fire.
+    """
     impl = DwellImpl(duration_ms=50, sample_rate_hz=200, tolerance_ms=15.0)
     first = impl.step(_c(5, 2))                   # dip in progress, 2 of 3 used
-    second = impl.step(_c(1, 5, start=False))     # 1 more false, then true
-    assert first.events.sum() == 0 and second.events.sum() == 1
+    second = impl.step(_c(2, 5, start=False))     # 2 more false, then true
+    assert first.events.sum() == 0 and second.events.sum() == 0
+    # Chunking must not change the answer at all, not just the event count.
+    one_shot = DwellImpl(duration_ms=50, sample_rate_hz=200, tolerance_ms=15.0)
+    whole = one_shot.step(_c(5, 4, 5))
+    assert np.array_equal(whole.events, np.concatenate([first.events, second.events]))
+    assert np.array_equal(whole.holds, np.concatenate([first.holds, second.holds]))
 
 
 def test_reset_clears_the_dip_counter():
