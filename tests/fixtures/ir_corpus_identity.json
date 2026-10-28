@@ -39,6 +39,7 @@
     "examples/othmer_ilf_cz_pz.refrain"
   ],
   "added": [
-    "bench/protocols/micro_14_tolerance.refrain"
+    "bench/protocols/micro_14_tolerance.refrain",
+    "bench/protocols/micro_15_artifact_gate.refrain"
   ]
 }

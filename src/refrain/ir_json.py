@@ -230,9 +230,16 @@ def _protocol_ir_version(ir: IRProtocol, ctx: _EmitCtx) -> str:
     would not validate against v0.4 at all. A hold whose `tolerance` reaches
     at least one sample at this rate emits v0.6, for the same reason: the
     v0.5 schema has no `tolerance_samples` slot, and an engine that ignored
-    the field would forgive nothing while the author believed otherwise.
+    the field would forgive nothing while the author believed otherwise. An
+    inhibit labelled `kind = "artifact"` emits 0.6 too: that label changes
+    what the engine scores, so an engine that dropped the key would run a
+    different protocol than the author wrote. A `"trained"` label and an
+    absent one do not — they run identically on a 0.24 engine, and refusing
+    such a document at load would be a refusal for documentation.
     """
-    if _bakes_a_hold_tolerance(ir, ctx):
+    if _bakes_a_hold_tolerance(ir, ctx) or any(
+        ih.kind == "artifact" for ih in ir.inhibits.values()
+    ):
         return "0.6"
     if (
         ir.feedback is not None
@@ -511,7 +518,7 @@ def _emit_threshold(t: IRThreshold, ctx: _EmitCtx) -> dict:
 
 
 def _emit_inhibit(ih: IRInhibit, ctx: _EmitCtx) -> dict:
-    return {
+    obj = {
         "canonical_name": ih.canonical_name,
         "metric": _emit_expr(ih.metric, ctx),
         "threshold": _emit_expr(ih.threshold, ctx),
@@ -519,6 +526,12 @@ def _emit_inhibit(ih: IRInhibit, ctx: _EmitCtx) -> dict:
         "action_release_ms": ih.action_release_ms,
         "final": ih.final,
     }
+    if ih.kind is not None:
+        # Emitted only when declared. An unconditional `"kind": null` would be
+        # a new key in every document in the corpus and move every pinned IR
+        # hash, for a field that says nothing.
+        obj["kind"] = ih.kind
+    return obj
 
 
 def _emit_reward(r: IRReward, ctx: _EmitCtx, version: str) -> dict:

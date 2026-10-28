@@ -22,6 +22,7 @@ from refrain.ir_json import ir_to_json, ir_to_json_obj
 from refrain.parser import parse, parse_file
 from refrain.primitive_impls import BandpassImpl, HilbertFirImpl, SmoothImpl
 from refrain.resolver import resolve
+from tests._inhibit_fixtures import inhibit_protocol  # verified one-inhibit fixture
 from tests.conftest_staged import HET as _HET_SRC
 from tests.test_feedback_declaration import resolved as feedback_resolved
 from tests.test_resolver import _dwell_protocol
@@ -705,3 +706,43 @@ def test_the_version_tag_and_the_baked_tolerance_never_disagree():
     # passes over nine documents that all agree trivially.
     assert len(tagged_0_6) == 5, sorted(tagged_0_6)
     assert len(documents) - len(tagged_0_6) == 4
+
+
+# ---------------------------------------------------------------------------
+# `kind` on an inhibit (SPEC §4.6) — emitted only when declared, and only
+# `"artifact"` moves the document's version.
+# ---------------------------------------------------------------------------
+
+
+def test_kind_artifact_emits_ir_0_6_and_the_kind_key():
+    """An artifact label changes what the engine scores, so a 0.24 engine that
+    ignored the key would run a different protocol than the author wrote."""
+    j = ir_to_json_obj(resolve(parse(inhibit_protocol(kind="artifact"))), sample_rate_hz=256)
+    assert j["refrain_ir_version"] == "0.6"
+    assert j["inhibits"]["emg"]["kind"] == "artifact"
+
+
+def test_kind_trained_keeps_the_current_version_and_emits_the_kind_key():
+    """It runs identically on a 0.24 engine, so refusing the document at load
+    would be a refusal for documentation."""
+    j = ir_to_json_obj(resolve(parse(inhibit_protocol(kind="trained"))), sample_rate_hz=256)
+    assert j["refrain_ir_version"] == "0.1" and j["inhibits"]["emg"]["kind"] == "trained"
+
+
+def test_an_unlabelled_inhibit_emits_no_kind_key():
+    """Absence stays absent on the wire: an emitted `"kind": null` would be a
+    new key in every existing document and move every pinned IR hash."""
+    j = ir_to_json_obj(resolve(parse(inhibit_protocol())), sample_rate_hz=256)
+    assert j["refrain_ir_version"] == "0.1"
+    assert "kind" not in j["inhibits"]["emg"]
+
+
+def test_an_artifact_label_on_a_freeze_inhibit_also_emits_0_6():
+    """`freeze` gates output exactly as `mute` does, so the label is just as
+    load-bearing there — a syntax-blind version predicate would miss it."""
+    j = ir_to_json_obj(
+        resolve(parse(inhibit_protocol(action="freeze(release: 200 ms)", kind="artifact"))),
+        sample_rate_hz=256,
+    )
+    assert j["refrain_ir_version"] == "0.6"
+    assert j["inhibits"]["emg"]["kind"] == "artifact"

@@ -178,13 +178,15 @@ def _generate_setcontrol(ir) -> None:
 # pure-DSP micro corpora with no `output` bindings to compare).
 EVENT_BEARING = frozenset({
     "micro_05_reward", "realistic_smr", "micro_09_inhibit", "composite_smr_theta",
-    "micro_14_tolerance",
+    "micro_14_tolerance", "micro_15_artifact_gate",
 })
 
 # Tap-rich protocols for the `taps.rs` golden-vector compare. `realistic_smr`
 # exercises input/derive/threshold/reward/condition/output taps;
-# `micro_09_inhibit` adds inhibit/<name> and the combined `muted` gate.
-TAP_BEARING = frozenset({"realistic_smr", "micro_09_inhibit"})
+# `micro_09_inhibit` adds inhibit/<name> and the combined `muted` gate;
+# `micro_15_artifact_gate` pins that `muted` is unchanged by an inhibit's
+# `kind` label — the label moves what a hold scores, not what the gate gates.
+TAP_BEARING = frozenset({"realistic_smr", "micro_09_inhibit", "micro_15_artifact_gate"})
 
 
 def generate(
@@ -386,6 +388,7 @@ if __name__ == "__main__":
         "micro_12_control_param_slots",
         "micro_13_band_envelope",
         "micro_14_tolerance",
+        "micro_15_artifact_gate",
         "realistic_smr",
         "composite_smr_theta",
     ):

@@ -1241,6 +1241,13 @@ class Evaluator:
         # Combined inhibit gate — also exposed as the `muted` tap. Inhibits not
         # in the active block's `.inhibits` set do not contribute to the gate.
         muted = self._compute_muted(inhibit_active, actual_chunk_size, active_block)
+        # The same gate restricted to inhibits labelled `kind = "artifact"`:
+        # the samples the engine could not read, as opposed to the samples it
+        # read and scored against the trainee. Must follow `_compute_muted`,
+        # which is what steps each inhibit's gate for this chunk.
+        artifact_muted = self._compute_artifact_muted(
+            inhibit_active, actual_chunk_size, active_block
+        )
 
         # Feed the autopilot advisor what happened this chunk (SPEC §7.10).
         # Advice is never a tap (global-constraints) — it has its own
@@ -1283,6 +1290,11 @@ class Evaluator:
             self._hold_for_eligible = (
                 ~muted & (not suppress_output) & (channel in active_channels)
             )
+            # The second mask. It carries ONLY the artifact label and does not
+            # vary by channel: a mid-session rest and an inactive-block
+            # channel are reasons the engine scored a sample, not reasons it
+            # could not read one, so neither belongs here.
+            self._hold_for_observable = ~artifact_muted
             values = self._eval_expr(
                 expr,
                 stream_values, control_chunks_cache, actual_chunk_size,
@@ -1813,7 +1825,20 @@ class Evaluator:
                 )
             )
         if call.callee in ("hold_for", "dwell", "dwell_rearm") and hasattr(self, "_hold_for_eligible"):
-            dynamic_chunks[0] = dynamic_chunks[0].astype(bool) & self._hold_for_eligible
+            # Two masks, not one AND, and the order between them is the whole
+            # point. `_hold_for_eligible` carries the mute, the muted rest and
+            # the inactive-channel rules, all of which still zero the streak,
+            # so it folds into the condition as "false". The observability
+            # mask carries only the artifact label, and the hold
+            # implementations check it FIRST — before the condition is looked
+            # at — which is what makes an artifact-muted sample neither a
+            # success nor a failure. An artifact mute appears in `muted` too,
+            # so such a sample arrives with the condition already false; were
+            # the mask merely AND-ed in, an artifact mute longer than
+            # `tolerance` would reset the streak through the dip path and the
+            # `kind` label would buy nothing at all.
+            condition = dynamic_chunks[0].astype(bool) & self._hold_for_eligible
+            return impl.step(condition, self._hold_for_observable)
         return impl.step(*dynamic_chunks)
 
     def _eval_reward_event(
@@ -1919,6 +1944,10 @@ class Evaluator:
             else None
         )
         muted = np.zeros(chunk_size, dtype=bool)
+        # Each gating inhibit's gate output for THIS chunk, for
+        # `_compute_artifact_muted` to recombine. See its docstring: the gate
+        # is a state machine and must be stepped exactly once per chunk.
+        self._inhibit_gates = {}
         for canonical, active in inhibit_active.items():
             short = canonical.split("/", 1)[-1]
             if allowed is not None and short not in allowed:
@@ -1926,8 +1955,57 @@ class Evaluator:
             action = self._inhibit_actions.get(canonical)
             if action is None or isinstance(action, impls.FlagAction):
                 continue
-            muted |= action.gate(active)
+            gated = action.gate(active)
+            self._inhibit_gates[canonical] = gated
+            muted |= gated
         return muted
+
+    def _compute_artifact_muted(
+        self, inhibit_active: dict[str, np.ndarray], chunk_size: int, active_block=None
+    ) -> np.ndarray:
+        """`muted`, restricted to the inhibits labelled `kind = "artifact"`.
+
+        The same combination rule as `_compute_muted`: the same block-scoping
+        `allowed` filter, the same exclusion of `flag` inhibits, the same OR
+        over each action's gate. So an artifact-muted sample is always a muted
+        sample too, which is what lets a hold treat the artifact mask as
+        "could not observe" on top of a condition that already reads false.
+
+        Reads the gate outputs `_compute_muted` recorded for this chunk rather
+        than calling `gate()` a second time: `MuteAction.gate` advances the
+        release hangover as a side effect, so a second call would run the
+        hangover down twice as fast and quietly shorten every mute in the
+        protocol. Call this after `_compute_muted`, on the same chunk and the
+        same arguments. Rust needs no equivalent: its inhibit loop accumulates
+        both gates in one pass (`refrain-core/src/eval.rs`).
+        """
+        artifact_muted = np.zeros(chunk_size, dtype=bool)
+        if not inhibit_active:
+            return artifact_muted
+        gates = getattr(self, "_inhibit_gates", None)
+        if gates is None:
+            raise RuntimeError(
+                "_compute_artifact_muted: _compute_muted has not run for this "
+                "chunk, so no inhibit gate outputs are available"
+            )
+        # The same `allowed` filter `_compute_muted` applied. It is a no-op on
+        # a cache this chunk filled — a non-allowed inhibit never had its gate
+        # stepped, so it is not in there — and it is what keeps a cache left
+        # over from a chunk under a different active block from contributing.
+        allowed = (
+            set(active_block.inhibits)
+            if (active_block is not None and active_block.inhibits)
+            else None
+        )
+        for canonical, gated in gates.items():
+            short = canonical.split("/", 1)[-1]
+            if allowed is not None and short not in allowed:
+                continue
+            inhibit = self.ir.inhibits.get(short)
+            if inhibit is None or inhibit.kind != "artifact":
+                continue
+            artifact_muted |= gated
+        return artifact_muted
 
     @staticmethod
     def _is_event_channel(expr: IRExpr) -> bool:

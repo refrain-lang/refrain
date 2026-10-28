@@ -425,35 +425,47 @@ impl CNode {
                 let parts: Vec<Val> = items.iter_mut().map(|c| c.eval(env, n)).collect();
                 Val::B((0..n).map(|i| parts.iter().any(|p| p.as_b()[i])).collect())
             }
+            // The three `output`-bound hold arms. Each takes TWO masks, and
+            // the order between them is the point. `__hold_for_eligible`
+            // carries the mute, the muted rest and the inactive-channel
+            // rules, all of which still zero the streak, so it folds into
+            // `clean` as false. `__hold_for_observable` carries only the
+            // artifact label, and `Dwell`/`DwellRearm` check it FIRST, before
+            // the condition is looked at — which is what makes an
+            // artifact-muted sample neither a success nor a failure. An
+            // artifact mute is in `muted` too, so such a sample arrives with
+            // `clean` already false; were it merely folded in there, an
+            // artifact mute longer than `tolerance` would reset the streak
+            // through the dip path and the `kind` label would buy nothing.
+            // Mirrors `_eval_call` in `src/refrain/eval_.py`.
             CNode::HoldFor { dwell, condition } => {
                 let input = condition.eval(env, n);
                 let eligible = env.get("__hold_for_eligible").map(Val::as_b);
+                let observable = env.get("__hold_for_observable").map(Val::as_b);
                 let clean: Vec<bool> = input.as_b().iter().enumerate().map(|(i, &on)| {
                     on && eligible.map(|mask| mask[i]).unwrap_or(true)
                 }).collect();
-                // `observable` is `None` until the artifact-mute work wires a
-                // real mask through: an ineligible sample is already folded into
-                // `clean` as false, which is "scored as not qualifying" rather
-                // than "not observed".
-                let (_, holds) = dwell.lock().unwrap().step(&clean, None);
+                let (_, holds) = dwell.lock().unwrap().step(&clean, observable);
                 Val::B(holds)
             }
             CNode::DwellEvent { dwell, condition } => {
                 let input = condition.eval(env, n);
                 let eligible = env.get("__hold_for_eligible").map(Val::as_b);
+                let observable = env.get("__hold_for_observable").map(Val::as_b);
                 let clean: Vec<bool> = input.as_b().iter().enumerate().map(|(i, &on)| {
                     on && eligible.map(|mask| mask[i]).unwrap_or(true)
                 }).collect();
-                let (events, _) = dwell.lock().unwrap().step(&clean, None);
+                let (events, _) = dwell.lock().unwrap().step(&clean, observable);
                 Val::B(events)
             }
             CNode::DwellRearmEvent { dwell, condition } => {
                 let input = condition.eval(env, n);
                 let eligible = env.get("__hold_for_eligible").map(Val::as_b);
+                let observable = env.get("__hold_for_observable").map(Val::as_b);
                 let clean: Vec<bool> = input.as_b().iter().enumerate().map(|(i, &on)| {
                     on && eligible.map(|mask| mask[i]).unwrap_or(true)
                 }).collect();
-                Val::B(dwell.lock().unwrap().step(&clean, None))
+                Val::B(dwell.lock().unwrap().step(&clean, observable))
             }
             CNode::Sigmoid { midpoint, steepness, input } => {
                 let x = input.eval(env, n).into_f();
@@ -582,6 +594,9 @@ struct CompiledInhibit {
     metric: CNode,
     threshold: InhibitThreshold,
     gate: Option<InhibitGate>,
+    /// `Some("artifact")` makes this inhibit's muted samples unobservable to
+    /// a hold rather than failing ones (mirrors `IRInhibit.kind`).
+    kind: Option<String>,
 }
 
 // --- Staged-protocol phase cursor -----------------------------------------
@@ -1543,6 +1558,13 @@ impl Evaluator {
         // chunk regardless of warmup so gate/threshold state stays current
         // (only event *emission* is warmup-suppressed). Empty → all-false.
         let mut muted = vec![false; n];
+        // The same gate restricted to inhibits labelled `kind = "artifact"`
+        // (`_compute_artifact_muted`): the samples the engine could not read,
+        // as opposed to the samples it read and scored against the trainee.
+        // Accumulated in this same loop, under the same `allowed` filter and
+        // off the same `gate.gate(&active)` output — the gate carries the
+        // release hangover, so it must be stepped exactly once per chunk.
+        let mut artifact_muted = vec![false; n];
         let mut adv_inhibits: Vec<(String, Vec<bool>)> = Vec::new();
         let mut adv_checks: Vec<Vec<bool>> = Vec::new();
         let mut adv_events: Vec<bool> = vec![false; n];
@@ -1582,8 +1604,12 @@ impl Evaluator {
             if allowed {
                 if let Some(gate) = ih.gate.as_mut() {
                     let g = gate.gate(&active);
+                    let is_artifact = ih.kind.as_deref() == Some("artifact");
                     for i in 0..n {
                         muted[i] |= g[i];
+                        if is_artifact {
+                            artifact_muted[i] |= g[i];
+                        }
                     }
                 }
             }
@@ -1726,6 +1752,14 @@ impl Evaluator {
             env.insert("__hold_for_eligible".to_string(), Val::B(
                 muted.iter().map(|&blocked| active && !blocked).collect()
             ));
+            // The second mask (`_hold_for_observable`). It carries ONLY the
+            // artifact label and does not vary by channel: a mid-session rest
+            // and an inactive-block channel are reasons the engine scored a
+            // sample, not reasons it could not read one. Inserted beside the
+            // eligibility mask so the two stay visibly one pair.
+            env.insert("__hold_for_observable".to_string(), Val::B(
+                artifact_muted.iter().map(|&blocked| !blocked).collect()
+            ));
             let v = match (node.eval(&env, n), *is_event) {
                 (Val::B(values), false) => Val::F(values.into_iter().map(bool_f).collect()),
                 (value, _) => value,
@@ -1733,6 +1767,7 @@ impl Evaluator {
             outs.push((ch.clone(), v));
         }
         env.remove("__hold_for_eligible");
+        env.remove("__hold_for_observable");
 
         // Output activation gate (mirrors `_process_chunk`): silence any channel
         // not in the active block's output set, and silence ALL channels during
@@ -2603,7 +2638,13 @@ fn build_inhibit(ih: &crate::ir::Inhibit, ctx: &mut BuildCtx) -> CompiledInhibit
         "flag" => None,
         other => panic!("PoC: unsupported inhibit action {other:?}"),
     };
-    CompiledInhibit { canonical_name: ih.canonical_name.clone(), metric, threshold, gate }
+    CompiledInhibit {
+        canonical_name: ih.canonical_name.clone(),
+        metric,
+        threshold,
+        gate,
+        kind: ih.kind.clone(),
+    }
 }
 
 /// Parse an inhibit's threshold-constructor call (`absolute(...)` /

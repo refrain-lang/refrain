@@ -392,6 +392,12 @@
             "number",
             "null"
           ]
+        },
+        "kind": {
+          "enum": [
+            "artifact",
+            "trained"
+          ]
         }
       }
     },

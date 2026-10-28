@@ -266,6 +266,23 @@
   "check_controls": [],
   "inhibit_controls": []
  },
+ "micro_15_artifact_gate.ir.json": {
+  "bundles": {
+   "": {
+    "combine": "all",
+    "checks": [
+     {
+      "name": null,
+      "knob": null,
+      "higher_is": null,
+      "controls": []
+     }
+    ]
+   }
+  },
+  "check_controls": [],
+  "inhibit_controls": []
+ },
  "micro_passthrough_identity.ir.json": {
   "bundles": {},
   "check_controls": [],

@@ -90,10 +90,17 @@ def test_batch_aggregates_multiple_paths(tmp_path, capsys):
     # stage, so it cannot name the band it would perturb. Nothing to do with
     # the tolerance itself — micro_13_band_envelope would skip the same way if
     # it declared a reward. Skip bucket again, `fuzzed` still 8.
+    # +1 total for micro_15_artifact_gate.refrain (the inhibit-`kind`
+    # golden-vector bench), which skips for the same reason as
+    # micro_14_tolerance and for that reason only: its reward signal is a
+    # one-stage band_envelope() derive, so `_band_from_call` cannot name the
+    # band it would perturb. The artifact label has nothing to do with it —
+    # the fuzzer's surface does not model an inhibit's `kind` at all. Skip
+    # bucket, `fuzzed` still 8.
     rc = main(["fuzz", "bench/protocols", "examples",
                "--library", "examples", "--max-scenarios", "2"])
     out = "".join(capsys.readouterr())
-    assert "coverage: fuzzed 8 / total 36" in out
+    assert "coverage: fuzzed 8 / total 37" in out
     # Inc1 splits the old generic "single-condition reward" skip into specific,
     # feature-mapped reasons (so the breakdown maps to later increments); the
     # multi-leaf control-absolute fixture adds its own feature-mapped skip.

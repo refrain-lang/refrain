@@ -1136,6 +1136,32 @@ class _Resolver:
         action_kind = action_ir.callee
         release_ms = _extract_duration_ms(action_ir, "release")
         final = self._bool_field(fields, "final", default=False)
+        # `kind` (§4.6). `_resolve_inhibit` has no unknown-field check, so an
+        # unvalidated read would drop a typo silently and leave the author
+        # believing their artifact gate pauses the hold clock. Hence the value
+        # set is checked, not merely read.
+        kind = self._string_field(fields, "kind")
+        if kind is not None:
+            kind_loc = fields["kind"].loc
+            if kind not in ("artifact", "trained"):
+                raise ResolveError(
+                    f"inhibit \"{decl.name}\": kind must be \"artifact\" or "
+                    f"\"trained\" (got {kind!r})",
+                    loc=kind_loc,
+                )
+            if action_kind == "flag":
+                # `mute` and `freeze` are OR-ed into the same output gate, so
+                # the label changes what the engine scores. A flag gates
+                # nothing, so a label on one would be a silent no-op — and a
+                # silent no-op in a safety-shaped declaration is worse than a
+                # compile error.
+                raise ResolveError(
+                    f"inhibit \"{decl.name}\": kind is not allowed on a flag "
+                    f"inhibit — a flag gates nothing, so the label would be a "
+                    f"silent no-op; drop the kind or give the inhibit a "
+                    f"mute/freeze action",
+                    loc=kind_loc,
+                )
         return IRInhibit(
             name=decl.name,
             canonical_name=f"inhibit/{decl.name}",
@@ -1145,6 +1171,7 @@ class _Resolver:
             action_release_ms=release_ms,
             final=final,
             loc=decl.loc,
+            kind=kind,
         )
 
     def _resolve_reward_component(self, decl: A.NamedDecl, *, role: str) -> IRRewardComponent:

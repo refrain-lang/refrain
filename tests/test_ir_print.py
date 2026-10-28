@@ -17,6 +17,7 @@ from refrain.amp_profile import load_amp_profile
 from refrain.ir_print import print_cred_nf, print_ir
 from refrain.parser import parse, parse_file
 from refrain.resolver import resolve
+from tests._inhibit_fixtures import inhibit_protocol  # verified one-inhibit fixture
 from tests.conftest_staged import HET
 
 
@@ -155,3 +156,27 @@ def test_print_ir_includes_block_and_mode():
     assert "beta_up" in text          # block declaration rendered
     assert "timed_with_floor" in text  # phase mode rendered
     assert "br" in text                # reward bundle name rendered
+
+
+# ---------------------------------------------------------------------------
+# The CRED-nf report carries each inhibit's `kind` label — Stage 3's worklist
+# of still-unlabelled inhibits is read off this report (design §2).
+# ---------------------------------------------------------------------------
+
+
+def test_the_cred_nf_report_names_each_inhibits_label():
+    for label in ("artifact", "trained"):
+        out = print_cred_nf(resolve(parse(inhibit_protocol(kind=label))))
+        assert f"kind={label}" in out, out
+        # The label has to sit on the inhibit's own row, or a report with two
+        # inhibits could not be read as a worklist at all.
+        row = next(line for line in out.splitlines() if "emg: " in line)
+        assert f"kind={label}" in row, row
+
+
+def test_an_unlabelled_inhibit_is_reported_as_unlabelled_not_as_trained():
+    """Absence is recorded as unlabelled, never asserted to be a trained
+    condition — most of them are mislabelled artifact gates."""
+    out = print_cred_nf(resolve(parse(inhibit_protocol())))
+    assert "kind=unlabelled" in out, out
+    assert "kind=trained" not in out

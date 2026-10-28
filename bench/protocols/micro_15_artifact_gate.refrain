@@ -1,0 +1,97 @@
+// micro_15_artifact_gate.refrain
+// Bench micro: an inhibit that says it is an artifact gate, and the two hold
+// paths it has to reach. The IR-JSON v0.6 golden vector for `kind` — the
+// label changes what the engine scores, so a 0.24 engine that dropped the
+// key would run a different protocol than this file describes.
+//
+// One fixture covers both hold paths on purpose. `video_clarity` binds
+// `hold_for` inside `output { }` — the path three of the 45 live protocols
+// use, and the one where the mute was already AND-ed into the condition, so
+// it is the path the label reaches today. `reward { event = dwell(...) }` is
+// the path the other 44 use; the observability mask does not reach it yet,
+// and this vector is here so that when it does, the reference streams either
+// side of the change are the same measurement. `release: 350 ms` makes each
+// gate long enough to outlast the 100 ms dip tolerance, which is the case a
+// `kind` label has to survive.
+//
+// `audio_gain` is gated on `reward.event.holds`, so it is the stream a
+// Python/Rust disagreement about a held clock shows up in as a whole value
+// rather than a rounding difference.
+
+protocol "micro_15_artifact_gate" {
+  meta {
+    version  = "0.1.0"
+    evidence = "demo"
+    description = "Bench: kind = artifact inhibit + holds on both reward paths"
+  }
+
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels    = ["Cz", "A1"]
+  }
+
+  input "raw" {
+    montage = referential(active: "Cz", reference: "linked_ears")
+  }
+
+  derive "smr_envelope" {
+    from = "raw"
+    pipeline = [
+      band_envelope(band: (12 Hz, 15 Hz), latency: 250 ms),
+    ]
+  }
+
+  derive "emg_power" {
+    formula = bandpower(input: "raw", band: (20 Hz, 50 Hz), window: 100 ms)
+  }
+
+  // `sqrt` turns the band power back into an amplitude, so the gate's limit
+  // below is written in the unit a practitioner sets it in.
+  derive "emg_envelope" {
+    from = "emg_power"
+    pipeline = [
+      sqrt(),
+    ]
+  }
+
+  threshold "smr_t" {
+    signal = "smr_envelope"
+    type   = absolute(2 uV)
+  }
+
+  // `rectify` is an identity on an already-positive envelope; an inhibit
+  // metric must be a call, so it is how a derive is named as one (as
+  // examples/critical_fluctuation_cue.refrain and design §2 both do).
+  // 9 uV trips on about an eighth of the bench signal's chunks: often enough
+  // that the held clock is exercised repeatedly, rarely enough that there is
+  // plenty of readable time either side of each gate for the difference to
+  // show in. Dropping the label moves `output/video_clarity` on 202 of the
+  // 4096 reference samples, which is what makes this a vector for `kind` and
+  // not just another inhibit fixture.
+  inhibit "emg" {
+    metric    = rectify("emg_envelope")
+    threshold = absolute(9 uV)
+    action    = mute(release: 350 ms)
+    kind      = "artifact"
+  }
+
+  reward {
+    event = dwell(
+      condition: above("smr_envelope", "smr_t"),
+      duration: 250 ms,
+      tolerance: 100 ms
+    )
+    continuous = sigmoid("smr_envelope" / "smr_t",
+                         midpoint: 1.0, steepness: 3)
+  }
+
+  output {
+    audio_chime   = reward.event
+    video_clarity = hold_for(
+      condition: above("smr_envelope", "smr_t"),
+      duration: 250 ms,
+      tolerance: 100 ms
+    )
+    audio_gain    = reward.event.holds ? reward.continuous : 0
+  }
+}

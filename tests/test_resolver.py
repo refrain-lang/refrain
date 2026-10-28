@@ -34,6 +34,7 @@ from refrain.ir import (
 from refrain.parser import parse, parse_file
 from refrain.resolver import ResolveError, resolve
 from refrain.types_ import BOOLEAN_STREAM, EVENT_STREAM, FREQUENCY, TIME, VOLTAGE
+from tests._inhibit_fixtures import inhibit_protocol  # verified one-inhibit fixture
 
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
@@ -561,6 +562,62 @@ def test_inhibit_action_kind_captured():
     inh = ir.inhibits["emg"]
     assert inh.action_kind == "mute"
     assert inh.action_release_ms == 200.0
+
+
+# ---------------------------------------------------------------------------
+# `kind` on an inhibit (SPEC §4.6)
+# ---------------------------------------------------------------------------
+
+
+def test_kind_artifact_resolves_on_a_mute_inhibit():
+    ir = resolve(parse(inhibit_protocol(kind="artifact")))
+    assert ir.inhibits["emg"].action_kind == "mute"
+    assert ir.inhibits["emg"].kind == "artifact"
+
+
+def test_kind_artifact_resolves_on_a_freeze_inhibit():
+    """`freeze` is OR-ed into the same output gate as `mute`, so the label
+    means the same thing on it."""
+    ir = resolve(parse(inhibit_protocol(action="freeze(release: 200 ms)", kind="artifact")))
+    assert ir.inhibits["emg"].action_kind == "freeze"
+    assert ir.inhibits["emg"].kind == "artifact"
+
+
+def test_kind_trained_resolves():
+    ir = resolve(parse(inhibit_protocol(kind="trained")))
+    assert ir.inhibits["emg"].kind == "trained"
+
+
+def test_kind_on_a_flag_inhibit_is_refused():
+    """A flag gates nothing, so kind = "artifact" on one would be a silent
+    no-op in a safety-shaped declaration."""
+    with pytest.raises(ResolveError, match="kind .* flag .* gates nothing"):
+        resolve(parse(inhibit_protocol(action="flag()", kind="artifact")))
+
+
+def test_kind_trained_on_a_flag_inhibit_is_refused_too():
+    """The refusal is about which actions gate output, not about which label:
+    neither value means anything on an inhibit that modifies nothing."""
+    with pytest.raises(ResolveError, match="kind .* flag .* gates nothing"):
+        resolve(parse(inhibit_protocol(action="flag()", kind="trained")))
+
+
+def test_an_unknown_kind_is_refused():
+    with pytest.raises(ResolveError, match='kind must be "artifact" or "trained"'):
+        resolve(parse(inhibit_protocol(kind="artefact")))
+
+
+def test_kind_must_be_a_string_literal():
+    """`_resolve_inhibit` has no unknown-field check, so a `kind` read with no
+    type check at all would be dropped on the floor."""
+    src = inhibit_protocol(kind="artifact").replace('"artifact"', "artifact")
+    with pytest.raises(ResolveError, match="kind"):
+        resolve(parse(src))
+
+
+def test_an_unlabelled_inhibit_still_resolves():
+    """Absence is recorded as unlabelled; the compiler must not refuse it."""
+    assert resolve(parse(inhibit_protocol())).inhibits["emg"].kind is None
 
 
 # ---------------------------------------------------------------------------

@@ -279,6 +279,16 @@ pub struct Inhibit {
     pub action_kind: String,
     #[serde(default)]
     pub action_release_ms: Option<f64>,
+    /// What kind of inhibit this is (IR-JSON 0.6, `docs/SPEC.md` §4.6):
+    /// `"artifact"` (the signal is unreadable, so muted time is unobservable
+    /// and a hold's clock is held rather than reset), `"trained"` (the
+    /// trainee is doing the thing the protocol trains away from, so it resets
+    /// the clock) or absent. Absent is *unlabelled*: today's behaviour, but
+    /// not an assertion that the condition is a trained one. The emitter
+    /// writes the key only when it was declared, and only `"artifact"` pushes
+    /// a document to 0.6 — the other two run identically on a 0.24 engine.
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 /// `reward { continuous?, event?, combine?, components? }`. For a v0.1

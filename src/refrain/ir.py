@@ -215,6 +215,15 @@ class IRInhibit:
     action_release_ms: float | None
     final: bool            # §11.4 — children cannot override or remove
     loc: Loc | None = None
+    # What kind of inhibit this is (§4.6): "artifact" (the signal is
+    # unreadable, so muted time is unobservable and a hold's clock is held),
+    # "trained" (the trainee is doing the thing the protocol trains away from,
+    # so it resets the clock) or None. None is *unlabelled*, which behaves
+    # exactly as "trained" does today but is not an assertion that the
+    # condition is a trained one — most unlabelled inhibits are artifact
+    # gates nobody has got round to labelling. Appended last so positional
+    # construction elsewhere is unaffected.
+    kind: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

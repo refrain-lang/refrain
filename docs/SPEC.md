@@ -375,6 +375,30 @@ Actions:
 - `freeze(release: <duration>)` — gates output exactly as `mute` does (zero, with hangover); the engines do not hold the last value
 - `flag()` — emit only; do not modify reward (for logging-only inhibits)
 
+#### `kind` — what kind of inhibit this is
+
+```refrain
+inhibit "emg" {
+  metric    = rectify("emg_envelope")
+  threshold = absolute(emg_limit_uv)
+  action    = mute(release: 350 ms)
+  kind      = "artifact"
+}
+```
+
+`kind` is optional and takes one of two values:
+
+- `"artifact"` — the signal is unreadable right now. Muted time is unobservable, so a hold's clock is held through it, neither advancing nor resetting, exactly as a forgiven dip is held (§7.4). There is no length limit; the clock resumes when the gate clears.
+- `"trained"` — the trainee is doing the thing this protocol trains away from. Failing it is the point, so it resets the clock. This is the behaviour an inhibit has had all along.
+
+The distinction is clinical, not bookkeeping. A clench tells you nothing about the trainee's SMR, so scoring it is measurement error; rising delta under an alpha-theta protocol means the trainee is falling asleep, which is a real state worth scoring against them.
+
+**Absence is not `"trained"`.** An inhibit with no `kind` behaves exactly as it does today — it resets a hold bound in `output { }`, and contributes nothing on the `reward { event = ... }` path — but it is recorded as *unlabelled* rather than asserted to be a trained condition, because most unlabelled inhibits are artifact gates nobody has labelled yet. A compiler **may** advise on an unlabelled inhibit; it **must not** refuse one. `print_cred_nf` (`refrain.ir_print`) names each inhibit's label as `artifact`, `trained` or `unlabelled`, which is where the count of still-unlabelled inhibits across a catalog is read from.
+
+`kind` is legal on `mute` and `freeze`, which are OR-ed into the same output gate, and is a resolve-time error on `flag`, which gates nothing: there the label would be a silent no-op, and a silent no-op in a safety-shaped declaration is worse than a compile error. An unrecognised value is also a resolve-time error — `_resolve_inhibit` has no unknown-field check, so an unvalidated spelling would be dropped in silence.
+
+On the wire (IR-JSON), `kind` is emitted only when it was declared, and only `"artifact"` raises the document's version to 0.6: a `"trained"` label and an absent one run identically on an engine that has never heard of the field, so refusing those documents at load would be a refusal for documentation.
+
 ### 4.7 `reward`
 
 The reward block has a single shape with two optional expression-valued fields. At least one must be declared.
@@ -1109,6 +1133,23 @@ Inhibits with `action = freeze` gate output exactly as `mute` does (zeroed, with
 Inhibits do not modify `reward.continuous` or `reward.event` directly — they modify what the output bindings deliver. This means downstream protocol logic (e.g., a derive that consumes `reward.continuous`) sees the unmodified value, which matters for protocols that compute derived feedback signals from reward.
 
 While a `mute` or `freeze` inhibit is active (including its `release` hangover), both engines zero every continuous `output/<channel>` and make every event channel false. The `output/<channel>` taps show those gated values. A `feedback { ... }` layer's `suppress_on_mute` flag is different: it is a declaration for the downstream player, carried in the IR and acted on by neither engine. The engines silence a muted output whatever that flag says. `tests/test_eval_mute_gating.py` pins both facts on both backends.
+
+#### What a hold forgives, and what it does not
+
+Silencing the output is separate from what a hold's clock does with the silenced samples. A hold (`dwell`, `dwell_rearm`, `hold_for`) takes two per-sample inputs: a condition, and an observability mask. The condition carries every reason a sample did not qualify — a signal dip, a mute, a muted phase, an inactive-block channel — and a false condition resets the streak unless the run of false samples is no longer than the hold's `tolerance` (§5.6). The observability mask carries one thing only: whether an inhibit labelled `kind = "artifact"` was gating. The mask is checked **first**, before the condition is examined, so a sample the engine could not read is scored as neither a success nor a failure: the streak and the dip counter both freeze. This ordering is the whole of the feature — an artifact mute appears in the mute gate too, so such a sample arrives with its condition already false, and a mask merely AND-ed into the condition would let an artifact mute longer than `tolerance` reset the streak through the dip path.
+
+| Why the condition is false | Forgiven by `tolerance`? | Clock |
+|---|---|---|
+| The envelope dipped — real signal | yes, if no longer than `tolerance` | held through the dip |
+| An inhibit labelled `"artifact"` is muting | no, handled by the observability mask | held for as long as the mute lasts |
+| An inhibit labelled `"trained"`, or unlabelled, is muting | no | today's behaviour, which differs by hold path |
+| A phase mutes output — a mid-session rest | no | reset, as today |
+| The channel is outside the active block's outputs | no | reset, as today |
+| The transport clock is frozen, or a data gap | no | reset, as today, via `reset_held_outputs()` |
+
+A labelled artifact gate is therefore a **reward change** wherever it applies: it turns a reward that was lost inside a blind window into a delivered one. That is the intended effect, and it means labelling an existing protocol moves its reward rate and must be recorded as a design decision in the protocol's header and in the PR, with its before-and-after. An unlabelled inhibit changes nothing, which is what lets every existing protocol land untouched.
+
+What a sample's condition carries differs between the two hold paths, which is what the third row means by "differs by hold path": a hold bound inside `output { }` has the mute gate AND-ed into its condition, while a hold in `reward { event = ... }` is stepped on the raw condition and has its event masked at the output stage instead. The paragraphs above describe the `output`-bound path. `tests/test_eval_inhibit_kind.py` pins one row of the table per case on both backends for that path, and `bench/protocols/micro_15_artifact_gate.refrain` is its golden vector.
 
 ### 7.5 Reward semantics
 
