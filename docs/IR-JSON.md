@@ -24,9 +24,11 @@ protocol using autopilot or named reward checks (§3.2 below; schema at
 `src/refrain/schema/ir-json-v0.4.schema.json`), `"0.5"` for a protocol
 that declares typed feedback, binds a dwell/rearm output, or bakes complex FIR
 taps (§3.3 below covers the last of the three), and `"0.6"` for a protocol
-whose hold forgives a dip (§3.4 below). Each version's schema is a
+whose hold forgives a dip (§3.4 below), whose inhibit is labelled
+`kind = "artifact"` (§3.5 below), or whose seed rule carries a `scale` other
+than `1.0` (§3.6 below). Each version's schema is a
 superset of the previous one's fields. This document otherwise describes the
-`"0.1"` shape; §3.1 through §3.4 cover the `"0.3"`, `"0.4"`, `"0.5"` and
+`"0.1"` shape; §3.1 through §3.6 cover the `"0.3"`, `"0.4"`, `"0.5"` and
 `"0.6"` additions.
 
 ### Compatibility policy
@@ -112,7 +114,7 @@ present in the serialized output (verified against `realistic_smr.ir.json`):
 
 | Key | JSON type | Meaning |
 |---|---|---|
-| `refrain_ir_version` | `"0.1"` \| `"0.2"` \| `"0.3"` \| `"0.4"` \| `"0.5"` \| `"0.6"` (string) | Wire-format version. Emitted by `_protocol_ir_version()` (`src/refrain/ir_json.py`) as the lowest version that represents the protocol: `"0.6"` for a hold whose tolerance reaches at least one sample, else `"0.5"` for complex FIR taps, else `"0.4"` for autopilot/named-check features, else `"0.3"` for a control baseline-seed rule, else `"0.2"` for composite/staging features, else `"0.1"`. Runtimes accept `SUPPORTED_IR_VERSIONS`: `"0.1"`, `"0.2"`, `"0.3"`, `"0.4"`, `"0.5"`, `"0.6"`. |
+| `refrain_ir_version` | `"0.1"` \| `"0.2"` \| `"0.3"` \| `"0.4"` \| `"0.5"` \| `"0.6"` (string) | Wire-format version. Emitted by `_protocol_ir_version()` (`src/refrain/ir_json.py`) as the lowest version that represents the protocol: `"0.6"` when any one of three things is true — some hold's `tolerance` bakes to **one or more samples** at this document's rate (a tolerance that rounds to zero forgives nothing, emits no field, and does not bump the version), some inhibit's `kind` is `"artifact"` (`"trained"` and unlabelled do not bump it), or some seed rule's `scale` differs from `1.0` (an omitted `scale`, and an explicit `1.0`, do not) — else `"0.5"` for complex FIR taps, else `"0.4"` for autopilot/named-check features, else `"0.3"` for a control baseline-seed rule, else `"0.2"` for composite/staging features, else `"0.1"`. Runtimes accept `SUPPORTED_IR_VERSIONS`: `"0.1"`, `"0.2"`, `"0.3"`, `"0.4"`, `"0.5"`, `"0.6"`. |
 | `name` | `string \| null` | Protocol name (`smr_cz_v1`, etc.). |
 | `extends` | `string \| null` | Parent protocol name, if any. |
 | `sample_rate_hz` | number | Baked runtime sample rate (host choice, ≥ `requires.sample_rate_min_hz`). |
@@ -167,6 +169,9 @@ protocol with no seeded controls never emits it and stays at `"0.1"` /
 | `from` | string | Canonical name of the source derive (e.g. `"derive/smr_envelope"`), already resolved — not the bare protocol-source name. |
 | `window_samples` | integer, ≥ 1 | The trailing measurement window, baked to samples **at this document's `sample_rate_hz`** (top-level field), not at the resolver's `requires.sample_rate_chosen_hz`. Recompiling the same protocol at a different emitted rate produces a different `window_samples` for an unchanged source-level `window`. |
 | `target_pct` | `Expr` (§4) | The percentile to measure — either a `number` node or a `control_ref` node targeting a sibling `percent`-kind control. |
+
+A fifth key, `scale`, arrived in v0.6 and appears only when it differs from
+`1.0` — see §3.6. A v0.3 seed object has exactly the four fields above.
 
 A consumer that understands `"0.3"` measures `from`'s samples into a buffer of `window_samples` during warmup, and at the warmup→run boundary writes the `target_pct` percentile of that buffer into the control once, then holds it. A consumer that only understands `"0.1"`/`"0.2"` never sees a `"0.3"`-tagged document at all — SPEC §9.3's version gate refuses it at load, since silently ignoring `seed` would run the control unbaselined instead of failing loudly.
 
@@ -360,6 +365,108 @@ nothing while the author believes it forgives a third of a second.
 A protocol that declares no `tolerance`, or one whose tolerance bakes to zero
 samples, keeps a byte-identical IR-JSON, `content_hash`, and
 `refrain_ir_version` to what it emitted before v0.6 existed.
+
+### 3.5 Inhibit kind (v0.6)
+
+One string field on an `inhibits.<name>` object: `kind`, which says what sort
+of thing the inhibit is watching for. `"artifact"` means "this is not the
+trainee's brain" — muscle, a loose electrode, a swallow — and the time such a
+gate mutes is time the engine could not read, so a hold's clock neither
+advances nor resets across it. `"trained"` means the opposite: drifting toward
+sleep is the thing the protocol trains against, so that time is scored, and
+muting on it resets a hold exactly as it did before the label existed
+(`docs/SPEC.md` §4.6).
+
+```json
+"inhibits": {
+  "emg": {
+    "canonical_name": "inhibit/emg",
+    "metric": { "node": "call", "callee": "rectify", "args": [ "..." ] },
+    "threshold": { "node": "call", "callee": "absolute", "args": [ "..." ] },
+    "action_kind": "mute",
+    "action_release_ms": 350.0,
+    "final": false,
+    "kind": "artifact"
+  }
+}
+```
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `kind` | `"artifact"` \| `"trained"` | What the inhibit watches for. The v0.6 schema states the closed pair as an `enum`. |
+
+**The key is emitted only when the source declared it.** An unlabelled inhibit
+has no `kind` key at all, rather than `"kind": null` — an unconditional null
+would be a new key in every document in the corpus and would move every pinned
+IR hash for a field that says nothing. The label is legal only on an inhibit
+whose action is `mute` or `freeze`; on `flag` it is refused at resolve time,
+because a flag does not stop any clock for a label to be read off.
+
+**Version gate.** `_protocol_ir_version()` returns `"0.6"` when any inhibit's
+`kind` is `"artifact"`. `"trained"` and an absent label do **not** bump the
+version: both run identically on a 0.24 engine, and refusing such a document
+at load would be a refusal for documentation. `"artifact"` is different —
+the label changes what the engine scores, so an engine that dropped the key
+would run a different protocol than the author wrote and the only symptom
+would be a trainee losing earned hold time to their own jaw.
+
+A protocol with no labelled inhibit, or one labelled only `"trained"`, keeps a
+byte-identical IR-JSON, `content_hash`, and `refrain_ir_version` to what it
+emitted before v0.6 existed.
+
+### 3.6 Seed scale (v0.6)
+
+One number field inside a `controls.<name>.seed` object: `scale`, a
+dimensionless multiplier applied to the statistic's result before the control
+is written. `target_pct = 50` with `scale = 3.0` reads as "three times this
+person's warm-up median", which is what makes a per-person limit robust — a
+percentile is its own trip rate, so a gate seeded at the 95th percentile of
+warm-up trips on 5 % of warm-up by construction (`docs/SPEC.md` §4.9.4).
+
+```json
+"controls": {
+  "emg_limit_uv": {
+    "canonical_name": "control/emg_limit_uv",
+    "type_kind": "voltage",
+    "default": { "node": "number", "value": 12.0 },
+    "seed": {
+      "statistic": "percentile",
+      "from": "derive/emg_envelope",
+      "window_samples": 512,
+      "target_pct": { "node": "number", "value": 50.0 },
+      "scale": 3.0
+    }
+  }
+}
+```
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `scale` | number, > 0 | Multiplier on the statistic's result. The v0.6 schema states the positivity as `"exclusiveMinimum": 0`; the resolver refuses a non-positive value outright, since `scale = 0` seeds a muscle limit at 0 µV and so mutes the whole session. |
+
+**The key is emitted only when it differs from `1.0`.** An omitted `scale`
+means 1.0, and an explicit `scale = 1.0` emits nothing either — multiplying by
+one changes no value, so writing the default out longhand must not move the
+document's bytes or its version. A consumer that understands this field
+multiplies the percentile by `scale` and then clamps the product to the
+control's declared `range_low`/`range_high`; a seed with no `scale` is written
+through unclamped, which is what it has always done, and that asymmetry is
+deliberate (`docs/SPEC.md` §4.9.4). Note that `range_low`/`range_high` were
+already emitted on every control — v0.6 adds no key for them, it just gives
+the runtime a reason to read them.
+
+**Version gate.** `_protocol_ir_version()` returns `"0.6"` when any seed
+rule's `scale` differs from `1.0`. An engine that dropped the key would seed
+the control at the bare statistic, so a limit meant to sit at three times the
+warm-up median would sit at the median itself and gate most of the session —
+loudly wrong in the clinic and silent on the wire, which is exactly what the
+version tag exists to prevent. `SUPPORTED_IR_VERSIONS` in
+`refrain-core/src/ir.rs` includes `"0.6"`; an older core refuses the document
+at load instead.
+
+A protocol whose seeds declare no `scale` keeps a byte-identical IR-JSON,
+`content_hash`, and `refrain_ir_version` to what it emitted before v0.6
+existed.
 
 ---
 

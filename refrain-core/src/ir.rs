@@ -118,6 +118,13 @@ pub struct ControlDecl {
     pub canonical_name: String,
     #[serde(default)]
     pub seed: Option<ControlSeed>,
+    /// Declared `range = (low, high)` bounds. Authoring metadata for every
+    /// other purpose, but a `scale`d seed is clamped to them (`_step_seeds` /
+    /// `step_seeds`), so the runtime needs them.
+    #[serde(default)]
+    pub range_low: Option<Expr>,
+    #[serde(default)]
+    pub range_high: Option<Expr>,
     #[serde(default)]
     pub type_kind: String,
     #[serde(default)]
@@ -139,6 +146,17 @@ pub struct ControlSeed {
     pub from: String,
     pub window_samples: usize,
     pub target_pct: Expr,
+    /// Dimensionless multiplier applied to the statistic before the control is
+    /// written (IR-JSON 0.6). The emitter omits the key at 1.0, so an absent
+    /// `scale` must mean "the statistic as measured" — hence `default = "one"`
+    /// rather than serde's `f64::default()`, which is 0.0 and would seed every
+    /// pre-0.6 protocol's control at zero.
+    #[serde(default = "one")]
+    pub scale: f64,
+}
+
+fn one() -> f64 {
+    1.0
 }
 
 /// `autopilot { }` (spec §6.2). Durations are pre-baked to samples.

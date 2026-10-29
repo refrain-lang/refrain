@@ -888,6 +888,14 @@ struct SeedLatch {
     /// `None` when it is a literal `number` (use `target_pct_const`).
     target_pct_cell: Option<ControlCell>,
     target_pct_const: f64,
+    /// Dimensionless multiplier applied to the statistic (IR-JSON 0.6).
+    /// 1.0 for a seed that declared none.
+    scale: f64,
+    /// The control's declared range as plain numbers, or `None` on a side the
+    /// protocol left open or bound to another control. Consulted only when
+    /// `scale != 1.0` — see `step_seeds`.
+    range_low: Option<f64>,
+    range_high: Option<f64>,
     window_samples: u64,
     buffer: Percentile,
     armed: bool,
@@ -896,6 +904,19 @@ struct SeedLatch {
     value: Option<f64>,
     n_samples: u64,
     at_time_s: Option<f64>,
+}
+
+/// A control range bound as a plain number, or `None` when there isn't one.
+///
+/// Mirrors Python's `_literal_bound` (`src/refrain/eval_.py`): only a literal
+/// `number` node is a bound the runtime can clamp against. A bound the
+/// protocol omitted (`null` on the wire) or bound to another control yields
+/// `None`, and that side does not clamp.
+fn literal_bound(expr: Option<&Expr>) -> Option<f64> {
+    match expr {
+        Some(Expr::Number { value }) => Some(*value),
+        _ => None,
+    }
 }
 
 impl SeedLatch {
@@ -916,6 +937,7 @@ pub struct SeedReportEntry {
     pub value: Option<f64>,
     pub source: String,
     pub target_pct: f64,
+    pub scale: f64,
     pub n_samples: u64,
     pub window_s: f64,
     pub at_time_s: Option<f64>,
@@ -1186,6 +1208,9 @@ impl Evaluator {
                 from_entity: seed.from.clone(),
                 target_pct_cell,
                 target_pct_const,
+                scale: seed.scale,
+                range_low: literal_bound(decl.range_low.as_ref()),
+                range_high: literal_bound(decl.range_high.as_ref()),
                 window_samples: seed.window_samples as u64,
                 buffer: Percentile::new(target_pct_const, seed.window_samples),
                 armed: true,
@@ -1970,7 +1995,28 @@ impl Evaluator {
                 any_failed = true; // set self.seed_failed after the loop
                 continue;
             }
-            let value = latch.buffer.value_at(pct);
+            // `scale` multiplies the statistic (spec §4.9.4); `* 1.0` is exact
+            // in IEEE-754, so an unscaled seed writes the same bits it wrote
+            // before this field existed.
+            let mut value = latch.buffer.value_at(pct) * latch.scale;
+            if latch.scale != 1.0 {
+                // The clamp attaches to `scale`, not to seeding in general:
+                // there is no range clamp on a seeded value in either engine
+                // today, and clamping every seed would move the seeded value
+                // of a protocol that declared nothing new. Mirrors the same
+                // two comparisons, in the same order, as Python's
+                // `_step_seeds`.
+                if let Some(low) = latch.range_low {
+                    if value < low {
+                        value = low;
+                    }
+                }
+                if let Some(high) = latch.range_high {
+                    if value > high {
+                        value = high;
+                    }
+                }
+            }
             latch.value = Some(value);
             latch.status = SeedStatus::Seeded;
             writes.push((latch.control_name.clone(), value));
@@ -2000,6 +2046,7 @@ impl Evaluator {
                     value: latch.value,
                     source: latch.from_entity.clone(),
                     target_pct: latch.current_target_pct(),
+                    scale: latch.scale,
                     n_samples: latch.n_samples,
                     window_s: latch.window_samples as f64 / self.sample_rate_hz,
                     at_time_s: latch.at_time_s,
@@ -2799,11 +2846,22 @@ fn absolute_value(args: &[crate::ir::Arg]) -> (f64, Option<String>) {
             };
         }
     }
-    // Positional fallback: `absolute(8 uV)` form (literal only; the front-end
-    // emits `value:` for control-ref bindings).
+    // Positional fallback: the `absolute(8 uV)` / `absolute(emg_limit_uv)`
+    // form. `absolute` has exactly one parameter, named `value`, so the
+    // front-end binds a positional argument to that slot and the Python
+    // engine reads the two spellings identically — the arms here therefore
+    // have to match the labelled ones above, control refs included.
+    //
+    // The control-ref arm used to be missing, on the belief (stated in the
+    // comment this replaces) that the front-end always emits `value:` for a
+    // control binding. It does not: `threshold = absolute(emg_limit_uv)`
+    // emits an unnamed `control_ref` arg, which Python runs and this core
+    // panicked on. `bench/protocols/seed_scale_emg.refrain` is the protocol
+    // that found it.
     match positional(args, 0) {
         Expr::Number { value } => (*value, None),
-        _ => panic!("absolute: numeric value"),
+        Expr::ControlRef { target, default } => (*default, Some(target.clone())),
+        _ => panic!("absolute: `value` must be a number or control_ref"),
     }
 }
 

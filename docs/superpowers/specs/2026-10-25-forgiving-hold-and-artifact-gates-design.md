@@ -472,11 +472,36 @@ puts the limit clearly above normal activity instead of inside its upper tail.
 The seeded value is still clamped to the control's declared range, so a scale
 cannot push a limit outside what the protocol declared as sane.
 
+> **Corrected during implementation (Task 8): the worked example below needs a
+> `sqrt()` stage, and the version first written here was wrong in a way that
+> changed what `scale` means.** As first drafted, `emg_envelope` was the raw
+> `bandpower`, which is µV², and the limit was seeded straight from it. Because
+> the median commutes with the square root, seeding from the power makes
+> `scale = 3.0` mean three times the median *power* — arithmetically the same
+> gate as **1.73 times the median amplitude**. A practitioner who read "three
+> times the warm-up median" in this section and wrote 3.0 would get a gate
+> nearly twice as trigger-happy as advertised, in exactly the direction this
+> item exists to fix. It also left the knob declared `voltage` with a 12 µV
+> default while the thing it was compared against was µV².
+>
+> The fix is the same one `bench/protocols/micro_15_artifact_gate.refrain`
+> already uses: split the derive and take the square root, so the seed, the
+> gate and the knob all work in microvolts and the multiplier means what the
+> prose says. The example below carries it. Corrected in place rather than
+> noted as errata, the same way this design's dip-filling invariant was.
+> Decided by the user: *"I don't use squares. microvolts is where its at.
+> thats our model."*
+
 The rest of the item is a worked fixture protocol plus tests that lock the
 composition in place, so Stage 3 can rely on it:
 
 ```
-derive "emg_envelope" = bandpower(input: "raw", band: (50 Hz, 100 Hz), window: 100 ms)
+derive "emg_power" = bandpower(input: "raw", band: (50 Hz, 100 Hz), window: 100 ms)
+
+// `sqrt` turns the band power back into an amplitude, so the seed, the gate
+// and the knob below all work in microvolts — and so `scale = 3.0` means
+// three times the median AMPLITUDE, which is what the prose above says.
+derive "emg_envelope" { from = "emg_power"; pipeline = [ sqrt() ] }
 
 controls {
   emg_limit_uv = voltage {
@@ -510,8 +535,20 @@ have been folded out before the seed ever saw it. It is not:
 - `threshold = absolute(<control>)` on an inhibit is already exercised by
   `bench/protocols/micro_09_inhibit.refrain`.
 
-So the composition itself needs no engine change. The only engine change this
-item carries is the `scale` field above.
+> **Corrected during implementation (Task 8): the last bullet was wrong, and so
+> was "needs no engine change".** `micro_09_inhibit.refrain` writes
+> `absolute(55 uV2)` — a literal, not a control — so nothing in the repository
+> exercised a *positional* control reference there. The Rust core's
+> `absolute_value` matched `Number` and `ControlRef` for the labelled
+> `value:` argument but only `Number` for a positional one, and panicked with
+> `"absolute: numeric value"` on the spelling this section writes. Python ran
+> it, because `absolute` has one parameter named `value` and the resolver binds
+> a positional argument into that slot. The composition therefore did *not*
+> work end to end on both engines until Task 8 added the missing match arm,
+> pinned by three new cases in `refrain-core/tests/absolute_control.rs`.
+
+So the composition needs one engine change beyond `scale`: the positional
+control-reference arm in `absolute_value`, described in the correction above.
 
 **One constraint that Stage 3 must know about, because it is harsh.** A seeded
 control's window has to fit inside a timed, output-muted warm-up phase 0 or the

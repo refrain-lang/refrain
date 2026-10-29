@@ -463,8 +463,8 @@ IR. Both are deliberately **not** taps — they don't share `last_taps()`'s
 strict key-set contract — so read them separately.
 
 **`seed_report()`** — a control declared `seed = percentile { from, window,
-target_pct }` (SPEC's baseline-seeding surface) measures its value from the
-person's own signal during warmup and writes it once at the warmup→run
+target_pct, scale }` (SPEC's baseline-seeding surface) measures its value from
+the person's own signal during warmup and writes it once at the warmup→run
 edge. `Evaluator.seed_report()` returns the outcome of every such control,
 keyed by bare control name (not the tap's `control/<name>` form):
 
@@ -475,15 +475,24 @@ report = evaluator.seed_report()
 #     "value": 7.42,
 #     "source": "derive/smr_envelope",
 #     "target_pct": 70.0,
+#     "scale": 1.0,                    # the declared multiplier; 1.0 = the statistic as measured
 #     "n_samples": 500,
 #     "window_s": 120.0,
 #     "at_time_s": 120.0,
 #   } }
 ```
 
+`value` is the statistic already multiplied by `scale`, so a report reading
+`"value": 22.26, "scale": 3.0` means the measured median was 7.42 and the
+control was written at three times it. Showing a practitioner the number
+without the multiplier beside it invites them to read a per-person limit as a
+raw measurement.
+
 `insufficient_samples` means the seed failed closed — not enough warmup
-samples reached the buffer (or they were all non-finite) — and the control
-kept its declared default rather than writing a measured value. `pending`
+samples reached the buffer (or they were all non-finite) — so the control kept
+its declared default **and every output channel is muted for the rest of the
+session**. There is no degrade-to-default path: a trainee whose warm-up got
+cut short hears nothing at all for the whole run. `pending`
 means warmup hasn't reached the run edge yet. `disarmed_by_host` means a
 practitioner called `set_control()` on the seeded control before it fired; that
 disarms the seed permanently for the session rather than racing it. Empty

@@ -323,15 +323,36 @@ def _walk_calls(expr: IRExpr):
     # Other leaves (refs, literals, member access) carry no impl.
 
 
+def _literal_bound(expr) -> float | None:
+    """A control range bound as a plain number, or None when there isn't one.
+
+    `range = (0.5 uV, 30 uV)` resolves to two `IRNumberLit`s whose `value` is
+    the authored face number, which is the same number the engine already
+    treats as the control's value everywhere else (`_scale_to_ms_if_duration`
+    does no unit conversion either). A bound the protocol omitted, or bound to
+    another control, has no literal to read and yields None — that side simply
+    does not clamp. Mirrored by `literal_bound` in `refrain-core/src/eval.rs`,
+    which reads the same `number` node off the wire.
+    """
+    return float(expr.value) if isinstance(expr, IRNumberLit) else None
+
+
 class _SeedLatch:
     """Per-seeded-control polled latch (§2.5). Ingests the `from` derive during
     warmup; fires once at the warmup→run edge."""
 
-    def __init__(self, *, control_name, control_target, seed, buffer):
+    def __init__(self, *, control_name, control_target, seed, buffer,
+                 range_low=None, range_high=None):
         self.control_name = control_name        # bare, for _apply_control + report key
         self.control_target = control_target     # "control/<name>"
         self.from_entity = seed.from_entity       # "derive/<name>"
         self.target_pct = seed.target_pct          # IRExpr (control_ref or number)
+        self.scale = float(seed.scale)              # dimensionless multiplier, 1.0 = as measured
+        # The control's declared range, as plain numbers, or None on a side the
+        # protocol left open or bound to another control. Only consulted when
+        # `scale != 1.0` — see `_step_seeds`.
+        self.range_low = range_low
+        self.range_high = range_high
         # Baked at the evaluator's actual runtime rate by `buffer` itself
         # (PercentileImpl), not re-derived from the rate-independent
         # `seed.window_ms` here — single source of truth, no round-trip.
@@ -866,7 +887,9 @@ class Evaluator:
             buf = impls.PercentileImpl(
                 target_pct=init_pct, window_ms=window_ms, sample_rate_hz=self.sample_rate_hz)
             self._seed_latches[ctrl.canonical_name] = _SeedLatch(
-                control_name=name, control_target=ctrl.canonical_name, seed=ctrl.seed, buffer=buf)
+                control_name=name, control_target=ctrl.canonical_name, seed=ctrl.seed, buffer=buf,
+                range_low=_literal_bound(ctrl.range_low),
+                range_high=_literal_bound(ctrl.range_high))
 
     def _seed_target_pct_value(self, target_pct) -> float:
         if isinstance(target_pct, IRControlRef):
@@ -911,7 +934,24 @@ class Evaluator:
                 latch.status = "insufficient_samples"
                 self._seed_failed_mute = True
                 continue
-            value = float(st["value"])
+            # `scale` multiplies the statistic (SPEC §4.9.4); `* 1.0` is exact
+            # in IEEE-754, so an unscaled seed writes the same bits it wrote
+            # before this field existed.
+            value = float(st["value"]) * latch.scale
+            if latch.scale != 1.0:
+                # The clamp attaches to `scale`, not to seeding in general.
+                # There is no range clamp on a seeded value today, so clamping
+                # every seed would move the seeded value — and the reward
+                # behaviour — of a protocol that declared nothing new, which
+                # this release forbids. `scale` is the new declaration and the
+                # one that can push a value far out, so it brings the clamp
+                # with it. Whether an unscaled seed should clamp too is a
+                # behaviour change with its own argument; `tests/
+                # test_eval_seed_scale.py` pins today's answer either way.
+                if latch.range_low is not None and value < latch.range_low:
+                    value = latch.range_low
+                if latch.range_high is not None and value > latch.range_high:
+                    value = latch.range_high
             latch.value = value
             latch.status = "seeded"
             self._apply_control(latch.control_name, value)   # NOT set_control -> no self-disarm
@@ -1710,6 +1750,7 @@ class Evaluator:
                 "value": latch.value,
                 "source": latch.from_entity,
                 "target_pct": self._seed_target_pct_value(latch.target_pct),
+                "scale": latch.scale,
                 "n_samples": latch.n_samples,
                 "window_s": latch.window_samples / self.sample_rate_hz,
                 "at_time_s": latch.at_time_s,

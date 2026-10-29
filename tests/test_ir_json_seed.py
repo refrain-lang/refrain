@@ -78,3 +78,69 @@ def test_seed_window_rebakes_at_emit_rate():
     for rate, expected in [(256.0, 512), (512.0, 1024), (1024.0, 2048)]:
         obj = compile_to_ir_json(SEED_PROTO, sample_rate_hz=rate).ir_json
         assert obj["controls"]["thr_uv"]["seed"]["window_samples"] == expected, rate
+
+
+# ---------------------------------------------------------------------------
+# `scale` on the wire — present only when it changes the seeded value
+# ---------------------------------------------------------------------------
+
+from tests._seed_fixtures import BASE  # the `%`-template; substitute ONE seed line
+
+_UNSCALED = 'seed = percentile { from = "env"; window = 60 s; target_pct = reward_pct }'
+_SCALED = _UNSCALED[:-2] + "; scale = 3.0 }"
+
+
+def test_a_scaled_seed_emits_ir_0_6_and_the_scale_key():
+    res = compile_to_ir_json(BASE % {"seed": _SCALED})
+    assert not res.errors, res.errors
+    obj = res.ir_json
+    # 0.6 because a consumer that dropped the key would seed the control at
+    # the bare median instead of three times it.
+    assert obj["refrain_ir_version"] == "0.6"
+    assert obj["controls"]["thr_uv"]["seed"]["scale"] == 3.0
+
+
+def test_an_unscaled_seed_emits_no_scale_key_and_keeps_version_0_3():
+    obj = compile_to_ir_json(BASE % {"seed": _UNSCALED}).ir_json
+    assert obj["refrain_ir_version"] == "0.3"
+    # The exact pre-0.6 key set, not just the absence of `scale`: this is the
+    # assertion that fails if a later field is added to the seed object without
+    # the omit-when-default discipline, which is what keeps every seed written
+    # before 0.6 byte-identical.
+    assert set(obj["controls"]["thr_uv"]["seed"]) == {
+        "statistic", "from", "window_samples", "target_pct",
+    }
+
+
+def test_a_scale_below_one_also_bumps_the_version_and_emits_the_key():
+    """A multiplier may shrink the statistic as well as grow it, and a
+    shrinking one is just as invisible to an engine that drops the key.
+
+    This is the case a `> 1.0` version predicate would get wrong while every
+    other wire test still passed: the document would carry `scale: 0.4`, be
+    tagged `"0.3"`, load happily on a 0.24 engine, and seed the control at
+    two and a half times the limit its author asked for.
+    """
+    obj = compile_to_ir_json(BASE % {"seed": _UNSCALED[:-2] + "; scale = 0.4 }"}).ir_json
+    assert obj["refrain_ir_version"] == "0.6"
+    assert obj["controls"]["thr_uv"]["seed"]["scale"] == 0.4
+
+
+def test_an_explicit_scale_of_one_is_byte_identical_to_no_scale_at_all():
+    """`scale = 1.0` multiplies by nothing, so it must not reach the wire and
+    must not move the version — otherwise writing the default out longhand
+    would get the document refused by a 0.24 engine for no behaviour change."""
+    explicit = compile_to_ir_json(BASE % {"seed": _UNSCALED[:-2] + "; scale = 1.0 }"})
+    assert not explicit.errors, explicit.errors
+    import json
+
+    assert json.dumps(explicit.ir_json, sort_keys=True) == json.dumps(
+        compile_to_ir_json(BASE % {"seed": _UNSCALED}).ir_json, sort_keys=True
+    )
+
+
+def test_the_scale_key_lands_inside_the_seed_object_only():
+    """It is a property of the seed rule, not of the control."""
+    obj = compile_to_ir_json(BASE % {"seed": _SCALED}).ir_json
+    assert "scale" not in obj["controls"]["thr_uv"]
+    assert obj["controls"]["reward_pct"].get("seed") is None

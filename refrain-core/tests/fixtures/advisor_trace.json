@@ -349,6 +349,13 @@
   "check_controls": [],
   "inhibit_controls": []
  },
+ "seed_scale_emg.ir.json": {
+  "bundles": {},
+  "check_controls": [],
+  "inhibit_controls": [
+   "emg_limit_uv"
+  ]
+ },
  "seed_smr_baseline.ir.json": {
   "bundles": {},
   "check_controls": [],

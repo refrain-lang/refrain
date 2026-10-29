@@ -235,10 +235,18 @@ def _protocol_ir_version(ir: IRProtocol, ctx: _EmitCtx) -> str:
     what the engine scores, so an engine that dropped the key would run a
     different protocol than the author wrote. A `"trained"` label and an
     absent one do not — they run identically on a 0.24 engine, and refusing
-    such a document at load would be a refusal for documentation.
+    such a document at load would be a refusal for documentation. A seed rule
+    with `scale != 1.0` emits 0.6 as well: an engine that dropped the key
+    would seed the control at the bare statistic, so a muscle limit meant to
+    sit at three times the warm-up median would sit at the median itself and
+    gate most of the session.
     """
-    if _bakes_a_hold_tolerance(ir, ctx) or any(
-        ih.kind == "artifact" for ih in ir.inhibits.values()
+    if (
+        _bakes_a_hold_tolerance(ir, ctx)
+        or any(ih.kind == "artifact" for ih in ir.inhibits.values())
+        or any(
+            c.seed is not None and c.seed.scale != 1.0 for c in ir.controls.values()
+        )
     ):
         return "0.6"
     if (
@@ -559,12 +567,18 @@ def _emit_reward(r: IRReward, ctx: _EmitCtx, version: str) -> dict:
 
 
 def _emit_seed(seed: IRControlSeed, ctx: _EmitCtx) -> dict:
-    return {
+    out = {
         "statistic": seed.statistic,
         "from": seed.from_entity,
         "window_samples": max(1, int(round(seed.window_ms / 1000.0 * ctx.sample_rate_hz))),
         "target_pct": _emit_expr(seed.target_pct, ctx),
     }
+    # Omitted at 1.0, which is what an absent `scale` resolves to: every seed
+    # written before this field existed keeps a byte-identical `seed` object,
+    # and therefore an unchanged `content_hash` and IR version.
+    if seed.scale != 1.0:
+        out["scale"] = seed.scale
+    return out
 
 
 def _samples(ms: float | None, ctx: _EmitCtx) -> int | None:

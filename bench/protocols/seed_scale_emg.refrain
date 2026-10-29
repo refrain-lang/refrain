@@ -1,0 +1,125 @@
+// seed_scale_emg.refrain
+// The worked per-person muscle limit, and the IR-JSON v0.6 golden vector for
+// a seed rule's `scale` multiplier (design §4).
+//
+// A fixed muscle limit in microvolts fits nobody: the same 12 uV is a hair
+// trigger on one trainee and never fires on the next. This protocol measures
+// the person's own warm-up muscle level and sets the limit at three times
+// their median. The median rather than a high percentile is the point — a
+// 95th-percentile gate is tripping 5 % of warm-up by construction, and if the
+// warm-up contains any clenching the percentile rises with it and the limit
+// never fires at all. The median ignores a few clenches, and the multiplier
+// puts the limit clearly above normal activity instead of inside its upper
+// tail.
+//
+// Four things about this file are deliberate and worth not "fixing":
+//
+//   - `emg_envelope` feeds nothing but the inhibit. That is the composition
+//     the design flagged as the open risk, because a derive nobody reads
+//     could have been folded out before the seed ever ingested it, and a
+//     control nobody references has its seed dropped as dead. Neither
+//     happens: every declared derive is evaluated on every chunk, and an
+//     inhibit's `threshold` counts as a reference to the control it names.
+//
+//   - The band power goes through `sqrt()` before anything reads it, so the
+//     seed, the gate and the knob all work in microvolts. This is not
+//     cosmetic. Band power is uV2, and the median commutes with the square
+//     root, so seeding from the power would make `scale = 3.0` mean three
+//     times the median POWER — arithmetically the same gate as 1.73 times the
+//     median amplitude. A practitioner who read "three times the warm-up
+//     median" in SPEC §4.9.4 and wrote 3.0 would get a gate nearly twice as
+//     trigger-happy as advertised, in exactly the direction this feature
+//     exists to fix. With the square root in place the multiplier means what
+//     the prose says.
+//
+//   - `rectify` is an identity on an already-positive amplitude; an inhibit
+//     metric must be a call, so it is how a derive is named as one (the same
+//     way examples/critical_fluctuation_cue.refrain does it).
+//
+//   - The seed window is 2 s and the warm-up 3 s, where a clinic would use
+//     60 s of warm-up. A seeded control's window has to fit inside a timed,
+//     output-muted phase 0 or the compiler refuses the protocol, and the
+//     corpus signal these fixtures run on is 16 s long — a 60 s window would
+//     never fill, the seed would fail closed, and the vector would be pinning
+//     a muted session instead of a scaled limit. Everything else, including
+//     `target_pct = 50` and `scale = 3.0`, is the clinical form verbatim.
+//
+// Generated with `skip_warmup=False` (docs/CONFORMANCE.md names this stem as
+// one of the three exceptions) so the seed actually fires, over broadband
+// noise plus two Hann-windowed 70 Hz clenches in the run phase. The warm-up
+// is left clean, so the seeded median is the person's resting level; the
+// clenches then carry the envelope past three times it and the gate trips
+// and clears twice. Noise alone does not trip this gate — 0 of the 3328
+// run-phase samples reach the limit without the clenches — which is the
+// point: every mute in this vector is muscle that is actually there. See the
+// `seed_scale_emg` block in `gen_fixtures.py` for the signal and the two
+// signal choices it rejects. The run phase is open-ended (`mode = open`) so a
+// full-length signal never runs the session to a stop mid-run.
+//
+// Deliberately NOT in the editor round-trip subset: `_match_reward_component`
+// matches an artifact inhibit only in the `bandpower` + `percentile` shape,
+// not `rectify` + `absolute`.
+protocol "seed_scale_emg" {
+  meta {
+    version     = "1.0.0"
+    evidence    = "clinical"
+    description = "Muscle limit seeded at three times the warm-up median amplitude"
+  }
+
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels    = ["Cz"]
+  }
+
+  input "raw" { montage = passthrough() }
+
+  // The muscle band, as power.
+  derive "emg_power" {
+    formula = bandpower(input: "raw", band: (50 Hz, 100 Hz), window: 100 ms)
+  }
+
+  // `sqrt` turns the band power back into an amplitude, so the gate's limit
+  // below is written in the unit a practitioner sets it in — and so that
+  // `scale = 3.0` means three times the median *amplitude*, which is what the
+  // spec says it means. Consumed by the seed rule and by the gate below, and
+  // by nothing else in the protocol.
+  derive "emg_envelope" {
+    from = "emg_power"
+    pipeline = [
+      sqrt(),
+    ]
+  }
+
+  // The trained band, so the session has something to reward and the gate has
+  // something to silence.
+  derive "smr" {
+    from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude() ]
+  }
+
+  threshold "smr_t" { signal = "smr"; type = absolute(2 uV) }
+
+  controls {
+    emg_limit_uv = voltage {
+      default = 12 uV
+      label   = "Muscle limit (seeded at warm-up)"
+      seed = percentile { from = "emg_envelope"; window = 2 s; target_pct = 50; scale = 3.0 }
+    }
+  }
+
+  inhibit "emg" {
+    metric    = rectify("emg_envelope")
+    threshold = absolute(emg_limit_uv)
+    action    = mute(release: 350 ms)
+    kind      = "artifact"
+  }
+
+  reward { continuous = sigmoid("smr" / "smr_t", midpoint: 1.0, steepness: 3) }
+
+  output { fb = reward.continuous }
+
+  session { phases = [
+    phase { name = "warmup"; duration = 3 s; output_muted = true },
+    phase { name = "run";    mode = open }
+  ] }
+}

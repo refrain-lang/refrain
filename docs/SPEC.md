@@ -763,22 +763,59 @@ controls {
 }
 ```
 
-**Statistic is the block kind.** `seed = <statistic> { ... }` — the block's typed name names the statistic. v1 supports only `percentile`; an unrecognized statistic is a `ResolveError`. The fields inside the block belong to that statistic (`percentile` takes `from`/`window`/`target_pct`); a future statistic would define its own field set under its own block kind.
+A `scale` multiplies the statistic before it is written, so a limit can be set
+at a multiple of the person's own baseline rather than at a percentile of it:
+
+```refrain
+controls {
+  emg_limit_uv = voltage {
+    default = 12 uV
+    label   = "Muscle limit (seeded at warm-up)"
+    seed = percentile {
+      from       = "emg_envelope"   // an AMPLITUDE in uV — see the warning below
+      window     = 60 s
+      target_pct = 50                // the median
+      scale      = 3.0               // ...times three
+    }
+  }
+}
+```
+
+**The signal `from` names must already be in the control's units.** `scale`
+multiplies whatever the statistic measured, and a median commutes with a square
+root, so seeding a microvolt limit from a band *power* (µV²) makes `scale = 3.0`
+mean three times the median power — the same gate as **1.73 times the median
+amplitude**, not three times it. Put a `sqrt()` stage between a `bandpower`
+derive and the seed, as `bench/protocols/seed_scale_emg.refrain` and
+`bench/protocols/micro_15_artifact_gate.refrain` both do, so the multiplier
+means what it reads as. Nothing in the compiler catches this for you: the
+dimension mismatch between a `voltage` control and a µV² metric is not
+currently an error.
+
+**Statistic is the block kind.** `seed = <statistic> { ... }` — the block's typed name names the statistic. v1 supports only `percentile`; an unrecognized statistic is a `ResolveError`. The fields inside the block belong to that statistic (`percentile` takes `from`/`window`/`target_pct`, plus the optional `scale`); a future statistic would define its own field set under its own block kind.
 
 **Fields (`percentile`):**
 - `from` (required): a quoted derive name — the signal the percentile is measured over. Must name a derive declared elsewhere in the protocol.
 - `window` (required): a duration literal (`ms`/`s`/`min`) — the trailing window, in real time, the statistic is measured over. Rate-independent; baked to samples at emit time (below).
 - `target_pct` (required): the percentile to measure — either a number literal or a `control_ref` to a sibling `percent` control (so the practitioner can tune *which* percentile seeds the value, not just the value itself).
+- `scale` (optional, default `1.0`): a dimensionless multiplier applied to the statistic's result before the control is written. A fixed number literal with no unit — not control-bindable, since a value written once at the warmup→run edge could only be retuned before it had any effect or after it was too late to have one. `scale` at or below zero is a `ResolveError` (below).
+
+**Reading `scale`: three times the warm-up median.** `target_pct = 50; scale = 3.0` reads as "three times this person's warm-up median", and that combination — not a high percentile — is what a per-person limit wants. A percentile *is* its own trip rate: a gate seeded at the 95th percentile of warm-up is tripping on 5 % of warm-up by construction, and if the warm-up contains any of the thing being guarded against (a clench, a jaw set), the percentile rises with it and the limit never fires at all. The median ignores a few clenches, and the multiplier puts the limit clearly above normal activity instead of inside its upper tail. `bench/protocols/seed_scale_emg.refrain` is the worked form: a muscle limit set from the trainee's own warm-up rather than a fixed voltage that is a hair trigger on one person and silent on the next.
 
 **Resolve-time guarantees:**
 - **Real derive.** `from` is validated against the resolved derive set; a name that doesn't resolve is a `ResolveError`, not a silent no-op.
 - **`target_pct` typing.** A number literal is accepted as-is; a `control_ref` is accepted only if it targets a control declared `percent` — binding it to any other control kind is a `ResolveError`.
-- **Warmup fits.** If the protocol's first session phase is a timed, output-muted warmup (not `mode = "open"`), `window` must fit inside that phase's duration. A seed whose window can never fill is refused at compile time, not discovered fail-closed at runtime.
+- **`scale` is a positive, dimensionless literal.** A non-number (including a control reference), a number carrying a unit, and any value at or below zero are each a `ResolveError`. Zero is not clamped to something harmless: `scale = 0` seeds a muscle limit at 0 µV, which makes its inhibit mute the whole session, and a negative multiplier lands on the control's range floor and reads as a working protocol while gating nothing the author asked for.
+- **Warmup fits.** If the protocol's first session phase is a timed, output-muted warmup (not `mode = "open"`), `window` must fit inside that phase's duration. A seed whose window can never fill is refused at compile time, not discovered fail-closed at runtime. This is normative and it is strict: a seeded control is only usable in a protocol that opens with a timed, output-muted phase long enough to hold its whole measurement window.
 - **Dead-seed elimination.** If the seeded control is never referenced anywhere in the resolved pipeline (derives, thresholds, inhibits, reward, output), the seed is dropped rather than attached — an unused control's seed rule would just be dead weight on the wire.
 
-**Runtime semantics (informative; full behavior in `docs/EMBEDDING.md`'s `seed_report()` section):** during warmup the engine measures `from`'s samples into a trailing buffer sized to `window`; at the warmup→run edge it computes the `target_pct` percentile of that buffer and writes the control exactly once, then holds. A practitioner who calls `set_control` on the seeded control before it fires disarms the seed for the rest of the session instead of racing it. If the buffer can't be filled with finite samples by the run edge, the seed fails closed and the control keeps its declared `default`.
+**Runtime semantics (informative; full behavior in `docs/EMBEDDING.md`'s `seed_report()` section):** during warmup the engine measures `from`'s samples into a trailing buffer sized to `window`; at the warmup→run edge it computes the `target_pct` percentile of that buffer, multiplies it by `scale`, and writes the control exactly once, then holds. A practitioner who calls `set_control` on the seeded control before it fires disarms the seed for the rest of the session instead of racing it.
 
-**Wire format.** A seeded control's IR-JSON carries a `seed` object (`statistic`/`from`/`window_samples`/`target_pct`) under `controls.<name>`; `window_samples` is `window` baked to samples **at the emitted `sample_rate_hz`**, not the resolver's chosen rate — the same rebaking discipline as every other rate-dependent coefficient. A protocol using `seed` is tagged `refrain_ir_version: "0.3"`. See `docs/IR-JSON.md`.
+**A seed that does not complete mutes the output for the rest of the session.** This is normative. If the buffer has not been filled with `window` finite samples by the run edge — a warm-up cut short, an early advance, a skipped warm-up — the seed fails closed: the control keeps its declared `default` **and** every output channel is muted for the remainder of the session. A trainee whose warm-up got cut short hears nothing at all for the whole run; there is no degrade-to-default path. Pinned on both engines by `tests/test_eval_seed_scale.py::test_a_warm_up_seed_that_cannot_fill_its_window_still_fails_closed`. The rule is defensible for a reward threshold and considerably more consequential for a seeded *inhibit* level, which a practitioner might reasonably expect to fall back to a fixed limit; whether fail-closed stays the right policy there is a protocol-library question, not an engine one.
+
+**The range clamp attaches to `scale`, not to seeding.** A seeded value is clamped to the control's declared `range` **only when `scale != 1.0`**: the multiplier is the thing that can push a value far outside what the protocol declared as sane, so it brings the bound with it. A seed with no multiplier is written through unclamped, which is what it has always done — adding a clamp there would move the seeded value, and therefore the reward behaviour, of a protocol that declared nothing new. Both halves are pinned in `tests/test_eval_seed_scale.py`. A `range` bound the protocol omitted, or bound to another control, is not a bound the clamp can use, and that side does not clamp.
+
+**Wire format.** A seeded control's IR-JSON carries a `seed` object (`statistic`/`from`/`window_samples`/`target_pct`, plus `scale` when it differs from `1.0`) under `controls.<name>`; `window_samples` is `window` baked to samples **at the emitted `sample_rate_hz`**, not the resolver's chosen rate — the same rebaking discipline as every other rate-dependent coefficient. A protocol using `seed` is tagged `refrain_ir_version: "0.3"`, rising to `"0.6"` when any seed rule carries a `scale` other than `1.0` — an engine that dropped the key would seed the control at the bare statistic, so a limit meant to sit at three times the warm-up median would sit at the median itself and gate most of the session. See `docs/IR-JSON.md`.
 
 **§9.3 is now enforced.** A runtime that doesn't understand IR-JSON `"0.3"` refuses a seeded protocol at load (§9.3) rather than silently ignoring the `seed` field and running an unbaselined default — the version gate described in §9.3 is implemented, not aspirational, as of this feature.
 

@@ -100,3 +100,56 @@ fn absolute_value_set_control_retunes_threshold() {
     assert!(smr_t.iter().all(|&v| (v - 5.5).abs() < 1e-12),
         "threshold did not retune to 5.5: {smr_t:?}");
 }
+
+// ---------------------------------------------------------------------------
+// The same binding written without the `value:` label.
+//
+// `absolute` has exactly one parameter, named `value`, so the front-end binds
+// a positional argument to that slot and the Python engine reads
+// `absolute(thr_uv)` and `absolute(value: thr_uv)` identically. This core did
+// not: the positional fallback matched only `Expr::Number` and panicked with
+// "absolute: numeric value" on an unnamed control ref, so a protocol Python
+// ran happily would not load here at all.
+//
+// `bench/protocols/seed_scale_emg.refrain` writes `threshold =
+// absolute(emg_limit_uv)` — the spelling the design wrote down — which is how
+// this was found.
+// ---------------------------------------------------------------------------
+
+/// The same protocol with the one argument unnamed instead of `value:`.
+fn build_positional() -> (Evaluator, Vec<Vec<f64>>) {
+    let json = PROTOCOL_JSON.replace("\"name\": \"value\"", "\"name\": null");
+    let p: Protocol = serde_json::from_str(&json).expect("parse positional PROTOCOL_JSON");
+    let channels = vec!["Cz".to_string()];
+    let mut ev = Evaluator::new(&p, p.sample_rate_hz, &channels);
+    ev.start(true);
+    (ev, vec![vec![0.0]; 2])
+}
+
+#[test]
+fn absolute_positional_control_ref_construction_does_not_panic() {
+    let (_ev, _chunk) = build_positional();
+}
+
+#[test]
+fn absolute_positional_control_ref_default_observed() {
+    let (mut ev, chunk) = build_positional();
+    let streams = ev.step_chunk(&chunk);
+    let smr_t = streams.get("smr_t").expect("threshold stream `smr_t` present");
+    assert!(smr_t.iter().all(|&v| (v - 4.0).abs() < 1e-12),
+        "positional threshold default not 4.0: {smr_t:?}");
+}
+
+#[test]
+fn absolute_positional_set_control_retunes_threshold() {
+    // The positional form must register the same live binding the labelled
+    // one does, not merely bake the default and stop listening.
+    let (mut ev, chunk) = build_positional();
+    let _ = ev.step_chunk(&chunk);
+    ev.set_control("threshold_uv", 5.5)
+        .expect("set_control should succeed for declared control");
+    let streams = ev.step_chunk(&chunk);
+    let smr_t = streams.get("smr_t").expect("threshold stream `smr_t` present");
+    assert!(smr_t.iter().all(|&v| (v - 5.5).abs() < 1e-12),
+        "positional threshold did not retune to 5.5: {smr_t:?}");
+}

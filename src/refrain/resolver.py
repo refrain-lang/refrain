@@ -178,12 +178,35 @@ def _warn(message: str, loc: Loc | None) -> None:
 # ---------------------------------------------------------------------------
 
 
+# `nan`, `inf` and `infinity` are bare identifiers to this grammar, not numeric
+# literals, so they reach `scale` as a NameRef exactly like a control name does.
+# Reporting them as "the control 'nan'" sends the author looking for a control
+# they never declared, so they get named for what they are.
+_NON_FINITE_WORDS = frozenset({"nan", "inf", "infinity"})
+
+
+def _scale_got(expr) -> str:
+    """How to describe a rejected `seed.scale` value back to its author."""
+    if isinstance(expr, A.NameRef):
+        if expr.name.lower().lstrip("+-") in _NON_FINITE_WORDS:
+            return (
+                f"the name {expr.name!r} — refrain has no literal for a "
+                "non-finite number, so this reads as an identifier, and a "
+                "non-finite multiplier has no meaning on a seeded value anyway"
+            )
+        return f"the control {expr.name!r}"
+    if isinstance(expr, A.NumberLit):
+        return f"{expr.value!r} {expr.unit}"
+    return "an expression"
+
+
 @dataclass(frozen=True)
 class _PendingSeed:
     statistic: str
     from_raw: str
     window_ms: float
     target_pct_ast: "A.Expr"
+    scale: float
     loc: "Loc | None"
 
 
@@ -1551,8 +1574,42 @@ class _Resolver:
             from_raw=from_expr.value,
             window_ms=_to_milliseconds(window_expr),
             target_pct_ast=fields["target_pct"],
+            scale=self._parse_seed_scale(name, fields.get("scale"), seed_ast.loc),
             loc=seed_ast.loc,
         )
+
+    def _parse_seed_scale(self, name: str, scale_ast, seed_loc: "Loc | None") -> float:
+        """A seed rule's optional `scale` multiplier (SPEC §4.9.4).
+
+        A fixed, dimensionless literal — it follows `dwell_rearm`'s `rearm`
+        rather than `dwell`'s `duration`: a live-tunable multiplier on a value
+        that is written once, at the warmup->run edge, could only be retuned
+        before it had any effect or after it was too late to have one.
+
+        Non-positive is refused rather than clamped. `scale = 0` seeds a
+        muscle limit at 0 uV, which makes its inhibit mute the whole session;
+        a negative one lands on the control's range floor and reads as a
+        working protocol while gating nothing the author asked for.
+        """
+        if scale_ast is None:
+            return 1.0
+        if not isinstance(scale_ast, A.NumberLit) or scale_ast.unit is not None:
+            raise ResolveError(
+                f"control {name!r}.seed.scale must be a plain number with no "
+                f"unit (got {_scale_got(scale_ast)}); it multiplies the measured "
+                "statistic, so it carries no dimension of its own",
+                loc=getattr(scale_ast, "loc", None) or seed_loc,
+            )
+        scale = float(scale_ast.value)
+        if scale <= 0.0:
+            raise ResolveError(
+                f"control {name!r}.seed.scale must be greater than zero "
+                f"(got {scale!r}); a zero or negative multiplier seeds the "
+                "control at or below its range floor, which silences the "
+                "session instead of calibrating it",
+                loc=getattr(scale_ast, "loc", None) or seed_loc,
+            )
+        return scale
 
     def _referenced_control_targets(self) -> set[str]:
         """Canonical targets of every control_ref surviving in the resolved
@@ -1649,6 +1706,7 @@ class _Resolver:
                 window_ms=pend.window_ms,
                 target_pct=target_pct,
                 loc=pend.loc,
+                scale=pend.scale,
             )
             self.controls[name] = replace(self.controls[name], seed=seed)
 

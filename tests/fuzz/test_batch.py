@@ -97,10 +97,16 @@ def test_batch_aggregates_multiple_paths(tmp_path, capsys):
     # band it would perturb. The artifact label has nothing to do with it —
     # the fuzzer's surface does not model an inhibit's `kind` at all. Skip
     # bucket, `fuzzed` still 8.
+    # +1 total for seed_scale_emg.refrain (the seed-`scale` golden-vector
+    # bench and the worked per-person muscle limit), which skips as "no reward
+    # event to fuzz": it declares `reward { continuous = ... }` and no event,
+    # and the fuzzer perturbs a reward event's condition. Nothing to do with
+    # the multiplier — the fuzzer's surface does not model a seed rule at all.
+    # Skip bucket, `fuzzed` still 8.
     rc = main(["fuzz", "bench/protocols", "examples",
                "--library", "examples", "--max-scenarios", "2"])
     out = "".join(capsys.readouterr())
-    assert "coverage: fuzzed 8 / total 37" in out
+    assert "coverage: fuzzed 8 / total 38" in out
     # Inc1 splits the old generic "single-condition reward" skip into specific,
     # feature-mapped reasons (so the breakdown maps to later increments); the
     # multi-leaf control-absolute fixture adds its own feature-mapped skip.

@@ -168,6 +168,7 @@ impl RustEvaluator {
             d.set_item("value", e.value)?; // Option<f64> -> None/float
             d.set_item("source", e.source)?;
             d.set_item("target_pct", e.target_pct)?;
+            d.set_item("scale", e.scale)?;
             d.set_item("n_samples", e.n_samples)?;
             d.set_item("window_s", e.window_s)?;
             d.set_item("at_time_s", e.at_time_s)?;

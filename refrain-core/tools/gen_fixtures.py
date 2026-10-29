@@ -398,7 +398,11 @@ if __name__ == "__main__":
     # one-channel guard).
     generate("micro_passthrough_identity", channels=("Cz",))
     # Baseline-seeding conformance fixture (§2.6): the seed fires only during
-    # warmup, so this is the ONE stem generated with skip_warmup=False. A
+    # warmup, so this is one of the three stems generated with
+    # skip_warmup=False — the others are `seed_exprpos` and `seed_scale_emg`
+    # below. Every other stem in this file takes the corpus-wide
+    # skip_warmup=True. docs/CONFORMANCE.md §3 names the same three as its
+    # exception to step 3; add a stem in both places if a fourth appears. A
     # constant-fill signal makes the seeded percentile exact by construction.
     # amp=None so the resolver's chosen rate is exactly 256 Hz (the rate this
     # fixture runs at) — see the `generate()` docstring note on control-seed
@@ -418,6 +422,51 @@ if __name__ == "__main__":
         channels=("Cz",),
         skip_warmup=False,
         signal=np.full((N_SAMPLES, 1), 5.0),
+        amp=None,
+    )
+    # The worked per-person muscle limit and the golden vector for a seed
+    # rule's `scale` multiplier (design §4): a muscle envelope feeding nothing
+    # but an artifact gate, a control seeded from that envelope at three times
+    # its warm-up median amplitude, and the gate's limit read off that control.
+    #
+    # `skip_warmup=False` and `amp=None` for the same reasons as the two seeds
+    # above. The signal is where this stem departs from them, and it is worth
+    # saying why, because two obvious choices are both wrong:
+    #
+    #   - A constant fill, which the other two use so their percentile is
+    #     exact by construction, has no energy at all in 50-100 Hz. The
+    #     envelope would sit at the numerical noise floor, the seeded limit
+    #     would come out around 1e-65, and the vector would pin nothing.
+    #
+    #   - Broadband noise alone gives the envelope a realistic spread, but a
+    #     gate at three times the median amplitude never trips on it: measured
+    #     over this exact signal, 0 of the 3328 run-phase samples reach the
+    #     limit. There is no muscle in Gaussian noise. Weakening the
+    #     multiplier until noise trips it would make the fixture demonstrate a
+    #     number no clinic would use.
+    #
+    # So the signal is broadband noise plus two clenches: Hann-windowed 70 Hz
+    # bursts at 6.0 s (1 s long) and 11.0 s (0.5 s), both inside the run
+    # phase, leaving the warm-up clean so the seeded median is the person's
+    # resting level. The gate then trips twice and clears twice on muscle that
+    # is actually there, with the clinical `scale = 3.0` intact. Hann rather
+    # than a hard edge because a square-edged burst is a broadband click: it
+    # would leak into the 12-15 Hz trained band and make the vector depend on
+    # that leak rather than on the muscle band.
+    _emg_rng = np.random.default_rng(SEED)
+    _emg_signal = _emg_rng.standard_normal((N_SAMPLES, 1)) * 10.0
+    _emg_t = np.arange(N_SAMPLES) / SAMPLE_RATE_HZ
+    for _burst_start, _burst_stop in ((1536, 1792), (2816, 2944)):
+        _emg_signal[_burst_start:_burst_stop, 0] += (
+            40.0
+            * np.hanning(_burst_stop - _burst_start)
+            * np.sin(2 * np.pi * 70.0 * _emg_t[_burst_start:_burst_stop])
+        )
+    generate(
+        "seed_scale_emg",
+        channels=("Cz",),
+        skip_warmup=False,
+        signal=_emg_signal,
         amp=None,
     )
     # Advisor parity fixtures (advisor_parity.rs): tracer output over every

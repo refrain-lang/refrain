@@ -504,13 +504,34 @@
           "type": "object"
         },
         "default": {
-          "$ref": "#/$defs/Expr"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "range_low": {
-          "$ref": "#/$defs/Expr"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "range_high": {
-          "$ref": "#/$defs/Expr"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Expr"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "log_scale": {
           "type": "boolean"
@@ -552,6 +573,10 @@
             },
             "target_pct": {
               "$ref": "#/$defs/Expr"
+            },
+            "scale": {
+              "type": "number",
+              "exclusiveMinimum": 0
             }
           }
         },

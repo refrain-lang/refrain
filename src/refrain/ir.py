@@ -281,6 +281,11 @@ class IRControlSeed:
     window_ms: float        # trailing window, rate-independent; baked to samples at emit time
     target_pct: IRExpr      # a `number` node or a `percent` control_ref
     loc: Loc | None = None
+    # Dimensionless multiplier applied to the statistic's result before the
+    # control is written (SPEC §4.9.4). 1.0 means "the statistic as measured",
+    # which is what an absent `scale` resolves to, so a protocol that does not
+    # declare one emits byte-identical IR-JSON.
+    scale: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)

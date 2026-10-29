@@ -2088,6 +2088,7 @@ data class SeedReport (
     var `value`: kotlin.Double?, 
     var `source`: kotlin.String, 
     var `targetPct`: kotlin.Double, 
+    var `scale`: kotlin.Double, 
     var `nSamples`: kotlin.ULong, 
     var `windowS`: kotlin.Double, 
     var `atTimeS`: kotlin.Double?
@@ -2106,6 +2107,7 @@ public object FfiConverterTypeSeedReport: FfiConverterRustBuffer<SeedReport> {
             FfiConverterOptionalDouble.read(buf),
             FfiConverterString.read(buf),
             FfiConverterDouble.read(buf),
+            FfiConverterDouble.read(buf),
             FfiConverterULong.read(buf),
             FfiConverterDouble.read(buf),
             FfiConverterOptionalDouble.read(buf),
@@ -2117,6 +2119,7 @@ public object FfiConverterTypeSeedReport: FfiConverterRustBuffer<SeedReport> {
             FfiConverterOptionalDouble.allocationSize(value.`value`) +
             FfiConverterString.allocationSize(value.`source`) +
             FfiConverterDouble.allocationSize(value.`targetPct`) +
+            FfiConverterDouble.allocationSize(value.`scale`) +
             FfiConverterULong.allocationSize(value.`nSamples`) +
             FfiConverterDouble.allocationSize(value.`windowS`) +
             FfiConverterOptionalDouble.allocationSize(value.`atTimeS`)
@@ -2127,6 +2130,7 @@ public object FfiConverterTypeSeedReport: FfiConverterRustBuffer<SeedReport> {
             FfiConverterOptionalDouble.write(value.`value`, buf)
             FfiConverterString.write(value.`source`, buf)
             FfiConverterDouble.write(value.`targetPct`, buf)
+            FfiConverterDouble.write(value.`scale`, buf)
             FfiConverterULong.write(value.`nSamples`, buf)
             FfiConverterDouble.write(value.`windowS`, buf)
             FfiConverterOptionalDouble.write(value.`atTimeS`, buf)
