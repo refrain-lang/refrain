@@ -273,6 +273,18 @@ pub struct Block {
     pub output: Vec<String>,
     #[serde(default)]
     pub inhibits: Vec<String>,
+    /// Seeded controls that re-measure themselves when this block goes active
+    /// (IR-JSON v0.6). Empty, and absent from the wire, for every protocol
+    /// that declares no `reseed`.
+    #[serde(default)]
+    pub reseed: Vec<String>,
+    /// The hold sites a re-seed resets, resolved by the Python front end so
+    /// both engines reset the same holds instead of each walking the
+    /// dependency graph. Each entry is `"reward/event"`,
+    /// `"reward_bundle/<name>"` or `"output/<channel>"`; sorted. Emitted with
+    /// `reseed` and only with it.
+    #[serde(default)]
+    pub reseed_holds: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]

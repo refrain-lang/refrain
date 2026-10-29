@@ -394,6 +394,16 @@ class IRBlock:
     default top-level reward. `outputs` is the set of output channels that may
     emit during this block (empty tuple => all channels). `inhibits` is the set
     of inhibits that gate during this block (empty tuple => all inhibits).
+
+    `reseed` names the seeded controls that re-measure themselves from a
+    trailing window when this block goes active, in declaration order.
+    `reseed_holds` is the set of hold sites a re-seed resets, computed once at
+    resolve time so both engines reset the same holds instead of each
+    rediscovering them at run time. Each entry names one site: `"reward/event"`
+    (the top-level reward event), `"reward_bundle/<name>"` (a bundle's event),
+    or `"output/<channel>"` (a hold bound directly in an output channel).
+    Sorted, so the emitted JSON is stable. Both empty for every protocol that
+    declares no `reseed`, which is what keeps today's wire format byte-identical.
     """
 
     name: str
@@ -401,6 +411,8 @@ class IRBlock:
     reward: str | None
     outputs: tuple[str, ...]
     inhibits: tuple[str, ...]
+    reseed: tuple[str, ...] = ()
+    reseed_holds: tuple[str, ...] = ()
     loc: Loc | None = None
 
 

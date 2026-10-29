@@ -239,7 +239,12 @@ def _protocol_ir_version(ir: IRProtocol, ctx: _EmitCtx) -> str:
     with `scale != 1.0` emits 0.6 as well: an engine that dropped the key
     would seed the control at the bare statistic, so a muscle limit meant to
     sit at three times the warm-up median would sit at the median itself and
-    gate most of the session.
+    gate most of the session. A block with a non-empty `reseed` is the fourth
+    and last of these: an engine that dropped the key would run the whole
+    session on the warm-up value, so a protocol whose later blocks depend on
+    re-measuring would train against a threshold set from a state the trainee
+    has since left. An empty `reseed` — which is every block written before
+    the field existed — emits no key and does not bump the version.
     """
     if (
         _bakes_a_hold_tolerance(ir, ctx)
@@ -247,6 +252,7 @@ def _protocol_ir_version(ir: IRProtocol, ctx: _EmitCtx) -> str:
         or any(
             c.seed is not None and c.seed.scale != 1.0 for c in ir.controls.values()
         )
+        or any(b.reseed for b in ir.blocks.values())
     ):
         return "0.6"
     if (
@@ -663,13 +669,23 @@ def _emit_phase(p: IRPhase) -> dict:
 
 
 def _emit_block(b) -> dict:
-    return {
+    obj = {
         "name": b.name,
         "thresholds": list(b.thresholds),
         "reward": b.reward,
         "output": list(b.outputs),
         "inhibits": list(b.inhibits),
     }
+    if b.reseed:
+        # Both keys or neither, and only when something is re-seeded: every
+        # block written before this field existed keeps a byte-identical
+        # object, and therefore an unchanged `content_hash` and IR version.
+        # `reseed_holds` travels with `reseed` rather than being recomputed by
+        # each runtime — it is the set both engines must reset, so it is the
+        # emitter's job to say which holds those are, once.
+        obj["reseed"] = list(b.reseed)
+        obj["reseed_holds"] = list(b.reseed_holds)
+    return obj
 
 
 def _emit_session(s: IRSession) -> dict:

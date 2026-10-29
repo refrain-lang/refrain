@@ -758,7 +758,29 @@
           "items": {
             "type": "string"
           }
+        },
+        "reseed": {
+          "description": "v0.6: seeded controls that re-measure themselves when this block goes active, in declaration order. Absent when nothing is re-seeded.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reseed_holds": {
+          "description": "v0.6: the hold sites a re-seed resets, each `reward/event`, `reward_bundle/<name>` or `output/<channel>`; sorted. Emitted with `reseed` and only with it.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
+      },
+      "dependentRequired": {
+        "reseed": [
+          "reseed_holds"
+        ],
+        "reseed_holds": [
+          "reseed"
+        ]
       }
     },
     "Arg": {

@@ -809,7 +809,7 @@ currently an error.
 - **Warmup fits.** If the protocol's first session phase is a timed, output-muted warmup (not `mode = "open"`), `window` must fit inside that phase's duration. A seed whose window can never fill is refused at compile time, not discovered fail-closed at runtime. This is normative and it is strict: a seeded control is only usable in a protocol that opens with a timed, output-muted phase long enough to hold its whole measurement window.
 - **Dead-seed elimination.** If the seeded control is never referenced anywhere in the resolved pipeline (derives, thresholds, inhibits, reward, output), the seed is dropped rather than attached — an unused control's seed rule would just be dead weight on the wire.
 
-**Runtime semantics (informative; full behavior in `docs/EMBEDDING.md`'s `seed_report()` section):** during warmup the engine measures `from`'s samples into a trailing buffer sized to `window`; at the warmup→run edge it computes the `target_pct` percentile of that buffer, multiplies it by `scale`, and writes the control exactly once, then holds. A practitioner who calls `set_control` on the seeded control before it fires disarms the seed for the rest of the session instead of racing it.
+**Runtime semantics (informative; full behavior in `docs/EMBEDDING.md`'s `seed_report()` section):** during warmup the engine measures `from`'s samples into a trailing buffer sized to `window`; at the warmup→run edge it computes the `target_pct` percentile of that buffer, multiplies it by `scale`, and writes the control exactly once, then holds. A practitioner who calls `set_control` on the seeded control before it fires disarms the seed for the rest of the session instead of racing it. A staged protocol may ask for a seeded control to be re-measured again at a block boundary, instead of holding the warm-up value for the whole session — see `reseed` in §4.13, and read its "off unless declared" paragraph before turning it on.
 
 **A seed that does not complete mutes the output for the rest of the session.** This is normative. If the buffer has not been filled with `window` finite samples by the run edge — a warm-up cut short, an early advance, a skipped warm-up — the seed fails closed: the control keeps its declared `default` **and** every output channel is muted for the remainder of the session. A trainee whose warm-up got cut short hears nothing at all for the whole run; there is no degrade-to-default path. Pinned on both engines by `tests/test_eval_seed_scale.py::test_a_warm_up_seed_that_cannot_fill_its_window_still_fails_closed`. The rule is defensible for a reward threshold and considerably more consequential for a seeded *inhibit* level, which a practitioner might reasonably expect to fall back to a fixed limit; whether fail-closed stays the right policy there is a protocol-library question, not an engine one.
 
@@ -975,6 +975,56 @@ Defaults are not part of the protocol and are not in `content_hash`.
 **Composition:** `autopilot` is a singleton section, merged like `reward` — a child's block replaces the parent's; `amend autopilot { ... }` overrides individual settings and entries. `remove` does not apply to sections. A control's `autopilot` field merges with the rest of the control at field level, exactly as `seed` does. `final` protects named declarations and controls (§11.4); it does not apply to whole sections, so `final autopilot { ... }` is not supported.
 
 See §4.9.5 for per-control policies, §6.7 for the compiler's cross-reference validation, §7.10 for the decision procedure, and `docs/AUTOPILOT-AUTHORING.md` for a worked, step-by-step guide.
+
+### 4.13 `block`
+
+A named activation set, referenced by `phase.block` (§4.10). A staged session declares one block per training stage and each phase names the block that is live while it runs. `examples/staged_beta_alpha.refrain` is the worked form: beta-up, then alpha-up, with one baseline up front.
+
+```refrain
+block "beta_up"  { threshold = "beta_t";  reward = "beta_reward";  output = ["audio_gain", "audio_chime"] }
+block "alpha_up" { threshold = "alpha_t"; reward = "alpha_reward"; output = ["audio_gain", "audio_chime"]
+                   reseed    = ["alpha_uv"] }
+```
+
+**Fields** (all optional; an unknown field is a `ResolveError`, not a silent drop):
+- `threshold`: a name or list of names — declarative, for validation and telemetry.
+- `reward`: the named reward bundle (§4.7) live during this block. Absent means the top-level `reward { }`.
+- `output`: the output channels that may emit during this block. Empty means all of them.
+- `inhibit`: the inhibits that gate during this block. Empty means all of them.
+- `reseed`: the seeded controls that re-measure themselves at this block's boundary. Empty — the default, and what every protocol written before this field says — means nothing re-seeds, and the session behaves exactly as it does today.
+
+Every name is checked against the protocol: an unknown threshold, output channel, inhibit or reward bundle is a `ResolveError`, as is a phase naming a block that does not exist.
+
+#### `reseed` — re-measuring a seeded control at a block boundary
+
+A seed rule (§4.9.4) measures a control once, from the warm-up, and holds it for the session. `reseed` says that a particular block re-measures the named controls when it goes active, from a trailing window of the signal that just ran, rather than training the rest of the session against a number taken from the warm-up:
+
+```refrain
+block "alpha_up" { threshold = "alpha_t"; reward = "alpha_reward"; reseed = ["alpha_uv"] }
+```
+
+**It is off unless declared, and leaving it off is often right.** Re-seeding assumes the window before the boundary is a fair baseline for what the next block trains. When consecutive blocks train materially different states — beta-up then alpha-up, as in the staged example — the trailing window is a measurement of the *previous* state, and a threshold set from it can be systematically wrong in a direction nobody notices: an alpha threshold seeded from the tail of beta training sits wherever beta training left alpha, which is not where an alpha baseline would put it. A fixed, warm-up-seeded threshold is the conservative choice, and a block whose signal is the same one the previous block trained is the case where re-seeding earns its keep.
+
+**Resolve-time guarantees:**
+- **The control exists and has a seed.** A name that is not a declared control, and a control with no `seed` rule, are each a `ResolveError` — there is no statistic to re-measure.
+- **The seed survived.** If the seeded control is referenced by nothing in the resolved pipeline, its seed is folded out as dead (§4.9.4), and a `reseed` naming it is a `ResolveError` rather than a declaration that compiles and re-measures a value no stream reads.
+- **No duplicates.** A control listed twice in one `reseed` is a `ResolveError`: a control re-measures itself once per boundary, and the second entry could only fire against an emptied buffer.
+- **The window can fill.** The seed's `window` is compared against the signal available before the boundary — the summed duration of the phases that precede it and are not output-muted. Two separate rules put a muted phase's wall clock outside the budget. A mid-session output-muted rest is frozen out of re-seed ingestion, so its minutes add no samples however long it runs. The warm-up is not frozen — refrain's existing freeze is `output_muted` **and** not the first phase, so phase 0 does feed a rolling percentile — but its samples are spent on the warm-up seed: a re-seed measures the signal since the previous seeding, and the warm-up seed fires at the end of the warm-up, so warm-up time cannot pay for the first re-seed either. A window longer than the resulting budget is a `ResolveError`. Two things bound the check, both deliberately: it refuses only when **every** phase that activates the block is short of the window, because a block whose first entry cannot fill but whose later entries can is a declaration that does something; and a live phase with `mode = "open"` makes the amount unknown rather than zero — the practitioner ends such a phase when they end it — so the check stands down, the same guard the warm-up window check makes. What those two allow through is not a session-ending fault: a re-seed whose window has not filled keeps the value the control is already running and records the miss.
+
+**The holds a re-seed resets.** A streak banked against the old threshold says nothing about the new one, so a re-seed restarts the hold clock (`dwell`, `dwell_rearm`, `hold_for`) of every hold whose condition reads the re-seeded control — directly, or through a threshold the re-seed moves. A hold that reads neither keeps its streak: every reward bundle is stepped on every chunk to keep its dwell timers warm, so resetting all of them at a boundary would change what the existing staged protocols do with no new declaration present. The set is resolved at compile time and carried on the wire as `reseed_holds` (`docs/IR-JSON.md` §3.7), so both engines reset the same holds instead of each walking the dependency graph.
+
+**How far the walk reaches**, stated as reach rather than as a list of shapes, because a list goes stale as the language grows:
+
+- It starts at the re-seeded control and adds every threshold whose own level expression names something already in the set. That is **transitive**: a threshold's level may itself be a threshold, so a chain of any length is followed to its end, and a hold reading the far link is reset. Over-resetting costs one streak; failing to reset a hold whose threshold moved is the defect this feature exists to remove, so the walk errs towards resetting.
+- It follows **expressions only**. A control that reaches a hold through a `derive` — as a `bandpass` centre frequency or a `smooth` time constant, say — is not in the set, and that hold is not reset.
+- A **site is a whole expression**, named once: `reward/event`, `reward_bundle/<name>` or `output/<channel>`. Two holds in one of those — in a single reward event, or in a single output channel's expression — are reset together, even if only one of them reads the re-seeded control.
+- The sites are the reward events and the output bindings, so a hold written into a reward's `continuous` rather than its `event` is not a site and is never reset.
+
+No protocol under `examples/` or `bench/protocols/` is affected, and the margin is thinner than it looks. No site holds more than one hold, no threshold takes its level from another threshold, and no reward's `continuous` holds. Derives *do* read controls — band edges in `examples/alpha_theta_autopilot.refrain`, the ORF in the Othmer ILF protocols — but none of those controls carries a `seed`, so none can be re-seeded. The shape this walk misses already exists outside those two trees: `tests/fixtures/external/skin_temp_warming.refrain` declares a `rise` derive reading the seeded control `baseline_c`, and `rise` feeds a `dwell`. Nothing is wrong there today, because that protocol declares no `reseed` — but adding one would leave that hold's streak stale with no diagnostic to say so.
+
+**Run-time behaviour.** What the engine does at the boundary — the trailing window it reads, what happens when that window has not filled, and what a practitioner's own `set_control` does to a re-seeding control — belongs with the rest of seeding in §4.9.4. This section specifies the declaration and the checks the compiler makes on it.
+
+**Wire format.** A block with a non-empty `reseed` emits `reseed` and `reseed_holds` on its block object and tags the document `refrain_ir_version: "0.6"`; an engine that dropped the keys would run the whole session on the warm-up value. A block with no `reseed` emits neither key and leaves the document's version where it was. See `docs/IR-JSON.md` §3.7.
 
 ---
 

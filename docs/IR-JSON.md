@@ -25,10 +25,11 @@ protocol using autopilot or named reward checks (§3.2 below; schema at
 that declares typed feedback, binds a dwell/rearm output, or bakes complex FIR
 taps (§3.3 below covers the last of the three), and `"0.6"` for a protocol
 whose hold forgives a dip (§3.4 below), whose inhibit is labelled
-`kind = "artifact"` (§3.5 below), or whose seed rule carries a `scale` other
-than `1.0` (§3.6 below). Each version's schema is a
+`kind = "artifact"` (§3.5 below), whose seed rule carries a `scale` other
+than `1.0` (§3.6 below), or whose block re-seeds a control at its boundary
+(§3.7 below). Each version's schema is a
 superset of the previous one's fields. This document otherwise describes the
-`"0.1"` shape; §3.1 through §3.6 cover the `"0.3"`, `"0.4"`, `"0.5"` and
+`"0.1"` shape; §3.1 through §3.7 cover the `"0.3"`, `"0.4"`, `"0.5"` and
 `"0.6"` additions.
 
 ### Compatibility policy
@@ -114,7 +115,7 @@ present in the serialized output (verified against `realistic_smr.ir.json`):
 
 | Key | JSON type | Meaning |
 |---|---|---|
-| `refrain_ir_version` | `"0.1"` \| `"0.2"` \| `"0.3"` \| `"0.4"` \| `"0.5"` \| `"0.6"` (string) | Wire-format version. Emitted by `_protocol_ir_version()` (`src/refrain/ir_json.py`) as the lowest version that represents the protocol: `"0.6"` when any one of three things is true — some hold's `tolerance` bakes to **one or more samples** at this document's rate (a tolerance that rounds to zero forgives nothing, emits no field, and does not bump the version), some inhibit's `kind` is `"artifact"` (`"trained"` and unlabelled do not bump it), or some seed rule's `scale` differs from `1.0` (an omitted `scale`, and an explicit `1.0`, do not) — else `"0.5"` for complex FIR taps, else `"0.4"` for autopilot/named-check features, else `"0.3"` for a control baseline-seed rule, else `"0.2"` for composite/staging features, else `"0.1"`. Runtimes accept `SUPPORTED_IR_VERSIONS`: `"0.1"`, `"0.2"`, `"0.3"`, `"0.4"`, `"0.5"`, `"0.6"`. |
+| `refrain_ir_version` | `"0.1"` \| `"0.2"` \| `"0.3"` \| `"0.4"` \| `"0.5"` \| `"0.6"` (string) | Wire-format version. Emitted by `_protocol_ir_version()` (`src/refrain/ir_json.py`) as the lowest version that represents the protocol: `"0.6"` when any one of four things is true — some hold's `tolerance` bakes to **one or more samples** at this document's rate (a tolerance that rounds to zero forgives nothing, emits no field, and does not bump the version), some inhibit's `kind` is `"artifact"` (`"trained"` and unlabelled do not bump it), some seed rule's `scale` differs from `1.0` (an omitted `scale`, and an explicit `1.0`, do not), or some block's `reseed` is non-empty (an absent `reseed` emits no key and does not bump it) — else `"0.5"` for complex FIR taps, else `"0.4"` for autopilot/named-check features, else `"0.3"` for a control baseline-seed rule, else `"0.2"` for composite/staging features, else `"0.1"`. Runtimes accept `SUPPORTED_IR_VERSIONS`: `"0.1"`, `"0.2"`, `"0.3"`, `"0.4"`, `"0.5"`, `"0.6"`. |
 | `name` | `string \| null` | Protocol name (`smr_cz_v1`, etc.). |
 | `extends` | `string \| null` | Parent protocol name, if any. |
 | `sample_rate_hz` | number | Baked runtime sample rate (host choice, ≥ `requires.sample_rate_min_hz`). |
@@ -467,6 +468,67 @@ at load instead.
 A protocol whose seeds declare no `scale` keeps a byte-identical IR-JSON,
 `content_hash`, and `refrain_ir_version` to what it emitted before v0.6
 existed.
+
+### 3.7 Block reseed (v0.6)
+
+Two array fields on a `blocks.<name>` object: `reseed`, the seeded controls
+that re-measure themselves from a trailing window when this block goes active,
+and `reseed_holds`, the hold sites a re-seed resets (`docs/SPEC.md` §4.13).
+
+```json
+"blocks": {
+  "alpha_up": {
+    "name": "alpha_up",
+    "thresholds": ["alpha_t"],
+    "reward": "alpha_reward",
+    "output": ["audio_gain", "audio_chime"],
+    "inhibits": [],
+    "reseed": ["alpha_uv"],
+    "reseed_holds": ["reward_bundle/alpha_reward"]
+  }
+}
+```
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `reseed` | array of string | Bare control names, in declaration order. Each names a control with a `seed` rule that survived dead-seed elimination; the resolver refuses anything else, so a consumer can look every entry up in `controls` and find a `seed` object there. |
+| `reseed_holds` | array of string | The hold sites whose streak a re-seed restarts, sorted. Each entry is `"reward/event"` (the top-level reward event), `"reward_bundle/<name>"` (that bundle's event), or `"output/<channel>"` (a hold bound directly in that output channel). May be empty: a block that re-seeds a control no hold reads has nothing to reset. |
+
+**Both keys are emitted together, and only when `reseed` is non-empty.** The
+v0.6 schema states that with `dependentRequired`, in both directions. A block
+with no `reseed` emits neither key, so every staged document written before
+this field existed keeps its bytes, its `content_hash` and its version.
+
+**Why the hold set travels on the wire instead of being recomputed.** The set
+is the answer to a dependency walk — from the control, through the thresholds
+it sets, to the hold conditions that read them — and the two engines must reset
+*the same* holds or they diverge the first time a streak straddles a boundary.
+Resolving it once, in the front end, is what makes that a wire fact rather than
+a reimplementation each runtime gets a chance to get wrong. A consumer resets
+the holds it is told to reset; it does not go looking for more.
+
+**How far the walk reaches**, stated as reach rather than as a list of shapes,
+because a list goes stale as the language grows. The set starts at the
+re-seeded control and adds every threshold whose own level expression names
+something already in it — transitively, since a threshold's level may itself be
+a threshold, so a chain of any length is followed to its end. From there it
+names each hold-bearing expression that reads anything in the set. It follows
+nothing else: a control reaching a hold only through a derive is not in the
+set; a site is a whole expression, so two holds in one reward event or one
+output channel are reset together even if only one of them reads the control;
+and the sites are the reward events and the output bindings, so a hold written
+into a reward's `continuous` is not a site at all. Nothing in the library is
+affected yet — the controls that derives read there carry no `seed`, so none of
+them can be re-seeded — and `docs/SPEC.md` §4.13 states the same reach
+normatively, with the one case that would bite first.
+
+**Version gate.** `_protocol_ir_version()` returns `"0.6"` when any block's
+`reseed` is non-empty. An engine that dropped the keys would run the whole
+session on the warm-up value, so a protocol whose later blocks depend on
+re-measuring would train against a threshold set from a state the trainee has
+since left — and it would hold streaks banked against the old threshold across
+the boundary. `SUPPORTED_IR_VERSIONS` in `refrain-core/src/ir.rs` includes
+`"0.6"`; an older core refuses the document at load instead.
 
 ---
 
