@@ -1123,6 +1123,18 @@ impl RewardEvent {
     /// same set in both engines.
     fn reset_holds(&mut self) {
         self.dwell.reset();
+        self.reset_condition_holds();
+    }
+
+    /// Restart every hold nested in this event's conditions, leaving the
+    /// event's own dwell running. This is the set a transport pause
+    /// invalidates (`reset_held_outputs`): the Python evaluator resets every
+    /// `hold_for` impl in the protocol and the reward event's own `DwellImpl`
+    /// is not one, so a freeze restarts a nested hold and not the event dwell
+    /// above it. A re-seed is the other case and resets both, via
+    /// `reset_holds` — there the control the hold reads has changed under it,
+    /// so the event's own streak is stale too.
+    fn reset_condition_holds(&mut self) {
         for condition in self.sub_conditions.iter_mut() {
             condition.reset_holds();
         }
@@ -1564,9 +1576,68 @@ impl Evaluator {
         self.snapshot_current_phase();
     }
 
+    /// Invalidate held feedback streaks after audio mute or a data gap.
+    /// Mirrors `Evaluator.reset_held_outputs`, whose set is the reference:
+    /// every `hold_for` in the protocol wherever it sits, plus a
+    /// `dwell`/`dwell_rearm` bound in `output { }`, and NOT a reward event's
+    /// own dwell. A streak accumulated across samples that never arrived is
+    /// stale wherever the hold is written, so walking only `self.outputs` —
+    /// which is what this did until 0.25.0 — left a hold nested in a reward
+    /// condition running through a transport pause in Rust while Python
+    /// restarted it: 250 ms apart on a 256 Hz measurement, on the shape
+    /// `docs/SPEC.md` §7.4 newly specifies.
+    ///
+    /// `CNode::reset_holds` is the re-seed walk, reused here rather than
+    /// duplicated. Its reach is wider than Python's by exactly one node kind:
+    /// a `dwell`/`dwell_rearm` nested BELOW the top level of an expression,
+    /// which Python's `HoldForImpl` test skips and this resets. No protocol
+    /// can observe the difference — every spelling that puts an event stream
+    /// in a boolean position either raises in the Python evaluator
+    /// (`'DwellResult' object has no attribute 'shape'`) or already disagrees
+    /// between the engines with no pause involved, so the resolver, not this
+    /// function, is where that shape has to be refused. The reward event's own
+    /// dwell is the one node that must NOT be swept in, which is why the
+    /// reward stage goes through `reset_condition_holds`.
     pub fn reset_held_outputs(&mut self) {
+        // `output { }`: every hold in the binding, the top-level
+        // `dwell`/`dwell_rearm` included — the only place a hold other than
+        // `hold_for` is reset.
         for (_, node, _) in self.outputs.iter_mut() {
             node.reset_holds();
+        }
+        // Everywhere else a `hold_for` can legally sit. A derive formula and
+        // an inhibit metric are among them (`docs/SPEC.md` §7.4), and both
+        // compile to a `CNode` here, so they are walked rather than argued
+        // about.
+        for (_, node) in self.derives.iter_mut() {
+            node.reset_holds();
+        }
+        for (_, node) in self.thresholds.iter_mut() {
+            node.reset_holds();
+        }
+        for inhibit in self.inhibits.iter_mut() {
+            inhibit.metric.reset_holds();
+        }
+        // The reward stage: the condition holds restart, the event's own
+        // dwell does not.
+        if let Some(node) = self.reward_continuous.as_mut() {
+            node.reset_holds();
+        }
+        if let Some(event) = self.reward_event.as_mut() {
+            event.reset_condition_holds();
+        }
+        for component in self.reward_components.iter_mut() {
+            component.signal.reset_holds();
+        }
+        // Every bundle, not only the live one: a pause is a pause whichever
+        // block is running, which is how the artifact mask treats them too.
+        for bundle in self.reward_bundles.values_mut() {
+            if let Some(node) = bundle.continuous.as_mut() {
+                node.reset_holds();
+            }
+            if let Some(event) = bundle.event.as_mut() {
+                event.reset_condition_holds();
+            }
         }
     }
 

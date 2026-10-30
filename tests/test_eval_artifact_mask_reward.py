@@ -120,6 +120,24 @@ NESTED_IF_ELIGIBILITY_CROSSED = _outer_fires_once_nested_holds_at(
     RESUME + NESTED_HOLD_SAMPLES - 1                                     # 966
 )                                                                          # 1029
 
+# --- A transport pause, with no mute anywhere ------------------------------
+#
+# A host pause is not an artifact: it does not mean "the engine could not read
+# these samples", it means there were no samples. So a streak does not freeze
+# across it, it dies — a streak accumulated across unobserved time is stale
+# wherever the hold sits, which is "forgive, don't credit" applied to a
+# transport gap.
+#
+# 704 is a chunk boundary 13 samples into the nested hold's 32, so the pause
+# lands mid-streak with nothing banked that survives. The hold starts again
+# from the first sample after the pause and holds 32 later; the outer dwell
+# then takes its 64 from there.
+PAUSE_AT = 704
+NESTED_RISE_AFTER_PAUSE = PAUSE_AT + NESTED_HOLD_SAMPLES - 1             # 735
+NESTED_AFTER_PAUSE = _outer_fires_once_nested_holds_at(
+    NESTED_RISE_AFTER_PAUSE
+)                                                                          # 798
+
 
 def _run(
     backend: str,
@@ -129,6 +147,8 @@ def _run(
     mode: str = "plain",
     artifact: bool = True,
     chunk: int = 64,
+    pause_at: int | None = None,
+    pause_via: str = "clock",
 ) -> tuple[dict[str, np.ndarray], list[tuple[int, int, dict[str, float]]]]:
     """Feed the swallow signal once; return the per-sample streams and a
     `(chunk_start, chunk_stop, last_taps())` triple for each chunk.
@@ -138,6 +158,14 @@ def _run(
     gate and never the signal. The muscle column is 1.0 for the length of the
     artifact and 0.0 otherwise; `artifact=False` leaves it silent throughout,
     which is the control run for "this mute changed nothing".
+
+    `pause_at` is the sample index of a chunk boundary at which the host
+    interrupts the session before that chunk is fed — the transport pause a
+    practitioner causes from the console. `pause_via="clock"` does it with
+    `set_clock_frozen(True)` then `(False)`, which is what a pause button
+    calls; `pause_via="reset"` calls `reset_held_outputs()` directly, which is
+    what `docs/PRIMITIVES.md` tells a host to do after an input gap. Both
+    reach the same invalidation and both must give the same answer.
     """
     src = reward_event_protocol(kind=kind, condition=condition, mode=mode)
     ir = resolve(parse(src))
@@ -156,6 +184,12 @@ def _run(
     streams: dict[str, list[float]] = {}
     taps: list[tuple[int, int, dict[str, float]]] = []
     for start in range(0, N_SAMPLES, chunk):
+        if pause_at is not None and start == pause_at:
+            if pause_via == "clock":
+                evaluator.set_clock_frozen(True)
+                evaluator.set_clock_frozen(False)
+            else:
+                evaluator.reset_held_outputs()
         evaluator.step_chunk(signal[start:start + chunk])
         for key, values in evaluator.last_streams().items():
             streams.setdefault(key, []).extend(np.asarray(values).tolist())
@@ -420,6 +454,51 @@ def test_a_hold_nested_in_a_reward_condition_freezes_under_an_artifact_mute(back
     # there is no observability mask to do the cancelling.
     assert NESTED_FROZEN < NESTED_IF_ELIGIBILITY_CROSSED
     assert _first_raw_event_time(streams) != _at(NESTED_IF_ELIGIBILITY_CROSSED)
+
+
+@pytest.mark.parametrize("pause_via", ["clock", "reset"])
+def test_a_transport_pause_restarts_a_hold_nested_in_a_reward_condition(backend, pause_via):
+    """A streak cannot survive a gap in the signal, wherever the hold is written.
+
+    `set_clock_frozen(True)` and `reset_held_outputs()` both say the same
+    thing: the samples that would have come next did not come, so no streak
+    standing at that moment means what it says any more. A hold nested inside
+    a reward condition is in exactly that position, so it restarts — the same
+    rule the `output`-bound holds have always followed, and the same rule
+    `tests/test_eval_inhibit_kind.py`'s frozen-clock row pins there.
+
+    No mute fires in either run here: the muscle column is silent, so the
+    masks are out of the picture and the pause is the only thing that can move
+    the answer. It moves it from 785 to 798 — the nested hold had banked 13 of
+    its 32 samples when the pause landed, loses them, needs all 32 again from
+    the first sample after, and the outer dwell takes its 64 from there.
+
+    Rust reset only the holds reachable from `output { }`, so it answered 785
+    with the pause and without it, 13 samples earlier than Python and on a
+    streak built partly on samples from before the gap. That is the divergence
+    this case exists to pin, and the reason it asserts the delivered event and
+    not an evaluator attribute: a parity claim has to be readable from the
+    stream a trainee hears.
+    """
+    paused, _ = _run(backend, kind=None, condition=NESTED_HOLD_CONDITION,
+                     artifact=False, pause_at=PAUSE_AT, pause_via=pause_via)
+    running, _ = _run(backend, kind=None, condition=NESTED_HOLD_CONDITION,
+                      artifact=False)
+    # Witness that nothing was muted in either run, so the only difference
+    # between them is the pause.
+    assert _muted_span(paused) == []
+    assert _muted_span(running) == []
+    assert _first_raw_event_time(running) == _at(NESTED_UNMASKED)
+    assert _first_raw_event_time(paused) == _at(NESTED_AFTER_PAUSE)
+    assert _first_delivered_event_time(paused) == _at(NESTED_AFTER_PAUSE)
+    assert int(paused["reward.event"].sum()) == 1
+    # The pause has to land inside the nested hold's streak, or the case
+    # observes nothing: before the burst it would have no streak to kill and
+    # after 722 the hold would already be satisfied.
+    assert BURST_START < PAUSE_AT <= NESTED_RISE_UNMASKED
+    # And the two answers have to differ, or it cannot tell a restarted hold
+    # from one that ran straight through the gap.
+    assert NESTED_AFTER_PAUSE != NESTED_UNMASKED
 
 
 @pytest.mark.skipif(
