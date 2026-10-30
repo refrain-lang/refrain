@@ -16,6 +16,28 @@ conforming runtime is one that, given the same IR-JSON and the same seeded
 input, produces outputs that agree with the references within the stated
 tolerance.
 
+**Supported wire versions.** A conforming runtime refuses at load any document
+whose `refrain_ir_version` is not one it supports, rather than running it with
+the unknown semantics silently dropped. As of 0.25.0 the supported set is:
+
+| `refrain_ir_version` | What first requires it |
+|---|---|
+| `"0.1"` (also: the tag absent) | The baseline shape this document describes |
+| `"0.2"` | Composite reward, staged sessions |
+| `"0.3"` | A control baseline-`seed` rule |
+| `"0.4"` | Autopilot, named reward checks |
+| `"0.5"` | Typed feedback, a dwell/rearm-bound output, baked complex FIR taps |
+| `"0.6"` (new in 0.25.0) | A hold `tolerance` that bakes to one or more samples, an inhibit `kind = "artifact"`, a seed `scale` other than `1.0`, or a non-empty block `reseed` |
+
+Each version's schema is a superset of the previous one's fields, so a runtime
+that supports `"0.6"` reads every earlier document. The normative list is
+`SUPPORTED_IR_VERSIONS` in `refrain-core/src/ir.rs`; the per-version field
+documentation and the exact version-bump predicate are in `docs/IR-JSON.md`
+§1 and §3.x. Note that the predicate is behavioural, not syntactic: a
+`tolerance` that rounds to zero samples at the document's rate, an inhibit
+labelled `kind = "trained"`, and an explicit `scale = 1.0` each emit nothing
+and do not raise the version.
+
 **Tooling (source only — do not modify or regenerate fixtures manually):**
 
 - `refrain-core/tools/gen_fixtures.py` — generates all fixture files from the
@@ -207,7 +229,18 @@ disagreement in a reward event is a genuine failure.
 ## 5. Coverage table
 
 Each row maps a fixture stem to the primitives and features it exercises.
-Verified against the actual fixture files in `refrain-core/tests/fixtures/`.
+
+**Reach of this table: it is a guide, not an inventory.** It lists 16 of the 30
+bundles in `refrain-core/tests/fixtures/` (29 stems with their own `.ir.json`,
+plus `realistic_smr_setcontrol`, which replays `realistic_smr.ir.json`). The 14
+it does not describe are `advisor_ap`, `autopilot_alpha_theta`,
+`autopilot_staged`, `composite_smr_theta`, `micro_10_autocorr`,
+`micro_11_control_expr`, `micro_12_control_param_slots`,
+`micro_passthrough_identity`, `output_dwell_event`, `output_dwell_rearm`,
+`output_dwell_rearm_tunable`, `seed_exprpos`, `seed_run` and
+`seed_smr_baseline`. They are part of the corpus and a conforming runtime must
+reproduce them; they are simply not written up here yet. Take the directory
+listing as the authoritative corpus, never this table.
 
 | Stem | Primary feature(s) |
 |---|---|
@@ -221,6 +254,10 @@ Verified against the actual fixture files in `refrain-core/tests/fixtures/`.
 | `micro_08_bandpower` | Bandpower (`bandpower` + auto-range normalization) |
 | `micro_09_inhibit` | Inhibit gate + output muting (`Inhibit` block, `muted` tap, `bandpower` metric; `events.json` and `taps.json` present) |
 | `micro_13_band_envelope` | One-stage band envelope (`band_envelope` with baked `fir_taps_re`/`fir_taps_im`/`group_delay`; IR-JSON v0.5). Deliberately the same band and channel as `micro_03_envelope`, so the two bundles are the four-stage and one-stage forms of one measurement. |
+| `micro_14_tolerance` | Hold dip tolerance (`dwell` with baked `tolerance_samples`; IR-JSON v0.6) paired with a `reward.event.holds`-gated continuous channel, so a disagreement about the dip counter shows up as a whole output value rather than a rounding difference |
+| `micro_15_artifact_gate` | Inhibit `kind = "artifact"` — the observability mask, checked before the condition, so artifact-gated samples freeze a hold's streak and dip counter instead of resetting them (IR-JSON v0.6). Covers both hold paths in one bundle: a `hold_for` bound directly in `output { }` and a `dwell` reward event. `release: 350 ms` outlasts the 100 ms tolerance, which is the case the label has to survive |
+| `seed_scale_emg` | Seed `scale` multiplier (`percentile { target_pct = 50; scale = 3.0 }`; IR-JSON v0.6) — the worked per-person muscle limit at three times the trainee's own warm-up median, with `sqrt` putting the gate in amplitude so the multiplier means what the spec says. Generated `skip_warmup=False` |
+| `reseed_staged` | Block-boundary re-seeding (`reseed` plus the baked `reseed_holds` set; IR-JSON v0.6) — a staged session whose second block re-measures the threshold the first block trained against, resetting the downstream dwell streak and recording two `seed_report()` history entries. Generated `skip_warmup=False` |
 | `realistic_smr` | Full clinical protocol: 3-band envelope pipeline, percentile + absolute thresholds, dwell+`all_of`, sigmoid continuous reward, conditional output expressions, `control_ref` thresholds, session phases (`events.json` and `taps.json` present) |
 | `realistic_smr_setcontrol` | Live `set_control` retuning mid-run: same signal as `realistic_smr`, SMR and theta percentile targets changed at chunk 64; percentile buffer preserved across the change (`events.json`, `taps.json`, `schedule.json` present) |
 
