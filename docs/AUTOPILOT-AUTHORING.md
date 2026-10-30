@@ -180,8 +180,8 @@ controls {
       higher_is = "harder"
       limits    = (0.5, 1.0)
       apply     = "auto"
-      round_to  = 0.01
       say       = "Crossover target"
+      round_to  = 0.01
     }
   }
 }

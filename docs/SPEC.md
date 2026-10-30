@@ -774,8 +774,8 @@ controls {
     seed = percentile {
       from       = "emg_envelope"   // an AMPLITUDE in uV — see the warning below
       window     = 60 s
-      target_pct = 50                // the median
       scale      = 3.0               // ...times three
+      target_pct = 50                // the median
     }
   }
 }
@@ -850,8 +850,8 @@ controls {
       higher_is = "harder"
       limits    = (0.5, 1.0)
       apply     = "auto"
-      round_to  = 0.01
       say       = "Crossover target"
+      round_to  = 0.01
     }
   }
 
