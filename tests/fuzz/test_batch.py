@@ -103,10 +103,18 @@ def test_batch_aggregates_multiple_paths(tmp_path, capsys):
     # and the fuzzer perturbs a reward event's condition. Nothing to do with
     # the multiplier — the fuzzer's surface does not model a seed rule at all.
     # Skip bucket, `fuzzed` still 8.
+    # +1 total for reseed_staged.refrain (the block-boundary re-seeding
+    # golden-vector bench), which skips as "reward.event has no all_of/any_of
+    # condition" for exactly the reason autopilot_staged does: its two rewards
+    # are block-scoped, selected per `block` rather than by one top-level
+    # `reward { }`, so the resolved `ir.reward.event` is None and there is no
+    # condition to perturb. Nothing to do with `reseed` — the fuzzer's surface
+    # does not model a block's declarations at all. Skip bucket, `fuzzed`
+    # still 8.
     rc = main(["fuzz", "bench/protocols", "examples",
                "--library", "examples", "--max-scenarios", "2"])
     out = "".join(capsys.readouterr())
-    assert "coverage: fuzzed 8 / total 38" in out
+    assert "coverage: fuzzed 8 / total 39" in out
     # Inc1 splits the old generic "single-condition reward" skip into specific,
     # feature-mapped reasons (so the breakdown maps to later increments); the
     # multi-leaf control-absolute fixture adds its own feature-mapped skip.

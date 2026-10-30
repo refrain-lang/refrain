@@ -178,7 +178,7 @@ def _generate_setcontrol(ir) -> None:
 # pure-DSP micro corpora with no `output` bindings to compare).
 EVENT_BEARING = frozenset({
     "micro_05_reward", "realistic_smr", "micro_09_inhibit", "composite_smr_theta",
-    "micro_14_tolerance", "micro_15_artifact_gate",
+    "micro_14_tolerance", "micro_15_artifact_gate", "reseed_staged",
 })
 
 # Tap-rich protocols for the `taps.rs` golden-vector compare. `realistic_smr`
@@ -186,7 +186,13 @@ EVENT_BEARING = frozenset({
 # `micro_09_inhibit` adds inhibit/<name> and the combined `muted` gate;
 # `micro_15_artifact_gate` pins that `muted` is unchanged by an inhibit's
 # `kind` label — the label moves what a hold scores, not what the gate gates.
-TAP_BEARING = frozenset({"realistic_smr", "micro_09_inhibit", "micro_15_artifact_gate"})
+# `reseed_staged` adds the staged-protocol tap keyset (two reward bundles, a
+# phase cursor) and the one tap a dropped re-seed moves on its own:
+# `threshold/thr` steps at the block boundary, and `output/audio_gain` steps
+# with it.
+TAP_BEARING = frozenset({
+    "realistic_smr", "micro_09_inhibit", "micro_15_artifact_gate", "reseed_staged",
+})
 
 
 def generate(
@@ -467,6 +473,32 @@ if __name__ == "__main__":
         channels=("Cz",),
         skip_warmup=False,
         signal=_emg_signal,
+        amp=None,
+    )
+    # Block-boundary re-seeding (SPEC §4.13): the fourth and last
+    # `skip_warmup=False` stem, for the same reason as the three above — a
+    # re-seed measures the signal since the warm-up seed, so the warm-up has
+    # to happen. `docs/CONFORMANCE.md` §3 names the same four; add a stem in
+    # both places if a fifth appears.
+    #
+    # The signal is constant within each phase, so every percentile in the
+    # vector is exact by construction and nothing depends on filter settling:
+    # 4 s of 2 uV warm-up (the warm-up seed writes 2.0), 6 s of 5 uV under
+    # block one (the trailing 2 s window at the boundary is all 5.0, so the
+    # re-seed writes 5.0), then 8 uV under block two — above the re-seeded
+    # threshold, so the restarted dwell earns its chime again 250 ms after the
+    # boundary. A single constant fill would have hidden both halves: the
+    # re-seed would write the number the warm-up already wrote, and the reward
+    # would stop at the boundary instead of marking it.
+    _reseed_signal = np.empty((N_SAMPLES, 1), dtype=np.float64)
+    _reseed_signal[: 4 * int(SAMPLE_RATE_HZ), 0] = 2.0
+    _reseed_signal[4 * int(SAMPLE_RATE_HZ) : 10 * int(SAMPLE_RATE_HZ), 0] = 5.0
+    _reseed_signal[10 * int(SAMPLE_RATE_HZ) :, 0] = 8.0
+    generate(
+        "reseed_staged",
+        channels=("Cz",),
+        skip_warmup=False,
+        signal=_reseed_signal,
         amp=None,
     )
     # Advisor parity fixtures (advisor_parity.rs): tracer output over every

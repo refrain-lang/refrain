@@ -339,7 +339,22 @@ def _literal_bound(expr) -> float | None:
 
 class _SeedLatch:
     """Per-seeded-control polled latch (§2.5). Ingests the `from` derive during
-    warmup; fires once at the warmup→run edge."""
+    warmup; fires once at the warmup→run edge.
+
+    A control named in some block's `reseed` list (SPEC §4.13) keeps the same
+    latch and the same buffer afterwards: `_ingest_reseed_buffers` keeps the
+    buffer filling for the rest of the session and `_step_reseeds` fires it
+    again at that block's boundary. Two fields carry that, and both stay inert
+    for a protocol that declares no `reseed`:
+
+    - `fresh` — samples ingested since the control was last measured. The
+      re-seed fires only when it reaches `window_samples`, which is what makes
+      "a short window" mean something: the `PercentileImpl` buffer is a
+      `maxlen` deque that never shrinks, so buffer length alone would report a
+      full window of samples the previous seeding already spent.
+    - `history` — one record per seeding event, warm-up included, in order.
+      Surfaced by `seed_report()`.
+    """
 
     def __init__(self, *, control_name, control_target, seed, buffer,
                  range_low=None, range_high=None):
@@ -364,6 +379,16 @@ class _SeedLatch:
         self.value = None
         self.n_samples = 0
         self.at_time_s = None
+        self.fresh = 0
+        self.history: list[dict] = []
+        # Set when the warm-up seed fails closed, which is terminal for this
+        # control: the session's output is muted for the rest of its life, so
+        # nothing may re-measure the control afterwards and nothing may rewrite
+        # the `insufficient_samples` status a host reads to explain the
+        # silence. Kept per latch rather than reusing the evaluator-wide
+        # `_seed_failed_mute`, because the terminal state belongs to the
+        # control that failed, not to the session.
+        self.failed_closed = False
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +472,12 @@ class Evaluator:
         # Python latches are simply never stepped — the Rust evaluator owns
         # its own latches — so no backend guard is needed here.
         self._build_seed_latches()
+        # Block-boundary re-seeding (SPEC §4.13). Built from the IR once, so
+        # the run-time path is a set membership test and a dict lookup rather
+        # than a walk over the blocks: every collection here is empty for a
+        # protocol that declares no `reseed`, which is what keeps today's
+        # per-chunk cost unchanged.
+        self._build_reseed_maps()
         # Autopilot advisor (SPEC §7.10, §5): built from the same IR-JSON the
         # Rust core loads, so both engines start from identical configuration.
         self._advisor, self._advisor_error = _build_advisor(self.ir, self.sample_rate_hz)
@@ -469,6 +500,15 @@ class Evaluator:
         self._phase_elapsed: int = 0
         self._held: bool = False
         self._clock_frozen: bool = False
+        # The phase occurrence a re-seed has already fired for, or None. This
+        # is deliberately NOT `phase_elapsed == 0`: both engines skip the
+        # elapsed increment while the clock is frozen (`_advance_if_due`), and
+        # freezing the clock is a public host API, so a practitioner who
+        # paused at the start of a re-seeding phase would re-fire the re-seed
+        # and restart every downstream hold on every chunk of the pause —
+        # identically on both engines, which means the drift gate could not
+        # see it. Mirrored by `reseed_fired_phase` in `refrain-core/src/eval.rs`.
+        self._reseed_fired_phase: int | None = None
         # When `start(skip_warmup=True)` is used and phase 0 is output-muted,
         # the leading warmup mute is bypassed (offline analysis / tests that
         # don't exercise warmup). Only suppresses the leading-phase mute; any
@@ -675,6 +715,7 @@ class Evaluator:
         self._phase_elapsed = 0
         self._held = False
         self._clock_frozen = False
+        self._reseed_fired_phase = None
         self._skip_leading_warmup_mute = bool(skip_warmup)
         first = self._current_phase_ir()
         if skip_warmup or first is None:
@@ -767,6 +808,16 @@ class Evaluator:
         if 0 <= self._phase_index < len(phases):
             return phases[self._phase_index]
         return None
+
+    def _active_block_ir(self):
+        """The block the current phase activates, or None (warmup, a rest, a
+        blockless protocol). Same lookup the mute gates and the output stage
+        make further down `_process_chunk`; separate so the seed slot can ask
+        the question without that lookup having to move up the method."""
+        ph = self._current_phase_ir()
+        if ph is None or ph.block is None:
+            return None
+        return self.ir.blocks.get(ph.block)
 
     def _compute_warmup_samples(self) -> int:
         """Look at the first session phase; if `output_muted = true`, its
@@ -891,6 +942,96 @@ class Evaluator:
                 range_low=_literal_bound(ctrl.range_low),
                 range_high=_literal_bound(ctrl.range_high))
 
+    def _build_reseed_maps(self) -> None:
+        """Bake the three things the re-seed run-time path needs.
+
+        `_reseed_controls` is every control named in any block's `reseed`, for
+        the `set_control` disarm gate. `_reseed_ingest` is the latches whose
+        buffers keep filling after they fire, in control-name order so the
+        per-chunk work is in a fixed order. `_reseed_hold_impls` maps a block
+        name to the hold implementations a re-seed of its controls restarts,
+        read off the `reseed_holds` sites the resolver baked — not re-derived
+        here. An engine that tried to be cleverer than the baked set would
+        diverge from the wire and from the other engine.
+        """
+        self._reseed_controls: set[str] = {
+            name for b in self.ir.blocks.values() for name in b.reseed
+        }
+        self._reseed_ingest: tuple[_SeedLatch, ...] = tuple(
+            self._seed_latches[f"control/{name}"]
+            for name in sorted(self._reseed_controls)
+            if f"control/{name}" in self._seed_latches
+        )
+        self._reseed_hold_impls: dict[str, tuple[Any, ...]] = {}
+        for name, block in self.ir.blocks.items():
+            if not block.reseed:
+                continue
+            found: list[Any] = []
+            for site in block.reseed_holds:
+                expr = self._reseed_site_expr(site)
+                if expr is None:
+                    continue
+                for call in _walk_calls(expr):
+                    if call.callee not in ("hold_for", "dwell", "dwell_rearm"):
+                        continue
+                    impl = self._impls.get(id(call))
+                    # An empty `reseed_holds` beside a non-empty `reseed` is a
+                    # real answer — the control reaches no hold — and must not
+                    # be read as "reset everything", which is why this map is
+                    # built from the sites and nothing else.
+                    if impl is not None and not any(impl is seen for seen in found):
+                        found.append(impl)
+            self._reseed_hold_impls[name] = tuple(found)
+
+    def _reseed_site_expr(self, site: str) -> IRExpr | None:
+        """The expression a baked `reseed_holds` site names, or None.
+
+        The three spellings are the resolver's (`_reseed_downstream_holds`):
+        `"reward/event"`, `"reward_bundle/<name>"`, `"output/<channel>"`.
+        """
+        kind, _, rest = site.partition("/")
+        if kind == "reward" and rest == "event":
+            return self.ir.reward.event
+        if kind == "reward_bundle":
+            bundle = self.ir.reward_bundles.get(rest)
+            return bundle.event if bundle is not None else None
+        if kind == "output":
+            return self.ir.output.get(rest)
+        return None
+
+    def _seed_history_record(
+        self, latch: _SeedLatch, *, trigger: str, old_value: float | None,
+        new_value: float | None, status: str, fresh: int, at_time_s: float,
+        target_pct: float,
+    ) -> dict:
+        """One `seed_report()["history"]` record. Built in one place so the
+        warm-up fire and a boundary re-seed cannot drift in shape, and so the
+        Rust `SeedHistoryEntry` has exactly one thing to mirror.
+
+        `old_value` is the measurement this event replaced — the latch's own
+        previous value — and deliberately not the live control value. The live
+        value is a quantity the Rust core cannot reproduce faithfully: it
+        keeps control values in each bound stage's own cell (a percentile's
+        target, a smooth's alpha), with no single live map, and the surface
+        unit a declared default would have to be converted with does not reach
+        it. "The measurement this replaced" is the same number in both engines
+        by construction, which is what a report a trainee's threshold is
+        scored from has to be. It is null for a control's first measurement,
+        where the control was still at its declared `default`.
+        """
+        return {
+            "at_time_s": at_time_s,
+            "old_value": old_value,
+            "new_value": new_value,
+            "source": latch.from_entity,
+            "window_s": latch.window_samples / self.sample_rate_hz,
+            "target_pct": target_pct,
+            "scale": latch.scale,
+            "status": status,
+            "trigger": trigger,
+            "fresh_samples": fresh,
+        }
+
     def _seed_target_pct_value(self, target_pct) -> float:
         if isinstance(target_pct, IRControlRef):
             return float(self._controls.get(target_pct.target, 0.0))
@@ -917,6 +1058,13 @@ class Evaluator:
             if self._state == "warmup":
                 if src is not None:
                     latch.buffer.ingest(src)        # append-only, skips non-finite
+                    # The same count `ingest` keeps, so one rule ("finite
+                    # samples ingested since the control was last measured")
+                    # covers the warm-up fire and every re-seed after it.
+                    # Note the warm-up ingest does NOT consult the artifact
+                    # mask and must not start doing so: that would move the
+                    # seeded value of a protocol that declared nothing new.
+                    latch.fresh += int(np.count_nonzero(np.isfinite(src)))
                 continue
             # state == "run", armed, not yet fired -> fire exactly once.
             if latch.fired:
@@ -928,11 +1076,20 @@ class Evaluator:
             n_eff = int(st["n_eff"])
             latch.n_samples = n_eff
             latch.at_time_s = t0_s
+            # The measurement this event replaces — None here, since a warm-up
+            # seed is by definition the control's first. Captured before the
+            # write below either way, so the two call sites read alike.
+            replaced = latch.value
             if n_eff < latch.window_samples:
                 # The measurement did not complete (short/skipped warmup, early
                 # advance) -> fail closed for the rest of the session (§2.6).
                 latch.status = "insufficient_samples"
+                latch.failed_closed = True
                 self._seed_failed_mute = True
+                latch.history.append(self._seed_history_record(
+                    latch, trigger="warmup", old_value=replaced, new_value=None,
+                    status="insufficient_samples", fresh=latch.fresh,
+                    at_time_s=t0_s, target_pct=pct))
                 continue
             # `scale` multiplies the statistic (SPEC §4.9.4); `* 1.0` is exact
             # in IEEE-754, so an unscaled seed writes the same bits it wrote
@@ -966,6 +1123,146 @@ class Evaluator:
             # consumers already refresh via update_control, so they're unaffected).
             control_chunks_cache[latch.control_target] = np.full(
                 actual_chunk_size, value, dtype=np.float64)
+            latch.history.append(self._seed_history_record(
+                latch, trigger="warmup", old_value=replaced, new_value=value,
+                status="seeded", fresh=latch.fresh, at_time_s=t0_s,
+                target_pct=pct))
+            # The freshness counter restarts whenever the control is actually
+            # written, so a re-seed measures the signal since the last value
+            # the trainee was scored against — not since the session started.
+            latch.fresh = 0
+
+    # -- Block-boundary re-seeding (SPEC §4.13) -----------------------------
+
+    def _step_reseeds(
+        self,
+        active_block,
+        t0_s: float,
+        control_chunks_cache: dict[str, np.ndarray],
+        actual_chunk_size: int,
+    ) -> None:
+        """Re-measure the active block's `reseed` controls, once per entry.
+
+        Called from the seed slot in `_process_chunk`, after `_step_seeds` and
+        before any threshold steps, so the re-seeded value is live for this
+        very chunk's comparison rather than one chunk late (the same reason
+        the warm-up fire sits there).
+
+        Three rules differ from warm-up seeding, each deliberately:
+
+        - **A window that has not filled keeps the old value** and records the
+          miss, instead of failing the session closed. At a re-seed there IS a
+          known-good value — the one that has been running all session — so
+          killing the session is not proportionate. At warm-up there is none.
+        - **A host write disarms it.** A practitioner who moved this threshold
+          by hand took responsibility for the number; block three does not
+          take it back. `set_control` sets that, gated on this control being
+          named in some block's `reseed`.
+        - **The downstream holds restart only when a value is actually
+          written.** A boundary that kept the old value changed nothing a
+          streak was measured against, so taking the streak away would be a
+          penalty with no cause.
+        """
+        if active_block is None or not active_block.reseed:
+            return
+        if self._reseed_fired_phase == self._phase_index:
+            return
+        self._reseed_fired_phase = self._phase_index
+        wrote_any = False
+        for name in active_block.reseed:        # duplicate-free (resolver)
+            latch = self._seed_latches.get(f"control/{name}")
+            if latch is None or not latch.armed:
+                continue                        # a host write took it over
+            if latch.failed_closed:
+                # The warm-up seed failed closed, which muted the output for
+                # the rest of the session (§4.9.4). Re-measuring now would
+                # write a real value and flip `status` from
+                # `insufficient_samples` to `seeded` while the trainee stays
+                # silent — so the one field a host reads to explain the
+                # silence would say everything is fine. Skipped silently: no
+                # history record either, because `history` records seeding
+                # events and a dead latch had no event.
+                continue
+            pct = self._seed_target_pct_value(latch.target_pct)
+            latch.buffer.update_control(latch.control_target, pct)
+            replaced = latch.value          # the measurement now standing
+            fresh = latch.fresh
+            if fresh < latch.window_samples:
+                latch.history.append(self._seed_history_record(
+                    latch, trigger=f"block:{active_block.name}", old_value=replaced,
+                    new_value=None, status="insufficient_samples", fresh=fresh,
+                    at_time_s=t0_s, target_pct=pct))
+                continue
+            st = latch.buffer.export_state()
+            # The same three lines as the warm-up fire, in the same order:
+            # the statistic, the multiplier, and the clamp that `scale` brings
+            # with it. Reusing the latch's own `PercentileImpl` means the
+            # arithmetic is the one baseline seeding already ships, so nothing
+            # new has to be proved bit-exact.
+            value = float(st["value"]) * latch.scale
+            if latch.scale != 1.0:
+                if latch.range_low is not None and value < latch.range_low:
+                    value = latch.range_low
+                if latch.range_high is not None and value > latch.range_high:
+                    value = latch.range_high
+            latch.value = value
+            latch.status = "seeded"
+            latch.n_samples = int(st["n_eff"])
+            latch.at_time_s = t0_s
+            self._apply_control(latch.control_name, value)  # NOT set_control
+            if self._advisor is not None:
+                self._advisor.note_control(latch.control_name, value, "seed")
+            control_chunks_cache[latch.control_target] = np.full(
+                actual_chunk_size, value, dtype=np.float64)
+            latch.history.append(self._seed_history_record(
+                latch, trigger=f"block:{active_block.name}", old_value=replaced,
+                new_value=value, status="seeded", fresh=fresh, at_time_s=t0_s,
+                target_pct=pct))
+            latch.fresh = 0
+            wrote_any = True
+        if wrote_any:
+            for impl in self._reseed_hold_impls.get(active_block.name, ()):
+                impl.reset()
+
+    def _ingest_reseed_buffers(
+        self,
+        stream_values: dict[str, np.ndarray],
+        artifact_muted: np.ndarray | None,
+        freeze_ingest: bool,
+    ) -> None:
+        """Keep a re-seeding control's buffer filling for the rest of the
+        session, with the two freezes.
+
+        Only latches that have already fired ingest here: before the fire the
+        buffer belongs to `_step_seeds`, and feeding it twice would make the
+        warm-up window fill at double rate over duplicated samples.
+
+        `freeze_ingest` is the evaluator's existing mid-session-rest freeze
+        (`output_muted` and not the first phase). The compile-time window
+        check leaves output-muted phases out of the time available to fill a
+        window *because* of this freeze, so the two have to agree: a ten-minute
+        rest contributes no samples, and a window that would only fill by
+        counting rest time is refused at compile time rather than quietly
+        seeding from rest-period signal.
+
+        `artifact_muted` drops the samples an inhibit labelled
+        `kind = "artifact"` says the engine could not read. An unlabelled mute
+        is a sample the engine read and scored against the trainee, so it
+        stays in the baseline — the same asymmetry the hold paths make.
+        """
+        if freeze_ingest:
+            return
+        for latch in self._reseed_ingest:
+            if not latch.armed or not latch.fired or latch.failed_closed:
+                # `failed_closed`: nothing will ever read this buffer again
+                # (the boundary skips a dead latch), so filling it is waste.
+                continue
+            src = stream_values.get(latch.from_entity)
+            if src is None:
+                continue
+            observed = src if artifact_muted is None else src[~artifact_muted]
+            latch.buffer.ingest(observed)
+            latch.fresh += int(np.count_nonzero(np.isfinite(observed)))
 
     # -- Adaptive-state seed/export (Ask 2) ---------------------------------
 
@@ -1159,6 +1456,20 @@ class Evaluator:
         # threshold steps, so the seeded value is live with no one-chunk lag.
         if self._seed_latches:
             self._step_seeds(stream_values, control_chunks_cache, actual_chunk_size, t0_s)
+            # Block-boundary re-seeding (SPEC §4.13), in the same slot and
+            # after the warm-up fire: on the chunk a re-seeding block goes
+            # active the warm-up seed may still be firing, and a re-seed
+            # measures the signal *since* the previous seeding, so warm-up has
+            # to be the previous seeding and not a simultaneous one. Reads the
+            # active block directly rather than taking the lookup further
+            # down: that one is read by the mute gates and the output stage,
+            # and moving it would reorder stages this task has no business
+            # reordering.
+            if self._reseed_controls:
+                self._step_reseeds(
+                    self._active_block_ir(), t0_s, control_chunks_cache,
+                    actual_chunk_size,
+                )
             suppress_output = suppress_output or self._seed_failed_mute
 
         # Freeze adaptive-window ingestion during mid-session muted rests so a
@@ -1251,6 +1562,20 @@ class Evaluator:
         # and not per-block, because an artifact is an artifact whichever block
         # is live and whichever channel is listening.
         artifact_observable = ~artifact_muted
+
+        # Re-seed ingestion, here rather than literally at the end of this
+        # method for two reasons. It must run after the mute gate exists (it
+        # reads it) and after the boundary fire above (so a fire reads the
+        # trailing window through the PREVIOUS chunk, which is causal and
+        # needs no reordering of the inhibit stage). And `_process_chunk` is a
+        # generator that returns early when output is suppressed, so anything
+        # after that return would simply not run on a muted chunk. Every value
+        # it reads — the derive's samples, the artifact mask, the freeze flag —
+        # is final by this point, so this position and the end of the chunk are
+        # the same ingestion. Rust ingests at the matching point in
+        # `eval_chunk`, right after it builds `artifact_observable`.
+        if self._reseed_ingest:
+            self._ingest_reseed_buffers(stream_values, artifact_muted, freeze_ingest)
 
         # The reward stage's observability mask, set here and cleared the
         # moment the stage ends. A `hold_for`/`dwell`/`dwell_rearm` written
@@ -1729,8 +2054,25 @@ class Evaluator:
         # A host write to a seeded control that has not fired yet is a deliberate
         # clinical judgement — disarm the seed and run normally (§2.6). Disarm,
         # NOT fail: the clinician just took responsibility for the value.
+        #
+        # A control some block RE-SEEDS is disarmed by a write at any time,
+        # before or after the warm-up fire, because for that control the
+        # engine still intends to write the value again later: without this, a
+        # re-seed at block three would silently take back a threshold the
+        # practitioner set by hand during block one, which is exactly what
+        # SPEC §4.9.4 promises it will not do. The gate on
+        # `_reseed_controls` is what keeps that safe. Extending the post-fire
+        # disarm to every seeded control would change
+        # `seed_report()["status"]` from "seeded" to "disarmed_by_host" for
+        # every existing protocol in which a practitioner retunes a seeded
+        # control mid-session — a host-facing report change with no new
+        # declaration present. No protocol in the repository has a `reseed`
+        # list, so no existing protocol's report moves at all
+        # (`tests/test_eval_reseed.py` pins both halves).
         latch = self._seed_latches.get(f"control/{name}")
-        if latch is not None and latch.armed and not latch.fired:
+        if latch is not None and latch.armed and (
+            not latch.fired or latch.control_name in self._reseed_controls
+        ):
             latch.armed = False
             latch.status = "disarmed_by_host"
         self._apply_control(name, value)
@@ -1754,6 +2096,14 @@ class Evaluator:
                 "n_samples": latch.n_samples,
                 "window_s": latch.window_samples / self.sample_rate_hz,
                 "at_time_s": latch.at_time_s,
+                # One record per seeding event, in order, the warm-up seed
+                # included — so a host can show a practitioner what this
+                # threshold has been, not just what it is. Empty until the
+                # warm-up seed fires, and permanently empty for a control a
+                # host write disarmed before it fired: the control was never
+                # measured at all. Additive (0.25.0): every key above stays
+                # where it is.
+                "history": [dict(h) for h in latch.history],
             }
         return out
 
@@ -1779,6 +2129,11 @@ class Evaluator:
             except ValueError as exc:
                 raise AdviceError(str(exc)) from None
         control, value, event = self._require_advisor().apply(advice_id, by)
+        # Reached only once the advice really applied: `apply` raises on a
+        # stale id or a forbidden auto-apply, so a refusal never gets here and
+        # never disarms anything.
+        if by == "practitioner":
+            self._disarm_reseed_on_accepted_advice(control)
         self._apply_control(control, value)
         return event
 
@@ -1805,6 +2160,40 @@ class Evaluator:
         if self._rust is not None:
             return json.loads(self._rust.autopilot_policy())
         return self._require_advisor().policy()
+
+    def _disarm_reseed_on_accepted_advice(self, control_name: str) -> None:
+        """The second door a practitioner sets a value by hand through.
+
+        `set_control` is the first: someone types a number, and a re-seed must
+        not take it back (SPEC §4.9.4). Accepting the advisor's suggestion is
+        the same act — the practitioner did not type the number, they took
+        responsibility for it — so it disarms the same way. A protocol with an
+        advisor is exactly the sophisticated one where re-seeding gets used, so
+        leaving this door open would have made the promise false precisely
+        where it matters most.
+
+        **The asymmetry with `by="autopilot"` is deliberate.** An automatic
+        apply has nobody taking responsibility, and between two automatic
+        mechanisms a fresh measurement of the person is more authoritative
+        than an inference from reward rate: the re-seed wins, and the autopilot
+        resumes nudging from the new baseline. That is why the caller tests
+        `by` rather than this method doing it.
+
+        Gated on the re-seed control set, like the post-fire half of
+        `set_control`'s disarm, and for the same reason: no protocol in the
+        repository declares a `reseed`, so no existing protocol's
+        `seed_report()` changes. Deliberately narrower than `set_control`,
+        which also disarms a not-yet-fired seed on ANY seeded control —
+        extending that to this door would change what an existing protocol
+        with an advisor and a seeded control reports, which this release
+        forbids. `tests/test_eval_reseed.py` pins both halves.
+        """
+        if control_name not in self._reseed_controls:
+            return
+        latch = self._seed_latches.get(f"control/{control_name}")
+        if latch is not None and latch.armed:
+            latch.armed = False
+            latch.status = "disarmed_by_host"
 
     def _apply_control(self, name: str, value: float) -> None:
         """Forward a control value to its dependent impls WITHOUT the disarm

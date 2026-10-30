@@ -339,6 +339,40 @@
   ],
   "inhibit_controls": []
  },
+ "reseed_staged.ir.json": {
+  "bundles": {
+   "block_one_reward": {
+    "combine": "all",
+    "checks": [
+     {
+      "name": null,
+      "knob": "smr_threshold_uv",
+      "higher_is": "harder",
+      "controls": [
+       "smr_threshold_uv"
+      ]
+     }
+    ]
+   },
+   "block_two_reward": {
+    "combine": "all",
+    "checks": [
+     {
+      "name": null,
+      "knob": "smr_threshold_uv",
+      "higher_is": "harder",
+      "controls": [
+       "smr_threshold_uv"
+      ]
+     }
+    ]
+   }
+  },
+  "check_controls": [
+   "smr_threshold_uv"
+  ],
+  "inhibit_controls": []
+ },
  "seed_exprpos.ir.json": {
   "bundles": {},
   "check_controls": [],

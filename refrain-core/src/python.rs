@@ -4,7 +4,7 @@
 
 use numpy::{IntoPyArray, PyReadonlyArray2};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -172,6 +172,25 @@ impl RustEvaluator {
             d.set_item("n_samples", e.n_samples)?;
             d.set_item("window_s", e.window_s)?;
             d.set_item("at_time_s", e.at_time_s)?;
+            // One record per seeding event, warm-up included (refrain 0.25.0).
+            // Additive: every key above stays where it is, so a host that
+            // parses the older shape is untouched.
+            let history = PyList::empty(py);
+            for h in e.history {
+                let hd = PyDict::new(py);
+                hd.set_item("at_time_s", h.at_time_s)?;
+                hd.set_item("old_value", h.old_value)?; // Option<f64> -> None/float
+                hd.set_item("new_value", h.new_value)?;
+                hd.set_item("source", h.source)?;
+                hd.set_item("window_s", h.window_s)?;
+                hd.set_item("target_pct", h.target_pct)?;
+                hd.set_item("scale", h.scale)?;
+                hd.set_item("status", h.status)?;
+                hd.set_item("trigger", h.trigger)?;
+                hd.set_item("fresh_samples", h.fresh_samples)?;
+                history.append(hd)?;
+            }
+            d.set_item("history", history)?;
             out.set_item(name, d)?;
         }
         Ok(out)

@@ -1,0 +1,522 @@
+{
+  "refrain_ir_version": "0.6",
+  "name": "reseed_staged",
+  "extends": null,
+  "sample_rate_hz": 256.0,
+  "channels": [
+    "Cz"
+  ],
+  "requires": {
+    "coupling": null,
+    "sample_rate_min_hz": 256,
+    "sample_rate_chosen_hz": 256,
+    "channels": [
+      "Cz"
+    ],
+    "impedance": "not_required",
+    "markers": "not_required"
+  },
+  "meta": {
+    "version": {
+      "node": "string",
+      "value": "1.0.0"
+    },
+    "evidence": {
+      "node": "string",
+      "value": "demo"
+    },
+    "description": {
+      "node": "string",
+      "value": "Bench: a block that re-measures its seeded threshold"
+    }
+  },
+  "inputs": {
+    "raw": {
+      "canonical_name": "input/raw",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "montage": {
+        "node": "call",
+        "callee": "passthrough",
+        "args": [],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        }
+      }
+    }
+  },
+  "derives": {
+    "env": {
+      "canonical_name": "derive/env",
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "expression": {
+        "node": "call",
+        "callee": "magnitude",
+        "args": [
+          {
+            "name": null,
+            "value": {
+              "node": "stream_ref",
+              "target": "input/raw",
+              "stream_type": {
+                "value_kind": "scalar",
+                "dimensions": {
+                  "time": 0,
+                  "voltage": 1
+                },
+                "vector_size": null
+              }
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        }
+      },
+      "upstream": [
+        "input/raw"
+      ]
+    }
+  },
+  "thresholds": {
+    "thr": {
+      "canonical_name": "threshold/thr",
+      "signal": "derive/env",
+      "threshold_call": {
+        "node": "call",
+        "callee": "absolute",
+        "args": [
+          {
+            "name": "value",
+            "value": {
+              "node": "control_ref",
+              "target": "control/smr_threshold_uv",
+              "default": 9.9,
+              "dims": {
+                "time": 0,
+                "voltage": 1
+              }
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "scalar",
+          "dimensions": {
+            "time": 0,
+            "voltage": 1
+          },
+          "vector_size": null
+        }
+      },
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 1
+        },
+        "vector_size": null
+      },
+      "live_tunable": false
+    }
+  },
+  "inhibits": {},
+  "reward": {
+    "continuous": null,
+    "event": null,
+    "combine": "all",
+    "components": []
+  },
+  "output": {
+    "audio_chime": {
+      "node": "reward_field",
+      "field_path": "event",
+      "stream_type": {
+        "value_kind": "event",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      }
+    },
+    "audio_gain": {
+      "node": "call",
+      "callee": "sigmoid",
+      "args": [
+        {
+          "name": null,
+          "value": {
+            "node": "binop",
+            "op": "/",
+            "left": {
+              "node": "stream_ref",
+              "target": "derive/env",
+              "stream_type": {
+                "value_kind": "scalar",
+                "dimensions": {
+                  "time": 0,
+                  "voltage": 1
+                },
+                "vector_size": null
+              }
+            },
+            "right": {
+              "node": "threshold_ref",
+              "target": "threshold/thr",
+              "stream_type": {
+                "value_kind": "scalar",
+                "dimensions": {
+                  "time": 0,
+                  "voltage": 1
+                },
+                "vector_size": null
+              }
+            },
+            "stream_type": {
+              "value_kind": "scalar",
+              "dimensions": {
+                "time": 0,
+                "voltage": 0
+              },
+              "vector_size": null
+            }
+          }
+        },
+        {
+          "name": "midpoint",
+          "value": {
+            "node": "number",
+            "value": 1.0,
+            "dims": {
+              "time": 0,
+              "voltage": 0
+            },
+            "unit": null
+          }
+        },
+        {
+          "name": "steepness",
+          "value": {
+            "node": "number",
+            "value": 3.0,
+            "dims": {
+              "time": 0,
+              "voltage": 0
+            },
+            "unit": null
+          }
+        }
+      ],
+      "stream_type": {
+        "value_kind": "scalar",
+        "dimensions": {
+          "time": 0,
+          "voltage": 0
+        },
+        "vector_size": null
+      }
+    }
+  },
+  "controls": {
+    "smr_threshold_uv": {
+      "canonical_name": "control/smr_threshold_uv",
+      "type_kind": "voltage",
+      "dims": {
+        "time": 0,
+        "voltage": 1
+      },
+      "default": {
+        "node": "number",
+        "value": 9.9,
+        "dims": {
+          "time": 0,
+          "voltage": 1
+        },
+        "unit": "uV"
+      },
+      "range_low": {
+        "node": "number",
+        "value": 0.5,
+        "dims": {
+          "time": 0,
+          "voltage": 1
+        },
+        "unit": "uV"
+      },
+      "range_high": {
+        "node": "number",
+        "value": 50.0,
+        "dims": {
+          "time": 0,
+          "voltage": 1
+        },
+        "unit": "uV"
+      },
+      "log_scale": false,
+      "label": null,
+      "live_tunable": true,
+      "tune_strategy": null,
+      "seed": {
+        "statistic": "percentile",
+        "from": "derive/env",
+        "window_samples": 512,
+        "target_pct": {
+          "node": "number",
+          "value": 50.0,
+          "dims": {
+            "time": 0,
+            "voltage": 0
+          },
+          "unit": null
+        }
+      }
+    }
+  },
+  "session": {
+    "phases": [
+      {
+        "name": "warmup",
+        "duration_ms": 4000.0,
+        "output_muted": true,
+        "mode": "timed",
+        "block": null
+      },
+      {
+        "name": "one",
+        "duration_ms": 6000.0,
+        "output_muted": false,
+        "mode": "timed",
+        "block": "one"
+      },
+      {
+        "name": "two",
+        "duration_ms": 0.0,
+        "output_muted": false,
+        "mode": "open",
+        "block": "two"
+      }
+    ]
+  },
+  "blocks": {
+    "one": {
+      "name": "one",
+      "thresholds": [],
+      "reward": "block_one_reward",
+      "output": [
+        "audio_chime",
+        "audio_gain"
+      ],
+      "inhibits": []
+    },
+    "two": {
+      "name": "two",
+      "thresholds": [],
+      "reward": "block_two_reward",
+      "output": [
+        "audio_chime",
+        "audio_gain"
+      ],
+      "inhibits": [],
+      "reseed": [
+        "smr_threshold_uv"
+      ],
+      "reseed_holds": [
+        "reward_bundle/block_one_reward",
+        "reward_bundle/block_two_reward"
+      ]
+    }
+  },
+  "reward_bundles": {
+    "block_one_reward": {
+      "continuous": null,
+      "event": {
+        "node": "call",
+        "callee": "dwell",
+        "args": [
+          {
+            "name": "condition",
+            "value": {
+              "node": "call",
+              "callee": "above",
+              "args": [
+                {
+                  "name": null,
+                  "value": {
+                    "node": "stream_ref",
+                    "target": "derive/env",
+                    "stream_type": {
+                      "value_kind": "scalar",
+                      "dimensions": {
+                        "time": 0,
+                        "voltage": 1
+                      },
+                      "vector_size": null
+                    }
+                  }
+                },
+                {
+                  "name": null,
+                  "value": {
+                    "node": "threshold_ref",
+                    "target": "threshold/thr",
+                    "stream_type": {
+                      "value_kind": "scalar",
+                      "dimensions": {
+                        "time": 0,
+                        "voltage": 1
+                      },
+                      "vector_size": null
+                    }
+                  }
+                }
+              ],
+              "stream_type": {
+                "value_kind": "boolean",
+                "dimensions": {
+                  "time": 0,
+                  "voltage": 0
+                },
+                "vector_size": null
+              }
+            }
+          },
+          {
+            "name": "duration",
+            "value": {
+              "node": "number",
+              "value": 250.0,
+              "dims": {
+                "time": 1,
+                "voltage": 0
+              },
+              "unit": "ms"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "event",
+          "dimensions": {
+            "time": 0,
+            "voltage": 0
+          },
+          "vector_size": null
+        },
+        "coeffs": {
+          "dwell_samples": 64
+        }
+      },
+      "combine": "all",
+      "components": []
+    },
+    "block_two_reward": {
+      "continuous": null,
+      "event": {
+        "node": "call",
+        "callee": "dwell",
+        "args": [
+          {
+            "name": "condition",
+            "value": {
+              "node": "call",
+              "callee": "above",
+              "args": [
+                {
+                  "name": null,
+                  "value": {
+                    "node": "stream_ref",
+                    "target": "derive/env",
+                    "stream_type": {
+                      "value_kind": "scalar",
+                      "dimensions": {
+                        "time": 0,
+                        "voltage": 1
+                      },
+                      "vector_size": null
+                    }
+                  }
+                },
+                {
+                  "name": null,
+                  "value": {
+                    "node": "threshold_ref",
+                    "target": "threshold/thr",
+                    "stream_type": {
+                      "value_kind": "scalar",
+                      "dimensions": {
+                        "time": 0,
+                        "voltage": 1
+                      },
+                      "vector_size": null
+                    }
+                  }
+                }
+              ],
+              "stream_type": {
+                "value_kind": "boolean",
+                "dimensions": {
+                  "time": 0,
+                  "voltage": 0
+                },
+                "vector_size": null
+              }
+            }
+          },
+          {
+            "name": "duration",
+            "value": {
+              "node": "number",
+              "value": 250.0,
+              "dims": {
+                "time": 1,
+                "voltage": 0
+              },
+              "unit": "ms"
+            }
+          }
+        ],
+        "stream_type": {
+          "value_kind": "event",
+          "dimensions": {
+            "time": 0,
+            "voltage": 0
+          },
+          "vector_size": null
+        },
+        "coeffs": {
+          "dwell_samples": 64
+        }
+      },
+      "combine": "all",
+      "components": []
+    }
+  },
+  "topological_order": [
+    "control/smr_threshold_uv",
+    "input/raw",
+    "derive/env",
+    "threshold/thr"
+  ]
+}

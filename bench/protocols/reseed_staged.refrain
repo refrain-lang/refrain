@@ -1,0 +1,82 @@
+// reseed_staged.refrain
+// Golden vector for block-boundary re-seeding (SPEC §4.13): a staged session
+// whose second block re-measures the threshold the first block trained
+// against, instead of running the whole session on a number taken from the
+// warm-up.
+//
+// Generated with `skip_warmup=False` (docs/CONFORMANCE.md §3 names the
+// exception) because the warm-up seed only fires with the warm-up intact, and
+// a re-seed measures the signal *since* that seed. The signal is constant
+// within each phase, which makes every percentile exact by construction:
+//
+//   warm-up   4 s at 2 uV   -> the warm-up seed writes 2.0
+//   block one 6 s at 5 uV   -> the trailing 2 s window at the boundary is all 5.0
+//   block two     at 8 uV   -> the re-seed writes 5.0, and 8 > 5 keeps rewarding
+//
+// Three things a 0.24 engine that dropped the keys would get wrong, all of
+// them visible in the committed vectors:
+//
+//   - `threshold/thr` steps from 2.0 to 5.0 at 10 s, so `output/audio_gain`
+//     (a sigmoid of env over thr) steps with it.
+//   - `audio_chime` fires a second time at 10.25 s. Both bundles' dwells have
+//     been holding since 4.25 s, so without the hold reset the re-seed would
+//     move the threshold and the trainee would hear nothing to mark it; with
+//     the reset the streak restarts and earns the chime again 250 ms later.
+//   - `seed_report()`'s history carries two records, `warmup` then
+//     `block:two`.
+//
+// Block two is `mode = open` so a full-length signal never runs the session to
+// a stop mid-run (the same reason `seed_smr_baseline`'s run phase is open).
+protocol "reseed_staged" {
+  meta {
+    version = "1.0.0"
+    evidence = "demo"
+    description = "Bench: a block that re-measures its seeded threshold"
+  }
+
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+
+  input "raw" { montage = passthrough() }
+
+  // `magnitude()` straight off a `passthrough()` input makes the derive equal
+  // the input sample for sample, so a constant-fill phase has an exact
+  // percentile and nothing in the vector depends on filter settling.
+  derive "env" { from = "raw"; pipeline = [ magnitude() ] }
+
+  threshold "thr" { signal = "env"; type = absolute(value: smr_threshold_uv) }
+
+  reward "block_one_reward" {
+    event = dwell(condition: above("env", "thr"), duration: 250 ms)
+  }
+  reward "block_two_reward" {
+    event = dwell(condition: above("env", "thr"), duration: 250 ms)
+  }
+
+  output {
+    audio_chime = reward.event
+    audio_gain  = sigmoid("env" / "thr", midpoint: 1.0, steepness: 3)
+  }
+
+  block "one" {
+    reward = "block_one_reward"
+    output = ["audio_chime", "audio_gain"]
+  }
+  block "two" {
+    reward = "block_two_reward"
+    output = ["audio_chime", "audio_gain"]
+    reseed = ["smr_threshold_uv"]
+  }
+
+  controls {
+    smr_threshold_uv = voltage {
+      default = 9.9 uV; range = (0.5 uV, 50 uV); live_tunable = true
+      seed = percentile { from = "env"; window = 2 s; target_pct = 50 }
+    }
+  }
+
+  session { phases = [
+    phase { name = "warmup"; duration = 4 s; output_muted = true },
+    phase { name = "one";    duration = 6 s; block = "one" },
+    phase { name = "two";    mode = open;    block = "two" },
+  ] }
+}

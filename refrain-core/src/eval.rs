@@ -625,6 +625,13 @@ struct CompiledBlock {
     reward: Option<String>,
     outputs: Vec<String>,
     inhibits: Vec<String>,
+    /// Seeded controls this block re-measures when it goes active, and the
+    /// hold sites a re-measurement restarts (IR-JSON 0.6). Both empty for
+    /// every block that declares no `reseed`. The site set is the resolver's,
+    /// taken as given: an engine that tried to be cleverer than the baked set
+    /// would diverge from the wire and from the other engine.
+    reseed: Vec<String>,
+    reseed_holds: Vec<String>,
 }
 
 /// A named, block-selectable reward bundle (continuous and/or event).
@@ -904,6 +911,22 @@ struct SeedLatch {
     value: Option<f64>,
     n_samples: u64,
     at_time_s: Option<f64>,
+    /// Samples ingested since the control was last measured. A re-seed fires
+    /// only when this reaches `window_samples` — buffer length alone would
+    /// report a full window of samples the previous seeding already spent,
+    /// since `Percentile`'s ring never shrinks. Mirrors `_SeedLatch.fresh`.
+    fresh: u64,
+    /// One record per seeding event, warm-up included, in order. Mirrors
+    /// `_SeedLatch.history`; surfaced by `seed_report`.
+    history: Vec<SeedHistoryEntry>,
+    /// Set when the warm-up seed fails closed, which is terminal for this
+    /// control: the session's output is muted for the rest of its life, so
+    /// nothing may re-measure the control afterwards and nothing may rewrite
+    /// the `insufficient_samples` status a host reads to explain the silence.
+    /// Per latch rather than reusing the evaluator-wide `seed_failed`, because
+    /// the terminal state belongs to the control that failed, not the session.
+    /// Mirrors `_SeedLatch.failed_closed`.
+    failed_closed: bool,
 }
 
 /// A control range bound as a plain number, or `None` when there isn't one.
@@ -930,6 +953,30 @@ impl SeedLatch {
     }
 }
 
+/// One seeding event in a control's history (`seed_report()["history"]`),
+/// mirroring `Evaluator._seed_history_record`. `trigger` is `"warmup"` for the
+/// warm-up seed or `"block:<name>"` for a boundary re-seed.
+///
+/// `old_value` is the measurement this event replaced — the latch's own
+/// previous value — and not the live control value, which this core keeps in
+/// each bound stage's cell rather than in one map, and which a declared
+/// default's surface unit never reaches. "The measurement this replaced" is
+/// the same number in both engines by construction. `None` for a control's
+/// first measurement.
+#[derive(Clone, Debug)]
+pub struct SeedHistoryEntry {
+    pub at_time_s: f64,
+    pub old_value: Option<f64>,
+    pub new_value: Option<f64>,
+    pub source: String,
+    pub window_s: f64,
+    pub target_pct: f64,
+    pub scale: f64,
+    pub status: String,
+    pub trigger: String,
+    pub fresh_samples: u64,
+}
+
 /// Per-control baseline-seed outcome (`seed_report()`), mirroring the Python
 /// evaluator's report dict shape.
 pub struct SeedReportEntry {
@@ -941,6 +988,9 @@ pub struct SeedReportEntry {
     pub n_samples: u64,
     pub window_s: f64,
     pub at_time_s: Option<f64>,
+    /// Every seeding event for this control, in order (IR-JSON 0.6 /
+    /// refrain 0.25.0). Additive: every field above stays where it was.
+    pub history: Vec<SeedHistoryEntry>,
 }
 
 pub struct Evaluator {
@@ -978,6 +1028,14 @@ pub struct Evaluator {
     phase_elapsed: usize,
     held: bool,
     clock_frozen: bool,
+    /// The phase occurrence a re-seed has already fired for, or `None`.
+    /// Deliberately NOT `phase_elapsed == 0`: `advance` skips the elapsed
+    /// increment while the clock is frozen, and freezing the clock is a public
+    /// host API, so a practitioner who paused at the start of a re-seeding
+    /// phase would re-fire the re-seed and restart every downstream hold on
+    /// every chunk of the pause — identically in both engines, so the drift
+    /// gate could not see it. Mirrors `Evaluator._reseed_fired_phase`.
+    reseed_fired_phase: Option<usize>,
     /// `start(skip_warmup=true)` bypasses the leading warmup phase's output
     /// mute (offline/tests); later muted phases still mute. Mirrors the Python
     /// `_skip_leading_warmup_mute` flag.
@@ -1010,6 +1068,14 @@ pub struct Evaluator {
     /// One latch per seeded control (§2.5), built unconditionally in `new`.
     /// Empty for protocols with no `seed` blocks (the common case) — inert.
     seed_latches: Vec<SeedLatch>,
+    /// Every control named in some block's `reseed`, for the `set_control`
+    /// disarm gate. Empty for every protocol that declares no `reseed`, which
+    /// is what keeps such a protocol's `seed_report` unchanged.
+    reseed_controls: std::collections::HashSet<String>,
+    /// Indices into `seed_latches` of the latches whose buffers keep filling
+    /// after they fire, in control-name order. Empty — so the per-chunk
+    /// ingestion is skipped outright — for every protocol with no `reseed`.
+    reseed_ingest: Vec<usize>,
     /// Set for the rest of the session once any latch fails closed
     /// (insufficient warmup samples) — mutes output regardless of phase.
     seed_failed: bool,
@@ -1046,6 +1112,21 @@ struct RewardEvent {
     dwell: Dwell,
     sub_conditions: Vec<CNode>,
     combine: SubCombine,
+}
+
+impl RewardEvent {
+    /// Restart this event's hold clock and every hold nested in its
+    /// conditions. The dwell here is the event's own; `sub_conditions` holds
+    /// the expanded `all_of` / `any_of` elements, which is where a nested
+    /// `hold_for` / `dwell` lives. Together they are the whole expression the
+    /// Python side walks for its hold impls, so one baked site resets the
+    /// same set in both engines.
+    fn reset_holds(&mut self) {
+        self.dwell.reset();
+        for condition in self.sub_conditions.iter_mut() {
+            condition.reset_holds();
+        }
+    }
 }
 
 /// How `RewardEvent` recombines its sub-conditions into the dwell's input
@@ -1160,6 +1241,8 @@ impl Evaluator {
                         reward: b.reward.clone(),
                         outputs: b.output.clone(),
                         inhibits: b.inhibits.clone(),
+                        reseed: b.reseed.clone(),
+                        reseed_holds: b.reseed_holds.clone(),
                     },
                 )
             })
@@ -1219,8 +1302,25 @@ impl Evaluator {
                 value: None,
                 n_samples: 0,
                 at_time_s: None,
+                fresh: 0,
+                history: Vec::new(),
+                failed_closed: false,
             });
         }
+
+        // Block-boundary re-seeding (spec §4.13), baked once: the control set
+        // for the `set_control` disarm gate, and the latch indices whose
+        // buffers keep filling. Both empty for a protocol that declares no
+        // `reseed`, so its per-chunk cost is unchanged. Sorted by control
+        // name, matching `_build_reseed_maps`.
+        let reseed_controls: std::collections::HashSet<String> =
+            p.blocks.values().flat_map(|b| b.reseed.iter().cloned()).collect();
+        let mut reseed_names: Vec<&String> = reseed_controls.iter().collect();
+        reseed_names.sort();
+        let reseed_ingest: Vec<usize> = reseed_names
+            .iter()
+            .filter_map(|name| seed_latches.iter().position(|l| &&l.control_name == name))
+            .collect();
 
         Evaluator {
             inputs,
@@ -1244,6 +1344,7 @@ impl Evaluator {
             phase_elapsed: 0,
             held: false,
             clock_frozen: false,
+            reseed_fired_phase: None,
             skip_leading_warmup_mute: false,
             phase_snapshot: PhaseSnapshot::terminal(),
             last_taps: BTreeMap::new(),
@@ -1255,6 +1356,8 @@ impl Evaluator {
                 .map(|c| c.canonical_name.clone())
                 .collect(),
             seed_latches,
+            reseed_controls,
+            reseed_ingest,
             seed_failed: false,
             advisor: Advisor::new(p, sample_rate_hz),
         }
@@ -1341,11 +1444,24 @@ impl Evaluator {
         // for that control, and the session runs normally with the host's
         // value in place. Mirrors the Python `set_control`'s pre-forward
         // disarm check.
+        //
+        // A control some block RE-SEEDS is disarmed by a write at any time,
+        // before or after the warm-up fire, because for that control the
+        // engine still intends to write the value again later: without this a
+        // re-seed at block three would silently take back a threshold the
+        // practitioner set by hand during block one. The gate on
+        // `reseed_controls` is what keeps that safe — extending the post-fire
+        // disarm to every seeded control would change `seed_report`'s status
+        // from "seeded" to "disarmed_by_host" for every existing protocol in
+        // which a practitioner retunes a seeded control mid-session, a
+        // host-facing change with no new declaration present. Mirrors the same
+        // condition in `Evaluator.set_control`.
         let target = format!("control/{name}");
+        let reseeding = self.reseed_controls.contains(name);
         if let Some(latch) =
             self.seed_latches.iter_mut().find(|l| l.control_target == target)
         {
-            if latch.armed && !latch.fired {
+            if latch.armed && (!latch.fired || reseeding) {
                 latch.armed = false;
                 latch.status = SeedStatus::DisarmedByHost;
             }
@@ -1384,6 +1500,7 @@ impl Evaluator {
         self.phase_elapsed = 0;
         self.held = false;
         self.clock_frozen = false;
+        self.reseed_fired_phase = None;
         self.skip_leading_warmup_mute = skip_warmup;
         let first_muted = self.phases.first().map(|p| p.output_muted).unwrap_or(false);
         self.state = if skip_warmup || self.phases.is_empty() || !first_muted {
@@ -1574,6 +1691,14 @@ impl Evaluator {
         // output for the rest of the session.
         if !self.seed_latches.is_empty() {
             self.step_seeds(&env);
+            // Block-boundary re-seeding (spec §4.13), in the same slot and
+            // after the warm-up fire: on the chunk a re-seeding block goes
+            // active the warm-up seed may still be firing, and a re-seed
+            // measures the signal *since* the previous seeding, so warm-up
+            // has to be the previous seeding and not a simultaneous one.
+            if !self.reseed_controls.is_empty() {
+                self.step_reseeds();
+            }
             if self.seed_failed {
                 mutes_output = true;
             }
@@ -1674,6 +1799,14 @@ impl Evaluator {
         // reward bundle below is stepped with this same mask, not just the
         // active one, and why the output loop reuses the same vector.
         let artifact_observable: Vec<bool> = artifact_muted.iter().map(|&b| !b).collect();
+
+        // Re-seed ingestion, at the point Python's `_process_chunk` reaches
+        // it: after the mute gate exists (it reads it) and after the boundary
+        // fire above, so a fire reads the trailing window through the PREVIOUS
+        // chunk — causal, and needing no reordering of the inhibit stage.
+        if !self.reseed_ingest.is_empty() {
+            self.ingest_reseed_buffers(&env, &artifact_muted, freeze_ingest);
+        }
 
         // The reward stage's observability mask, in the env for the length of
         // that stage and removed the moment it ends. A `hold_for` / `dwell` /
@@ -1965,6 +2098,7 @@ impl Evaluator {
     fn step_seeds(&mut self, env: &HashMap<String, Val>) {
         let t0_s = self.samples_pushed as f64 / self.sample_rate_hz;
         let warmup = self.state == State::Warmup;
+        let sample_rate_hz = self.sample_rate_hz;
         let mut writes: Vec<(String, f64)> = Vec::new();
         let mut any_failed = false;
         for latch in self.seed_latches.iter_mut() {
@@ -1980,6 +2114,13 @@ impl Evaluator {
             };
             if warmup {
                 latch.buffer.ingest(src); // append-only, skips non-finite
+                // The same count `ingest` keeps, so one rule ("finite samples
+                // ingested since the control was last measured") covers the
+                // warm-up fire and every re-seed after it. The warm-up ingest
+                // does NOT consult the artifact mask and must not start to:
+                // that would move the seeded value of a protocol that
+                // declared nothing new (mirrors `_step_seeds`).
+                latch.fresh += src.iter().filter(|v| v.is_finite()).count() as u64;
                 continue;
             }
             if latch.fired {
@@ -1990,9 +2131,26 @@ impl Evaluator {
             let n = latch.buffer.n_eff();
             latch.n_samples = n;
             latch.at_time_s = Some(t0_s);
+            // The measurement this event replaces — None here, since a warm-up
+            // seed is by definition the control's first. Captured before the
+            // write below either way, so the two call sites read alike.
+            let replaced = latch.value;
             if n < latch.window_samples {
                 latch.status = SeedStatus::InsufficientSamples;
+                latch.failed_closed = true;
                 any_failed = true; // set self.seed_failed after the loop
+                latch.history.push(SeedHistoryEntry {
+                    at_time_s: t0_s,
+                    old_value: replaced,
+                    new_value: None,
+                    source: latch.from_entity.clone(),
+                    window_s: latch.window_samples as f64 / sample_rate_hz,
+                    target_pct: pct,
+                    scale: latch.scale,
+                    status: SeedStatus::InsufficientSamples.as_str().to_string(),
+                    trigger: "warmup".to_string(),
+                    fresh_samples: latch.fresh,
+                });
                 continue;
             }
             // `scale` multiplies the statistic (spec §4.9.4); `* 1.0` is exact
@@ -2019,6 +2177,22 @@ impl Evaluator {
             }
             latch.value = Some(value);
             latch.status = SeedStatus::Seeded;
+            latch.history.push(SeedHistoryEntry {
+                at_time_s: t0_s,
+                old_value: replaced,
+                new_value: Some(value),
+                source: latch.from_entity.clone(),
+                window_s: latch.window_samples as f64 / sample_rate_hz,
+                target_pct: pct,
+                scale: latch.scale,
+                status: SeedStatus::Seeded.as_str().to_string(),
+                trigger: "warmup".to_string(),
+                fresh_samples: latch.fresh,
+            });
+            // The freshness counter restarts whenever the control is actually
+            // written, so a re-seed measures the signal since the last value
+            // the trainee was scored against — not since the session started.
+            latch.fresh = 0;
             writes.push((latch.control_name.clone(), value));
         }
         if any_failed {
@@ -2030,6 +2204,209 @@ impl Evaluator {
             // anything else), so `note_control`'s `Result` (which only errs
             // for a source other than "manual"/"seed") can't fail.
             self.advisor.note_control(&name, value, "seed").expect("fixed source");
+        }
+    }
+
+    /// Re-measure the active block's `reseed` controls, once per entry into
+    /// that phase (spec §4.13). Mirrors `Evaluator._step_reseeds`.
+    ///
+    /// Called from `eval_chunk` right after `step_seeds` and before the
+    /// thresholds loop, so a re-seeded value is live for this very chunk's
+    /// comparison rather than one chunk late — the same position, and the same
+    /// reason, as the warm-up fire.
+    ///
+    /// Three rules differ from warm-up seeding, each deliberately: a window
+    /// that has not filled keeps the old value and records the miss instead of
+    /// failing the session closed (at a re-seed there IS a known-good value);
+    /// a host write disarms it, so a practitioner's number is never taken
+    /// back; and the downstream holds restart only when a value was actually
+    /// written, because a boundary that changed nothing a streak was measured
+    /// against is no reason to take the streak away.
+    ///
+    /// Borrow discipline as in `step_seeds`: the block's two name lists are
+    /// cloned out of `self.blocks` before the latch loop, the control writes
+    /// are applied after it, and the hold resets come last.
+    fn step_reseeds(&mut self) {
+        let t0_s = self.samples_pushed as f64 / self.sample_rate_hz;
+        let sample_rate_hz = self.sample_rate_hz;
+        let Some(block_name) =
+            self.phases.get(self.phase_index).and_then(|p| p.block.clone())
+        else {
+            return;
+        };
+        let (names, sites) = match self.blocks.get(&block_name) {
+            Some(b) if !b.reseed.is_empty() => (b.reseed.clone(), b.reseed_holds.clone()),
+            _ => return,
+        };
+        if self.reseed_fired_phase == Some(self.phase_index) {
+            return;
+        }
+        self.reseed_fired_phase = Some(self.phase_index);
+        let trigger = format!("block:{block_name}");
+        let mut writes: Vec<(String, f64)> = Vec::new();
+        for name in &names {
+            // Duplicate-free by construction: the resolver refuses the same
+            // control twice in one `reseed` list.
+            let Some(latch) =
+                self.seed_latches.iter_mut().find(|l| &l.control_name == name)
+            else {
+                continue;
+            };
+            if !latch.armed {
+                continue; // a host write took this value over
+            }
+            if latch.failed_closed {
+                // The warm-up seed failed closed, which muted the output for
+                // the rest of the session (spec §4.9.4). Re-measuring now
+                // would write a real value and flip `status` from
+                // `insufficient_samples` to `seeded` while the trainee stays
+                // silent, so the one field a host reads to explain the
+                // silence would say everything is fine. Skipped silently: no
+                // history record either, because `history` records seeding
+                // events and a dead latch had no event.
+                continue;
+            }
+            let pct = latch.current_target_pct();
+            let replaced = latch.value; // the measurement now standing
+            let fresh = latch.fresh;
+            if fresh < latch.window_samples {
+                latch.history.push(SeedHistoryEntry {
+                    at_time_s: t0_s,
+                    old_value: replaced,
+                    new_value: None,
+                    source: latch.from_entity.clone(),
+                    window_s: latch.window_samples as f64 / sample_rate_hz,
+                    target_pct: pct,
+                    scale: latch.scale,
+                    status: SeedStatus::InsufficientSamples.as_str().to_string(),
+                    trigger: trigger.clone(),
+                    fresh_samples: fresh,
+                });
+                continue;
+            }
+            // The same three steps as the warm-up fire, in the same order: the
+            // statistic over the latch's own buffer, the multiplier, and the
+            // clamp `scale` brings with it. Reusing the buffer means the
+            // arithmetic is the one baseline seeding already ships, so nothing
+            // new has to be proved bit-exact.
+            let mut value = latch.buffer.value_at(pct) * latch.scale;
+            if latch.scale != 1.0 {
+                if let Some(low) = latch.range_low {
+                    if value < low {
+                        value = low;
+                    }
+                }
+                if let Some(high) = latch.range_high {
+                    if value > high {
+                        value = high;
+                    }
+                }
+            }
+            latch.value = Some(value);
+            latch.status = SeedStatus::Seeded;
+            latch.n_samples = latch.buffer.n_eff();
+            latch.at_time_s = Some(t0_s);
+            latch.history.push(SeedHistoryEntry {
+                at_time_s: t0_s,
+                old_value: replaced,
+                new_value: Some(value),
+                source: latch.from_entity.clone(),
+                window_s: latch.window_samples as f64 / sample_rate_hz,
+                target_pct: pct,
+                scale: latch.scale,
+                status: SeedStatus::Seeded.as_str().to_string(),
+                trigger: trigger.clone(),
+                fresh_samples: fresh,
+            });
+            latch.fresh = 0;
+            writes.push((latch.control_name.clone(), value));
+        }
+        let wrote_any = !writes.is_empty();
+        for (name, value) in writes {
+            let _ = self.apply_control_value(&name, value); // NOT set_control
+            self.advisor.note_control(&name, value, "seed").expect("fixed source");
+        }
+        if wrote_any {
+            self.reset_reseed_hold_sites(&sites);
+        }
+    }
+
+    /// Restart the hold clocks at the sites the resolver baked into
+    /// `reseed_holds`. A site is a whole expression, named once, so every hold
+    /// in it restarts together — the Python side resets the same set by
+    /// walking the same site's expression for its hold impls. An empty list
+    /// beside a non-empty `reseed` is a real answer (the control reaches no
+    /// hold) and must not be read as "reset everything".
+    fn reset_reseed_hold_sites(&mut self, sites: &[String]) {
+        for site in sites {
+            if site == "reward/event" {
+                if let Some(ev) = self.reward_event.as_mut() {
+                    ev.reset_holds();
+                }
+            } else if let Some(name) = site.strip_prefix("reward_bundle/") {
+                if let Some(ev) = self.reward_bundles.get_mut(name).and_then(|b| b.event.as_mut())
+                {
+                    ev.reset_holds();
+                }
+            } else if let Some(channel) = site.strip_prefix("output/") {
+                for (ch, node, _) in self.outputs.iter_mut() {
+                    if ch == channel {
+                        node.reset_holds();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Keep a re-seeding control's buffer filling for the rest of the session,
+    /// with the two freezes. Mirrors `Evaluator._ingest_reseed_buffers`.
+    ///
+    /// Only latches that have already fired ingest here: before the fire the
+    /// buffer belongs to `step_seeds`, and feeding it twice would make the
+    /// warm-up window fill at double rate over duplicated samples.
+    ///
+    /// `freeze_ingest` is the evaluator's existing mid-session-rest freeze
+    /// (`output_muted` and not the first phase). The compile-time window check
+    /// leaves output-muted phases out of the time available to fill a window
+    /// *because* of this freeze, so the two have to agree: a ten-minute rest
+    /// contributes no samples at all.
+    ///
+    /// `artifact_muted` drops the samples an inhibit labelled
+    /// `kind = "artifact"` says the engine could not read. An unlabelled mute
+    /// is a sample the engine read and scored against the trainee, so it stays
+    /// in the baseline — the same asymmetry the hold paths make.
+    fn ingest_reseed_buffers(
+        &mut self,
+        env: &HashMap<String, Val>,
+        artifact_muted: &[bool],
+        freeze_ingest: bool,
+    ) {
+        if freeze_ingest {
+            return;
+        }
+        for k in 0..self.reseed_ingest.len() {
+            let i = self.reseed_ingest[k];
+            if !self.seed_latches[i].armed
+                || !self.seed_latches[i].fired
+                || self.seed_latches[i].failed_closed
+            {
+                // `failed_closed`: nothing will ever read this buffer again
+                // (the boundary skips a dead latch), so filling it is waste.
+                continue;
+            }
+            // `env` is keyed by the BARE derive name, as in `step_seeds`.
+            let observed: Vec<f64> = match env.get(&self.seed_latches[i].from_bare) {
+                Some(Val::F(v)) => v
+                    .iter()
+                    .zip(artifact_muted)
+                    .filter(|(_, &muted)| !muted)
+                    .map(|(&x, _)| x)
+                    .collect(),
+                _ => continue,
+            };
+            let latch = &mut self.seed_latches[i];
+            latch.buffer.ingest(&observed);
+            latch.fresh += observed.iter().filter(|v| v.is_finite()).count() as u64;
         }
     }
 
@@ -2050,6 +2427,7 @@ impl Evaluator {
                     n_samples: latch.n_samples,
                     window_s: latch.window_samples as f64 / self.sample_rate_hz,
                     at_time_s: latch.at_time_s,
+                    history: latch.history.clone(),
                 },
             );
         }
@@ -2064,8 +2442,52 @@ impl Evaluator {
     /// Apply the current `adjust` advice; refuses a stale id or a forbidden auto-apply.
     pub fn apply_advice(&mut self, advice_id: &str, by: &str) -> Result<Value, String> {
         let (control, value, event) = self.advisor.apply(advice_id, by)?;
+        // Reached only once the advice really applied: `apply` returns `Err`
+        // on a stale id, an unknown `by` or a forbidden auto-apply, and `?`
+        // takes us out before anything is written or disarmed.
+        if by == "practitioner" {
+            self.disarm_reseed_on_accepted_advice(&control);
+        }
         self.apply_control_value(&control, value)?;
         Ok(event)
+    }
+
+    /// The second door a practitioner sets a value by hand through, mirroring
+    /// `Evaluator._disarm_reseed_on_accepted_advice`.
+    ///
+    /// `set_control` is the first: someone types a number, and a re-seed must
+    /// not take it back (spec §4.9.4). Accepting the advisor's suggestion is
+    /// the same act — the practitioner did not type the number, they took
+    /// responsibility for it. A protocol with an advisor is exactly the
+    /// sophisticated one where re-seeding gets used, so leaving this door open
+    /// would make the promise false precisely where it matters most.
+    ///
+    /// The asymmetry with `by == "autopilot"` is deliberate, which is why the
+    /// caller tests `by` and this does not: an automatic apply has nobody
+    /// taking responsibility, and between two automatic mechanisms a fresh
+    /// measurement of the person is more authoritative than an inference from
+    /// reward rate. The re-seed wins and the advisor resumes from the new
+    /// baseline.
+    ///
+    /// Gated on `reseed_controls` for the same reason as the post-fire half of
+    /// `set_control`'s disarm: no protocol in the repository declares a
+    /// `reseed`, so no existing protocol's `seed_report` moves. Narrower than
+    /// `set_control`, which also disarms a not-yet-fired seed on ANY seeded
+    /// control; widening this door to match would change what an existing
+    /// protocol with an advisor and a seeded control reports.
+    fn disarm_reseed_on_accepted_advice(&mut self, control_name: &str) {
+        if !self.reseed_controls.contains(control_name) {
+            return;
+        }
+        let target = format!("control/{control_name}");
+        if let Some(latch) =
+            self.seed_latches.iter_mut().find(|l| l.control_target == target)
+        {
+            if latch.armed {
+                latch.armed = false;
+                latch.status = SeedStatus::DisarmedByHost;
+            }
+        }
     }
 
     pub fn dismiss_advice(&mut self, advice_id: &str) -> Result<Value, String> {

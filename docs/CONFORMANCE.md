@@ -171,11 +171,14 @@ For `realistic_smr_setcontrol`: replay the `realistic_smr.ir.json` protocol
 with the same signal; at chunk `at_chunk`, call `set_control` for each entry
 in `changes`; compare `.events.json` and `.taps.json` to the references.
 
-**Exception — `seed_smr_baseline`, `seed_exprpos` and `seed_scale_emg`:**
-baseline-seeding (§2.6) controls are seeded from a statistic measured *only
-during warmup*, so these three bundles are generated with `skip_warmup=False`
-(warmup intact) instead of step 3 above. Every other bundle in the corpus
-follows step 3; add a stem here if a fourth seeding bundle is ever generated.
+**Exception — `seed_smr_baseline`, `seed_exprpos`, `seed_scale_emg` and
+`reseed_staged`:** baseline-seeding (§2.6) controls are seeded from a statistic
+measured *only during warmup*, so these four bundles are generated with
+`skip_warmup=False` (warmup intact) instead of step 3 above. `reseed_staged`
+needs it for one step more: a re-seed measures the signal since the previous
+seeding, so the warm-up seed has to have happened for the boundary re-seed to
+mean anything. Every other bundle in the corpus follows step 3; add a stem here
+if a fifth seeding bundle is ever generated.
 A runtime self-validating one of these bundles must drive it with the
 lifecycle-aware entry point that advances the warmup→run cursor (Rust:
 `step_chunk_events`, which auto-starts with `skip_warmup=false` and advances
