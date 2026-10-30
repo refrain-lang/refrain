@@ -1,7 +1,16 @@
+import warnings
+from pathlib import Path
+
 import pytest
 
 jsonschema = pytest.importorskip("jsonschema")
-from refrain.editor import validate_model
+from refrain.editor import describe_protocol, validate_model
+from refrain.resolver import ResolveWarning
+
+REPO = Path(__file__).resolve().parents[1]
+CORPUS = sorted(REPO.glob("examples/**/*.refrain")) + sorted(
+    (REPO / "bench" / "protocols").glob("*.refrain")
+)
 
 _GOOD = {
     "name": "p", "meta": {"description": "d", "status": "draft", "goals": []},
@@ -173,3 +182,83 @@ protocol "flagship_shape" {
     found = list(_exprs(d["model"]))
     assert found, "no carried-through expression in the model — test is vacuous"
     validate_model(d["model"])
+
+
+# ---------------------------------------------------------------------------
+# refrain 0.25.0's two model-schema additions: `scale` on a control's seed
+# rule, and `reseed` on a staged block.
+
+def _seeded(**seed):
+    m = dict(_GOOD)
+    m["controls"] = [{"name": "thr_uv", "kind": "voltage", "default": 2.0, "unit": "uV",
+                      "range": [0.5, 30.0], "label": "Threshold", "live_tunable": True,
+                      "seed": {"statistic": "percentile", "from": "env",
+                               "window_ms": 60000, "target_pct": 40, **seed}}]
+    return m
+
+
+def test_a_seed_with_a_scale_validates():
+    validate_model(_seeded(scale=3.0))
+
+
+def test_a_seed_with_an_unknown_field_is_still_rejected():
+    """The seed object closes with `additionalProperties: false`; adding
+    `scale` must not open it. A typo'd `scal` is the case that matters — it is
+    the one the closed object exists to catch."""
+    with pytest.raises(jsonschema.ValidationError):
+        validate_model(_seeded(scal=3.0))
+
+
+def test_a_seed_scale_must_be_a_positive_number():
+    # The engine multiplies the measured statistic by it, so zero writes the
+    # control to zero and a negative flips the comparison's sense.
+    for bad in (0, -1.0, "3.0"):
+        with pytest.raises(jsonschema.ValidationError):
+            validate_model(_seeded(scale=bad))
+
+
+def _blocked(reseed):
+    m = dict(_GOOD)
+    m["blocks"] = [{"name": "focus", "thresholds": ["env_t"], "reseed": reseed}]
+    return m
+
+
+def test_a_block_with_a_reseed_list_validates():
+    # Documentation, not a gate: the `blocks` item is an open object, so this
+    # passed before `reseed` was declared. Its sibling below is the gate.
+    validate_model(_blocked(["thr_uv"]))
+
+
+def test_a_block_whose_reseed_entries_are_not_control_names_is_rejected():
+    """The half of the pair that can fail. An open `blocks` item accepts
+    `reseed: [1, 2]`, so this is red until `reseed` is declared with
+    `items: {"type": "string"}` — which is what makes the positive case above
+    mean anything."""
+    for bad in ([1, 2], ["ok", 3], "thr_uv"):
+        with pytest.raises(jsonschema.ValidationError):
+            validate_model(_blocked(bad))
+
+
+def test_every_in_repo_protocol_in_the_subset_validates_against_the_model_schema():
+    """What the ticket's "fixtures validated against it" asks for, on this side
+    of the vendor boundary; Task 12 does the same for refrain-editor's
+    vendored corpus.
+
+    Reach: the two trees this repository keeps protocols in,
+    `examples/**/*.refrain` and `bench/protocols/*.refrain` — 39 files, of
+    which the editor admits 17. It was green before refrain 0.25.0's schema
+    additions and is green after, because no in-repo protocol that the editor
+    admits declares a `scale` or a `reseed`; it is here to catch a schema edit
+    that breaks something else, not to prove the additions landed. The
+    assertions that prove that live in tests/test_editor_roundtrip.py.
+    """
+    validated = 0
+    for path in CORPUS:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ResolveWarning)
+            d = describe_protocol(path.read_text())
+        if not d["in_subset"]:
+            continue
+        validate_model(d["model"])
+        validated += 1
+    assert (len(CORPUS), validated) == (39, 17)

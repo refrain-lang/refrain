@@ -1,5 +1,5 @@
 {
-  "catalog_version": "2",
+  "catalog_version": "3",
   "blocks": [
     {
       "id": "derive.envelope",
@@ -208,7 +208,15 @@
           "default": 1
         }
       ],
-      "template": "event      = dwell(condition: {direction}(\"{signal}\", \"{threshold}\"), duration: {dwell})\n    continuous = sigmoid(\"{cont_signal}\", midpoint: {midpoint_uv}, steepness: {steepness})"
+      "template": "event      = dwell(condition: {direction}(\"{signal}\", \"{threshold}\"), duration: {dwell})\n    continuous = sigmoid(\"{cont_signal}\", midpoint: {midpoint_uv}, steepness: {steepness})",
+      "optional_slots": [
+        {
+          "name": "tolerance",
+          "type": "raw",
+          "after": "duration: {dwell}",
+          "clause": ", tolerance: {tolerance}"
+        }
+      ]
     },
     {
       "id": "reward.operant_compound_abs",
@@ -242,7 +250,15 @@
           "default": 250
         }
       ],
-      "template": "event      = dwell(condition: all_of([{conditions}]), duration: {dwell})\n    continuous = sigmoid(\"{cont_signal}\", midpoint: {midpoint}, steepness: {steepness})"
+      "template": "event      = dwell(condition: all_of([{conditions}]), duration: {dwell})\n    continuous = sigmoid(\"{cont_signal}\", midpoint: {midpoint}, steepness: {steepness})",
+      "optional_slots": [
+        {
+          "name": "tolerance",
+          "type": "raw",
+          "after": "duration: {dwell}",
+          "clause": ", tolerance: {tolerance}"
+        }
+      ]
     },
     {
       "id": "reward.operant_compound",
@@ -281,7 +297,15 @@
           "default": 250
         }
       ],
-      "template": "event      = dwell(condition: all_of([{conditions}]), duration: {dwell})\n    continuous = sigmoid(\"{cont_num}\" / \"{cont_den}\", midpoint: {midpoint}, steepness: {steepness})"
+      "template": "event      = dwell(condition: all_of([{conditions}]), duration: {dwell})\n    continuous = sigmoid(\"{cont_num}\" / \"{cont_den}\", midpoint: {midpoint}, steepness: {steepness})",
+      "optional_slots": [
+        {
+          "name": "tolerance",
+          "type": "raw",
+          "after": "duration: {dwell}",
+          "clause": ", tolerance: {tolerance}"
+        }
+      ]
     },
     {
       "id": "reward.operant_compound_anyof",
@@ -320,7 +344,15 @@
           "default": 250
         }
       ],
-      "template": "event      = dwell(condition: any_of([{conditions}]), duration: {dwell})\n    continuous = sigmoid(\"{cont_num}\" / \"{cont_den}\", midpoint: {midpoint}, steepness: {steepness})"
+      "template": "event      = dwell(condition: any_of([{conditions}]), duration: {dwell})\n    continuous = sigmoid(\"{cont_num}\" / \"{cont_den}\", midpoint: {midpoint}, steepness: {steepness})",
+      "optional_slots": [
+        {
+          "name": "tolerance",
+          "type": "raw",
+          "after": "duration: {dwell}",
+          "clause": ", tolerance: {tolerance}"
+        }
+      ]
     },
     {
       "id": "inhibit.artifact",
@@ -355,7 +387,15 @@
           "type": "duration_ms"
         }
       ],
-      "template": "metric = bandpower(input: \"{input}\", band: ({band_low_hz}, {band_high_hz}), window: {metric_window_ms} ms); threshold = percentile(target_pct: {target_pct}, window: {thr_window_ms}); action = mute(release: {release_ms} ms)"
+      "template": "metric = bandpower(input: \"{input}\", band: ({band_low_hz}, {band_high_hz}), window: {metric_window_ms} ms); threshold = percentile(target_pct: {target_pct}, window: {thr_window_ms}); action = mute(release: {release_ms} ms)",
+      "optional_slots": [
+        {
+          "name": "kind",
+          "type": "raw",
+          "after": "action = mute(release: {release_ms} ms)",
+          "clause": "; kind = \"{kind}\""
+        }
+      ]
     },
     {
       "id": "reward.operant",
@@ -405,7 +445,15 @@
           "default": 3
         }
       ],
-      "template": "event      = dwell(condition: {direction}(\"{signal}\", \"{threshold}\"), duration: {dwell})\n    continuous = sigmoid(\"{cont_num}\" / \"{cont_den}\", midpoint: {midpoint}, steepness: {steepness})"
+      "template": "event      = dwell(condition: {direction}(\"{signal}\", \"{threshold}\"), duration: {dwell})\n    continuous = sigmoid(\"{cont_num}\" / \"{cont_den}\", midpoint: {midpoint}, steepness: {steepness})",
+      "optional_slots": [
+        {
+          "name": "tolerance",
+          "type": "raw",
+          "after": "duration: {dwell}",
+          "clause": ", tolerance: {tolerance}"
+        }
+      ]
     },
     {
       "id": "derive.ratio",
@@ -465,7 +513,15 @@
           "default": 250
         }
       ],
-      "template": "combine    = \"all\"\n    event      = dwell(condition: {direction}(\"{signal}\", \"{threshold}\"), duration: {dwell})"
+      "template": "combine    = \"all\"\n    event      = dwell(condition: {direction}(\"{signal}\", \"{threshold}\"), duration: {dwell})",
+      "optional_slots": [
+        {
+          "name": "tolerance",
+          "type": "raw",
+          "after": "duration: {dwell}",
+          "clause": ", tolerance: {tolerance}"
+        }
+      ]
     },
     {
       "id": "derive.difference",
@@ -649,7 +705,15 @@
           "default": 250
         }
       ],
-      "template": "combine    = \"weighted\"\n    continuous = reward.composite\n    event      = dwell(condition: above(reward.composite, {threshold}), duration: {dwell})"
+      "template": "combine    = \"weighted\"\n    continuous = reward.composite\n    event      = dwell(condition: above(reward.composite, {threshold}), duration: {dwell})",
+      "optional_slots": [
+        {
+          "name": "tolerance",
+          "type": "raw",
+          "after": "duration: {dwell}",
+          "clause": ", tolerance: {tolerance}"
+        }
+      ]
     },
     {
       "id": "reward.passthrough",
@@ -677,7 +741,15 @@
           "type": "ref"
         }
       ],
-      "template": "event      = dwell(condition: {direction}(\"{signal}\", \"{threshold}\"), duration: {dwell})\n    continuous = \"{cont_ref}\""
+      "template": "event      = dwell(condition: {direction}(\"{signal}\", \"{threshold}\"), duration: {dwell})\n    continuous = \"{cont_ref}\"",
+      "optional_slots": [
+        {
+          "name": "tolerance",
+          "type": "raw",
+          "after": "duration: {dwell}",
+          "clause": ", tolerance: {tolerance}"
+        }
+      ]
     }
   ]
 }
