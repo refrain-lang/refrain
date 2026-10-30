@@ -710,12 +710,19 @@ _HELD = SURFACE_N - (SURFACE_HOLD - 1)                                   # 609
 # that is `SURFACE_HOLD - 1` samples and not `SURFACE_HOLD`.
 _HELD_PAUSED = _HELD - (SURFACE_HOLD - 1)                                # 578
 # Under a 250 ms dwell, `reward.event.holds` starts `SURFACE_DWELL - 1`
-# samples after the nested hold does.
-_DWELL_HELD = _HELD - (SURFACE_DWELL - 1)                                # 546
-# A pause costs that path a whole dwell: the nested hold drops, which zeroes
-# the dwell's streak with it, so `.holds` returns `SURFACE_DWELL` samples
-# later than it otherwise would.
-_DWELL_HELD_PAUSED = _DWELL_HELD - SURFACE_DWELL                         # 482
+# samples after the nested hold does, so 94 samples in.
+_DWELL_FIRST = (SURFACE_HOLD - 1) + (SURFACE_DWELL - 1)                  # 94
+_DWELL_HELD = SURFACE_N - _DWELL_FIRST                                   # 546
+# A pause here lands BEFORE `.holds` has ever risen, and that is a different
+# regime from the three surfaces above. The nested hold starts its streak
+# again at the pause index, and the dwell above it then takes its own full
+# duration from there, so the whole answer slides right by exactly the pause
+# index — not by a dwell. The two coincide at this pause index and nowhere
+# else: measured, a pause at 32 moves it by 32 and a pause at 64 by 64, while
+# a pause at 96 or later moves the first index not at all and costs a flat
+# `_DWELL_FIRST` samples, because by then `.holds` has already risen and what
+# the pause costs is the time to rebuild it from nothing.
+_DWELL_HELD_PAUSED = _DWELL_HELD - SURFACE_PAUSE_AT                      # 482
 # The inhibit case reads the gate rather than the hold: `output/fb` is a
 # constant, so a non-zero sample is an unmuted one. The gate shuts when the
 # metric hold latches, so the unmuted samples are the ones before that.
@@ -723,6 +730,10 @@ _UNMUTED = SURFACE_HOLD - 1                                              # 31
 # A pause drops the metric hold, which reopens the gate for the samples it
 # takes to latch again, less the release hangover.
 _UNMUTED_PAUSED = _UNMUTED + (SURFACE_HOLD - 1 - SURFACE_RELEASE)        # 61
+# A reward event's own dwell, with nothing nested under it: `.holds` rises
+# `SURFACE_DWELL - 1` samples in and stays up, and a pause does not touch it.
+_REWARD_DWELL_FIRST = SURFACE_DWELL - 1                                  # 63
+_REWARD_DWELL_HELD = SURFACE_N - _REWARD_DWELL_FIRST                     # 577
 
 _SURFACE_HEAD = '''protocol "hold reset surfaces" {
   meta { version = "1.0"; evidence = "experimental"; description = "hold reset surfaces" }
@@ -777,6 +788,15 @@ _BODY_BUNDLE = f'''  reward "live" {{
   block "b2" {{ reward = "warm"; output = ["fb"] }}
   session {{ phases = [ phase {{ name = "p1"; duration = 60 s; block = "b1" }} ] }}
 }}'''
+
+# The exclusion the fix implements, as its own body: a reward event whose
+# condition carries no hold at all, so the only hold in the protocol is the
+# event's own dwell — the one node `reset_held_outputs` must leave alone.
+_BODY_REWARD_DWELL = '''  reward {
+    event = dwell(condition: above("level", "t"), duration: 250 ms)
+  }
+  output { fb = reward.event.holds }
+}'''
 
 _BODY_INHIBIT = f'''  inhibit "latch" {{
     metric    = {_SURFACE_HOLD_LIT}
@@ -847,11 +867,60 @@ def test_a_transport_pause_restarts_the_hold_on_every_surface_that_carries_one(
     assert expected_paused != expected_running
 
     if index_moves:
-        # Under a dwell the first `.holds` sample moves by a whole dwell.
-        assert _first(paused) == _first(running) + SURFACE_DWELL
+        # The hold restarts at the pause, and the dwell above it takes its
+        # duration from there, so the first `.holds` sample slides right by
+        # the pause index. This holds only while the pause lands before
+        # `.holds` has risen; past that the index stops moving entirely.
+        assert SURFACE_PAUSE_AT < _DWELL_FIRST
+        assert _first(paused) == _first(running) + SURFACE_PAUSE_AT
     else:
         # And here is why the count is the assertion: the hold had already
         # satisfied when the pause landed, so the first sample does not move
         # at all. A case that asserted this index would be green on both
         # engines while they disagreed by 31 samples.
         assert _first(paused) == _first(running)
+
+
+def test_a_transport_pause_leaves_a_reward_events_own_dwell_running(backend):
+    """The exclusion, pinned: a pause restarts holds, and not this one.
+
+    `reset_held_outputs()` reaches every `hold_for` in the protocol and a
+    `dwell`/`dwell_rearm` bound in `output { }`. It does **not** reach a
+    `reward { event = dwell(...) }`'s own dwell, on either engine, and never
+    has. That is the shape 44 of the 45 live protocols drive feedback from, so
+    it is not a detail: making it reset would move almost every protocol in the
+    library with nothing in their source asking for it, which is what this
+    release forbids. `docs/SPEC.md` §7.4's "What a freeze reaches" table states
+    it, and the 0.25.0 notes record it as an open question — so the notes
+    actively invite the change this case refuses.
+
+    Until now nothing guarded the row on either side. Patching the Python
+    reference so a pause also restarts the reward dwell left the whole suite
+    green, 1647 passed, byte-for-byte identical to unpatched; the same is true
+    of swapping Rust's `reset_condition_holds` for `reset_holds`. Either edit
+    reintroduces the divergence this branch exists to fix, on the dominant
+    protocol shape, with no gate firing.
+
+    The protocol has no hold in its condition, so the event's own dwell is the
+    only hold in it and nothing else can absorb the pause. The assertion is
+    again the count, because that is what would move: with the exclusion
+    patched out, `.holds` drops for the 63 samples the dwell takes to rebuild
+    and the count falls 577 → 514 while the first index stays at 63.
+    """
+    running = _surface_run(backend, _BODY_REWARD_DWELL, pause=False)
+    paused = _surface_run(backend, _BODY_REWARD_DWELL, pause=True)
+
+    assert _first(running) == _REWARD_DWELL_FIRST
+    assert int((running != 0).sum()) == _REWARD_DWELL_HELD
+    # Unchanged, both ways round: the pause reaches nothing here.
+    assert int((paused != 0).sum()) == _REWARD_DWELL_HELD
+    assert _first(paused) == _first(running)
+    assert np.array_equal(paused, running)
+
+    # Non-vacuity, in the same protocol shape and under the same pause: put a
+    # hold one level down, inside the event's condition, and the same call on
+    # the same chunk boundary moves that stream by 64 samples. So a stream
+    # that does not move is this exclusion and not an inert case.
+    nested_running = _surface_run(backend, _BODY_NESTED, pause=False)
+    nested_paused = _surface_run(backend, _BODY_NESTED, pause=True)
+    assert int((nested_paused != 0).sum()) == int((nested_running != 0).sum()) - SURFACE_PAUSE_AT
