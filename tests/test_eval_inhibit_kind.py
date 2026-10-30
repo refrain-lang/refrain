@@ -9,13 +9,18 @@ separate mask: the condition still says "not qualifying", the observability
 mask says "not observed", and the hold checks observability first.
 
 Every row of the design's forgiveness table is covered, and each test names
-the row it covers in its docstring. The three rows that say "reset, as today"
-(a phase mute, an inactive block channel, a frozen transport clock) are pinned
-here too, with an artifact label declared but its gate idle: those are the rows
-that break the moment a reason the engine *scored* a sample is mistaken for a
-reason it could not *read* one, which is the easiest way to build this mask
-wrong. They pass before this change as well as after — they are regression
-pins, not new behaviour.
+the row it covers in its docstring. The two rows that say "reset, as today"
+(a phase mute and an inactive block channel) are pinned here too, as is row 6
+— a frozen transport clock, which `docs/SPEC.md` §7.4 now spells out per hold
+surface rather than as "reset, as today", because that wording was false for a
+reward event's own dwell. All three are run with an artifact label declared and
+its gate idle: they are the rows that break the moment a reason the engine
+*scored* a sample is mistaken for a reason it could not *read* one, which is
+the easiest way to build this mask wrong. They pass before this change as well
+as after — they are regression pins, not new behaviour. Row 6's reach across
+the other hold surfaces is pinned in
+`tests/test_eval_artifact_mask_reward.py`, which also pins the one surface a
+freeze does not reach.
 
 The file name matches `tests/test_eval_*.py` on purpose: that glob is what the
 dual-backend drift gate runs under `REFRAIN_EVAL_BACKEND=rust`.
@@ -325,9 +330,12 @@ def test_a_dip_inside_an_artifact_mute_does_not_count_against_tolerance(backend)
 
 
 # ---------------------------------------------------------------------------
-# The three rows that stay as they are. In each the artifact label is
-# declared and the gate is idle, so nothing but a mask built from the wrong
-# source could make these forgiving.
+# The three cases whose answer does not change: a phase mute, an inactive
+# block channel, and a frozen clock, each of which still resets an
+# `output`-bound hold. (Row 6's wording changed in 0.25.0 — see the module
+# docstring — but not what it does to a hold bound here.) In each the artifact
+# label is declared and the gate is idle, so nothing but a mask built from the
+# wrong source could make these forgiving.
 # ---------------------------------------------------------------------------
 
 STAGED_LENGTH = 800
@@ -382,8 +390,13 @@ def test_an_inactive_block_channel_still_resets_the_clock(backend):
 
 
 def test_a_frozen_transport_clock_still_resets_the_clock(backend):
-    """Row 6 — the transport clock is frozen, or a data gap: reset, as today,
-    via `reset_held_outputs()`.
+    """Row 6 — the transport clock is frozen, or a data gap.
+
+    The row reads, since 0.25.0, "every `hold_for` restarts, wherever it is
+    written, and so does a `dwell`/`dwell_rearm` bound in `output { }`". This
+    is the `output`-bound half of it; the other surfaces, and the reward
+    event's own dwell that a freeze leaves running, are in
+    `tests/test_eval_artifact_mask_reward.py`.
 
     9 qualifying samples, then the clock freezes, then qualifying samples
     again with nothing muted at all. `reset_held_outputs()` discards the

@@ -1588,16 +1588,32 @@ impl Evaluator {
     /// `docs/SPEC.md` §7.4 newly specifies.
     ///
     /// `CNode::reset_holds` is the re-seed walk, reused here rather than
-    /// duplicated. Its reach is wider than Python's by exactly one node kind:
-    /// a `dwell`/`dwell_rearm` nested BELOW the top level of an expression,
-    /// which Python's `HoldForImpl` test skips and this resets. No protocol
-    /// can observe the difference — every spelling that puts an event stream
-    /// in a boolean position either raises in the Python evaluator
-    /// (`'DwellResult' object has no attribute 'shape'`) or already disagrees
-    /// between the engines with no pause involved, so the resolver, not this
-    /// function, is where that shape has to be refused. The reward event's own
-    /// dwell is the one node that must NOT be swept in, which is why the
-    /// reward stage goes through `reset_condition_holds`.
+    /// duplicated, and its reach is wider than Python's. Python resets exactly
+    /// one `dwell`/`dwell_rearm`: the one that is the WHOLE top-level
+    /// expression of an `output { }` binding. This resets any it walks, which
+    /// is six further positions, not one:
+    ///
+    ///   1. nested below the top level of an `output { }` binding
+    ///      (`all_of([dwell(...)])`, `hold_for(condition: dwell(...))`);
+    ///   2. nested in a reward event's condition;
+    ///   3. the whole expression of a derive formula;
+    ///   4. the whole expression of `reward { continuous = ... }`;
+    ///   5. the whole expression of a reward bundle's `continuous`;
+    ///   6. the whole expression of an inhibit's `metric`.
+    ///
+    /// Positions 3-6 are top-level and the resolver accepts all four today, so
+    /// "below the top level" is not the boundary — being an `output` binding
+    /// is. No protocol can observe the difference even so: in 3-6 the Python
+    /// evaluator raises on the first chunk (`'DwellResult' object has no
+    /// attribute 'size'`, or a `TypeError` from the inhibit comparison), and
+    /// in 1-2 it either raises or already disagrees with this engine before
+    /// any pause is involved. So every shape that reaches the over-reach is
+    /// one no session can run, and the refusal belongs in the resolver rather
+    /// than here. The reward event's own dwell is the one node that must NOT
+    /// be swept in, which is why the reward stage goes through
+    /// `reset_condition_holds`;
+    /// `test_a_transport_pause_leaves_a_reward_events_own_dwell_running`
+    /// pins that, and goes red if this line becomes `reset_holds`.
     pub fn reset_held_outputs(&mut self) {
         // `output { }`: every hold in the binding, the top-level
         // `dwell`/`dwell_rearm` included — the only place a hold other than
