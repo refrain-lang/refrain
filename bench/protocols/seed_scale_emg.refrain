@@ -45,7 +45,7 @@
 //     `target_pct = 50` and `scale = 3.0`, is the clinical form verbatim.
 //
 // Generated with `skip_warmup=False` (docs/CONFORMANCE.md names this stem as
-// one of the three exceptions) so the seed actually fires, over broadband
+// one of the four exceptions) so the seed actually fires, over broadband
 // noise plus two Hann-windowed 70 Hz clenches in the run phase. The warm-up
 // is left clean, so the seeded median is the person's resting level; the
 // clenches then carry the envelope past three times it and the gate trips

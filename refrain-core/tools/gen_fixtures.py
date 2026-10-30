@@ -404,12 +404,13 @@ if __name__ == "__main__":
     # one-channel guard).
     generate("micro_passthrough_identity", channels=("Cz",))
     # Baseline-seeding conformance fixture (§2.6): the seed fires only during
-    # warmup, so this is one of the three stems generated with
-    # skip_warmup=False — the others are `seed_exprpos` and `seed_scale_emg`
-    # below. Every other stem in this file takes the corpus-wide
-    # skip_warmup=True. docs/CONFORMANCE.md §3 names the same three as its
-    # exception to step 3; add a stem in both places if a fourth appears. A
-    # constant-fill signal makes the seeded percentile exact by construction.
+    # warmup, so this is one of the four stems generated with
+    # skip_warmup=False — the others are `seed_exprpos`, `seed_scale_emg` and
+    # `reseed_staged` below. Every other stem in this file takes the
+    # corpus-wide skip_warmup=True. docs/CONFORMANCE.md §3 names the same four
+    # as its exception to step 3; add a stem in both places if a fifth appears.
+    # A constant-fill signal makes the seeded percentile exact by
+    # construction.
     # amp=None so the resolver's chosen rate is exactly 256 Hz (the rate this
     # fixture runs at) — see the `generate()` docstring note on control-seed
     # `window_samples` baking.

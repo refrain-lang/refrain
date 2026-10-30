@@ -785,9 +785,28 @@ invisible, it was merely unpunished.
 
 **What it forgives, and what it does not.** `tolerance` is about the signal
 dipping. Everything else that makes the condition false keeps the behaviour it
-has today: an inhibit or a muted output, a phase that mutes output, a channel
-outside the active block, a frozen transport clock, and a host call to
-`Evaluator.reset_held_outputs()` all still reset the hold.
+has today: an inhibit or a muted output, a phase that mutes output and a
+channel outside the active block all still reset a hold bound in `output { }`,
+where the mute gate is AND-ed into the condition, and none of them has ever
+been folded into a hold inside `reward { ... }` (§7.4 of `docs/SPEC.md` has
+the per-path table and the `kind = "artifact"` exception).
+
+A frozen transport clock and a host call to `Evaluator.reset_held_outputs()`
+are not about the condition at all — they say the samples that would have come
+next did not come — and they reach a set of their own, which both engines
+agree on sample for sample:
+
+| Where the hold is written | A freeze or `reset_held_outputs()` |
+|---|---|
+| `hold_for(...)`, wherever it sits — an `output { }` binding, a reward event's condition, `reward { continuous = ... }`, a weighted composite's component `signal`, a derive formula, an inhibit metric | restarts it |
+| `dwell(...)` or `dwell_rearm(...)` bound directly in `output { }` | restarts it |
+| the `dwell` of a `reward { event = dwell(...) }`, top-level or per-bundle | leaves it running |
+
+The last row is the dominant shape, so it is stated rather than deduced: a
+reward dwell's first rising edge lands on the same sample with and without a
+freeze, measured at 256 Hz on both engines. It is today's behaviour in both
+rather than a reasoned exception, and the 0.25.0 release notes record it as an
+open question.
 
 Rules the compiler enforces:
 

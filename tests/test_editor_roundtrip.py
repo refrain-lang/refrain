@@ -839,11 +839,16 @@ def test_an_authored_empty_reseed_list_is_absent_from_the_model():
 
 
 def test_an_artifact_inhibit_whose_action_is_a_freeze_is_not_in_the_subset():
-    """A mute silences the output; a freeze holds the last value. The block's
-    template renders `action = mute(release: ...)` unconditionally, so
-    accepting a freeze re-rendered it as a mute — a different protocol,
-    silently. `kind` is legal on either, so the label this release adds makes
-    a freeze artifact gate a more attractive thing to write than it was.
+    """The editor has to hand back the source the author wrote.
+
+    `freeze` and `mute` gate output identically at runtime — neither engine
+    holds the last value, which `tests/test_eval_mute_gating.py` measures on
+    both backends — so this refusal is about fidelity, not behaviour. The
+    block's template renders `action = mute(release: ...)` unconditionally, so
+    accepting a freeze gave back a document the author did not write and an IR
+    whose `action_kind` had changed. `kind` is legal on either, so the label
+    this release adds makes a freeze artifact gate a more attractive thing to
+    write than it was.
     """
     src = ALL_FOUR.replace("action    = mute(release: 200 ms)",
                            "action    = freeze(release: 200 ms)")

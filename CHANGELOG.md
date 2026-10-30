@@ -185,10 +185,14 @@ load-time version gate exists. `SUPPORTED_IR_VERSIONS` in
   it: an artifact inhibit whose `action` is `freeze(...)` rather than
   `mute(...)` is now reported **out of subset** instead of being re-rendered as
   a mute. `kind` is legal on both, so a `freeze` artifact gate is a more
-  attractive thing to write than it used to be — and a mute silences the output
-  while a freeze holds its last value, which are different protocols. Nothing
-  in the repository writes one, so this moves no existing protocol; it moves a
-  future one from silently corrupted to correctly reported. Two honest limits.
+  attractive thing to write than it used to be — and the editor's promise is to
+  give back the source the author wrote. At runtime the two are the same gate
+  (see **Fixed** below: neither engine holds the last value), so this is not a
+  behaviour trap but a fidelity one: the author gets back a document they did
+  not write, and the emitted IR's `action_kind` changes from `"freeze"` to
+  `"mute"`. Nothing in the repository writes one, so this moves no existing
+  protocol; it moves a future one from silently corrupted to correctly
+  reported. Two honest limits.
   First,
   **the TypeScript editor cannot render these four and drops them silently**;
   the port is outstanding, and a guard test now fails the day a vendored
@@ -246,6 +250,71 @@ load-time version gate exists. `SUPPORTED_IR_VERSIONS` in
   distinction governs the re-seed freshness counter: it restarts when the engine
   *measures* a control, so a `set_control` or an autopilot apply moves the value
   without resetting the count.
+
+### Fixed
+
+- **A spec reversal: `action = freeze` does not hold the output at its last
+  value, and never did.** Through 0.24 three sentences said it does — §4.6's
+  action list ("hold reward at last value"), §7.4 ("Inhibits with
+  `action = freeze` hold the previous output value") and `docs/PRIMITIVES.md`'s
+  inhibit-actions list ("hold output at last value"). All three were wrong
+  about both engines, from the beginning: `FreezeAction.gate` is the same
+  hangover state machine as `MuteAction.gate`, and the Rust core maps
+  `"mute" | "freeze"` to a single `InhibitGate`. A `freeze` inhibit zeroes
+  every continuous output channel and falsifies every event channel, release
+  hangover included, exactly as a `mute` does. All three sentences now say so,
+  and `tests/test_eval_mute_gating.py` pins it on both backends — the claim had
+  no behavioural test on either engine until now. **If you implemented a
+  conformant runtime from SPEC 0.24 and made `freeze` hold its last value, that
+  runtime does not match refrain's engines and should be changed.** If you
+  authored a protocol with a `freeze` inhibit expecting a held tone, you have
+  been getting silence; `flag()` is the action that modifies nothing.
+
+- **A host clock freeze now restarts a hold nested in a reward condition in the
+  Rust core too.** `Evaluator.reset_held_outputs()` — which
+  `set_clock_frozen(true)` calls, and which `docs/PRIMITIVES.md` tells a host to
+  call after an input gap — invalidates held streaks, because a streak
+  accumulated across samples that never arrived is stale. The Rust core walked
+  only the holds reachable from `output { }`; the Python reference walks every
+  `hold_for` in the protocol. On
+  `dwell(condition: hold_for(... 125 ms), duration: 250 ms)` at 256 Hz with a
+  freeze mid-streak, Python delivered the first chime 250 ms later than Rust.
+  The two now agree on the whole set: every `hold_for` wherever it is written
+  (an `output` binding, a reward event's condition, `reward { continuous }`, a
+  weighted composite's component signal, a derive formula, an inhibit metric),
+  plus a `dwell`/`dwell_rearm` bound directly in `output { }`. The lines
+  predate 0.25.0, but this release made the nested reward hold a specified,
+  masked surface and wrote the freeze behaviour into §7.4 normatively, so the
+  divergence became a conformance-visible one. Pinned on both backends by
+  `tests/test_eval_artifact_mask_reward.py::test_a_transport_pause_restarts_a_hold_nested_in_a_reward_condition`.
+  **Open and deliberately unchanged:** a freeze does *not* restart a
+  `reward { event = dwell(...) }`'s own dwell, on either engine. That is the
+  shape most live protocols use, nothing in the engines ever restarted it, and
+  no declaration gates it — so changing it would move almost every protocol in
+  the library at release time. §7.4's "What a freeze reaches" table states the
+  three-way split rather than leaving it to be deduced.
+
+### Documentation
+
+- **§7.4's forgiveness table said a freeze resets "the hold", which was false
+  for the dominant hold path on both engines.** Row 6 and the matching
+  paragraph in `docs/PRIMITIVES.md` now say which holds a freeze restarts and
+  which it leaves running, surface by surface — a conformance implementor
+  building from the old row would have implemented a reset neither refrain
+  engine performs.
+- **§7.4 said "Three surfaces are inside" the observability mask; there are
+  four.** A weighted composite's component signal (`reward "<name>"
+  { signal = ... }`) is evaluated inside the same mask window as the event
+  condition, a hold nested in it and `reward { continuous }`, identically on
+  both engines. The count and the enumeration are now four.
+- **§7.4 attributed another repository's protocol count to this one.** "44 of
+  the 45 protocols in this repository" is now "in the refrain-protocols live
+  corpus"; this repository has 40 `.refrain` files, 39 of them in the pinned
+  corpus.
+- **Two comments still said three `skip_warmup=False` fixture stems.**
+  `refrain-core/tools/gen_fixtures.py` and
+  `bench/protocols/seed_scale_emg.refrain` now say four, matching
+  `docs/CONFORMANCE.md` §3, which already did.
 
 ## [0.24.0] — 2026-10-20
 

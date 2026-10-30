@@ -334,12 +334,27 @@ def _match_reward_component(decl: A.NamedDecl) -> dict:
         metric, thr, action = bm["metric"], bm["threshold"], bm["action"]
         # `mute` only. The block's template renders `action = mute(release: ...)`
         # unconditionally, so accepting any other action re-rendered it AS a
-        # mute: a `freeze` inhibit silently became a muting one. A mute
-        # silences the output, a freeze holds the last value and a flag gates
-        # nothing — three clinically different protocols, and the editor was
-        # turning the second into the first without a word. Out of subset is
-        # the honest answer, the same call `band_envelope` with explicit
-        # `taps` already makes.
+        # mute: a `freeze` inhibit silently became a muting one, and a `flag`
+        # inhibit — which gates nothing at all — became a silencing one.
+        #
+        # The reason is round-trip fidelity, not runtime behaviour. At runtime
+        # `freeze` and `mute` are the same gate: `FreezeAction.gate` is the
+        # same hangover state machine as `MuteAction.gate` (same constructor,
+        # same loop, differing in a local name and one redundant `else`), the
+        # Rust core maps `"mute" | "freeze"` to one `InhibitGate`, and neither
+        # engine holds the last value (`docs/SPEC.md` §4.6, §7.4). Measured
+        # rather than read off the source:
+        # `tests/test_eval_mute_gating.py` now runs the same protocol under
+        # both spellings and compares the gated taps on both backends. What
+        # differs is the
+        # document and the wire: `action_kind` carries `"freeze"`, and the
+        # editor's promise is to give back the source the author wrote. Handing
+        # back a `mute` where they wrote a `freeze` breaks that promise however
+        # the two behave, and would also change the emitted IR. Out of subset
+        # is the honest answer, the same call `band_envelope` with explicit
+        # `taps` already makes. (`flag` is a behaviour change as well as an
+        # IR one — it gates nothing — which is the stronger half of the same
+        # case.)
         #
         # `kind` is legal on a mute OR a freeze inhibit, so the label this
         # release adds makes a freeze artifact gate a more attractive thing to

@@ -8,6 +8,13 @@ event channel reads false. They also pin that `suppress_on_mute` on a
 `feedback` layer is a declaration for the downstream player and changes
 nothing in either engine.
 
+`action = freeze(...)` is here for the same reason: it gates output exactly as
+`mute` does and holds no value, which is what SPEC §7.4 says and what both
+engines do — `FreezeAction.gate` is the same hangover state machine as
+`MuteAction.gate` and the Rust core maps `"mute" | "freeze"` to one
+`InhibitGate`. Until 0.25.0 that claim had no behavioural test on either
+backend, which is what the parametrized case at the bottom of this file is.
+
 The file name matches `tests/test_eval_*.py` on purpose: that glob is what the
 dual-backend gate runs under `REFRAIN_EVAL_BACKEND=rust`.
 """
@@ -17,6 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from refrain.amp_profile import load_amp_profile
 from refrain.eval_ import Evaluator
@@ -42,7 +50,7 @@ protocol "mute gating" {
   inhibit "emg" {
     metric = sigmoid("level", midpoint: 1.5 uV, steepness: 10)
     threshold = absolute(0.5)
-    action = mute(release: 100 ms)
+    action = ACTION(release: 100 ms)
   }
   output {
     audio_gain = 0.5
@@ -63,10 +71,11 @@ FEEDBACK = '''feedback {
 }'''
 
 
-def _ir(suppress_on_mute: bool | None = None):
+def _ir(suppress_on_mute: bool | None = None, action: str = "mute"):
     feedback = "" if suppress_on_mute is None else FEEDBACK.replace(
         "SUPPRESS", "true" if suppress_on_mute else "false")
-    return resolve(parse(PROTOCOL.replace("FEEDBACK", feedback)), AMP)
+    return resolve(parse(
+        PROTOCOL.replace("FEEDBACK", feedback).replace("ACTION", action)), AMP)
 
 
 def _signal() -> np.ndarray:
@@ -77,9 +86,10 @@ def _signal() -> np.ndarray:
     return np.column_stack((level, np.zeros_like(level)))
 
 
-def _run(backend: str, suppress_on_mute: bool | None = None) -> list[dict]:
+def _run(backend: str, suppress_on_mute: bool | None = None,
+         action: str = "mute") -> list[dict]:
     """Feed the signal chunk by chunk; return the taps after each chunk."""
-    ev = Evaluator.live(_ir(suppress_on_mute), sample_rate_hz=RATE,
+    ev = Evaluator.live(_ir(suppress_on_mute, action), sample_rate_hz=RATE,
                         channel_names=("Cz", "linked_ears"), backend=backend)
     ev.start(skip_warmup=True)
     signal = _signal()
@@ -129,3 +139,44 @@ def test_suppress_on_mute_on_a_feedback_layer_is_not_an_engine_behaviour(backend
         assert [t[key] for t in with_flag] == [t[key] for t in without]
     # Even with the flag false, the engine still silences the muted chunks.
     assert all(t["output/audio_gain"] == 0.0 for t in without if t["muted"])
+
+
+@pytest.mark.parametrize("action", ["mute", "freeze"])
+def test_a_freeze_gates_the_output_as_a_mute_does_and_holds_no_value(backend, action):
+    """SPEC §7.4: a `freeze` inhibit zeroes the output, hangover and all.
+
+    The name says otherwise and the spec used to as well, which is why this
+    exists: through 0.24 §4.6 said a freeze held the output at its last value.
+    Neither engine has ever done that — `FreezeAction.gate` is the same
+    hangover state machine as `MuteAction.gate`, and the Rust core maps
+    `"mute" | "freeze"` to a single `InhibitGate` — and 0.25.0 corrected the
+    sentence. A protocol author who believed the old sentence would author a
+    `freeze` gate expecting a held tone and get silence.
+
+    "Zero" and "the last value" are different answers here, which is what
+    makes this case able to tell them apart: the channel is a constant 0.5, so
+    the sample before the gate shuts reads 0.5 and a held value would keep
+    reading 0.5 for the whole mute. And the two actions are compared
+    tap-for-tap, not merely both-nonzero: whatever the gate does, it has to do
+    the same thing under either spelling, on either backend.
+    """
+    # The fixture is the thing most likely to make this vacuous: if the
+    # action never reached the IR as a freeze, the case below would be a
+    # second mute test passing for the wrong reason.
+    assert _ir(action=action).inhibits["emg"].action_kind == action
+    taps = _run(backend, action=action)
+    first_muted = next(i for i, t in enumerate(taps) if t["muted"])
+    # The last reading before the gate shut, i.e. the value a freeze would
+    # have held. Non-zero, or the assertion below proves nothing.
+    assert first_muted > 0
+    assert taps[first_muted - 1]["output/audio_gain"] == 0.5
+    assert any(t["muted"] for t in taps)
+    for t in taps:
+        if t["muted"]:
+            assert t["output/audio_gain"] == 0.0
+            assert t["output/audio_chime"] == 0.0
+    # Identical to the `mute` run, tap for tap, including which chunks are
+    # gated and the hangover's length.
+    as_mute = _run(backend, action="mute")
+    for key in ("muted", "output/audio_gain", "output/audio_chime"):
+        assert [t[key] for t in taps] == [t[key] for t in as_mute], key
