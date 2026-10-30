@@ -664,3 +664,194 @@ def test_the_muted_tap_keyset_is_unchanged(backend):
     # the tap API that anything was declared.
     _, plain_taps = _run(backend, kind=None)
     assert set(plain_taps[-1][2]) == set(snapshot)
+
+
+# ---------------------------------------------------------------------------
+# Every surface a transport pause reaches, one case each.
+#
+# The case above pins the shape the review measured — a `hold_for` nested in a
+# reward condition. It is one of six surfaces where the two engines disagreed
+# about a pause, and five of the six are nothing like it: a hold in a derive
+# formula, in `reward { continuous }`, in a weighted composite's component
+# signal, in a reward bundle's event condition, and as an inhibit's metric.
+# With only the nested-condition case committed, narrowing the Rust walk back
+# toward `self.outputs` would turn exactly one of six red and let the other
+# five go back to disagreeing in silence, which is the condition that made
+# this a ship-blocker.
+#
+# **The assertion is the count of true samples, not the first index.** On
+# three of the six the hold has already satisfied by the time the pause lands,
+# so the first index does not move at all — a first-index assertion is green
+# on both engines while they disagree, which is this release's own "a green
+# that cannot observe the property" with the *probe* as the thing that cannot
+# see. The count moves on all six, so it is the observable all six share, and
+# the three cases where the index is blind assert that it is blind: they pin
+# `first(paused) == first(running)`, which is the fact that makes the count
+# necessary rather than merely sufficient.
+#
+# Every expected number below is written as the arithmetic that produces it,
+# so a fixture that drifted shows up as a formula that no longer holds rather
+# than as a literal nobody can check.
+# ---------------------------------------------------------------------------
+
+SURFACE_RATE = 256          # every duration below is a whole number of samples
+SURFACE_N = 640             # 2.5 s
+SURFACE_CHUNK = 32
+SURFACE_PAUSE_AT = 64       # a chunk boundary, well after the hold has latched
+SURFACE_HOLD = 32           # the surface hold's 125 ms
+SURFACE_DWELL = 64          # the reward dwell's 250 ms, where there is one
+SURFACE_RELEASE = 1         # the inhibit case's 4 ms release hangover
+
+# A hold read straight out: true from the sample its streak completes on, and
+# true to the end, because the condition never dips.
+_HELD = SURFACE_N - (SURFACE_HOLD - 1)                                   # 609
+# A pause zeroes the streak. The hold reads false for exactly the samples it
+# takes to earn the streak back — the first fresh sample starts a new one, so
+# that is `SURFACE_HOLD - 1` samples and not `SURFACE_HOLD`.
+_HELD_PAUSED = _HELD - (SURFACE_HOLD - 1)                                # 578
+# Under a 250 ms dwell, `reward.event.holds` starts `SURFACE_DWELL - 1`
+# samples after the nested hold does.
+_DWELL_HELD = _HELD - (SURFACE_DWELL - 1)                                # 546
+# A pause costs that path a whole dwell: the nested hold drops, which zeroes
+# the dwell's streak with it, so `.holds` returns `SURFACE_DWELL` samples
+# later than it otherwise would.
+_DWELL_HELD_PAUSED = _DWELL_HELD - SURFACE_DWELL                         # 482
+# The inhibit case reads the gate rather than the hold: `output/fb` is a
+# constant, so a non-zero sample is an unmuted one. The gate shuts when the
+# metric hold latches, so the unmuted samples are the ones before that.
+_UNMUTED = SURFACE_HOLD - 1                                              # 31
+# A pause drops the metric hold, which reopens the gate for the samples it
+# takes to latch again, less the release hangover.
+_UNMUTED_PAUSED = _UNMUTED + (SURFACE_HOLD - 1 - SURFACE_RELEASE)        # 61
+
+_SURFACE_HEAD = '''protocol "hold reset surfaces" {
+  meta { version = "1.0"; evidence = "experimental"; description = "hold reset surfaces" }
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz", "A1"] }
+  input "trained" { montage = referential(active: "Cz", reference: "device") }
+  input "muscle"  { montage = referential(active: "A1", reference: "device") }
+  derive "level"     { from = "trained"; pipeline = [rectify()] }
+  derive "emg_level" { from = "muscle";  pipeline = [rectify()] }
+  threshold "t" { signal = "level"; type = absolute(0.5 uV) }
+'''
+
+# The surface hold, in the two spellings the resolver allows. A derive is
+# evaluated before any threshold, so a hold written inside one cannot read
+# `"t"` and takes a literal bound instead; the same literal form is used for
+# the inhibit metric so the two read identically.
+_SURFACE_HOLD_SRC = 'hold_for(condition: above("level", "t"), duration: 125 ms)'
+_SURFACE_HOLD_LIT = 'hold_for(condition: above("level", 0.5 uV), duration: 125 ms)'
+
+# The six bodies, one per surface. A hold in a derive formula and a hold used
+# as an inhibit metric take the literal-bound spelling; the rest read `"t"`.
+_BODY_DERIVE = f'''  derive "latched" {{ formula = ({_SURFACE_HOLD_LIT} ? 1.0 : 0.0) }}
+  reward {{ continuous = "latched" }}
+  output {{ fb = reward.continuous }}
+}}'''
+
+_BODY_CONTINUOUS = f'''  reward {{ continuous = ({_SURFACE_HOLD_SRC} ? 1.0 : 0.0) }}
+  output {{ fb = reward.continuous }}
+}}'''
+
+_BODY_COMPONENT = f'''  reward "a" {{
+    signal = ({_SURFACE_HOLD_SRC} ? 1.0 : 0.0)
+    weight = 1.0
+  }}
+  reward {{ combine = "weighted"; continuous = reward.composite }}
+  output {{ fb = reward.composite }}
+}}'''
+
+_BODY_NESTED = f'''  reward {{
+    event = dwell(condition: {_SURFACE_HOLD_SRC}, duration: 250 ms)
+  }}
+  output {{ fb = reward.event.holds }}
+}}'''
+
+_BODY_BUNDLE = f'''  reward "live" {{
+    event = dwell(condition: {_SURFACE_HOLD_SRC}, duration: 250 ms)
+  }}
+  reward "warm" {{
+    event = dwell(condition: {_SURFACE_HOLD_SRC}, duration: 250 ms)
+  }}
+  output {{ fb = reward.event.holds }}
+  block "b1" {{ reward = "live"; output = ["fb"] }}
+  block "b2" {{ reward = "warm"; output = ["fb"] }}
+  session {{ phases = [ phase {{ name = "p1"; duration = 60 s; block = "b1" }} ] }}
+}}'''
+
+_BODY_INHIBIT = f'''  inhibit "latch" {{
+    metric    = {_SURFACE_HOLD_LIT}
+    threshold = absolute(0.5 uV)
+    action    = mute(release: 4 ms)
+  }}
+  reward {{ continuous = 0.5 }}
+  output {{ fb = 0.5 }}
+}}'''
+
+#: surface -> (protocol body, true samples without a pause, with one, does
+#: the first index move?). `index_moves` is False exactly where the first
+#: index cannot see the pause at all.
+_PAUSE_SURFACES: dict[str, tuple[str, int, int, bool]] = {
+    "derive formula": (_BODY_DERIVE, _HELD, _HELD_PAUSED, False),
+    "reward continuous": (_BODY_CONTINUOUS, _HELD, _HELD_PAUSED, False),
+    "weighted component signal": (_BODY_COMPONENT, _HELD, _HELD_PAUSED, False),
+    "nested reward condition": (_BODY_NESTED, _DWELL_HELD, _DWELL_HELD_PAUSED, True),
+    "reward bundle condition": (_BODY_BUNDLE, _DWELL_HELD, _DWELL_HELD_PAUSED, True),
+    "inhibit metric": (_BODY_INHIBIT, _UNMUTED, _UNMUTED_PAUSED, False),
+}
+
+
+def _surface_run(backend: str, body: str, *, pause: bool) -> np.ndarray:
+    """Feed a never-dipping signal; return `output/fb` sample by sample.
+
+    Both columns are written 1.0, so the trained condition and the muscle
+    metric both qualify on every sample and nothing but the pause can make a
+    hold drop.
+    """
+    ir = resolve(parse(_SURFACE_HEAD + body))
+    signal = np.column_stack((np.full(SURFACE_N, 1.0), np.full(SURFACE_N, 1.0)))
+    evaluator = Evaluator.live(
+        ir, sample_rate_hz=SURFACE_RATE, channel_names=("Cz", "A1"),
+        record_streams=True, backend=backend,
+    )
+    evaluator.start(skip_warmup=True)
+    values: list[float] = []
+    for start in range(0, SURFACE_N, SURFACE_CHUNK):
+        if pause and start == SURFACE_PAUSE_AT:
+            evaluator.set_clock_frozen(True)
+            evaluator.set_clock_frozen(False)
+        evaluator.step_chunk(signal[start:start + SURFACE_CHUNK])
+        values.extend(np.asarray(evaluator.last_streams()["output/fb"]).tolist())
+    return np.asarray(values)
+
+
+@pytest.mark.parametrize("surface", list(_PAUSE_SURFACES))
+def test_a_transport_pause_restarts_the_hold_on_every_surface_that_carries_one(
+    backend, surface
+):
+    """One case per surface a pause reaches, asserted on the count.
+
+    Each of these restarted in Python and ran straight through the pause in
+    Rust until 0.25.0. With the Rust walk narrowed back to `self.outputs`,
+    every one of the six goes red on the rust backend and stays green on
+    python; that is what makes them coverage of the fix rather than a
+    restatement of it.
+    """
+    body, expected_running, expected_paused, index_moves = _PAUSE_SURFACES[surface]
+    running = _surface_run(backend, body, pause=False)
+    paused = _surface_run(backend, body, pause=True)
+
+    assert int((running != 0).sum()) == expected_running
+    assert int((paused != 0).sum()) == expected_paused
+    # The counts must differ, or the case cannot tell a restarted hold from
+    # one that ran through the gap.
+    assert expected_paused != expected_running
+
+    if index_moves:
+        # Under a dwell the first `.holds` sample moves by a whole dwell.
+        assert _first(paused) == _first(running) + SURFACE_DWELL
+    else:
+        # And here is why the count is the assertion: the hold had already
+        # satisfied when the pause landed, so the first sample does not move
+        # at all. A case that asserted this index would be green on both
+        # engines while they disagreed by 31 samples.
+        assert _first(paused) == _first(running)
