@@ -148,7 +148,74 @@ def _uses_complex_fir_taps(ir: IRProtocol) -> bool:
     )
 
 
-def _protocol_ir_version(ir: IRProtocol) -> str:
+def _emitted_exprs(ir: IRProtocol):
+    """Every expression `ir_to_json_obj` serializes coefficients into.
+
+    REUSES `cost._all_stream_exprs`, which covers the derive pipelines, the
+    inhibit metrics, the default reward's two fields and the output bindings.
+    A staged protocol's reward bundles and a weighted composite's component
+    signals are emitted too and are not in that walk, so they are added here:
+    a hold left out of this walk would bake its `tolerance_samples` into a
+    document still tagged 0.5, which is exactly the silent drop the version
+    tag exists to prevent.
+    """
+    from .cost import _all_stream_exprs
+
+    yield from _all_stream_exprs(ir)
+    for bundle in ir.reward_bundles.values():
+        if bundle.continuous is not None:
+            yield bundle.continuous
+        if bundle.event is not None:
+            yield bundle.event
+    for bundle in (ir.reward, *ir.reward_bundles.values()):
+        for component in bundle.components:
+            yield component.signal
+
+
+def _declares_tolerance(call: IRCall) -> bool:
+    """True when this call's primitive has a dip `tolerance` parameter.
+
+    Read from the primitive registry rather than restating the three hold
+    names, exactly as `_channel_param_names` above reads the montage params:
+    a fourth tolerant hold then needs no edit here, and cannot slip past the
+    version gate because someone added it to the resolver's list and not to
+    a copy kept here. The baked `tolerance_samples` field arrived in IR-JSON
+    v0.6, and v0.5 closes `Coeffs` to additional properties, so a document
+    carrying it cannot be represented in any earlier version.
+    """
+    if call.primitive is None:
+        return False
+    return any(
+        param.name == "tolerance"
+        for signature in call.primitive.signatures
+        for param in signature.params
+    )
+
+
+def _bakes_a_hold_tolerance(ir: IRProtocol, ctx: _EmitCtx) -> bool:
+    """True when some hold's `tolerance` actually reaches a whole sample here.
+
+    The test is behaviour, not syntax. `tolerance: 1 ms` at 256 Hz rounds to
+    0 samples, forgives nothing and emits no `tolerance_samples` key, so such
+    a document is still representable in — and must keep — its pre-0.6
+    version; tagging it 0.6 would get it refused by a 0.24 engine for no
+    benefit. Asking `_bake_coeffs` rather than re-deriving the rounding is
+    what keeps this predicate and `_extract_coeffs` from ever disagreeing
+    about what a tolerance bakes to, including the case where nothing can be
+    baked at all (no sample rate, a control-bound argument) and no
+    `tolerance_samples` is emitted either.
+    """
+    from .cost import _iter_calls
+
+    return any(
+        (_bake_coeffs(call, ctx) or {}).get("tolerance_samples", 0) >= 1
+        for expr in _emitted_exprs(ir)
+        for call in _iter_calls(expr)
+        if _declares_tolerance(call)
+    )
+
+
+def _protocol_ir_version(ir: IRProtocol, ctx: _EmitCtx) -> str:
     """Lowest IR-JSON version that represents this protocol.
 
     A protocol that uses no named components, no weighted combine, and no
@@ -160,8 +227,34 @@ def _protocol_ir_version(ir: IRProtocol) -> str:
     binds a dwell/rearm output, or bakes complex FIR taps (`band_envelope`)
     emits v0.5. Each of those three needs a field the v0.4 schema has no slot
     for, and v0.4 closes `Coeffs` to additional properties, so such a document
-    would not validate against v0.4 at all.
+    would not validate against v0.4 at all. A hold whose `tolerance` reaches
+    at least one sample at this rate emits v0.6, for the same reason: the
+    v0.5 schema has no `tolerance_samples` slot, and an engine that ignored
+    the field would forgive nothing while the author believed otherwise. An
+    inhibit labelled `kind = "artifact"` emits 0.6 too: that label changes
+    what the engine scores, so an engine that dropped the key would run a
+    different protocol than the author wrote. A `"trained"` label and an
+    absent one do not — they run identically on a 0.24 engine, and refusing
+    such a document at load would be a refusal for documentation. A seed rule
+    with `scale != 1.0` emits 0.6 as well: an engine that dropped the key
+    would seed the control at the bare statistic, so a muscle limit meant to
+    sit at three times the warm-up median would sit at the median itself and
+    gate most of the session. A block with a non-empty `reseed` is the fourth
+    and last of these: an engine that dropped the key would run the whole
+    session on the warm-up value, so a protocol whose later blocks depend on
+    re-measuring would train against a threshold set from a state the trainee
+    has since left. An empty `reseed` — which is every block written before
+    the field existed — emits no key and does not bump the version.
     """
+    if (
+        _bakes_a_hold_tolerance(ir, ctx)
+        or any(ih.kind == "artifact" for ih in ir.inhibits.values())
+        or any(
+            c.seed is not None and c.seed.scale != 1.0 for c in ir.controls.values()
+        )
+        or any(b.reseed for b in ir.blocks.values())
+    ):
+        return "0.6"
     if (
         ir.feedback is not None
         or any(
@@ -264,6 +357,12 @@ def _extract_coeffs(impl: object) -> dict | None:
         c["dwell_samples"] = int(impl.dwell_samples)
     if hasattr(impl, "rearm_samples"):
         c["rearm_samples"] = int(impl.rearm_samples)
+    # Truthiness, not `hasattr`, and deliberately: every hold carries a
+    # `tolerance_samples` attribute now, and a zero one forgives nothing.
+    # Omitting it keeps the wire form of every protocol that declares no
+    # tolerance byte-identical to what it emitted before the field existed.
+    if getattr(impl, "tolerance_samples", 0):
+        c["tolerance_samples"] = int(impl.tolerance_samples)
     if hasattr(impl, "nperseg"):
         c["nperseg"] = int(impl.nperseg)
     if hasattr(impl, "noverlap"):
@@ -433,7 +532,7 @@ def _emit_threshold(t: IRThreshold, ctx: _EmitCtx) -> dict:
 
 
 def _emit_inhibit(ih: IRInhibit, ctx: _EmitCtx) -> dict:
-    return {
+    obj = {
         "canonical_name": ih.canonical_name,
         "metric": _emit_expr(ih.metric, ctx),
         "threshold": _emit_expr(ih.threshold, ctx),
@@ -441,6 +540,12 @@ def _emit_inhibit(ih: IRInhibit, ctx: _EmitCtx) -> dict:
         "action_release_ms": ih.action_release_ms,
         "final": ih.final,
     }
+    if ih.kind is not None:
+        # Emitted only when declared. An unconditional `"kind": null` would be
+        # a new key in every document in the corpus and move every pinned IR
+        # hash, for a field that says nothing.
+        obj["kind"] = ih.kind
+    return obj
 
 
 def _emit_reward(r: IRReward, ctx: _EmitCtx, version: str) -> dict:
@@ -468,12 +573,18 @@ def _emit_reward(r: IRReward, ctx: _EmitCtx, version: str) -> dict:
 
 
 def _emit_seed(seed: IRControlSeed, ctx: _EmitCtx) -> dict:
-    return {
+    out = {
         "statistic": seed.statistic,
         "from": seed.from_entity,
         "window_samples": max(1, int(round(seed.window_ms / 1000.0 * ctx.sample_rate_hz))),
         "target_pct": _emit_expr(seed.target_pct, ctx),
     }
+    # Omitted at 1.0, which is what an absent `scale` resolves to: every seed
+    # written before this field existed keeps a byte-identical `seed` object,
+    # and therefore an unchanged `content_hash` and IR version.
+    if seed.scale != 1.0:
+        out["scale"] = seed.scale
+    return out
 
 
 def _samples(ms: float | None, ctx: _EmitCtx) -> int | None:
@@ -558,13 +669,23 @@ def _emit_phase(p: IRPhase) -> dict:
 
 
 def _emit_block(b) -> dict:
-    return {
+    obj = {
         "name": b.name,
         "thresholds": list(b.thresholds),
         "reward": b.reward,
         "output": list(b.outputs),
         "inhibits": list(b.inhibits),
     }
+    if b.reseed:
+        # Both keys or neither, and only when something is re-seeded: every
+        # block written before this field existed keeps a byte-identical
+        # object, and therefore an unchanged `content_hash` and IR version.
+        # `reseed_holds` travels with `reseed` rather than being recomputed by
+        # each runtime — it is the set both engines must reset, so it is the
+        # emitter's job to say which holds those are, once.
+        obj["reseed"] = list(b.reseed)
+        obj["reseed_holds"] = list(b.reseed_holds)
+    return obj
 
 
 def _emit_session(s: IRSession) -> dict:
@@ -633,7 +754,7 @@ def ir_to_json_obj(ir: IRProtocol, *, sample_rate_hz: float | None = None) -> di
         channel_names=channels,
         controls=control_defaults(ir),
     )
-    version = _protocol_ir_version(ir)
+    version = _protocol_ir_version(ir, ctx)
     obj = {
         "refrain_ir_version": version,
         "name": ir.name,

@@ -1152,17 +1152,19 @@ public struct SeedReport {
     public var value: Double?
     public var source: String
     public var targetPct: Double
+    public var scale: Double
     public var nSamples: UInt64
     public var windowS: Double
     public var atTimeS: Double?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(status: String, value: Double?, source: String, targetPct: Double, nSamples: UInt64, windowS: Double, atTimeS: Double?) {
+    public init(status: String, value: Double?, source: String, targetPct: Double, scale: Double, nSamples: UInt64, windowS: Double, atTimeS: Double?) {
         self.status = status
         self.value = value
         self.source = source
         self.targetPct = targetPct
+        self.scale = scale
         self.nSamples = nSamples
         self.windowS = windowS
         self.atTimeS = atTimeS
@@ -1188,6 +1190,9 @@ extension SeedReport: Equatable, Hashable {
         if lhs.targetPct != rhs.targetPct {
             return false
         }
+        if lhs.scale != rhs.scale {
+            return false
+        }
         if lhs.nSamples != rhs.nSamples {
             return false
         }
@@ -1205,6 +1210,7 @@ extension SeedReport: Equatable, Hashable {
         hasher.combine(value)
         hasher.combine(source)
         hasher.combine(targetPct)
+        hasher.combine(scale)
         hasher.combine(nSamples)
         hasher.combine(windowS)
         hasher.combine(atTimeS)
@@ -1224,6 +1230,7 @@ public struct FfiConverterTypeSeedReport: FfiConverterRustBuffer {
                 value: FfiConverterOptionDouble.read(from: &buf), 
                 source: FfiConverterString.read(from: &buf), 
                 targetPct: FfiConverterDouble.read(from: &buf), 
+                scale: FfiConverterDouble.read(from: &buf), 
                 nSamples: FfiConverterUInt64.read(from: &buf), 
                 windowS: FfiConverterDouble.read(from: &buf), 
                 atTimeS: FfiConverterOptionDouble.read(from: &buf)
@@ -1235,6 +1242,7 @@ public struct FfiConverterTypeSeedReport: FfiConverterRustBuffer {
         FfiConverterOptionDouble.write(value.value, into: &buf)
         FfiConverterString.write(value.source, into: &buf)
         FfiConverterDouble.write(value.targetPct, into: &buf)
+        FfiConverterDouble.write(value.scale, into: &buf)
         FfiConverterUInt64.write(value.nSamples, into: &buf)
         FfiConverterDouble.write(value.windowS, into: &buf)
         FfiConverterOptionDouble.write(value.atTimeS, into: &buf)

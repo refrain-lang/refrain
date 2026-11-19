@@ -152,6 +152,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "reseed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Seeded controls that re-measure themselves when this block goes active, by control name, in declaration order. Authored. The resolver's derived `reseed_holds` is deliberately NOT part of the model: it is a dependency walk over thresholds and hold conditions, computed once so both engines reset an identical hold set, and an editor writing it back would be asserting a walk it never did."
           }
         }
       }
@@ -356,6 +363,11 @@
             },
             "target_pct": {
               "$ref": "#/$defs/slotValue"
+            },
+            "scale": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "Dimensionless multiplier applied to the measured statistic before the control is written. Omitted means 1.0, which is what an absent `scale` resolves to, so a protocol that does not declare one keeps a byte-identical model. Strictly positive: zero would write the control to zero and a negative would flip the sense of every comparison against it."
             }
           }
         }

@@ -372,8 +372,32 @@ inhibit "emg" {
 
 Actions:
 - `mute(release: <duration>)` — gate reward to zero, with hangover
-- `freeze(release: <duration>)` — hold reward at last value
+- `freeze(release: <duration>)` — gates output exactly as `mute` does (zero, with hangover); the engines do not hold the last value
 - `flag()` — emit only; do not modify reward (for logging-only inhibits)
+
+#### `kind` — what kind of inhibit this is
+
+```refrain
+inhibit "emg" {
+  metric    = rectify("emg_envelope")
+  threshold = absolute(emg_limit_uv)
+  action    = mute(release: 350 ms)
+  kind      = "artifact"
+}
+```
+
+`kind` is optional and takes one of two values:
+
+- `"artifact"` — the signal is unreadable right now. Muted time is unobservable, so a hold's clock is held through it, neither advancing nor resetting, exactly as a forgiven dip is held (§7.4). There is no length limit; the clock resumes when the gate clears.
+- `"trained"` — the trainee is doing the thing this protocol trains away from. Failing it is the point, so it resets the clock. This is the behaviour an inhibit has had all along.
+
+The distinction is clinical, not bookkeeping. A clench tells you nothing about the trainee's SMR, so scoring it is measurement error; rising delta under an alpha-theta protocol means the trainee is falling asleep, which is a real state worth scoring against them.
+
+**Absence is not `"trained"`.** An inhibit with no `kind` behaves exactly as it does today — it resets a hold bound in `output { }`, and contributes nothing on the `reward { event = ... }` path — but it is recorded as *unlabelled* rather than asserted to be a trained condition, because most unlabelled inhibits are artifact gates nobody has labelled yet. A compiler **may** advise on an unlabelled inhibit; it **must not** refuse one. `print_cred_nf` (`refrain.ir_print`) names each inhibit's label as `artifact`, `trained` or `unlabelled`, which is where the count of still-unlabelled inhibits across a catalog is read from.
+
+`kind` is legal on `mute` and `freeze`, which are OR-ed into the same output gate, and is a resolve-time error on `flag`, which gates nothing: there the label would be a silent no-op, and a silent no-op in a safety-shaped declaration is worse than a compile error. An unrecognised value is also a resolve-time error — `_resolve_inhibit` has no unknown-field check, so an unvalidated spelling would be dropped in silence.
+
+On the wire (IR-JSON), `kind` is emitted only when it was declared, and only `"artifact"` raises the document's version to 0.6: a `"trained"` label and an absent one run identically on an engine that has never heard of the field, so refusing those documents at load would be a refusal for documentation.
 
 ### 4.7 `reward`
 
@@ -739,22 +763,76 @@ controls {
 }
 ```
 
-**Statistic is the block kind.** `seed = <statistic> { ... }` — the block's typed name names the statistic. v1 supports only `percentile`; an unrecognized statistic is a `ResolveError`. The fields inside the block belong to that statistic (`percentile` takes `from`/`window`/`target_pct`); a future statistic would define its own field set under its own block kind.
+A `scale` multiplies the statistic before it is written, so a limit can be set
+at a multiple of the person's own baseline rather than at a percentile of it:
+
+```refrain
+controls {
+  emg_limit_uv = voltage {
+    default = 12 uV
+    label   = "Muscle limit (seeded at warm-up)"
+    seed = percentile {
+      from       = "emg_envelope"   // an AMPLITUDE in uV — see the warning below
+      window     = 60 s
+      scale      = 3.0               // ...times three
+      target_pct = 50                // the median
+    }
+  }
+}
+```
+
+**The signal `from` names must already be in the control's units.** `scale`
+multiplies whatever the statistic measured, and a median commutes with a square
+root, so seeding a microvolt limit from a band *power* (µV²) makes `scale = 3.0`
+mean three times the median power — the same gate as **1.73 times the median
+amplitude**, not three times it. Put a `sqrt()` stage between a `bandpower`
+derive and the seed, as `bench/protocols/seed_scale_emg.refrain` and
+`bench/protocols/micro_15_artifact_gate.refrain` both do, so the multiplier
+means what it reads as. Nothing in the compiler catches this for you: the
+dimension mismatch between a `voltage` control and a µV² metric is not
+currently an error.
+
+**Statistic is the block kind.** `seed = <statistic> { ... }` — the block's typed name names the statistic. v1 supports only `percentile`; an unrecognized statistic is a `ResolveError`. The fields inside the block belong to that statistic (`percentile` takes `from`/`window`/`target_pct`, plus the optional `scale`); a future statistic would define its own field set under its own block kind.
 
 **Fields (`percentile`):**
 - `from` (required): a quoted derive name — the signal the percentile is measured over. Must name a derive declared elsewhere in the protocol.
 - `window` (required): a duration literal (`ms`/`s`/`min`) — the trailing window, in real time, the statistic is measured over. Rate-independent; baked to samples at emit time (below).
 - `target_pct` (required): the percentile to measure — either a number literal or a `control_ref` to a sibling `percent` control (so the practitioner can tune *which* percentile seeds the value, not just the value itself).
+- `scale` (optional, default `1.0`): a dimensionless multiplier applied to the statistic's result before the control is written. A fixed number literal with no unit — not control-bindable, since a value written once at the warmup→run edge could only be retuned before it had any effect or after it was too late to have one. `scale` at or below zero is a `ResolveError` (below).
+
+**Reading `scale`: three times the warm-up median.** `target_pct = 50; scale = 3.0` reads as "three times this person's warm-up median", and that combination — not a high percentile — is what a per-person limit wants. A percentile *is* its own trip rate: a gate seeded at the 95th percentile of warm-up is tripping on 5 % of warm-up by construction, and if the warm-up contains any of the thing being guarded against (a clench, a jaw set), the percentile rises with it and the limit never fires at all. The median ignores a few clenches, and the multiplier puts the limit clearly above normal activity instead of inside its upper tail. `bench/protocols/seed_scale_emg.refrain` is the worked form: a muscle limit set from the trainee's own warm-up rather than a fixed voltage that is a hair trigger on one person and silent on the next.
 
 **Resolve-time guarantees:**
 - **Real derive.** `from` is validated against the resolved derive set; a name that doesn't resolve is a `ResolveError`, not a silent no-op.
 - **`target_pct` typing.** A number literal is accepted as-is; a `control_ref` is accepted only if it targets a control declared `percent` — binding it to any other control kind is a `ResolveError`.
-- **Warmup fits.** If the protocol's first session phase is a timed, output-muted warmup (not `mode = "open"`), `window` must fit inside that phase's duration. A seed whose window can never fill is refused at compile time, not discovered fail-closed at runtime.
+- **`scale` is a positive, dimensionless literal.** A non-number (including a control reference), a number carrying a unit, and any value at or below zero are each a `ResolveError`. Zero is not clamped to something harmless: `scale = 0` seeds a muscle limit at 0 µV, which makes its inhibit mute the whole session, and a negative multiplier lands on the control's range floor and reads as a working protocol while gating nothing the author asked for.
+- **Warmup fits.** If the protocol's first session phase is a timed, output-muted warmup (not `mode = "open"`), `window` must fit inside that phase's duration. A seed whose window can never fill is refused at compile time, not discovered fail-closed at runtime. This is normative and it is strict: a seeded control is only usable in a protocol that opens with a timed, output-muted phase long enough to hold its whole measurement window.
 - **Dead-seed elimination.** If the seeded control is never referenced anywhere in the resolved pipeline (derives, thresholds, inhibits, reward, output), the seed is dropped rather than attached — an unused control's seed rule would just be dead weight on the wire.
 
-**Runtime semantics (informative; full behavior in `docs/EMBEDDING.md`'s `seed_report()` section):** during warmup the engine measures `from`'s samples into a trailing buffer sized to `window`; at the warmup→run edge it computes the `target_pct` percentile of that buffer and writes the control exactly once, then holds. A practitioner who calls `set_control` on the seeded control before it fires disarms the seed for the rest of the session instead of racing it. If the buffer can't be filled with finite samples by the run edge, the seed fails closed and the control keeps its declared `default`.
+**Runtime semantics (informative; full behavior in `docs/EMBEDDING.md`'s `seed_report()` section):** during warmup the engine measures `from`'s samples into a trailing buffer sized to `window`; at the warmup→run edge it computes the `target_pct` percentile of that buffer, multiplies it by `scale`, and writes the control exactly once, then holds. A practitioner who calls `set_control` on the seeded control before it fires disarms the seed for the rest of the session instead of racing it. A staged protocol may ask for a seeded control to be re-measured again at a block boundary, instead of holding the warm-up value for the whole session — see `reseed` in §4.13, and read its "off unless declared" paragraph before turning it on.
 
-**Wire format.** A seeded control's IR-JSON carries a `seed` object (`statistic`/`from`/`window_samples`/`target_pct`) under `controls.<name>`; `window_samples` is `window` baked to samples **at the emitted `sample_rate_hz`**, not the resolver's chosen rate — the same rebaking discipline as every other rate-dependent coefficient. A protocol using `seed` is tagged `refrain_ir_version: "0.3"`. See `docs/IR-JSON.md`.
+**Run-time semantics of a re-seed (normative).** A block that declares `reseed` (§4.13) re-measures the named controls when it goes active. Everything below applies only to a control some block names; a seeded control no block re-seeds behaves exactly as it did before this field existed, including what its `seed_report()` says.
+
+- **The buffer keeps filling after the warm-up seed fires.** For a re-seeding control only, the engine goes on measuring `from`'s samples into the same trailing buffer, sized to the same `window`, using the same statistic. Nothing new is computed: a re-seed is the warm-up measurement taken again, later.
+- **Ingestion is frozen while output is muted.** A mid-session output-muted rest contributes no samples however long it runs, which is the rule the compile-time window check in §4.13 is built on. The warm-up is not frozen — refrain's freeze is `output_muted` and not the first phase — but its samples are spent on the warm-up seed.
+- **Ingestion is frozen on samples an artifact gate says the engine could not read.** A sample masked by an inhibit declared `kind = "artifact"` (§4.6) is dropped from the window and does not count towards it: an EMG-contaminated sample would push a threshold up at exactly the moment it must not. A sample muted by an inhibit with no `kind` is one the engine read and scored against the trainee, so it stays in the baseline. The asymmetry is the same one the hold paths make (§7.4).
+- **The window means "since this control was last measured".** A freshness counter restarts whenever the engine **measures** the control — the warm-up seed and every re-seed that fires — and the re-seed fires only once that counter reaches the window. A write that is not a measurement does not restart it: a host `set_control` or an `apply_advice` with `by = "autopilot"` moves the value without resetting the count, which is why this bullet says *measures* and not *writes*. Buffer length alone would not do: the buffer is a trailing ring that never shrinks, so after the warm-up seed it already holds a full window of samples the warm-up seed spent. A warm-up seed that fails closed writes nothing, so its samples do stay countable — in a session whose output that same failure has muted for the rest of its life.
+- **A window that has not filled keeps the value the control is running, and records the miss.** Deliberately asymmetric with warm-up seeding, which fails closed: at a re-seed there is a known-good value — the one the whole session has been trained against — so ending the session is not proportionate. The attempt appears in the control's seeding history with `status: "insufficient_samples"` and no new value, and the samples already in the buffer are not discarded, so a later entry into the same block can fire.
+- **A block entered twice re-seeds twice**, once per entry, and never more than once per entry. The fire is marked per phase occurrence rather than by elapsed phase time, because a host may freeze the phase clock (§7.1) at the start of a re-seeding phase and elapsed time then stands still.
+- **A practitioner's write wins, permanently, and it has two doors.** A `set_control` on a re-seeding control disarms its seeding for the rest of the session, before or after the warm-up seed has fired, and the control's status becomes `disarmed_by_host`. So does **advice the practitioner accepts** — `apply_advice(id, by = "practitioner")` (§7.10) — because the practitioner did not type that number but did take responsibility for it, and a protocol with an advisor is exactly the kind that re-seeds. If the practitioner moved a threshold by hand during block one, by either door, block three does not take it back. For a control no block re-seeds, `set_control`'s disarm is pre-fire only and accepted advice disarms nothing, exactly as both have always been.
+- **The autopilot applying its own advice does not disarm it.** `apply_advice(id, by = "autopilot")` writes the value and leaves the re-seeding armed, so the next boundary re-measures and the advisor resumes from the new baseline. The asymmetry is deliberate: nobody took responsibility for an automatic apply, and between two automatic mechanisms a fresh measurement of the person is more authoritative than an inference drawn from reward rate. An advisor whose suggestion is overwritten by a re-seed has lost nothing it knew.
+- **The downstream holds restart only when a value is actually written.** Which holds those are is resolved at compile time and carried on the wire (§4.13); a boundary that kept the old value changed nothing a streak was measured against, so it restarts nothing.
+- **A re-seeded value is scaled and clamped by the same rules as a warm-up seed** (`scale`, and the clamp that comes with a `scale` other than 1.0), and is live for the chunk the boundary falls in — not one chunk later.
+- **A warm-up seed that failed closed is terminal.** If the warm-up measurement did not complete, that control is finished for the session: `status` stays `insufficient_samples` and is never overwritten, no boundary re-measures the control, and the engine stops measuring into its buffer — nothing will ever read it. This is normative, and it is what keeps `status` the single thing a host can read to explain the silence. Without it the buffer would refill from the first clean block, the next boundary would write a real value and flip `status` to `seeded`, and the report would say everything was fine while every output channel stayed muted for the rest of the session. The skipped boundary is **not** recorded in the control's history: `history` records seeding events, and a control in this state has none left. Note the failure does not need a truncated or skipped warm-up to happen — the window counts *finite* samples, so a full-length warm-up with an electrode off for part of it fails exactly the same way.
+- **A resumed session starts its re-seed buffers empty.** `export_state()` / `seed_state` (`docs/EMBEDDING.md`'s cross-session state section) carries the adaptive trackers behind `percentile` and `auto_range`; it does not carry a re-seed buffer. The first re-seed of a resumed session therefore measures that session's own signal, and comes up short if the block boundary arrives before the window has filled.
+
+`bench/protocols/reseed_staged.refrain` is the worked form, and the golden vector: a threshold seeded at 2 µV from the warm-up, re-measured at 5 µV when the second block goes active, with the reward streak restarting at the boundary so the trainee's next chime is earned against the new number. `tests/test_eval_reseed.py` pins each rule above on both engines.
+
+**A seed that does not complete mutes the output for the rest of the session.** This is normative. If the buffer has not been filled with `window` finite samples by the run edge — a warm-up cut short, an early advance, a skipped warm-up — the seed fails closed: the control keeps its declared `default` **and** every output channel is muted for the remainder of the session. A trainee whose warm-up got cut short hears nothing at all for the whole run; there is no degrade-to-default path. For a control some block re-seeds, that failure is terminal in the sense above: no later boundary re-measures it, so the status keeps explaining the silence instead of being overwritten by a measurement nobody can hear the effect of. Pinned on both engines by `tests/test_eval_seed_scale.py::test_a_warm_up_seed_that_cannot_fill_its_window_still_fails_closed`. The rule is defensible for a reward threshold and considerably more consequential for a seeded *inhibit* level, which a practitioner might reasonably expect to fall back to a fixed limit; whether fail-closed stays the right policy there is a protocol-library question, not an engine one.
+
+**The range clamp attaches to `scale`, not to seeding.** A seeded value is clamped to the control's declared `range` **only when `scale != 1.0`**: the multiplier is the thing that can push a value far outside what the protocol declared as sane, so it brings the bound with it. A seed with no multiplier is written through unclamped, which is what it has always done — adding a clamp there would move the seeded value, and therefore the reward behaviour, of a protocol that declared nothing new. Both halves are pinned in `tests/test_eval_seed_scale.py`. A `range` bound the protocol omitted, or bound to another control, is not a bound the clamp can use, and that side does not clamp.
+
+**Wire format.** A seeded control's IR-JSON carries a `seed` object (`statistic`/`from`/`window_samples`/`target_pct`, plus `scale` when it differs from `1.0`) under `controls.<name>`; `window_samples` is `window` baked to samples **at the emitted `sample_rate_hz`**, not the resolver's chosen rate — the same rebaking discipline as every other rate-dependent coefficient. A protocol using `seed` is tagged `refrain_ir_version: "0.3"`, rising to `"0.6"` when any seed rule carries a `scale` other than `1.0` — an engine that dropped the key would seed the control at the bare statistic, so a limit meant to sit at three times the warm-up median would sit at the median itself and gate most of the session. See `docs/IR-JSON.md`.
 
 **§9.3 is now enforced.** A runtime that doesn't understand IR-JSON `"0.3"` refuses a seeded protocol at load (§9.3) rather than silently ignoring the `seed` field and running an unbaselined default — the version gate described in §9.3 is implemented, not aspirational, as of this feature.
 
@@ -772,8 +850,8 @@ controls {
       higher_is = "harder"
       limits    = (0.5, 1.0)
       apply     = "auto"
-      round_to  = 0.01
       say       = "Crossover target"
+      round_to  = 0.01
     }
   }
 
@@ -915,6 +993,56 @@ Defaults are not part of the protocol and are not in `content_hash`.
 
 See §4.9.5 for per-control policies, §6.7 for the compiler's cross-reference validation, §7.10 for the decision procedure, and `docs/AUTOPILOT-AUTHORING.md` for a worked, step-by-step guide.
 
+### 4.13 `block`
+
+A named activation set, referenced by `phase.block` (§4.10). A staged session declares one block per training stage and each phase names the block that is live while it runs. `examples/staged_beta_alpha.refrain` is the worked form: beta-up, then alpha-up, with one baseline up front.
+
+```refrain
+block "beta_up"  { threshold = "beta_t";  reward = "beta_reward";  output = ["audio_gain", "audio_chime"] }
+block "alpha_up" { threshold = "alpha_t"; reward = "alpha_reward"; output = ["audio_gain", "audio_chime"]
+                   reseed    = ["alpha_uv"] }
+```
+
+**Fields** (all optional; an unknown field is a `ResolveError`, not a silent drop):
+- `threshold`: a name or list of names — declarative, for validation and telemetry.
+- `reward`: the named reward bundle (§4.7) live during this block. Absent means the top-level `reward { }`.
+- `output`: the output channels that may emit during this block. Empty means all of them.
+- `inhibit`: the inhibits that gate during this block. Empty means all of them.
+- `reseed`: the seeded controls that re-measure themselves at this block's boundary. Empty — the default, and what every protocol written before this field says — means nothing re-seeds, and the session behaves exactly as it does today.
+
+Every name is checked against the protocol: an unknown threshold, output channel, inhibit or reward bundle is a `ResolveError`, as is a phase naming a block that does not exist.
+
+#### `reseed` — re-measuring a seeded control at a block boundary
+
+A seed rule (§4.9.4) measures a control once, from the warm-up, and holds it for the session. `reseed` says that a particular block re-measures the named controls when it goes active, from a trailing window of the signal that just ran, rather than training the rest of the session against a number taken from the warm-up:
+
+```refrain
+block "alpha_up" { threshold = "alpha_t"; reward = "alpha_reward"; reseed = ["alpha_uv"] }
+```
+
+**It is off unless declared, and leaving it off is often right.** Re-seeding assumes the window before the boundary is a fair baseline for what the next block trains. When consecutive blocks train materially different states — beta-up then alpha-up, as in the staged example — the trailing window is a measurement of the *previous* state, and a threshold set from it can be systematically wrong in a direction nobody notices: an alpha threshold seeded from the tail of beta training sits wherever beta training left alpha, which is not where an alpha baseline would put it. A fixed, warm-up-seeded threshold is the conservative choice, and a block whose signal is the same one the previous block trained is the case where re-seeding earns its keep.
+
+**Resolve-time guarantees:**
+- **The control exists and has a seed.** A name that is not a declared control, and a control with no `seed` rule, are each a `ResolveError` — there is no statistic to re-measure.
+- **The seed survived.** If the seeded control is referenced by nothing in the resolved pipeline, its seed is folded out as dead (§4.9.4), and a `reseed` naming it is a `ResolveError` rather than a declaration that compiles and re-measures a value no stream reads.
+- **No duplicates.** A control listed twice in one `reseed` is a `ResolveError`: a control re-measures itself once per boundary, and the second entry could only fire against an emptied buffer.
+- **The window can fill.** The seed's `window` is compared against the signal available before the boundary — the summed duration of the phases that precede it and are not output-muted. Two separate rules put a muted phase's wall clock outside the budget. A mid-session output-muted rest is frozen out of re-seed ingestion, so its minutes add no samples however long it runs. The warm-up is not frozen — refrain's existing freeze is `output_muted` **and** not the first phase, so phase 0 does feed a rolling percentile — but its samples are spent on the warm-up seed: a re-seed measures the signal since the previous seeding, and the warm-up seed fires at the end of the warm-up, so warm-up time cannot pay for the first re-seed either. A window longer than the resulting budget is a `ResolveError`. Two things bound the check, both deliberately: it refuses only when **every** phase that activates the block is short of the window, because a block whose first entry cannot fill but whose later entries can is a declaration that does something; and a live phase with `mode = "open"` makes the amount unknown rather than zero — the practitioner ends such a phase when they end it — so the check stands down, the same guard the warm-up window check makes. What those two allow through is not a session-ending fault: a re-seed whose window has not filled keeps the value the control is already running and records the miss.
+
+**The holds a re-seed resets.** A streak banked against the old threshold says nothing about the new one, so a re-seed restarts the hold clock (`dwell`, `dwell_rearm`, `hold_for`) of every hold whose condition reads the re-seeded control — directly, or through a threshold the re-seed moves. A hold that reads neither keeps its streak: every reward bundle is stepped on every chunk to keep its dwell timers warm, so resetting all of them at a boundary would change what the existing staged protocols do with no new declaration present. The set is resolved at compile time and carried on the wire as `reseed_holds` (`docs/IR-JSON.md` §3.7), so both engines reset the same holds instead of each walking the dependency graph.
+
+**How far the walk reaches**, stated as reach rather than as a list of shapes, because a list goes stale as the language grows:
+
+- It starts at the re-seeded control and adds every threshold whose own level expression names something already in the set. That is **transitive**: a threshold's level may itself be a threshold, so a chain of any length is followed to its end, and a hold reading the far link is reset. Over-resetting costs one streak; failing to reset a hold whose threshold moved is the defect this feature exists to remove, so the walk errs towards resetting.
+- It follows **expressions only**. A control that reaches a hold through a `derive` — as a `bandpass` centre frequency or a `smooth` time constant, say — is not in the set, and that hold is not reset.
+- A **site is a whole expression**, named once: `reward/event`, `reward_bundle/<name>` or `output/<channel>`. Two holds in one of those — in a single reward event, or in a single output channel's expression — are reset together, even if only one of them reads the re-seeded control.
+- The sites are the reward events and the output bindings, so a hold written into a reward's `continuous` rather than its `event` is not a site and is never reset.
+
+No protocol under `examples/` or `bench/protocols/` is affected, and the margin is thinner than it looks. No site holds more than one hold, no threshold takes its level from another threshold, and no reward's `continuous` holds. Derives *do* read controls — band edges in `examples/alpha_theta_autopilot.refrain`, the ORF in the Othmer ILF protocols — but none of those controls carries a `seed`, so none can be re-seeded. The shape this walk misses already exists outside those two trees: `tests/fixtures/external/skin_temp_warming.refrain` declares a `rise` derive reading the seeded control `baseline_c`, and `rise` feeds a `dwell`. Nothing is wrong there today, because that protocol declares no `reseed` — but adding one would leave that hold's streak stale with no diagnostic to say so.
+
+**Run-time behaviour.** What the engine does at the boundary — the trailing window it reads, the two freezes that keep rest time and unreadable samples out of it, what happens when the window has not filled, what a practitioner's own `set_control` does, and when the downstream holds restart — is specified with the rest of seeding in **§4.9.4**, under "Run-time semantics of a re-seed". This section specifies the declaration and the checks the compiler makes on it.
+
+**Wire format.** A block with a non-empty `reseed` emits `reseed` and `reseed_holds` on its block object and tags the document `refrain_ir_version: "0.6"`; an engine that dropped the keys would run the whole session on the warm-up value. A block with no `reseed` emits neither key and leaves the document's version where it was. See `docs/IR-JSON.md` §3.7.
+
 ---
 
 ## 5. Type system
@@ -968,6 +1096,41 @@ Most types are inferred from primitive signatures. Explicit annotation is requir
 - `.holds` member access — yields `stream<boolean>` indicating whether the dwell condition currently holds
 
 A single `event_stream` value can drive both consumption modes within the same protocol. The runtime maintains the underlying state once and exposes both views.
+
+#### Dip tolerance
+
+`dwell`, `dwell_rearm` and `hold_for` each accept an optional `tolerance`
+duration. It MUST be a literal with a time unit; it MUST NOT bind a control.
+It MUST NOT be negative, and it MUST be shorter than the hold's `duration`
+unless `duration` binds a control, in which case the comparison is not
+knowable at compile time and is not made. Where `duration` binds a control,
+the control's declared range SHOULD stay above the tolerance: a `duration`
+retuned to at or below `tolerance` yields a hold that, once satisfied, never
+drops — every dip long enough to end it is first long enough to be forgiven —
+and therefore gated output that never stops. Implementations are not required
+to refuse that configuration. Absence is equivalent to `0 ms` and
+MUST produce sample-identical output to a hold with no `tolerance` at all.
+
+`tolerance` converts to a whole number of samples as
+`round(tolerance_ms / 1000 × rate)`, which MAY be zero. Unlike a hold's
+`duration`, it is not raised to a minimum of one sample.
+
+A run of consecutive samples on which the condition is false, and whose length
+so far does not exceed the tolerance in samples, MUST leave the hold's streak
+unchanged — neither advanced nor reset. On the first sample of such a run
+whose length exceeds the tolerance, the streak MUST reset to zero. The streak
+counts only samples on which the condition was genuinely true, so an
+implementation MUST NOT credit a forgiven sample toward `duration`. Where the
+hold was already satisfied when the run began, `.holds` MUST remain true for
+every forgiven sample of it.
+
+For `dwell_rearm`, the re-arm counter MUST NOT advance on a forgiven sample.
+On the first sample of a false run that exceeds the tolerance, the re-arm
+counter MUST be credited with the whole run so far, counted from its first
+sample; each later false sample of the same run credits one.
+
+The rule requires no lookahead, and conforming implementations MUST produce
+identical output sample for sample.
 
 ---
 
@@ -1054,8 +1217,13 @@ Per recorder buffer chunk (typical: 64 samples at 256 Hz = 250 ms):
 1. Walk IR in topological order.
 2. For each primitive, call `step(input_chunk, state) → (output_chunk, new_state)`.
 3. Propagate outputs to dependents.
-4. Evaluate reward expression(s).
-5. Evaluate output bindings; emit to recorder bus.
+4. Evaluate every inhibit and step its action's gate, producing the combined
+   mute gate for the chunk. This is ordered **before** the reward stage in both
+   engines, because the reward event's hold is stepped with the observability
+   mask derived from it (§7.4). Each inhibit's gate carries its own `release`
+   hangover and so is stepped exactly once per chunk, whatever reads it.
+5. Evaluate reward expression(s).
+6. Evaluate output bindings; emit to recorder bus.
 
 ### 7.3 Live control mutations
 
@@ -1069,9 +1237,49 @@ Each inhibit produces a boolean stream. Inhibits affect the values that reach th
 effective_output = output_expression * AND(NOT inhibit_i for each muting inhibit i)
 ```
 
-Inhibits with `action = freeze` hold the previous output value; with `action = flag` they only emit telemetry.
+Inhibits with `action = freeze` gate output exactly as `mute` does (zeroed, with the same hangover); with `action = flag` they only emit telemetry.
 
-Inhibits do not modify `reward.continuous` or `reward.event` directly — they modify what the output bindings deliver. This means downstream protocol logic (e.g., a derive that consumes `reward.continuous`) sees the unmodified value, which matters for protocols that compute derived feedback signals from reward.
+Inhibits do not modify `reward.continuous` or `reward.event` directly — they modify what the output bindings deliver. This means downstream protocol logic (e.g., a derive that consumes `reward.continuous`) sees the unmodified value, which matters for protocols that compute derived feedback signals from reward. The one exception is an inhibit labelled `kind = "artifact"`: it pauses the reward event's hold clock while its gate is shut, which changes *when* `reward.event` fires rather than suppressing a value. See "What a hold forgives, and what it does not" below.
+
+While a `mute` or `freeze` inhibit is active (including its `release` hangover), both engines zero every continuous `output/<channel>` and make every event channel false. The `output/<channel>` taps show those gated values. A `feedback { ... }` layer's `suppress_on_mute` flag is different: it is a declaration for the downstream player, carried in the IR and acted on by neither engine. The engines silence a muted output whatever that flag says. `tests/test_eval_mute_gating.py` pins both facts on both backends.
+
+#### What a hold forgives, and what it does not
+
+Silencing the output is separate from what a hold's clock does with the silenced samples. A hold (`dwell`, `dwell_rearm`, `hold_for`) takes two per-sample inputs: a condition, and an observability mask. The condition carries every reason a sample did not qualify — a signal dip, a mute, a muted phase, an inactive-block channel — and a false condition resets the streak unless the run of false samples is no longer than the hold's `tolerance` (§5.6). The observability mask carries one thing only: whether an inhibit labelled `kind = "artifact"` was gating. The mask is checked **first**, before the condition is examined, so a sample the engine could not read is scored as neither a success nor a failure: the streak and the dip counter both freeze. This ordering is the whole of the feature — an artifact mute appears in the mute gate too, so such a sample arrives with its condition already false, and a mask merely AND-ed into the condition would let an artifact mute longer than `tolerance` reset the streak through the dip path.
+
+| Why the condition is false | Forgiven by `tolerance`? | Clock |
+|---|---|---|
+| The envelope dipped — real signal | yes, if no longer than `tolerance` | held through the dip |
+| An inhibit labelled `"artifact"` is muting | no, handled by the observability mask | held for as long as the mute lasts |
+| An inhibit labelled `"trained"`, or unlabelled, is muting | no | today's behaviour, which differs by hold path |
+| A phase mutes output — a mid-session rest | no | reset, as today |
+| The channel is outside the active block's outputs | no | reset, as today |
+| The transport clock is frozen, or a data gap | no | every `hold_for` restarts, wherever it is written, and so does a `dwell`/`dwell_rearm` bound in `output { }`; a `reward { event = dwell(...) }`'s own dwell does not — see "What a freeze reaches" below |
+
+A labelled artifact gate is therefore a **reward change** wherever it applies: it turns a reward that was lost inside a blind window into a delivered one. That is the intended effect, and it means labelling an existing protocol moves its reward rate and must be recorded as a design decision in the protocol's header and in the PR, with its before-and-after. An unlabelled inhibit changes nothing, which is what lets every existing protocol land untouched.
+
+The observability mask reaches both hold paths. What differs between them — and what the third row means by "differs by hold path" — is the *condition*, not the mask:
+
+- A hold bound inside `output { }` has the mute gate AND-ed into its condition, so a muted sample arrives already reading false. Where the mute is labelled `"artifact"` the mask overrides that and the clock holds; where it is labelled `"trained"` or not labelled at all, the false condition stands and the streak resets.
+- A hold in `reward { event = ... }` is stepped on the raw condition: no mute, no muted phase and no inactive block has ever been folded in there, and none is now. Only the observability mask applies. Where the mute is labelled `"artifact"` the reward clock pauses for as long as the gate is shut; where it is labelled `"trained"` or not labelled, nothing applies at all and the clock runs through the mute exactly as it does today, with the resulting event discarded at the output stage. So no existing protocol's reward timing moves until one of its inhibits is labelled.
+
+**What a freeze reaches.** A frozen transport clock and a host call to `Evaluator.reset_held_outputs()` are not condition-level at all: they say the samples that would have come next did not come, so no streak standing at that moment still means what it says. They reach a set of their own, and both engines agree on it sample for sample:
+
+| Where the hold is written | A freeze or `reset_held_outputs()` |
+|---|---|
+| `hold_for(...)`, wherever it sits — an `output { }` binding, a reward event's condition, `reward { continuous = ... }`, a weighted composite's component `signal`, a derive formula, an inhibit metric | restarts it |
+| `dwell(...)` or `dwell_rearm(...)` bound directly in `output { }` | restarts it |
+| the `dwell` of a `reward { event = dwell(...) }`, top-level or per-bundle | leaves it running |
+
+The last row is the dominant shape — most live protocols drive feedback from `reward { event = dwell(...) }` — so it is stated rather than deduced: measured at 256 Hz, a reward dwell's first rising edge lands on the same sample with and without a freeze, on both engines. It is today's behaviour in both, not a reasoned exception; the 0.25.0 release notes record it as an open question. The halves above it are pinned on both backends by `tests/test_eval_artifact_mask_reward.py::test_a_transport_pause_restarts_a_hold_nested_in_a_reward_condition` (a hold nested in a reward condition) and `tests/test_eval_inhibit_kind.py::test_a_frozen_transport_clock_still_resets_the_clock` (an `output`-bound hold).
+
+The observability mask covers the **whole reward stage**, not the event's own dwell alone. Four surfaces are inside it: the event condition; a hold nested within that condition — `dwell(condition: hold_for(...), ...)`, or a `hold_for` among the elements of an `all_of`; `reward { continuous = ... }`, top-level and per-bundle alike; and a weighted composite's component signal, `reward "<name>" { signal = ... }`, which is evaluated inside the same mask window as the other three and can legally carry a hold. All four follow the reward-event rule above rather than the `output`-bound one. All four receive the observability mask, because "a streak of N samples always means N samples genuinely above threshold and observable" is unconditional and does not stop applying because of where the hold is written; under an artifact-labelled mute the clock freezes wherever it stands. None of the four receives the eligibility mask. That is deliberate: eligibility folds a mute into the condition as a *failure* and zeroes the streak, the reward stage has never applied it, and applying it would change what a reward expression means for every protocol with nothing declared. Unobservable freezes; it does not fail.
+
+Outside the reward stage and outside `output { }` — in a derive, or in an inhibit's metric — a hold receives neither mask and is stepped on its condition alone.
+
+The mask is not scoped per channel or per reward bundle. An artifact is an artifact whichever block is live, so every reward bundle is stepped with the same mask, not only the active one. It *is* scoped by the active block's `inhibit` set, in the same way the mute gate is: an inhibit the active block has excluded gates no output, and therefore makes nothing unobservable either.
+
+Because the reward event is the path 44 of the 45 protocols in the refrain-protocols live corpus drive feedback from, this is where a labelled gate changes what a session delivers. An edge that fires inside a blind window is discarded by the output gate, and `dwell` does not re-arm, so the burst that produced it pays out nothing at all; with the mask, the clock does not reach that edge and the reward is earned once the gate clears. `bench/protocols/micro_15_artifact_gate.refrain` is the golden vector for both paths, `tests/test_eval_inhibit_kind.py` pins one row of the table per case for the `output`-bound path, and `tests/test_eval_artifact_mask_reward.py` does the same for the reward-event path — both on both backends.
 
 ### 7.5 Reward semantics
 

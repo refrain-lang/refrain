@@ -34,6 +34,7 @@ from refrain.ir import (
 from refrain.parser import parse, parse_file
 from refrain.resolver import ResolveError, resolve
 from refrain.types_ import BOOLEAN_STREAM, EVENT_STREAM, FREQUENCY, TIME, VOLTAGE
+from tests._inhibit_fixtures import inhibit_protocol  # verified one-inhibit fixture
 
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
@@ -561,6 +562,62 @@ def test_inhibit_action_kind_captured():
     inh = ir.inhibits["emg"]
     assert inh.action_kind == "mute"
     assert inh.action_release_ms == 200.0
+
+
+# ---------------------------------------------------------------------------
+# `kind` on an inhibit (SPEC §4.6)
+# ---------------------------------------------------------------------------
+
+
+def test_kind_artifact_resolves_on_a_mute_inhibit():
+    ir = resolve(parse(inhibit_protocol(kind="artifact")))
+    assert ir.inhibits["emg"].action_kind == "mute"
+    assert ir.inhibits["emg"].kind == "artifact"
+
+
+def test_kind_artifact_resolves_on_a_freeze_inhibit():
+    """`freeze` is OR-ed into the same output gate as `mute`, so the label
+    means the same thing on it."""
+    ir = resolve(parse(inhibit_protocol(action="freeze(release: 200 ms)", kind="artifact")))
+    assert ir.inhibits["emg"].action_kind == "freeze"
+    assert ir.inhibits["emg"].kind == "artifact"
+
+
+def test_kind_trained_resolves():
+    ir = resolve(parse(inhibit_protocol(kind="trained")))
+    assert ir.inhibits["emg"].kind == "trained"
+
+
+def test_kind_on_a_flag_inhibit_is_refused():
+    """A flag gates nothing, so kind = "artifact" on one would be a silent
+    no-op in a safety-shaped declaration."""
+    with pytest.raises(ResolveError, match="kind .* flag .* gates nothing"):
+        resolve(parse(inhibit_protocol(action="flag()", kind="artifact")))
+
+
+def test_kind_trained_on_a_flag_inhibit_is_refused_too():
+    """The refusal is about which actions gate output, not about which label:
+    neither value means anything on an inhibit that modifies nothing."""
+    with pytest.raises(ResolveError, match="kind .* flag .* gates nothing"):
+        resolve(parse(inhibit_protocol(action="flag()", kind="trained")))
+
+
+def test_an_unknown_kind_is_refused():
+    with pytest.raises(ResolveError, match='kind must be "artifact" or "trained"'):
+        resolve(parse(inhibit_protocol(kind="artefact")))
+
+
+def test_kind_must_be_a_string_literal():
+    """`_resolve_inhibit` has no unknown-field check, so a `kind` read with no
+    type check at all would be dropped on the floor."""
+    src = inhibit_protocol(kind="artifact").replace('"artifact"', "artifact")
+    with pytest.raises(ResolveError, match="kind"):
+        resolve(parse(src))
+
+
+def test_an_unlabelled_inhibit_still_resolves():
+    """Absence is recorded as unlabelled; the compiler must not refuse it."""
+    assert resolve(parse(inhibit_protocol())).inhibits["emg"].kind is None
 
 
 # ---------------------------------------------------------------------------
@@ -1506,3 +1563,75 @@ def test_reward_unknown_component_access_rejected(amp):
     bad = _COMPONENTS_PROTO.replace("reward.composite }", "reward.nope.signal }")
     with pytest.raises(ResolveError):
         resolve(parse(bad), amp)
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: dip tolerance on the hold primitives
+# ---------------------------------------------------------------------------
+
+
+def _dwell_protocol(*, duration: str = "500 ms", tolerance: str | None = None) -> str:
+    """A minimal protocol whose reward is a single `dwell`.
+
+    `duration` and `tolerance` are written into the call verbatim, so
+    `"100 ms"` is a literal and `"tol_ms"` or `"hold_ms"` binds one of the
+    duration controls declared below. The default `duration` is far longer
+    than any tolerance these tests pass, because a tolerance at or above the
+    duration is itself refused.
+    """
+    tol = "" if tolerance is None else f", tolerance: {tolerance}"
+    return f'''
+        protocol "dwelling" {{
+          meta {{ version = "1.0"; evidence = "clinical"; description = "x" }}
+          controls {{
+            tol_ms  = duration {{ default = 100 ms; range = (0 ms, 500 ms); label = "Dip" }}
+            hold_ms = duration {{ default = 500 ms; range = (100 ms, 2 s); label = "Hold" }}
+          }}
+          input "raw" {{ montage = referential(active: "Cz", reference: "linked_ears") }}
+          derive "env" {{ from = "raw"; pipeline = [smooth(tau: 100 ms)] }}
+          threshold "t" {{ signal = "env"; type = absolute(8 uV) }}
+          reward {{ event = dwell(condition: above("env", "t"), duration: {duration}{tol}) }}
+          output {{ audio_chime = reward.event }}
+        }}
+    '''
+
+
+def test_dwell_protocol_helper_resolves_without_a_tolerance():
+    """The helper itself must be a protocol, or every refusal below is vacuous."""
+    ir = resolve(parse(_dwell_protocol()))
+    assert isinstance(ir.reward.event, IRCall) and ir.reward.event.callee == "dwell"
+
+
+def test_a_tolerance_literal_resolves():
+    ir = resolve(parse(_dwell_protocol(tolerance="100 ms")))
+    tol = next(a.value for a in ir.reward.event.args if a.name == "tolerance")
+    assert isinstance(tol, IRNumberLit) and tol.value == 100.0 and tol.unit == "ms"
+
+
+def test_tolerance_may_not_bind_a_control():
+    with pytest.raises(ResolveError, match="tolerance must be a fixed duration"):
+        resolve(parse(_dwell_protocol(tolerance="tol_ms")))
+
+
+def test_tolerance_at_or_above_duration_is_refused():
+    """Once satisfied, such a hold never drops."""
+    with pytest.raises(ResolveError, match="tolerance .* must be shorter than"):
+        resolve(parse(_dwell_protocol(duration="250 ms", tolerance="250 ms")))
+
+
+def test_tolerance_must_be_a_duration_literal():
+    with pytest.raises(ResolveError, match="tolerance"):
+        resolve(parse(_dwell_protocol(tolerance="100")))
+
+
+def test_a_negative_tolerance_is_refused():
+    """`max(0, ...)` in the impl would silently read it as no tolerance."""
+    with pytest.raises(ResolveError, match="tolerance must not be negative"):
+        resolve(parse(_dwell_protocol(tolerance="-100 ms")))
+
+
+def test_tolerance_under_a_control_bound_duration_is_not_compared():
+    """The comparison is unknowable when `duration` is a live control, so it
+    is skipped rather than guessed."""
+    ir = resolve(parse(_dwell_protocol(duration="hold_ms", tolerance="100 ms")))
+    assert isinstance(ir.reward.event, IRCall)

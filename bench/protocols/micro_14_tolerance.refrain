@@ -1,0 +1,52 @@
+// micro_14_tolerance.refrain
+// Bench micro: a hold that forgives a short dip. The IR-JSON v0.6 golden
+// vector — `tolerance: 100 ms` is 26 samples at 256 Hz, so the dwell's baked
+// coefficients carry `tolerance_samples` and the document is tagged 0.6.
+//
+// The `holds`-gated continuous channel is the point of pairing the two
+// outputs: a forgiven dip must leave `audio_gain` sounding, and that is the
+// stream a Python/Rust divergence in the dip counter shows up in.
+
+protocol "micro_14_tolerance" {
+  meta {
+    version  = "0.1.0"
+    evidence = "demo"
+    description = "Bench: dwell with dip tolerance + holds-gated continuous output"
+  }
+
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels    = ["Cz"]
+  }
+
+  input "raw" {
+    montage = referential(active: "Cz", reference: "linked_ears")
+  }
+
+  derive "smr_envelope" {
+    from = "raw"
+    pipeline = [
+      band_envelope(band: (12 Hz, 15 Hz), latency: 250 ms),
+    ]
+  }
+
+  threshold "smr_t" {
+    signal = "smr_envelope"
+    type   = absolute(2 uV)
+  }
+
+  reward {
+    event = dwell(
+      condition: above("smr_envelope", "smr_t"),
+      duration: 250 ms,
+      tolerance: 100 ms
+    )
+    continuous = sigmoid("smr_envelope" / "smr_t",
+                         midpoint: 1.0, steepness: 3)
+  }
+
+  output {
+    audio_chime = reward.event
+    audio_gain  = reward.event.holds ? reward.continuous : 0
+  }
+}

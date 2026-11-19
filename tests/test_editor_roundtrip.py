@@ -1,9 +1,14 @@
+import json
+import warnings
+from pathlib import Path
+
 import pytest
 
 import refrain
-from refrain.resolver import resolve
+from refrain.resolver import ResolveWarning, resolve
 from refrain.ir_json import ir_to_json_obj
-from refrain.editor import describe_protocol, render_protocol
+from refrain.editor import describe_protocol, load_catalog, render_protocol
+from refrain.editor.catalog import _CATALOG_PATH
 
 SMR = '''
 protocol "smr_up_c4" {
@@ -492,6 +497,36 @@ def test_rendering_a_mode_folded_control_keeps_its_seed_block():
     assert again["model"] == d["model"]
 
 
+# The same folded-out seed, carrying a `scale` multiplier. `_seed_view` reads
+# the resolved IR and `_seed_view_from_ast` reads the source; a seed the active
+# mode folds out only ever travels the second path, so a scale wired into one
+# and not the other goes missing for exactly the protocols whose seed the
+# resolver dropped — and for nothing else, which is why no other test here
+# would notice.
+#
+# The seed is written in the one-line `;` form on purpose. In the multi-line
+# form a `scale` line after a bare-number `target_pct` lexes as
+# `target_pct = 40 s` plus a field called `cale`, and nothing refuses it (see
+# the note in render.py's `_render_seed`).
+SEEDED_MODE_SCALE = SEEDED_MODE.replace('"seeded_mode"', '"seeded_mode_scaled"').replace(
+    """      seed = percentile {
+        from       = "env"
+        window     = 60 s
+        target_pct = 40
+      }""",
+    """      seed = percentile { from = "env"; window = 60 s; target_pct = 40; scale = 2.5 }""")
+
+
+def test_editor_keeps_a_seed_scale_on_a_mode_folded_control():
+    d = describe_protocol(SEEDED_MODE_SCALE)
+    assert d["in_subset"] is True, d.get("reason")
+    ctl = next(c for c in d["model"]["controls"] if c["name"] == "thr_uv")
+    assert ctl["seed"]["scale"] == 2.5                      # describe carries it,
+    again = describe_protocol(render_protocol(d["model"]))  # and render writes it
+    assert again["in_subset"] is True, again.get("reason")
+    assert again["model"] == d["model"]
+
+
 # Band edges as PAIRED frequency controls — `bandpass(band: (lo_hz, hi_hz))`.
 # This is how the flagship protocols are written (smr.refrain:113), and it is
 # why five of them sat outside the editor subset: the four-stage matcher
@@ -681,3 +716,351 @@ def test_declared_envelope_with_explicit_taps_is_not_in_subset():
     # than round-trip something that is not what was authored.
     src = DECLARED.replace("latency: 360 ms)", "latency: 360 ms, taps: ratio(2.5))")
     assert describe_protocol(src)["in_subset"] is False
+
+
+# ---------------------------------------------------------------------------
+# The four declarations refrain 0.25.0 adds to the language: a dip tolerance
+# on a hold, a `kind` label on an inhibit, a `scale` multiplier on a seed rule
+# and block-boundary re-seeding.
+#
+# The editor model is a *subset* mechanism: a field no matcher reads is
+# dropped, and because render does not write it either, the re-rendered
+# protocol still round-trips byte-identically — green, and wrong. So every
+# test below asserts on what the model actually carries, and each declaration
+# gets a drop guard that proves the field is load-bearing.
+
+ALL_FOUR = '''
+protocol "all_four_declarations" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["sensorimotor_sleep"] }
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "env" { from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 250 ms) ] }
+  threshold "env_t" { signal = "env"; type = absolute(value: thr_uv) }
+  inhibit "emg" {
+    metric    = bandpower(input: "raw", band: (50 Hz, 100 Hz), window: 100 ms)
+    threshold = percentile(target_pct: 95, window: 2 min)
+    action    = mute(release: 200 ms)
+    kind      = "artifact"
+  }
+  reward { event = dwell(condition: above("env", "env_t"), duration: 250 ms, tolerance: 100 ms)
+           continuous = sigmoid("env" / "env_t", midpoint: 1.0, steepness: 3) }
+  output { audio_chime = reward.event; audio_gain = reward.event.holds ? reward.continuous : 0 }
+  controls {
+    thr_uv = voltage { default = 2.0 uV; range = (0.5 uV, 30.0 uV); label = "Threshold"; live_tunable = true
+      seed = percentile { from = "env"; window = 60 s; target_pct = 40; scale = 1.5 } }
+  }
+  block "early" { threshold = ["env_t"] }
+  block "focus" { threshold = ["env_t"]; reseed = ["thr_uv"] }
+  session { phases = [
+    phase { name = "warmup"; duration = 90 s; output_muted = true },
+    phase { name = "early";  duration = 5 min; block = "early"; mode = timed_with_floor },
+    phase { name = "focus";  duration = 5 min; block = "focus"; mode = timed_with_floor }
+  ] }
+}
+'''
+
+
+def _blocks_of(model):
+    return {b["name"]: b for b in model["blocks"]}
+
+
+def test_a_protocol_using_all_four_declarations_is_in_the_subset_and_round_trips():
+    d = describe_protocol(ALL_FOUR)
+    assert d["in_subset"] is True and d["model"] is not None, d.get("reason")
+    assert _ir(ALL_FOUR) == _ir(render_protocol(d["model"]))
+
+
+def test_the_model_carries_the_tolerance():
+    assert describe_protocol(ALL_FOUR)["model"]["reward"]["slots"]["tolerance"] == "100 ms"
+
+
+def test_the_model_carries_the_inhibit_kind():
+    emg = _component(describe_protocol(ALL_FOUR), "emg")
+    assert emg["block"] == "inhibit.artifact"
+    assert emg["slots"]["kind"] == "artifact"
+
+
+def test_the_model_carries_the_block_reseed_list():
+    blocks = _blocks_of(describe_protocol(ALL_FOUR)["model"])
+    assert blocks["focus"]["reseed"] == ["thr_uv"]
+    # Absent in the source means absent in the model, or every block in every
+    # existing model grows a key it never had.
+    assert "reseed" not in blocks["early"]
+
+
+def test_the_model_does_not_carry_the_derived_reseed_hold_set():
+    # `reseed_holds` is walked by the resolver so that both engines reset an
+    # identical hold set. An editor writing it back would be asserting a
+    # dependency walk it never did, so it is deliberately not round-tripped.
+    for blk in describe_protocol(ALL_FOUR)["model"]["blocks"]:
+        assert "reseed_holds" not in blk
+
+
+def test_the_model_carries_the_seed_scale():
+    thr = next(c for c in describe_protocol(ALL_FOUR)["model"]["controls"]
+               if c["name"] == "thr_uv")
+    assert thr["seed"]["scale"] == 1.5
+
+
+def test_the_rendered_seed_puts_the_scale_above_the_target_pct():
+    """Asserted directly, so the next person does not have to rediscover the
+    reason from an IR diff.
+
+    The lexer attaches a trailing unit to a bare number across a newline, so
+    `target_pct = 40` followed by a `scale` line parses as `target_pct = 40 s`
+    plus a field named `cale` — and neither the parser nor the resolver
+    objects, so the multiplier silently reverts to its 1.0 default. SPEC
+    §4.9.4's own worked example is written in that order and mis-parses
+    because of it. `window` always renders with a unit, so `scale` placed
+    straight after it can never sit behind a bare number.
+
+    `test_a_protocol_using_all_four_declarations_is_in_the_subset_and_round_trips`
+    is also red if these lines are swapped, but it fails with an IR diff that
+    does not say why.
+    """
+    out = render_protocol(describe_protocol(ALL_FOUR)["model"])
+    assert ("\n        window     = 1 min"
+            "\n        scale      = 1.5"
+            "\n        target_pct = 40\n") in out, out
+
+
+def test_an_authored_empty_reseed_list_is_absent_from_the_model():
+    """`reseed = []` is legal and means nothing re-seeds. Emitting the empty
+    list left the model carrying a key render then dropped, so the model was
+    not a fixed point under render-then-describe — invisible to every IR-level
+    gate, because the IR is identical either way."""
+    src = ALL_FOUR.replace('reseed = ["thr_uv"]', "reseed = []")
+    d = describe_protocol(src)
+    assert d["in_subset"] is True, d.get("reason")
+    assert "reseed" not in _blocks_of(d["model"])["focus"]
+    again = describe_protocol(render_protocol(d["model"]))
+    assert again["model"] == d["model"]          # a fixed point
+
+
+def test_an_artifact_inhibit_whose_action_is_a_freeze_is_not_in_the_subset():
+    """The editor has to hand back the source the author wrote.
+
+    `freeze` and `mute` gate output identically at runtime — neither engine
+    holds the last value, which `tests/test_eval_mute_gating.py` measures on
+    both backends — so this refusal is about fidelity, not behaviour. The
+    block's template renders `action = mute(release: ...)` unconditionally, so
+    accepting a freeze gave back a document the author did not write and an IR
+    whose `action_kind` had changed. `kind` is legal on either, so the label
+    this release adds makes a freeze artifact gate a more attractive thing to
+    write than it was.
+    """
+    src = ALL_FOUR.replace("action    = mute(release: 200 ms)",
+                           "action    = freeze(release: 200 ms)")
+    d = describe_protocol(src)
+    assert d["in_subset"] is False
+    # Named, not incidental: the reason has to say which action it refused, or
+    # a future unrelated exclusion would satisfy this test.
+    assert "freeze" in d["reason"] and "mute" in d["reason"], d["reason"]
+
+
+def test_an_artifact_inhibit_whose_action_is_a_mute_is_still_in_the_subset():
+    # The guard above must not take the whole family out with it.
+    d = describe_protocol(ALL_FOUR)
+    assert d["in_subset"] is True
+    assert _component(d, "emg")["block"] == "inhibit.artifact"
+
+
+def test_dropping_the_inhibit_kind_from_the_model_changes_the_rendered_ir():
+    d = describe_protocol(ALL_FOUR)
+    del _component(d, "emg")["slots"]["kind"]
+    assert _ir(ALL_FOUR) != _ir(render_protocol(d["model"]))
+
+
+def test_dropping_the_block_reseed_from_the_model_changes_the_rendered_ir():
+    model = describe_protocol(ALL_FOUR)["model"]
+    del _blocks_of(model)["focus"]["reseed"]
+    assert _ir(ALL_FOUR) != _ir(render_protocol(model))
+
+
+def test_dropping_the_seed_scale_from_the_model_changes_the_rendered_ir():
+    model = describe_protocol(ALL_FOUR)["model"]
+    del next(c for c in model["controls"] if c["name"] == "thr_uv")["seed"]["scale"]
+    assert _ir(ALL_FOUR) != _ir(render_protocol(model))
+
+
+# One source per `kind: "reward"` catalog block, each with a dip tolerance on
+# its dwell. `_match_reward` reads the dwell's `duration` in four places — the
+# set-all arm, the weighted arm, the compound arm's `dwell` local and the
+# single-condition arm's `base` dict — and those four feed these eight blocks
+# between them. A case per block is what makes an arm nobody edited fail
+# loudly instead of quietly dropping the tolerance from one reward family.
+
+def _with_tolerance(src: str, duration: str) -> str:
+    old, new = f"duration: {duration})", f"duration: {duration}, tolerance: 100 ms)"
+    assert src.count(old) == 1, f"ambiguous dwell duration {duration!r} in source"
+    return src.replace(old, new)
+
+
+SET_ALL = '''
+protocol "smr_set_all" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["sensorimotor_sleep"] }
+  requires { sample_rate = ">= 256 Hz"; channels = ["C3", "Cz", "C4"] }
+  input "raw" { montage = referential(active: sites, reference: "linked_ears") }
+  derive "env" { from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 250 ms) ] }
+  threshold "env_t" { signal = "env"; type = absolute(8 uV) }
+  reward { combine = "all"
+           event = dwell(condition: above("env", "env_t"), duration: 250 ms) }
+  output { audio_chime = reward.event }
+  controls {
+    sites = placement { kind = "set"; default = ["C3", "Cz", "C4"]; allowed = ["C3", "Cz", "C4"];
+                        min = 1; max = 3; label = "Training sites" }
+  }
+}
+'''
+
+# all_of + a bare-ref continuous. Coherence rather than an envelope so the
+# sigmoid's midpoint is honestly dimensionless: the catalog renders this
+# block's midpoint slot without a unit, and a uV-dimensioned signal would make
+# the source and the re-render disagree about whether the unit was written.
+COMPOUND_ABS = '''
+protocol "coh_compound_abs" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["flow_connectivity"] }
+  requires { sample_rate = ">= 256 Hz"; channels = ["C3", "C4"] }
+  input "left"  { montage = referential(active: "C3", reference: "linked_ears") }
+  input "right" { montage = referential(active: "C4", reference: "linked_ears") }
+  derive "alpha_coh" { formula = coherence(input_a: "left", input_b: "right", band: (8 Hz, 12 Hz), window: 2 s) }
+  derive "beta_coh"  { formula = coherence(input_a: "left", input_b: "right", band: (15 Hz, 25 Hz), window: 2 s) }
+  threshold "a_t" { signal = "alpha_coh"; type = percentile(target_pct: reward_pct, window: 2 min) }
+  threshold "b_t" { signal = "beta_coh";  type = percentile(target_pct: 80, window: 2 min) }
+  reward {
+    event = dwell(condition: all_of([above("alpha_coh", "a_t"), below("beta_coh", "b_t")]), duration: 500 ms)
+    continuous = sigmoid("alpha_coh", midpoint: 0.5, steepness: 3)
+  }
+  output { audio_chime = reward.event }
+  controls { reward_pct = percent { default = 70; range = (50, 90); label = "Target reward %"; live_tunable = true } }
+}
+'''
+
+# A weighted composite (`combine = "weighted"`) and a bare-ref continuous
+# (`reward.passthrough`) — the two reward families this module did not already
+# carry a source for. Spelled out here rather than imported from
+# tests/test_editor_catalog_growth.py: importing one test module from another
+# costs pytest its assertion rewriting in the imported one.
+WEIGHTED = '''
+protocol "weighted_smr_theta" {
+  meta { version = "0.1.0"; description = "d"; status = "draft"; goals = ["adhd_attention"];
+         reward_style = "weighted" }
+  requires { sample_rate = ">= 256 Hz"; channels = ["Cz"] }
+  input "raw" { montage = referential(active: "Cz", reference: "linked_ears") }
+  derive "smr" { from = "raw"
+    pipeline = [ bandpass(band: (12 Hz, 15 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 250 ms) ] }
+  derive "theta" { from = "raw"
+    pipeline = [ bandpass(band: (4 Hz, 8 Hz), order: 4), hilbert(), magnitude(), smooth(tau: 250 ms) ] }
+  reward  "s" { signal = sigmoid("smr",   midpoint: 6 uV, steepness: 1); weight = w_s }
+  inhibit "t" { signal = sigmoid("theta", midpoint: 8 uV, steepness: 1); weight = w_t }
+  reward {
+    combine    = "weighted"
+    continuous = reward.composite
+    event      = dwell(condition: above(reward.composite, 0.5), duration: 250 ms)
+  }
+  output { audio_gain = reward.composite; audio_chime = reward.event }
+  controls {
+    w_s = number { default = 1.0; range = (0, 4); label = "SMR weight"; live_tunable = true }
+    w_t = number { default = 0.6; range = (0, 4); label = "Theta weight"; live_tunable = true }
+  }
+}
+'''
+
+PASSTHROUGH = COH.replace(
+    'continuous = sigmoid("alpha_coh" / "coh_t", midpoint: 1.0, steepness: 3)',
+    'continuous = "alpha_coh"')
+
+
+def _catalog_blocks():
+    return json.loads(_CATALOG_PATH.read_text())["blocks"]
+
+
+TOLERANCE_SOURCES = {
+    "reward.operant": _with_tolerance(SMR, "250 ms"),
+    "reward.operant_abs": _with_tolerance(ALPHA, "500 ms"),
+    "reward.operant_compound": _with_tolerance(COMPOUND, "250 ms"),
+    "reward.operant_compound_anyof": _with_tolerance(ANYOF, "250 ms"),
+    "reward.operant_compound_abs": _with_tolerance(COMPOUND_ABS, "500 ms"),
+    "reward.set_all": _with_tolerance(SET_ALL, "250 ms"),
+    "reward.weighted": _with_tolerance(WEIGHTED, "250 ms"),
+    "reward.passthrough": _with_tolerance(PASSTHROUGH, "500 ms"),
+}
+
+
+def test_the_tolerance_cases_cover_every_reward_block_in_the_catalog():
+    """Completeness, checked rather than asserted: if the catalog grows a
+    ninth `kind: "reward"` block, the case list below stops being per-family
+    and this fails instead of silently covering seven of eight."""
+    cat = load_catalog()
+    rewards = {b["id"] for b in _catalog_blocks() if b["kind"] == "reward"}
+    assert rewards == set(TOLERANCE_SOURCES)
+    for bid in rewards:
+        assert any(s["name"] == "tolerance"
+                   for s in cat.block(bid).get("optional_slots", [])), bid
+
+
+@pytest.mark.parametrize("block_id", sorted(TOLERANCE_SOURCES))
+def test_dropping_the_tolerance_from_the_model_changes_the_rendered_ir(block_id):
+    """The guard that makes `test_the_model_carries_the_tolerance` mean
+    something: if describe dropped the tolerance, the round-trip would still
+    pass, because render would omit it too."""
+    src = TOLERANCE_SOURCES[block_id]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ResolveWarning)
+        d = describe_protocol(src)
+        assert d["in_subset"] is True, d.get("reason")
+        assert d["model"]["reward"]["block"] == block_id
+        assert d["model"]["reward"]["slots"]["tolerance"] == "100 ms"
+        assert _ir(src) == _ir(render_protocol(d["model"]))     # carried through,
+        del d["model"]["reward"]["slots"]["tolerance"]
+        assert _ir(src) != _ir(render_protocol(d["model"]))     # and load-bearing
+
+
+# Every protocol this repository ships that the editor admits, round-tripped
+# through the model. This is the gate the tolerance actually failed:
+# bench/protocols/micro_14_tolerance.refrain was in the subset and re-rendered
+# *without* its `tolerance:` argument, so the editor was quietly turning a
+# shipped protocol into a different one.
+#
+# Reach: the two trees this repository keeps protocols in, enumerated the same
+# way tests/test_ir_corpus_identity.py enumerates them — `examples/**/*.refrain`
+# and `bench/protocols/*.refrain`. Protocols outside those two trees are not
+# covered here: refrain-protocols and refrain-editor's vendored parity corpus
+# are each checked on their own side.
+REPO = Path(__file__).resolve().parents[1]
+CORPUS = sorted(REPO.glob("examples/**/*.refrain")) + sorted(
+    (REPO / "bench" / "protocols").glob("*.refrain")
+)
+
+
+def _in_subset_corpus():
+    out = []
+    for path in CORPUS:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ResolveWarning)
+            if describe_protocol(path.read_text())["in_subset"]:
+                out.append(path)
+    return out
+
+
+def test_the_in_repo_subset_is_the_size_this_suite_believes_it_is():
+    """The reach of the test below, as a number rather than as a claim that
+    nothing else exists. 39 protocols under the two trees, 17 of which the
+    editor admits. Both counts are tripwires: a protocol joining the corpus,
+    or a matcher widening the subset, should land here and be looked at rather
+    than silently change what the round-trip gate covered."""
+    assert len(CORPUS) == 39
+    assert len(_in_subset_corpus()) == 17
+
+
+@pytest.mark.parametrize("path", CORPUS, ids=lambda p: p.stem)
+def test_every_in_repo_protocol_in_the_subset_round_trips(path):
+    src = path.read_text()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ResolveWarning)
+        d = describe_protocol(src)
+        if not d["in_subset"]:
+            pytest.skip(f"out of subset: {d['reason']}")
+        assert _ir(src) == _ir(render_protocol(d["model"]))

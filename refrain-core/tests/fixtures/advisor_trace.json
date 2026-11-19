@@ -249,6 +249,40 @@
   "check_controls": [],
   "inhibit_controls": []
  },
+ "micro_14_tolerance.ir.json": {
+  "bundles": {
+   "": {
+    "combine": "all",
+    "checks": [
+     {
+      "name": null,
+      "knob": null,
+      "higher_is": null,
+      "controls": []
+     }
+    ]
+   }
+  },
+  "check_controls": [],
+  "inhibit_controls": []
+ },
+ "micro_15_artifact_gate.ir.json": {
+  "bundles": {
+   "": {
+    "combine": "all",
+    "checks": [
+     {
+      "name": null,
+      "knob": null,
+      "higher_is": null,
+      "controls": []
+     }
+    ]
+   }
+  },
+  "check_controls": [],
+  "inhibit_controls": []
+ },
  "micro_passthrough_identity.ir.json": {
   "bundles": {},
   "check_controls": [],
@@ -305,6 +339,40 @@
   ],
   "inhibit_controls": []
  },
+ "reseed_staged.ir.json": {
+  "bundles": {
+   "block_one_reward": {
+    "combine": "all",
+    "checks": [
+     {
+      "name": null,
+      "knob": "smr_threshold_uv",
+      "higher_is": "harder",
+      "controls": [
+       "smr_threshold_uv"
+      ]
+     }
+    ]
+   },
+   "block_two_reward": {
+    "combine": "all",
+    "checks": [
+     {
+      "name": null,
+      "knob": "smr_threshold_uv",
+      "higher_is": "harder",
+      "controls": [
+       "smr_threshold_uv"
+      ]
+     }
+    ]
+   }
+  },
+  "check_controls": [
+   "smr_threshold_uv"
+  ],
+  "inhibit_controls": []
+ },
  "seed_exprpos.ir.json": {
   "bundles": {},
   "check_controls": [],
@@ -314,6 +382,13 @@
   "bundles": {},
   "check_controls": [],
   "inhibit_controls": []
+ },
+ "seed_scale_emg.ir.json": {
+  "bundles": {},
+  "check_controls": [],
+  "inhibit_controls": [
+   "emg_limit_uv"
+  ]
  },
  "seed_smr_baseline.ir.json": {
   "bundles": {},

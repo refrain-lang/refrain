@@ -9,6 +9,313 @@ bumps are additive; major bumps may break compatibility.
 
 Nothing yet.
 
+## [0.25.0] — 2026-10-30
+
+Four optional declarations — a forgiving hold clock, a label that makes
+artifact-muted time unobservable, a multiplier on a baseline seed, and a
+re-measurement at a block boundary — plus the IR-JSON `"0.6"` wire version they
+share.
+
+**All four are off by default, and a protocol that declares none of them is
+unchanged.** Same compiled IR-JSON byte for byte, same `content_hash`, same
+`refrain_ir_version`, same output sample for sample on both engines. That is
+pinned rather than asserted: `tests/test_ir_corpus_identity.py` hashes the
+compiled IR of every protocol under `examples/` and `bench/protocols/` (39
+files; 34 that existed at 0.24.0, the 4 new benches below, and
+`examples/othmer_ilf_cz_pz.refrain`, which needs an import resolver and does
+not resolve standalone) and holds all 34 pre-existing hashes to their 0.24.0
+values. Of the committed golden vectors in `refrain-core/tests/fixtures/`, only
+`advisor_trace.json` changed, and only by gaining the new bench's trace.
+
+**If you arrived here from `unsupported refrain_ir_version: "0.6"` on a 0.24
+runtime,** one of four things in your protocol asked for 0.6. The emitter tags
+the lowest version that can represent the protocol, and it keys on the
+*behaviour you declared*, not on the syntax you typed — so writing one of these
+fields is not by itself enough to move the version:
+
+| Bumps the document to `"0.6"` | Does **not** bump it |
+|---|---|
+| A hold whose `tolerance` bakes to **one or more samples** at the document's `sample_rate_hz` | A `tolerance` that rounds to zero samples at that rate: it forgives nothing, emits no field, and leaves the version where it was |
+| An inhibit labelled `kind = "artifact"` | `kind = "trained"`, and an inhibit with no `kind` at all — both run identically on an engine that has never heard of the field, so refusing those documents would be a refusal over documentation |
+| A seed rule whose `scale` differs from `1.0` | An omitted `scale`, and an explicitly written `scale = 1.0` |
+| A block whose `reseed` list is non-empty | An absent `reseed` — no key is emitted, so every staged protocol written before this field keeps its bytes |
+
+The fix is to upgrade the runtime or drop the declaration. There is no
+downgrade that keeps the behaviour: an engine that ignored these keys would run
+a measurably different protocol and say nothing, which is the whole reason the
+load-time version gate exists. `SUPPORTED_IR_VERSIONS` in
+`refrain-core/src/ir.rs` now reads `"0.1"` through `"0.6"`.
+
+### Added
+
+- **A hold can forgive a brief dip: `tolerance` on `dwell`, `dwell_rearm` and
+  `hold_for`.** A duration literal with a time unit; it cannot bind a control.
+  **Default: absent, which is exactly `0 ms`** and must produce sample-identical
+  output to a hold with no `tolerance` at all. A run of consecutive samples on
+  which the condition is false, no longer than `tolerance`, leaves the streak
+  neither advanced nor reset; the first sample of a false run that exceeds
+  `tolerance` resets it to zero. Forgiven samples are never credited toward
+  `duration` — the streak counts only genuinely true samples — and where the
+  hold was already satisfied, `.holds` stays true across the forgiven dip, so
+  holds-gated continuous output keeps sounding through it instead of dropping
+  out and back in. For `dwell_rearm` the re-arm counter does not advance on a
+  forgiven sample, and on the first sample that breaks the tolerance it is
+  credited with the whole false run counted from its first sample. The
+  conversion is `round(tolerance_ms / 1000 × rate)` and, unlike `duration`, is
+  *not* raised to a minimum of one sample. `tolerance` must be shorter than
+  `duration`, checked at resolve time unless `duration` binds a control, where
+  the comparison is not knowable; if you bind `duration`, keep the control's
+  declared range above `tolerance`, because a `duration` retuned to at or below
+  `tolerance` yields a hold that once satisfied never drops — every dip long
+  enough to end it is first long enough to be forgiven. Implementations are not
+  required to refuse that. No lookahead required, and the two engines are held
+  sample-for-sample. SPEC §5.6, IR-JSON §3.4, bench
+  `micro_14_tolerance.refrain`.
+
+- **Artifact-muted time is *unobservable* rather than failed: `kind` on an
+  inhibit.** `kind = "artifact"` says the inhibit fires because the engine could
+  not read the signal — electrode pop, jaw clench, movement — rather than
+  because the trainee did the wrong thing. A hold takes two per-sample inputs:
+  a condition, which carries every reason a sample did not qualify, and an
+  observability mask, which carries only whether an artifact-labelled inhibit
+  was gating. The mask is checked **first**, before the condition is examined,
+  so a sample the engine could not read scores as neither success nor failure:
+  the streak and the dip counter both freeze. The ordering is the feature. An
+  artifact mute also shows up in the ordinary mute gate, so such a sample
+  arrives with its condition already false, and a mask merely AND-ed into the
+  condition would let an artifact mute longer than `tolerance` reset the streak
+  through the dip path. This applies on the output-hold path and on the
+  `reward { event = ... }` path, including a hold nested inside a reward
+  condition. **Default: absent.** Absence is *not* `"trained"` — it is recorded
+  as *unlabelled*, because most unlabelled inhibits are artifact gates nobody
+  has labelled yet; an unlabelled inhibit resets a hold bound in `output { }`
+  and contributes nothing on the reward-event path, exactly as before. A
+  compiler may advise on an unlabelled inhibit and must not refuse one.
+  `print_cred_nf` now names each inhibit as `artifact`, `trained` or
+  `unlabelled`, which is where a catalog-wide count of still-unlabelled
+  inhibits is read from. `kind` is legal on `mute` and `freeze`, and a resolve
+  error on `flag`, which gates nothing — there the label would be a silent
+  no-op, and a silent no-op in a safety-shaped declaration is worse than a
+  compile error. An unrecognised value is a resolve error too. SPEC §4.6,
+  IR-JSON §3.5, bench `micro_15_artifact_gate.refrain`.
+
+- **A limit can be set at a multiple of the person's own baseline: `scale` on a
+  seed rule.** `seed = percentile { from, window, target_pct, scale }`, where
+  `scale` is a positive dimensionless number literal multiplying the statistic
+  before the control is written. **Default: `1.0`** — the statistic as measured,
+  which is what every existing seed rule does. Not control-bindable: a value
+  written once at the warmup→run edge could only be retuned before it had any
+  effect or after it was too late to have one. A non-number, a number carrying a
+  unit, and any value at or below zero are each resolve errors; zero is not
+  clamped to something harmless, because `scale = 0` seeds a muscle limit at
+  0 µV and mutes the whole session. The point is the combination
+  `target_pct = 50; scale = 3.0` — "three times this person's warm-up median".
+  A high percentile *is* its own trip rate: a gate seeded at the 95th percentile
+  of warm-up trips on 5 % of warm-up by construction, and if the warm-up
+  contains any of the thing being guarded against, the percentile rises with it
+  and the limit never fires. `bench/protocols/seed_scale_emg.refrain` is the
+  worked per-person muscle limit. `seed_report()` reports `value` already
+  multiplied, with `scale` beside it, so a practitioner is never shown a scaled
+  limit as a raw measurement. **The range clamp attaches to `scale`, not to
+  seeding:** a seeded value is clamped to the control's declared `range` only
+  when `scale != 1.0`. An unscaled seed is written through unclamped, as it
+  always has been — there is no such clamp today, and adding one would move the
+  seeded value, and therefore the reward behaviour, of a protocol that declared
+  nothing new. SPEC §4.9.4, IR-JSON §3.6.
+
+- **A staged block can re-measure a seeded control at its boundary: `reseed` on
+  a `block`.** A list of seeded control names that re-measure themselves, from a
+  trailing window of the signal that just ran, when the block goes active —
+  instead of training the whole session against a number taken from the warm-up.
+  **Default: empty, which is what every protocol written before this field says,
+  and means nothing re-seeds.** Read the "off unless declared" paragraph in SPEC
+  §4.13 before turning it on: re-seeding assumes the window before the boundary
+  is a fair baseline for what the next block trains, and when consecutive blocks
+  train materially different states — beta-up then alpha-up — the trailing
+  window measures the *previous* state, so an alpha threshold seeded from the
+  tail of beta training sits wherever beta training left alpha. A fixed,
+  warm-up-seeded threshold is the conservative choice. Checked at resolve time:
+  the control exists and has a `seed`; the seed was not folded out as dead; no
+  duplicates; and the seed's `window` fits the unmuted training time before the
+  boundary, refusing only when *every* phase that activates the block is short
+  of the window, and standing down when a live `mode = "open"` phase makes the
+  amount unknowable. A re-seed whose window has not filled keeps the value the
+  control is already running and records the miss — it is not a session-ending
+  fault. A re-seeded value is scaled and clamped by the same rules as a warm-up
+  seed, and is live for the chunk the boundary falls in, not one chunk later.
+  **A re-seed also restarts the hold clock** for holds downstream of the
+  re-seeded control, since a streak banked against the old threshold says
+  nothing about the new one. That set is resolved once in the front end and
+  carried on the wire as `reseed_holds`, so both engines reset identical holds
+  rather than each walking the dependency graph. Its reach is stated as reach
+  rather than as a list of shapes, and three things are deliberately outside it:
+  a control that reaches a hold only through a `derive` is not in the set; a
+  site is a whole expression, so two holds in one reward event or one output
+  channel are reset together even if only one reads the control; and a hold
+  written into a reward's `continuous` rather than its `event` is not a site and
+  is never reset. SPEC §4.13 names the shape that would bite first. SPEC §4.13,
+  IR-JSON §3.7, bench `reseed_staged.refrain`.
+
+- **IR-JSON `"0.6"`,** with `src/refrain/schema/ir-json-v0.6.schema.json` a
+  superset of v0.5. New keys: `tolerance_samples` on a hold (emitted only when
+  it bakes to one or more samples), `kind` on an inhibit (emitted only when
+  declared), `scale` on a control's `seed` (emitted only when it differs from
+  `1.0`), and `reseed` plus `reseed_holds` on a block (emitted together, and
+  only when `reseed` is non-empty — stated with `dependentRequired` in both
+  directions).
+
+- **`seed_report()["history"]` — the trail behind a seeded value.** One record
+  per seeding event, in order, warm-up seed first, each carrying time, old and
+  new value, source derive, window, percentile, scale, and status. Purely
+  additive: the existing keys and their meanings are untouched, and a control
+  no block re-seeds gets a one-record history saying what it already said.
+  Once a block can re-measure a control, "the seeded value" stops being one
+  number and starts being something a practitioner can be shown.
+  **This addition is Python and Rust-core only.** The uniffi `SeedReport`
+  record that generates the Swift and Kotlin bindings does not carry `history`,
+  so a mobile host still sees the single current value. That is a known,
+  accepted gap, not an oversight, and it is the one host-facing part of this
+  release that did not reach every surface.
+
+- **The protocol editor round-trips all four declarations — in Python.**
+  `src/refrain/editor/` models, validates, describes and re-renders
+  `tolerance`, `kind`, `scale` and `reseed`, so a protocol carrying them
+  survives a load-edit-render cycle instead of coming back with the
+  declarations quietly gone. `catalog_version` 2 → 3. One refusal comes with
+  it: an artifact inhibit whose `action` is `freeze(...)` rather than
+  `mute(...)` is now reported **out of subset** instead of being re-rendered as
+  a mute. `kind` is legal on both, so a `freeze` artifact gate is a more
+  attractive thing to write than it used to be — and the editor's promise is to
+  give back the source the author wrote. At runtime the two are the same gate
+  (see **Fixed** below: neither engine holds the last value), so this is not a
+  behaviour trap but a fidelity one: the author gets back a document they did
+  not write, and the emitted IR's `action_kind` changes from `"freeze"` to
+  `"mute"`. Nothing in the repository writes one, so this moves no existing
+  protocol; it moves a future one from silently corrupted to correctly
+  reported. Two honest limits.
+  First,
+  **the TypeScript editor cannot render these four and drops them silently**;
+  the port is outstanding, and a guard test now fails the day a vendored
+  protocol uses one, so the gap is loud rather than discovered in a session.
+  "Editor support" in this release means the Python editor model and renderer.
+  Second, **an explicitly authored `scale = 1.0` disappears from the
+  re-rendered source.** That is inside the stated contract — `scale` is emitted
+  only when it differs from `1.0`, which is exactly what keeps every existing
+  protocol's IR byte-identical — but if you write the default out by hand and
+  run the file through the editor, you get it back without that line. It is not
+  data loss: the value is the default either way.
+
+- **Four conformance bundles and a `skip_warmup` rule a third-party runtime has
+  to honour.** New golden-vector families in `refrain-core/tests/fixtures/`:
+  `micro_14_tolerance`, `micro_15_artifact_gate`, `seed_scale_emg` and
+  `reseed_staged`. `docs/CONFORMANCE.md` §3 now names **four**
+  `skip_warmup=False` bundles rather than two — `seed_smr_baseline`,
+  `seed_exprpos`, `seed_scale_emg` and `reseed_staged` — because a seeded
+  control measures its statistic only during warm-up, and `reseed_staged` needs
+  the warm-up seed to have happened for a boundary re-seed to mean anything. A
+  runtime self-validating one of those four must drive it with the
+  lifecycle-aware entry point that advances the warmup→run cursor; the
+  streams-only one never fires the seed and reads every `output/fb` sample as
+  `0.0`. §1 of that document now also states the supported wire versions
+  directly, instead of leaving a conforming runtime to find them in
+  `docs/IR-JSON.md`.
+
+### Changed
+
+- **A host write now disarms a re-seeding control — permanently, and only for a
+  control some block re-seeds.** This is a behaviour change, not an addition.
+  `set_control` on such a control disarms its seeding for the rest of the
+  session, before *or* after the warm-up seed has fired, and its
+  `seed_report()` status becomes `disarmed_by_host`. Before this release
+  nothing disarmed any seed latch after it fired. A practitioner who moved a
+  threshold by hand during block one does not have block three take it back. For
+  a control no block re-seeds, nothing moves: `set_control`'s disarm stays
+  pre-fire only, exactly as it has always been. No protocol in this repository
+  declares a `reseed`, so no existing protocol's report changes — but a host
+  that writes controls mid-session should know the rule exists before someone
+  authors one.
+
+- **Accepted advice disarms a re-seeding control; the autopilot applying its own
+  advice does not.** The second door to the rule above, and the asymmetry is
+  deliberate. `apply_advice(id, by = "practitioner")` disarms the control's
+  re-seeding, because the practitioner did not type that number but did take
+  responsibility for it — and a protocol with an advisor is exactly the kind
+  that re-seeds. `apply_advice(id, by = "autopilot")` writes the value and
+  leaves re-seeding **armed**, so the next boundary re-measures and the advisor
+  resumes from the new baseline: nobody took responsibility for an automatic
+  apply, and between two automatic mechanisms a fresh measurement of the person
+  is more authoritative than an inference drawn from reward rate. An advisor
+  whose suggestion a re-seed overwrites has lost nothing it knew. For a control
+  no block re-seeds, accepted advice disarms nothing, as before. The same
+  distinction governs the re-seed freshness counter: it restarts when the engine
+  *measures* a control, so a `set_control` or an autopilot apply moves the value
+  without resetting the count.
+
+### Fixed
+
+- **A spec reversal: `action = freeze` does not hold the output at its last
+  value, and never did.** Through 0.24 three sentences said it does — §4.6's
+  action list ("hold reward at last value"), §7.4 ("Inhibits with
+  `action = freeze` hold the previous output value") and `docs/PRIMITIVES.md`'s
+  inhibit-actions list ("hold output at last value"). All three were wrong
+  about both engines, from the beginning: `FreezeAction.gate` is the same
+  hangover state machine as `MuteAction.gate`, and the Rust core maps
+  `"mute" | "freeze"` to a single `InhibitGate`. A `freeze` inhibit zeroes
+  every continuous output channel and falsifies every event channel, release
+  hangover included, exactly as a `mute` does. All three sentences now say so,
+  and `tests/test_eval_mute_gating.py` pins it on both backends — the claim had
+  no behavioural test on either engine until now. **If you implemented a
+  conformant runtime from SPEC 0.24 and made `freeze` hold its last value, that
+  runtime does not match refrain's engines and should be changed.** If you
+  authored a protocol with a `freeze` inhibit expecting a held tone, you have
+  been getting silence; `flag()` is the action that modifies nothing.
+
+- **A host clock freeze now restarts a hold nested in a reward condition in the
+  Rust core too.** `Evaluator.reset_held_outputs()` — which
+  `set_clock_frozen(true)` calls, and which `docs/PRIMITIVES.md` tells a host to
+  call after an input gap — invalidates held streaks, because a streak
+  accumulated across samples that never arrived is stale. The Rust core walked
+  only the holds reachable from `output { }`; the Python reference walks every
+  `hold_for` in the protocol. On
+  `dwell(condition: hold_for(... 125 ms), duration: 250 ms)` at 256 Hz with a
+  freeze mid-streak, Python delivered the first chime 250 ms later than Rust.
+  The two now agree on the whole set: every `hold_for` wherever it is written
+  (an `output` binding, a reward event's condition, `reward { continuous }`, a
+  weighted composite's component signal, a derive formula, an inhibit metric),
+  plus a `dwell`/`dwell_rearm` bound directly in `output { }`. The lines
+  predate 0.25.0, but this release made the nested reward hold a specified,
+  masked surface and wrote the freeze behaviour into §7.4 normatively, so the
+  divergence became a conformance-visible one. Pinned on both backends by
+  `tests/test_eval_artifact_mask_reward.py::test_a_transport_pause_restarts_a_hold_nested_in_a_reward_condition`.
+  **Open and deliberately unchanged:** a freeze does *not* restart a
+  `reward { event = dwell(...) }`'s own dwell, on either engine. That is the
+  shape most live protocols use, nothing in the engines ever restarted it, and
+  no declaration gates it — so changing it would move almost every protocol in
+  the library at release time. §7.4's "What a freeze reaches" table states the
+  three-way split rather than leaving it to be deduced.
+
+### Documentation
+
+- **§7.4's forgiveness table said a freeze resets "the hold", which was false
+  for the dominant hold path on both engines.** Row 6 and the matching
+  paragraph in `docs/PRIMITIVES.md` now say which holds a freeze restarts and
+  which it leaves running, surface by surface — a conformance implementor
+  building from the old row would have implemented a reset neither refrain
+  engine performs.
+- **§7.4 said "Three surfaces are inside" the observability mask; there are
+  four.** A weighted composite's component signal (`reward "<name>"
+  { signal = ... }`) is evaluated inside the same mask window as the event
+  condition, a hold nested in it and `reward { continuous }`, identically on
+  both engines. The count and the enumeration are now four.
+- **§7.4 attributed another repository's protocol count to this one.** "44 of
+  the 45 protocols in this repository" is now "in the refrain-protocols live
+  corpus"; this repository has 40 `.refrain` files, 39 of them in the pinned
+  corpus.
+- **Two comments still said three `skip_warmup=False` fixture stems.**
+  `refrain-core/tools/gen_fixtures.py` and
+  `bench/protocols/seed_scale_emg.refrain` now say four, matching
+  `docs/CONFORMANCE.md` §3, which already did.
+
 ## [0.24.0] — 2026-10-20
 
 ### Added

@@ -409,11 +409,22 @@ def _filter_design(ir: IRProtocol):
 
 
 def _artifact_rejection(ir: IRProtocol):
+    """One row per inhibit, each naming its `kind` label (§4.6).
+
+    An inhibit with no label reads `kind=unlabelled`, never `kind=trained`:
+    absence is recorded, not asserted to be a trained condition. Counting the
+    unlabelled rows across the corpus is how the labelling worklist is read,
+    which is the whole reason the label appears here — `print_cred_nf` carries
+    the count for free once each row says what it is.
+    """
     if not ir.inhibits:
         return None
     rows = []
     for ih in ir.inhibits.values():
-        rows.append(f"{ih.name}: metric={_render_expr(ih.metric)}, action={ih.action_kind}")
+        rows.append(
+            f"{ih.name}: metric={_render_expr(ih.metric)}, "
+            f"action={ih.action_kind}, kind={ih.kind or 'unlabelled'}"
+        )
     return rows
 
 

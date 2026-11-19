@@ -26,12 +26,18 @@ def _seed_view(seed: Any) -> dict:
         target = tp.value
     else:                                   # resolver guarantees number | percent-ref
         target = _num(tp)
-    return {
+    view = {
         "statistic": seed.statistic,
         "from": seed.from_entity.removeprefix("derive/"),
         "window_ms": seed.window_ms,
         "target_pct": target,
     }
+    # `scale` only when it is doing something. An absent `scale` resolves to
+    # 1.0 and the IR omits it at 1.0 too, so emitting the key unconditionally
+    # would add it to every seeded model that never declared one.
+    if seed.scale != 1.0:
+        view["scale"] = seed.scale
+    return view
 
 
 def _seed_view_from_ast(be: A.BlockExpr) -> dict:
@@ -50,12 +56,21 @@ def _seed_view_from_ast(be: A.BlockExpr) -> dict:
     """
     bm = _body_map(be)
     target = _slot_from_expr(bm["target_pct"])
-    return {
+    view = {
         "statistic": be.name,
         "from": bm["from"].value,
         "window_ms": _to_ms(bm["window"]),
         "target_pct": float(target) if isinstance(target, (int, float)) else target,
     }
+    # Both paths carry the scale or neither does. This one exists for a seed
+    # the resolver folded out, and a protocol that round-tripped through only
+    # the other would re-render with its multiplier missing. Gated on 1.0 for
+    # the same reason as `_seed_view`, so an explicit `scale = 1.0` and an
+    # absent one give the same model.
+    scale = bm.get("scale")
+    if scale is not None and float(scale.value) != 1.0:
+        view["scale"] = float(scale.value)
+    return view
 
 
 def _ast_control_seeds(ast: A.File) -> dict:
@@ -317,7 +332,48 @@ def _match_reward_component(decl: A.NamedDecl) -> dict:
     bm = _body_map(decl)
     if "metric" in bm and "action" in bm:  # artifact-rejection inhibit (bandpower + mute)
         metric, thr, action = bm["metric"], bm["threshold"], bm["action"]
+        # `mute` only. The block's template renders `action = mute(release: ...)`
+        # unconditionally, so accepting any other action re-rendered it AS a
+        # mute: a `freeze` inhibit silently became a muting one, and a `flag`
+        # inhibit — which gates nothing at all — became a silencing one.
+        #
+        # The reason is round-trip fidelity, not runtime behaviour. At runtime
+        # `freeze` and `mute` are the same gate: `FreezeAction.gate` is the
+        # same hangover state machine as `MuteAction.gate` (same constructor,
+        # same loop, differing in a local name and one redundant `else`), the
+        # Rust core maps `"mute" | "freeze"` to one `InhibitGate`, and neither
+        # engine holds the last value (`docs/SPEC.md` §4.6, §7.4). Measured
+        # rather than read off the source:
+        # `tests/test_eval_mute_gating.py` now runs the same protocol under
+        # both spellings and compares the gated taps on both backends. What
+        # differs is the
+        # document and the wire: `action_kind` carries `"freeze"`, and the
+        # editor's promise is to give back the source the author wrote. Handing
+        # back a `mute` where they wrote a `freeze` breaks that promise however
+        # the two behave, and would also change the emitted IR. Out of subset
+        # is the honest answer, the same call `band_envelope` with explicit
+        # `taps` already makes. (`flag` is a behaviour change as well as an
+        # IR one — it gates nothing — which is the stronger half of the same
+        # case.)
+        #
+        # `kind` is legal on a mute OR a freeze inhibit, so the label this
+        # release adds makes a freeze artifact gate a more attractive thing to
+        # write than it was. Nothing in the repository uses one today, so this
+        # moves no existing protocol — it moves a future one from silently
+        # corrupted to correctly reported.
+        act = getattr(action, "callee", None)
+        if act != "mute":
+            raise _NotInSubset(
+                f"artifact inhibit action is {act or type(action).__name__}, not mute; "
+                "this block renders only mute(release: ...), so accepting it would "
+                "re-render the inhibit as a mute")
         band = _arg(metric, "band")
+        # `kind = "artifact" | "trained"` changes what the engine scores, so a
+        # model that dropped it would re-render a different protocol. Note the
+        # name collision: the model's `kind` key here is the declaration
+        # keyword (`reward`/`inhibit`), the *slot* named `kind` is the label.
+        label = bm.get("kind")
+        kind_slot = {} if label is None else {"kind": label.value}
         return {"name": decl.name, "kind": decl.keyword, "block": "inhibit.artifact",
                 "slots": {"input": _arg(metric, "input").value,
                           "band_low_hz": _slot_from_expr(band.elements[0]),
@@ -325,7 +381,8 @@ def _match_reward_component(decl: A.NamedDecl) -> dict:
                           "metric_window_ms": _to_ms(_arg(metric, "window")),
                           "target_pct": _slot_from_expr(_arg(thr, "target_pct")),
                           "thr_window_ms": _to_ms(_arg(thr, "window")),
-                          "release_ms": _to_ms(_arg(action, "release"))}}
+                          "release_ms": _to_ms(_arg(action, "release")),
+                          **kind_slot}}
     sig = bm.get("signal")
     if not isinstance(sig, A.Call) or sig.callee != "sigmoid":
         raise _NotInSubset("reward component signal not a sigmoid()")
@@ -488,6 +545,21 @@ def _placement_anchors(p: A.Protocol) -> dict:
     return out
 
 
+def _tolerance_slot(ev: A.Call) -> dict:
+    """A reward dwell's optional `tolerance:` argument, as the catalog's
+    optional `tolerance` slot — `{}` when the source declares none.
+
+    Read in one place and splatted into every arm of `_match_reward` below.
+    There are four sites in that function that read the dwell's `duration`,
+    and they feed the catalog's eight `kind: "reward"` blocks between them; a
+    helper that every arm splats is what stops one family quietly losing its
+    tolerance while the round-trip stays green (describe dropping a field that
+    render also omits re-renders byte-identically).
+    """
+    tol = _arg(ev, "tolerance")
+    return {} if tol is None else {"tolerance": _expr_to_str(tol)}
+
+
 def _match_reward(block: A.SectionBlock) -> dict:
     bm = _body_map(block)
     if getattr(bm.get("combine"), "value", None) == "all":   # Mode 2b: set placement, all sites
@@ -499,7 +571,8 @@ def _match_reward(block: A.SectionBlock) -> dict:
         return {"name": None, "block": "reward.set_all",
                 "slots": {"direction": cond.callee, "signal": cond.args[0].value.value,
                           "threshold": cond.args[1].value.value,
-                          "dwell": _expr_to_str(_arg(ev, "duration"))}}
+                          "dwell": _expr_to_str(_arg(ev, "duration")),
+                          **_tolerance_slot(ev)}}
     if "combine" in bm:                                   # weighted composite
         cont = bm.get("continuous")
         ev = bm.get("event")
@@ -513,7 +586,8 @@ def _match_reward(block: A.SectionBlock) -> dict:
             raise _NotInSubset("weighted reward event not dwell(above(reward.composite, ..))")
         return {"name": None, "block": "reward.weighted",
                 "slots": {"threshold": cond.args[1].value.value,
-                          "dwell": _expr_to_str(_arg(ev, "duration"))}}
+                          "dwell": _expr_to_str(_arg(ev, "duration")),
+                          **_tolerance_slot(ev)}}
     ev, cont = bm.get("event"), bm.get("continuous")
     if not isinstance(ev, A.Call) or ev.callee != "dwell":
         raise _NotInSubset("reward.event not a dwell()")
@@ -534,6 +608,7 @@ def _match_reward(block: A.SectionBlock) -> dict:
             raise _NotInSubset("compound reward continuous not a sigmoid()")
         carg = cont.args[0].value
         dwell = _expr_to_str(_arg(ev, "duration"))
+        tol = _tolerance_slot(ev)
         if (isinstance(carg, A.BinaryOp) and carg.op == "/"
                 and isinstance(carg.left, A.StringLit) and isinstance(carg.right, A.StringLit)):
             block = ("reward.operant_compound" if combinator == "all_of"
@@ -542,19 +617,22 @@ def _match_reward(block: A.SectionBlock) -> dict:
                     "slots": {"conditions": ", ".join(parts),
                               "cont_num": carg.left.value, "cont_den": carg.right.value,
                               "midpoint": _arg(cont, "midpoint").value,
-                              "steepness": _arg(cont, "steepness").value, "dwell": dwell}}
+                              "steepness": _arg(cont, "steepness").value, "dwell": dwell,
+                              **tol}}
         if isinstance(carg, A.StringLit):         # bare-ref continuous (e.g. coherence)
             if combinator == "any_of":
                 raise _NotInSubset("any_of compound with bare-ref continuous not in subset")
             return {"name": None, "block": "reward.operant_compound_abs",
                     "slots": {"conditions": ", ".join(parts), "cont_signal": carg.value,
                               "midpoint": _arg(cont, "midpoint").value,
-                              "steepness": _arg(cont, "steepness").value, "dwell": dwell}}
+                              "steepness": _arg(cont, "steepness").value, "dwell": dwell,
+                              **tol}}
         raise _NotInSubset("compound sigmoid arg not a ref/ref ratio or bare ref")
     if not isinstance(cond, A.Call) or cond.callee not in ("above", "below"):
         raise _NotInSubset("reward condition not above/below")
     base = {"direction": cond.callee, "signal": cond.args[0].value.value,
-            "threshold": cond.args[1].value.value, "dwell": _expr_to_str(_arg(ev, "duration"))}
+            "threshold": cond.args[1].value.value, "dwell": _expr_to_str(_arg(ev, "duration")),
+            **_tolerance_slot(ev)}
     if isinstance(cont, A.Call) and cont.callee == "sigmoid":
         arg = cont.args[0].value  # first positional arg of sigmoid
         mid = _arg(cont, "midpoint")
@@ -595,10 +673,31 @@ def _match_requires(block: A.SectionBlock) -> dict:
 
 
 def _match_block(decl: A.NamedDecl) -> dict:
-    thr = _body_map(decl).get("threshold")  # staged block activates a set of thresholds
+    bm = _body_map(decl)
+    thr = bm.get("threshold")  # staged block activates a set of thresholds
     if not isinstance(thr, (A.Array, A.Tuple)):
         raise _NotInSubset("block needs threshold = [...]")
-    return {"name": decl.name, "thresholds": [e.value for e in thr.elements]}
+    view = {"name": decl.name, "thresholds": [e.value for e in thr.elements]}
+    # `reseed` names the seeded controls this block re-measures at its
+    # boundary. Emitted only when the source declares one, so a block written
+    # before 0.25.0 keeps the model it already had. The resolver's companion
+    # `reseed_holds` is deliberately absent: it is a dependency walk over
+    # thresholds and hold conditions, baked once so both engines reset an
+    # identical hold set, and an editor writing it back would be asserting a
+    # walk it never did.
+    reseed = bm.get("reseed")
+    if isinstance(reseed, (A.Array, A.Tuple)):
+        # Non-empty only, matching what `ir_json` does on the IR side
+        # (`if b.reseed:`). An authored `reseed = []` is legal and means
+        # nothing re-seeds, so emitting the empty list left the model carrying
+        # a key that render then dropped — the model was not a fixed point
+        # under render-then-describe, while the IR stayed identical and every
+        # gate stayed green.
+        if reseed.elements:
+            view["reseed"] = [e.value for e in reseed.elements]
+    elif reseed is not None:
+        raise _NotInSubset("block reseed is not a list of control names")
+    return view
 
 
 def _match_session(block: A.SectionBlock) -> dict:

@@ -1,0 +1,47 @@
+{
+  "hashes": {
+    "examples/alpha_theta.refrain": "c12bece5c3475875b4a45e78ebbd45c7624862192634812b777e08918a199463",
+    "examples/alpha_theta_autopilot.refrain": "d9e933436f517855f7fbddac6ea8d7a130c25eda835c3ff41190e6843b4fe04e",
+    "examples/critical_fluctuation_cue.refrain": "f42491fb3014ae45767800b46e6e94dd79a9cc1e29d718762cfdd6a19dd54065",
+    "examples/dyadic_alpha_coherence_pz.refrain": "d9f981d8100b894a3554ebd43398c68189570310e9b832cae8e867c4bbeed0b0",
+    "examples/library/othmer/ilf_base.refrain": "f1fb2b0d86aa0e66e71f783b4378705f61f007d08f5af09c6c8be1a788be4b4c",
+    "examples/othmer_ilf_t3t4.refrain": "1900869cf21c8943b2b327cbc25da6529113e5d4da8b85ad114e777144bab0e1",
+    "examples/smr_cz.refrain": "59c637d4a6acc14ee3ab1fd0b29e0ae1bd279ad1db505001b6399437c1a3ad99",
+    "examples/smr_cz_brainbit.refrain": "650f2b6fee589a914fddf77d6be065c412a417f6ad426e5c41d0cf00dd6446e2",
+    "examples/staged_beta_alpha.refrain": "223c8d39c2ed8565f0de2113da32e1ce0d4333ba60fcb406a38c5ab854393ebc",
+    "bench/protocols/autopilot_alpha_theta.refrain": "b42a9ce2892357c670e7548f54b0c252eb0b60789c9f9b112401afe58203ce70",
+    "bench/protocols/autopilot_staged.refrain": "2b146ae8523b5ade00d50522c09025de8480a3e0b4daf61adf3b03e070aea6a8",
+    "bench/protocols/composite_smr_theta.refrain": "f32f50a3ea3cf4d871e081a91c244934e7cff1912379190df1dc11f994f0eae0",
+    "bench/protocols/micro_01_passthrough.refrain": "c8fc94dd97253b0196398ffaf5ec0937812871cc253af5c2e4652be7be360050",
+    "bench/protocols/micro_02_bandpass.refrain": "62d4d5f6839159bcf7cbded74efed3a00b840797caa4c4986d554f38f110d260",
+    "bench/protocols/micro_03_envelope.refrain": "bff7fd6db7d15077f204b9171e9941aa7a992621e59da86168c090252ab9f21e",
+    "bench/protocols/micro_04_threshold.refrain": "3b09c22bfb35298fa75a21dc24663b49116d451c5ac4d99c693e360de474e6aa",
+    "bench/protocols/micro_05_reward.refrain": "293331029c177e4d6df954f5a30e96d65d082fe48db14f32e5a6d86db98b8074",
+    "bench/protocols/micro_06_coherence.refrain": "34aaf6deceed4a008755000d1b13a0513d8b1a105c5da19ceafcc4acbd6ade23",
+    "bench/protocols/micro_07_ilf.refrain": "489831f93612595570ca80792416a26edb4c8343a44db4e67887e0ebb844d491",
+    "bench/protocols/micro_08_bandpower.refrain": "fddc84a0e5885d79fb1f87ab5c8815ef3911bae9985e15e614abaf68e2817149",
+    "bench/protocols/micro_09_inhibit.refrain": "c153f0d5320becebc1d4bcc2c91d94982d2222c7b28a4bb07891d02d55213643",
+    "bench/protocols/micro_10_autocorr.refrain": "4b144a05a962368e5fab8b19ad90f0192feefe1fca96c9a844864e8c29612d78",
+    "bench/protocols/micro_11_control_expr.refrain": "f83d2b740971d3f856c4e2fcdf22efd8217703cd2dd536732ea1a8f341d83e88",
+    "bench/protocols/micro_12_control_param_slots.refrain": "206be206728dfd4d7387c8b895409606cc9d2ec231dc746576bcc82c2baf6d57",
+    "bench/protocols/micro_13_band_envelope.refrain": "58758eada95c1c178ed94b4cde3c7d6d1478ad4e2a8cf3c682486fefc2540291",
+    "bench/protocols/micro_center_bandwidth.refrain": "aae22fd97a40e6ae9cf0fc627d3a2959b4ba8a5fa961183d4e196160127b9507",
+    "bench/protocols/micro_multi_leaf_control_absolute.refrain": "9d248596e66204e737d1b8d120941cd9fe2061ec86bbd7d8430f056a6c2a76f6",
+    "bench/protocols/micro_passthrough_identity.refrain": "dca0aa97b3c68dfb501f535b54271e70b53d3595870f4013b5ab9b0c59f1d6e0",
+    "bench/protocols/micro_single_above.refrain": "f6a2f6cf5e5ef2974950bf19e5135df4f2e21782a1aa1aed2c16b9bfdcd2308e",
+    "bench/protocols/micro_single_below.refrain": "00e4c1ee89cbc071e8152659649d142587234993104b63bd7b3baf76661ac494",
+    "bench/protocols/micro_single_pct.refrain": "3bf427aaad837166a20d2258d5faf962d826c6144933d256d9663533834e2744",
+    "bench/protocols/realistic_smr.refrain": "524cfe4f368c3cb44806cb781707ebe4ef35b0696fe6c3c31abb9667cbb7c426",
+    "bench/protocols/seed_exprpos.refrain": "355309e9256096f5a335d956316b0764434e828f489f0c5f4e52c65206731ea9",
+    "bench/protocols/seed_smr_baseline.refrain": "54083c55e4defd011dd3e22bcd8708eedb293e777cb406223e0194595ce29eb9"
+  },
+  "unresolvable": [
+    "examples/othmer_ilf_cz_pz.refrain"
+  ],
+  "added": [
+    "bench/protocols/micro_14_tolerance.refrain",
+    "bench/protocols/micro_15_artifact_gate.refrain",
+    "bench/protocols/seed_scale_emg.refrain",
+    "bench/protocols/reseed_staged.refrain"
+  ]
+}

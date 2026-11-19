@@ -178,12 +178,35 @@ def _warn(message: str, loc: Loc | None) -> None:
 # ---------------------------------------------------------------------------
 
 
+# `nan`, `inf` and `infinity` are bare identifiers to this grammar, not numeric
+# literals, so they reach `scale` as a NameRef exactly like a control name does.
+# Reporting them as "the control 'nan'" sends the author looking for a control
+# they never declared, so they get named for what they are.
+_NON_FINITE_WORDS = frozenset({"nan", "inf", "infinity"})
+
+
+def _scale_got(expr) -> str:
+    """How to describe a rejected `seed.scale` value back to its author."""
+    if isinstance(expr, A.NameRef):
+        if expr.name.lower().lstrip("+-") in _NON_FINITE_WORDS:
+            return (
+                f"the name {expr.name!r} — refrain has no literal for a "
+                "non-finite number, so this reads as an identifier, and a "
+                "non-finite multiplier has no meaning on a seeded value anyway"
+            )
+        return f"the control {expr.name!r}"
+    if isinstance(expr, A.NumberLit):
+        return f"{expr.value!r} {expr.unit}"
+    return "an expression"
+
+
 @dataclass(frozen=True)
 class _PendingSeed:
     statistic: str
     from_raw: str
     window_ms: float
     target_pct_ast: "A.Expr"
+    scale: float
     loc: "Loc | None"
 
 
@@ -330,6 +353,10 @@ class _Resolver:
         session_ir = self._resolve_session()
         self._validate_staging(session_ir)
         self._resolve_control_seeds(session_ir)
+        # After the seeds, not with the rest of staging: a `reseed` entry is
+        # checked against the attached seed, and dead-seed elimination has to
+        # have run first. See `_validate_reseed`.
+        self._validate_reseed(session_ir)
         autopilot_ir = self._resolve_autopilot(session_ir)
         self._resolve_control_autopilots(autopilot_ir)
         meta_ir = self._resolve_meta()
@@ -1136,6 +1163,32 @@ class _Resolver:
         action_kind = action_ir.callee
         release_ms = _extract_duration_ms(action_ir, "release")
         final = self._bool_field(fields, "final", default=False)
+        # `kind` (§4.6). `_resolve_inhibit` has no unknown-field check, so an
+        # unvalidated read would drop a typo silently and leave the author
+        # believing their artifact gate pauses the hold clock. Hence the value
+        # set is checked, not merely read.
+        kind = self._string_field(fields, "kind")
+        if kind is not None:
+            kind_loc = fields["kind"].loc
+            if kind not in ("artifact", "trained"):
+                raise ResolveError(
+                    f"inhibit \"{decl.name}\": kind must be \"artifact\" or "
+                    f"\"trained\" (got {kind!r})",
+                    loc=kind_loc,
+                )
+            if action_kind == "flag":
+                # `mute` and `freeze` are OR-ed into the same output gate, so
+                # the label changes what the engine scores. A flag gates
+                # nothing, so a label on one would be a silent no-op — and a
+                # silent no-op in a safety-shaped declaration is worse than a
+                # compile error.
+                raise ResolveError(
+                    f"inhibit \"{decl.name}\": kind is not allowed on a flag "
+                    f"inhibit — a flag gates nothing, so the label would be a "
+                    f"silent no-op; drop the kind or give the inhibit a "
+                    f"mute/freeze action",
+                    loc=kind_loc,
+                )
         return IRInhibit(
             name=decl.name,
             canonical_name=f"inhibit/{decl.name}",
@@ -1145,6 +1198,7 @@ class _Resolver:
             action_release_ms=release_ms,
             final=final,
             loc=decl.loc,
+            kind=kind,
         )
 
     def _resolve_reward_component(self, decl: A.NamedDecl, *, role: str) -> IRRewardComponent:
@@ -1223,11 +1277,14 @@ class _Resolver:
 
     def _resolve_block(self, decl: A.NamedDecl) -> IRBlock:
         fields = self._assignments_dict(decl.body)
-        extra = set(fields) - {"threshold", "reward", "output", "inhibit"}
+        allowed = {"threshold", "reward", "output", "inhibit", "reseed"}
+        extra = set(fields) - allowed
         if extra:
+            # The message lists the set rather than restating it, so a fifth
+            # field can never be allowed here and left out of the diagnostic.
             raise ResolveError(
                 f'block "{decl.name}": unexpected field(s) {sorted(extra)}; '
-                "allowed: threshold, reward, output, inhibit.",
+                f"allowed: {', '.join(sorted(allowed))}.",
                 loc=decl.loc,
             )
 
@@ -1264,6 +1321,10 @@ class _Resolver:
             reward=reward_name,
             outputs=_str_list("output"),
             inhibits=_str_list("inhibit"),
+            # Validated — and `reseed_holds` filled — by `_validate_reseed`,
+            # which cannot run here: it needs the seed decisions, the reward
+            # bundles and the output bindings, none of which exist yet.
+            reseed=_str_list("reseed"),
             loc=decl.loc,
         )
 
@@ -1296,6 +1357,170 @@ class _Resolver:
                     )
                 if ph.block is not None and ph.block not in self._blocks:
                     raise ResolveError(f'phase "{ph.name}": unknown block "{ph.block}"', loc=ph.loc)
+
+    # -- Block re-seeding ---------------------------------------------------
+
+    def _validate_reseed(self, session_ir: IRSession) -> None:
+        """Validate every block's `reseed` list and bake its hold set.
+
+        Deliberately not part of `_validate_staging`, and run after
+        `_resolve_control_seeds` rather than before it: that pass drops the
+        seed of a control nothing in the pipeline references (dead-seed
+        elimination), and a `reseed` naming such a control has to be refused
+        rather than compiled into a re-measurement of a value no stream
+        reads. Staging's own checks stay where they are, so a protocol with
+        both an unknown block and a bad `reseed` still reports the unknown
+        block first, exactly as it does today.
+        """
+        for name, b in list(self._blocks.items()):
+            if not b.reseed:
+                continue
+            seen: set[str] = set()
+            for ctrl in b.reseed:
+                # Reachable only for a name every earlier entry's checks
+                # passed, so a repeated name is a valid one by the time this
+                # fires — a repeated *wrong* name is reported as wrong, by the
+                # check below, on its first occurrence.
+                if ctrl in seen:
+                    raise ResolveError(
+                        f'block "{name}".reseed names control "{ctrl}" twice; '
+                        "keep only one — a control re-measures itself once per "
+                        "boundary, and the second entry could only record a miss",
+                        loc=b.loc,
+                    )
+                seen.add(ctrl)
+                if ctrl not in self.controls:
+                    raise ResolveError(
+                        f'block "{name}".reseed: unknown control "{ctrl}"', loc=b.loc
+                    )
+                if ctrl not in self._pending_seeds:
+                    raise ResolveError(
+                        f'block "{name}".reseed: control "{ctrl}" has no `seed` '
+                        "rule, so there is no statistic to re-measure; give it a "
+                        "`seed = percentile { ... }` or drop it from the list",
+                        loc=b.loc,
+                    )
+                if self.controls[ctrl].seed is None:
+                    raise ResolveError(
+                        f'block "{name}".reseed: control "{ctrl}" is referenced by '
+                        "nothing in the resolved pipeline, so its seed was dropped "
+                        "as dead (folded out with the control); re-seeding it would "
+                        "re-measure a value no stream reads",
+                        loc=b.loc,
+                    )
+            self._validate_reseed_window(name, b, session_ir)
+            holds = {
+                site for ctrl in b.reseed for site in self._reseed_downstream_holds(ctrl)
+            }
+            self._blocks[name] = replace(b, reseed_holds=tuple(sorted(holds)))
+
+    def _validate_reseed_window(
+        self, block_name: str, b: IRBlock, session_ir: IRSession
+    ) -> None:
+        """Refuse a re-seed window that no entry into this block can ever fill.
+
+        Mirrors the warm-up window check in `_resolve_control_seeds`, down to
+        its open-mode guard: a window longer than the signal available before
+        the boundary is an authoring error worth catching at compile time, but
+        only when the amount available is actually knowable. Refused only when
+        *every* phase that activates this block is short of it — a block whose
+        first entry cannot fill but whose third can is a declaration that does
+        something, and at run time a re-seed that comes up short keeps the
+        value it has rather than failing the session.
+        """
+        phases = session_ir.phases
+        activating = [i for i, ph in enumerate(phases) if ph.block == block_name]
+        if not activating:
+            return   # nothing activates this block; there is no boundary to check
+        for ctrl in b.reseed:
+            window_ms = self.controls[ctrl].seed.window_ms
+            best_ms = 0.0
+            for index in activating:
+                budget_ms, knowable = _reseed_budget_ms(phases, index)
+                if not knowable:
+                    break   # one unknown budget stands the whole check down
+                best_ms = max(best_ms, budget_ms)
+            else:
+                # Reached only when every budget was knowable.
+                if window_ms > best_ms:
+                    raise ResolveError(
+                        f'block "{block_name}".reseed: control "{ctrl}".seed.window '
+                        f"({window_ms / 1000:.1f}s) exceeds the preceding block time "
+                        f"before every phase that activates it (at most "
+                        f"{best_ms / 1000:.1f}s of unmuted training); the re-seed "
+                        "buffer can never fill",
+                        loc=b.loc,
+                    )
+
+    def _reseed_downstream_holds(self, control_name: str) -> tuple[str, ...]:
+        """The hold sites a re-seed of `control_name` has to reset.
+
+        A streak banked against the old threshold says nothing about the new
+        one, so every hold whose condition reads this control — directly, or
+        through a threshold the re-seed moves — restarts at the boundary. A
+        hold that reads neither keeps its streak: every reward bundle is
+        stepped on every chunk to keep its dwell timers warm, so resetting all
+        of them at a block boundary would change what the staged protocols
+        already do with no new declaration present.
+
+        Two passes, the expression walk reusing the shape of
+        `_referenced_control_targets`. First the thresholds the control moves,
+        closed **transitively**: a threshold's level may itself be another
+        threshold (`eval_.py:1184-1188` evaluates exactly that), so
+        `control -> seeded_t -> chained_t` moves `chained_t` too and a hold
+        reading it is just as stale. Over-resetting costs one streak;
+        under-resetting leaves a streak measured against a threshold that
+        moved, which is the defect this feature exists to remove, so the
+        closure errs in the safe direction. Then each hold-bearing expression
+        that reads anything in that set.
+
+        The fixed-point loop makes the result independent of the order
+        `self.thresholds` happens to iterate in. Declaration order alone would
+        do today — a reference resolves only to an already-declared threshold,
+        so a chain always points backwards — but that is a property of another
+        pass, not of this one, and a single sweep that silently depended on it
+        would stop finding chains the day anything reorders the dict.
+
+        It terminates on any input: `wanted` only grows, inside the finite set
+        of declared thresholds, and a name already in it is never re-added. So
+        a cycle could not loop it. One is not constructible anyway — a
+        string-literal reference becomes an `IRThresholdRef` only when its
+        target is already declared, so a forward or self reference stays an
+        `IRStringLit` and is never followed.
+
+        What the walk does NOT reach is in SPEC §4.13 and `docs/IR-JSON.md`
+        §3.7, stated as the walk's reach rather than as a list of shapes.
+        """
+        target = f"control/{control_name}"
+        wanted = {target}
+        growing = True
+        while growing:
+            growing = False
+            for t in self.thresholds.values():
+                if t.canonical_name in wanted:
+                    continue
+                if _expr_named_targets(t.threshold_call) & wanted:
+                    wanted.add(t.canonical_name)
+                    growing = True
+        sites: list[str] = []
+
+        def record(site: str, expr) -> None:
+            if expr is None or not _expr_contains_a_hold(expr):
+                return
+            if _expr_named_targets(expr) & wanted:
+                sites.append(site)
+
+        if self.reward_ir is not None:
+            record("reward/event", self.reward_ir.event)
+        for name, bundle in self._reward_bundles.items():
+            record(f"reward_bundle/{name}", bundle.event)
+        for channel, expr in self.output.items():
+            record(f"output/{channel}", expr)
+        # Deterministic (site kind, then declaration order) but not sorted:
+        # `_validate_reseed` sorts the union across every control the block
+        # names, and that union is what reaches the wire. Sorting here as well
+        # would be a line with no behaviour behind it.
+        return tuple(sites)
 
     # -- Groups -------------------------------------------------------------
 
@@ -1524,8 +1749,42 @@ class _Resolver:
             from_raw=from_expr.value,
             window_ms=_to_milliseconds(window_expr),
             target_pct_ast=fields["target_pct"],
+            scale=self._parse_seed_scale(name, fields.get("scale"), seed_ast.loc),
             loc=seed_ast.loc,
         )
+
+    def _parse_seed_scale(self, name: str, scale_ast, seed_loc: "Loc | None") -> float:
+        """A seed rule's optional `scale` multiplier (SPEC §4.9.4).
+
+        A fixed, dimensionless literal — it follows `dwell_rearm`'s `rearm`
+        rather than `dwell`'s `duration`: a live-tunable multiplier on a value
+        that is written once, at the warmup->run edge, could only be retuned
+        before it had any effect or after it was too late to have one.
+
+        Non-positive is refused rather than clamped. `scale = 0` seeds a
+        muscle limit at 0 uV, which makes its inhibit mute the whole session;
+        a negative one lands on the control's range floor and reads as a
+        working protocol while gating nothing the author asked for.
+        """
+        if scale_ast is None:
+            return 1.0
+        if not isinstance(scale_ast, A.NumberLit) or scale_ast.unit is not None:
+            raise ResolveError(
+                f"control {name!r}.seed.scale must be a plain number with no "
+                f"unit (got {_scale_got(scale_ast)}); it multiplies the measured "
+                "statistic, so it carries no dimension of its own",
+                loc=getattr(scale_ast, "loc", None) or seed_loc,
+            )
+        scale = float(scale_ast.value)
+        if scale <= 0.0:
+            raise ResolveError(
+                f"control {name!r}.seed.scale must be greater than zero "
+                f"(got {scale!r}); a zero or negative multiplier seeds the "
+                "control at or below its range floor, which silences the "
+                "session instead of calibrating it",
+                loc=getattr(scale_ast, "loc", None) or seed_loc,
+            )
+        return scale
 
     def _referenced_control_targets(self) -> set[str]:
         """Canonical targets of every control_ref surviving in the resolved
@@ -1622,6 +1881,7 @@ class _Resolver:
                 window_ms=pend.window_ms,
                 target_pct=target_pct,
                 loc=pend.loc,
+                scale=pend.scale,
             )
             self.controls[name] = replace(self.controls[name], seed=seed)
 
@@ -3101,6 +3361,9 @@ class _Resolver:
             if isinstance(duration, IRNumberLit) and duration.value <= 0:
                 raise ResolveError("dwell_rearm duration must be positive", loc=call.loc)
 
+        if call.callee in _TOLERANT_HOLDS:
+            self._validate_hold_tolerance(call, resolved_args)
+
         # Per-primitive validation of `kind`-style enumerated string args.
         _validate_kind_args(spec, resolved_args, call.loc)
         # Dimension-check the slots that compare a value against a signal.
@@ -3121,6 +3384,48 @@ class _Resolver:
             stream_type=output_type,
             loc=call.loc,
         )
+
+    def _validate_hold_tolerance(self, call: A.Call, args: list[IRArg]) -> None:
+        """Refuse a `tolerance` the engines could not honour as written.
+
+        Two refusals. First, `tolerance` is a fixed duration literal: a
+        control-bound one makes the IR version gate unknowable at emit time,
+        and `update_control` on these implementations calls `reset()`, which
+        would zero a streak mid-dip. It follows `dwell_rearm`'s `rearm`
+        rather than `dwell`'s `duration` for that reason.
+
+        Second, a tolerance at or above the duration makes a hold that never
+        drops once satisfied: every dip long enough to end the hold is also
+        long enough to have been forgiven first, so `holds` latches true for
+        the rest of the session.
+        """
+        tolerance = next((a.value for a in args if a.name == "tolerance"), None)
+        if tolerance is None:
+            return
+        if not isinstance(tolerance, IRNumberLit) or tolerance.unit not in _TIME_UNITS:
+            raise ResolveError(
+                f"{call.callee} tolerance must be a fixed duration with a time "
+                f"unit, e.g. `tolerance: 100 ms`",
+                loc=call.loc,
+            )
+        if tolerance.value < 0:
+            raise ResolveError(
+                f"{call.callee} tolerance must not be negative", loc=call.loc
+            )
+        duration = next((a.value for a in args if a.name == "duration"), None)
+        # When `duration` binds a control its value is not knowable here — the
+        # host may retune it mid-session — so the comparison is skipped rather
+        # than guessed at against the control's default.
+        if not isinstance(duration, IRNumberLit) or duration.unit not in _TIME_UNITS:
+            return
+        if _to_milliseconds(tolerance) >= _to_milliseconds(duration):
+            raise ResolveError(
+                f"{call.callee} tolerance ({tolerance.value:g} {tolerance.unit}) "
+                f"must be shorter than duration "
+                f"({duration.value:g} {duration.unit}): a hold that forgives its "
+                f"own duration never drops once satisfied",
+                loc=call.loc,
+            )
 
     def _validate_band_nyquist(self, spec: P.PrimitiveSpec, args: list[IRArg],
                                loc: Loc | None) -> None:
@@ -3785,8 +4090,88 @@ _SESSION_FIELDS = frozenset({"phases"})
 # coefficients from it, so an edge at or above Nyquist is unrunnable.
 _NYQUIST_CHECKED = frozenset({"bandpass", "bandpower", "coherence"})
 
+# The hold primitives that accept a dip `tolerance`. Also the complete set of
+# holds, and therefore of streaks a block re-seed has to reset: a hold is
+# exactly a primitive with a streak to forgive.
+_TOLERANT_HOLDS = frozenset({"dwell", "dwell_rearm", "hold_for"})
 
-def _to_milliseconds(n: A.NumberLit) -> float:
+
+def _iter_subexprs(expr):
+    """Every node in `expr`, itself first. Mirrors the expression walk in
+    `_Resolver._referenced_control_targets` — one shape, so a node kind that
+    hides a control from one of them cannot hide it from the other."""
+    if expr is None:
+        return
+    yield expr
+    if isinstance(expr, IRCall):
+        children = [a.value for a in expr.args]
+    elif isinstance(expr, IRBinaryOp):
+        children = [expr.left, expr.right]
+    elif isinstance(expr, IRConditional):
+        children = [expr.cond, expr.then_branch, expr.else_branch]
+    elif isinstance(expr, (IRArray, IRTuple)):
+        children = list(expr.elements)
+    elif isinstance(expr, IRBlockExpr):
+        children = list(expr.fields.values())
+    else:
+        children = []
+    for child in children:
+        yield from _iter_subexprs(child)
+
+
+def _expr_named_targets(expr) -> set[str]:
+    """The canonical controls and thresholds this expression names."""
+    return {
+        node.target
+        for node in _iter_subexprs(expr)
+        if isinstance(node, (IRControlRef, IRThresholdRef))
+    }
+
+
+def _expr_contains_a_hold(expr) -> bool:
+    """True when this expression holds a `dwell`/`dwell_rearm`/`hold_for`."""
+    return any(
+        isinstance(node, IRCall) and node.callee in _TOLERANT_HOLDS
+        for node in _iter_subexprs(expr)
+    )
+
+
+def _reseed_budget_ms(phases: tuple[IRPhase, ...], index: int) -> tuple[float, bool]:
+    """Milliseconds of signal a re-seed buffer can hold by the time the phase
+    at `index` begins, and whether that number is knowable at compile time.
+
+    Only phases whose output is live contribute, for two different reasons.
+    A mid-session output-muted rest is frozen out of re-seed ingestion, as it
+    already is for a rolling percentile threshold, so its minutes add no
+    samples however long it runs. The warm-up is not frozen — refrain's freeze
+    is `output_muted and phase_index > 0` (`eval_.py:1169-1172`), so phase 0
+    does feed a rolling percentile — but its samples are spent on the warm-up
+    seed: a re-seed measures the signal since the previous seeding, and the
+    warm-up seed fires at the end of the warm-up, so warm-up time cannot pay
+    for the first re-seed either.
+
+    A live phase with `mode = "open"` has no duration to add — the resolver
+    reports 0.0 for it — and the practitioner ends it when they end it, so the
+    budget becomes unknown rather than zero. That is the guard the warm-up
+    window check makes too (`first.mode != "open"`), and without it an
+    open-mode rest before a block phase would refuse every re-seed window in
+    a legal staged protocol.
+    """
+    total = 0.0
+    for ph in phases[:index]:
+        if ph.output_muted:
+            continue
+        if ph.mode == "open":
+            return (total, False)
+        total += ph.duration_ms
+    return (total, True)
+
+
+# Surface units `_to_milliseconds` below can convert.
+_TIME_UNITS = frozenset({"ms", "s", "min"})
+
+
+def _to_milliseconds(n: A.NumberLit | IRNumberLit) -> float:
     if n.unit == "ms":
         return n.value
     if n.unit == "s":

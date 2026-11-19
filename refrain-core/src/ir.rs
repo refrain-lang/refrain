@@ -89,7 +89,7 @@ pub struct FeedbackEntry {
 /// misinterpreted. This crate has no `deny_unknown_fields`, so an unknown field
 /// is invisible to serde — without this gate, a newer protocol would run with
 /// its new semantics dropped and no signal to anyone.
-pub const SUPPORTED_IR_VERSIONS: &[&str] = &["0.1", "0.2", "0.3", "0.4", "0.5"];
+pub const SUPPORTED_IR_VERSIONS: &[&str] = &["0.1", "0.2", "0.3", "0.4", "0.5", "0.6"];
 
 /// Refuse a document tagged with an unsupported schema version. Untagged
 /// documents predate versioning and are treated as "0.1".
@@ -118,6 +118,13 @@ pub struct ControlDecl {
     pub canonical_name: String,
     #[serde(default)]
     pub seed: Option<ControlSeed>,
+    /// Declared `range = (low, high)` bounds. Authoring metadata for every
+    /// other purpose, but a `scale`d seed is clamped to them (`_step_seeds` /
+    /// `step_seeds`), so the runtime needs them.
+    #[serde(default)]
+    pub range_low: Option<Expr>,
+    #[serde(default)]
+    pub range_high: Option<Expr>,
     #[serde(default)]
     pub type_kind: String,
     #[serde(default)]
@@ -139,6 +146,17 @@ pub struct ControlSeed {
     pub from: String,
     pub window_samples: usize,
     pub target_pct: Expr,
+    /// Dimensionless multiplier applied to the statistic before the control is
+    /// written (IR-JSON 0.6). The emitter omits the key at 1.0, so an absent
+    /// `scale` must mean "the statistic as measured" — hence `default = "one"`
+    /// rather than serde's `f64::default()`, which is 0.0 and would seed every
+    /// pre-0.6 protocol's control at zero.
+    #[serde(default = "one")]
+    pub scale: f64,
+}
+
+fn one() -> f64 {
+    1.0
 }
 
 /// `autopilot { }` (spec §6.2). Durations are pre-baked to samples.
@@ -255,6 +273,18 @@ pub struct Block {
     pub output: Vec<String>,
     #[serde(default)]
     pub inhibits: Vec<String>,
+    /// Seeded controls that re-measure themselves when this block goes active
+    /// (IR-JSON v0.6). Empty, and absent from the wire, for every protocol
+    /// that declares no `reseed`.
+    #[serde(default)]
+    pub reseed: Vec<String>,
+    /// The hold sites a re-seed resets, resolved by the Python front end so
+    /// both engines reset the same holds instead of each walking the
+    /// dependency graph. Each entry is `"reward/event"`,
+    /// `"reward_bundle/<name>"` or `"output/<channel>"`; sorted. Emitted with
+    /// `reseed` and only with it.
+    #[serde(default)]
+    pub reseed_holds: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -279,6 +309,16 @@ pub struct Inhibit {
     pub action_kind: String,
     #[serde(default)]
     pub action_release_ms: Option<f64>,
+    /// What kind of inhibit this is (IR-JSON 0.6, `docs/SPEC.md` §4.6):
+    /// `"artifact"` (the signal is unreadable, so muted time is unobservable
+    /// and a hold's clock is held rather than reset), `"trained"` (the
+    /// trainee is doing the thing the protocol trains away from, so it resets
+    /// the clock) or absent. Absent is *unlabelled*: today's behaviour, but
+    /// not an assertion that the condition is a trained one. The emitter
+    /// writes the key only when it was declared, and only `"artifact"` pushes
+    /// a document to 0.6 — the other two run identically on a 0.24 engine.
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 /// `reward { continuous?, event?, combine?, components? }`. For a v0.1
@@ -371,6 +411,13 @@ pub struct Coeffs {
     pub dwell_samples: Option<usize>,
     #[serde(default)]
     pub rearm_samples: Option<usize>,
+    /// Dip-forgiveness window of a `dwell`/`dwell_rearm`/`hold_for`, in
+    /// samples. New in IR-JSON v0.6. Absent reads as 0 — no forgiveness,
+    /// which is what every pre-v0.6 document means — and the emitter omits
+    /// it whenever it would be 0, so an absent field and a zero one are the
+    /// same document.
+    #[serde(default)]
+    pub tolerance_samples: Option<usize>,
     #[serde(default)]
     pub nperseg: Option<usize>,
     #[serde(default)]

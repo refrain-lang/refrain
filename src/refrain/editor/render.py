@@ -20,9 +20,61 @@ def _fmtnum(v):
     return None if v is None else _fmt_num(v)
 
 
-def _fill(template: str, slots_def: list[dict], slot_values: dict) -> str:
+def _fill(template: str, slots_def: list[dict], slot_values: dict,
+          optional_slots: list[dict] | tuple = ()) -> str:
+    """Substitute a block's slot values into its catalog template.
+
+    `optional_slots` are the slots a block accepts but whose text is absent
+    from the source unless the model supplies a value — `tolerance:` on a
+    reward's dwell, `kind =` on an artifact inhibit. Each entry names the
+    slot, its type, the text in `template` it follows (`after`) and the
+    `clause` to splice in after it; the clause carries its own separator and
+    its own `{placeholder}`.
+
+    The clause lives in the catalog entry rather than as a placeholder in
+    `template` on purpose, and the purpose is compatibility, not taste. A
+    renderer that has never heard of optional slots sees an unchanged
+    `template` and so renders every model that omits the slot byte-for-byte as
+    it did before. refrain-editor's vendored TypeScript port is exactly that
+    renderer, and its parity corpus re-renders 41 models byte-exact; a new
+    `{tolerance}` in the eight shared reward templates would have turned all
+    41 red in a repository this change does not touch.
+
+    A supplied slot whose `after` anchor is not in the template raises rather
+    than silently rendering nothing — dropping a declaration quietly is the
+    failure this whole mechanism exists to prevent. So does a slot the model
+    carries with nothing in it: the splice keys off the VALUE, not merely the
+    presence of the key, because an empty value renders the clause with a hole
+    in it (`tolerance: )`) and a `None` renders Python's own repr into the
+    source (`tolerance: None`). Neither parses, and both would reach a
+    practitioner as a corrupt protocol rather than an error.
+    """
     typed = {s["name"]: s["type"] for s in slots_def}
+    for s in optional_slots:
+        typed[s["name"]] = s["type"]
+        if s["name"] not in slot_values:
+            continue
+        value = slot_values[s["name"]]
+        if value is None or render_slot(value, s["type"]) == "":
+            raise ValueError(
+                f"optional slot {s['name']!r}: the model carries the key but it renders "
+                f"empty ({value!r}); omit the slot instead of supplying a blank value")
+        anchor = s["after"]
+        if anchor not in template:
+            raise ValueError(
+                f"optional slot {s['name']!r}: anchor {anchor!r} is not in the template")
+        template = template.replace(anchor, anchor + s["clause"], 1)
     return template.format(**{n: render_slot(v, typed[n]) for n, v in slot_values.items()})
+
+
+def _fill_block(b: dict, slot_values: dict) -> str:
+    """`_fill` for a catalog block, carrying its optional slots along.
+
+    Every call site goes through this rather than calling `_fill` with three
+    arguments, so a block that grows an optional slot cannot be rendered by a
+    site that forgot to pass it.
+    """
+    return _fill(b["template"], b["slots"], slot_values, b.get("optional_slots", ()))
 
 
 def _render_seed(s: dict) -> str:
@@ -32,9 +84,29 @@ def _render_seed(s: dict) -> str:
     literal number."""
     tp = s["target_pct"]
     tp_txt = tp["bind"] if isinstance(tp, dict) else _fmt_num(tp)
+    # `scale` only when the model carries one. An absent scale resolves to
+    # 1.0, so a seed that never declared one keeps rendering exactly as it did
+    # — which is what keeps every already-vendored model byte-identical.
+    #
+    # It is emitted BEFORE `target_pct`, not after it as SPEC §4.9.4 writes it,
+    # and that is not a style choice. The lexer attaches a trailing unit to a
+    # bare number across a newline, so
+    #
+    #     target_pct = 40
+    #     scale      = 1.5
+    #
+    # lexes as `target_pct = 40 s` plus a field called `cale`, and the
+    # resolver accepts both without complaint: the multiplier vanishes
+    # silently. `window` always renders with a unit (`_fmt_duration` never
+    # omits one), so putting `scale` straight after it can never sit behind a
+    # bare number. Do not reorder these two lines without re-reading
+    # `test_a_protocol_using_all_four_declarations_is_in_the_subset_and_round_trips`,
+    # which is red for exactly this.
+    scale = f"        scale      = {_fmt_num(s['scale'])}\n" if s.get("scale") is not None else ""
     return ("\n      seed = percentile {\n"
             f'        from       = "{s["from"]}"\n'
             f"        window     = {_fmt_duration(s['window_ms'])}\n"
+            f"{scale}"
             f"        target_pct = {tp_txt}\n"
             "      }")
 
@@ -156,7 +228,7 @@ def _render_threshold_call(cat: Catalog, branch: dict) -> str:
     `type = ` prefix baked into the catalog template so it can be embedded on
     either side of a mode-conditional ternary."""
     b = cat.block(branch["block"])
-    filled = _fill(b["template"], b["slots"], branch["slots"])
+    filled = _fill_block(b, branch["slots"])
     return filled.removeprefix("type = ")
 
 
@@ -205,11 +277,11 @@ def render_protocol(model: dict, catalog: Catalog | None = None) -> str:
 
     for n in model["inputs"]:
         b = cat.block(n["block"])
-        L.append(f'  input "{n["name"]}" {{ montage = {_fill(b["template"], b["slots"], n["slots"])} }}')
+        L.append(f'  input "{n["name"]}" {{ montage = {_fill_block(b, n["slots"])} }}')
 
     for n in model["derives"]:
         b = cat.block(n["block"])
-        body = _fill(b["template"], b["slots"], n["slots"])
+        body = _fill_block(b, n["slots"])
         if b.get("form") == "formula":
             L.append(f'  derive "{n["name"]}" {{ formula = {body} }}')
         else:
@@ -225,16 +297,16 @@ def render_protocol(model: dict, catalog: Catalog | None = None) -> str:
             continue
         b = cat.block(n["block"])
         lt = "; live_tunable = true" if n.get("live_tunable") else ""
-        L.append(f'  threshold "{n["name"]}" {{ signal = "{n["signal"]}"; {_fill(b["template"], b["slots"], n["slots"])}{lt} }}')
+        L.append(f'  threshold "{n["name"]}" {{ signal = "{n["signal"]}"; {_fill_block(b, n["slots"])}{lt} }}')
 
     for n in model.get("reward_components", []):  # named weighted-composite reward/inhibit decls
         b = cat.block(n["block"])
-        L.append(f'  {n["kind"]} "{n["name"]}" {{ {_fill(b["template"], b["slots"], n["slots"])} }}')
+        L.append(f'  {n["kind"]} "{n["name"]}" {{ {_fill_block(b, n["slots"])} }}')
 
     r = model["reward"]
     if r:
         b = cat.block(r["block"])
-        L.append(f'  reward {{\n    {_fill(b["template"], b["slots"], r["slots"])}\n  }}')
+        L.append(f'  reward {{\n    {_fill_block(b, r["slots"])}\n  }}')
 
     L.append("  output {")
     for o in model["outputs"]:
@@ -247,8 +319,15 @@ def render_protocol(model: dict, catalog: Catalog | None = None) -> str:
         L.append("  }")
 
     for blk in model.get("blocks", []):           # staged: per-phase threshold sets
-        thr = ", ".join(_quote(t) for t in blk["thresholds"])
-        L.append(f'  block "{blk["name"]}" {{ threshold = [{thr}] }}')
+        parts = [f'threshold = [{", ".join(_quote(t) for t in blk["thresholds"])}]']
+        # `reseed` only when non-empty: a block that declares none must render
+        # the single-field form it was written in, byte for byte. The
+        # resolver's derived `reseed_holds` is never rendered — see the model
+        # schema's note on why the editor does not round-trip a dependency
+        # walk it did not do.
+        if blk.get("reseed"):
+            parts.append(f'reseed = [{", ".join(_quote(c) for c in blk["reseed"])}]')
+        L.append(f'  block "{blk["name"]}" {{ {"; ".join(parts)} }}')
 
     phases = model.get("session", {}).get("phases") or []
     if phases:

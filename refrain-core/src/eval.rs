@@ -425,31 +425,55 @@ impl CNode {
                 let parts: Vec<Val> = items.iter_mut().map(|c| c.eval(env, n)).collect();
                 Val::B((0..n).map(|i| parts.iter().any(|p| p.as_b()[i])).collect())
             }
+            // The three nested-hold arms. Each takes TWO masks, read
+            // independently, and the order between them is the point.
+            // `__hold_for_eligible` carries the mute, the muted rest and the
+            // inactive-channel rules, all of which still zero the streak, so
+            // it folds into `clean` as false. `__hold_for_observable` carries
+            // only the artifact label, and `Dwell`/`DwellRearm` check it
+            // FIRST, before the condition is looked at — which is what makes
+            // an artifact-muted sample neither a success nor a failure. An
+            // artifact mute is in `muted` too, so such a sample arrives with
+            // `clean` already false; were it merely folded in there, an
+            // artifact mute longer than `tolerance` would reset the streak
+            // through the dip path and the `kind` label would buy nothing.
+            //
+            // Neither key implies the other, and which are present says which
+            // stage is evaluating. Inside an `output` binding: both, so a mute
+            // fails the sample and an artifact mute freezes it. Inside a
+            // REWARD condition: only the observability mask, because that
+            // stage has never folded a mute into its condition and doing so
+            // would change what a reward condition means. Anywhere else — a
+            // derive, an inhibit metric: neither, and the hold is stepped
+            // bare. Mirrors `_eval_call` in `src/refrain/eval_.py`.
             CNode::HoldFor { dwell, condition } => {
                 let input = condition.eval(env, n);
                 let eligible = env.get("__hold_for_eligible").map(Val::as_b);
+                let observable = env.get("__hold_for_observable").map(Val::as_b);
                 let clean: Vec<bool> = input.as_b().iter().enumerate().map(|(i, &on)| {
                     on && eligible.map(|mask| mask[i]).unwrap_or(true)
                 }).collect();
-                let (_, holds) = dwell.lock().unwrap().step(&clean);
+                let (_, holds) = dwell.lock().unwrap().step(&clean, observable);
                 Val::B(holds)
             }
             CNode::DwellEvent { dwell, condition } => {
                 let input = condition.eval(env, n);
                 let eligible = env.get("__hold_for_eligible").map(Val::as_b);
+                let observable = env.get("__hold_for_observable").map(Val::as_b);
                 let clean: Vec<bool> = input.as_b().iter().enumerate().map(|(i, &on)| {
                     on && eligible.map(|mask| mask[i]).unwrap_or(true)
                 }).collect();
-                let (events, _) = dwell.lock().unwrap().step(&clean);
+                let (events, _) = dwell.lock().unwrap().step(&clean, observable);
                 Val::B(events)
             }
             CNode::DwellRearmEvent { dwell, condition } => {
                 let input = condition.eval(env, n);
                 let eligible = env.get("__hold_for_eligible").map(Val::as_b);
+                let observable = env.get("__hold_for_observable").map(Val::as_b);
                 let clean: Vec<bool> = input.as_b().iter().enumerate().map(|(i, &on)| {
                     on && eligible.map(|mask| mask[i]).unwrap_or(true)
                 }).collect();
-                Val::B(dwell.lock().unwrap().step(&clean))
+                Val::B(dwell.lock().unwrap().step(&clean, observable))
             }
             CNode::Sigmoid { midpoint, steepness, input } => {
                 let x = input.eval(env, n).into_f();
@@ -578,6 +602,9 @@ struct CompiledInhibit {
     metric: CNode,
     threshold: InhibitThreshold,
     gate: Option<InhibitGate>,
+    /// `Some("artifact")` makes this inhibit's muted samples unobservable to
+    /// a hold rather than failing ones (mirrors `IRInhibit.kind`).
+    kind: Option<String>,
 }
 
 // --- Staged-protocol phase cursor -----------------------------------------
@@ -598,6 +625,13 @@ struct CompiledBlock {
     reward: Option<String>,
     outputs: Vec<String>,
     inhibits: Vec<String>,
+    /// Seeded controls this block re-measures when it goes active, and the
+    /// hold sites a re-measurement restarts (IR-JSON 0.6). Both empty for
+    /// every block that declares no `reseed`. The site set is the resolver's,
+    /// taken as given: an engine that tried to be cleverer than the baked set
+    /// would diverge from the wire and from the other engine.
+    reseed: Vec<String>,
+    reseed_holds: Vec<String>,
 }
 
 /// A named, block-selectable reward bundle (continuous and/or event).
@@ -642,10 +676,21 @@ impl PhaseSnapshot {
 /// `reward/condition[i]` taps). Pure w.r.t. phase state — used for both the
 /// default reward and every reward bundle (all bundles step every chunk so
 /// their dwell timers stay warm).
+///
+/// `observable` is false on each sample an inhibit labelled `kind = "artifact"`
+/// was gating: the dwell checks it before it looks at the condition, so such a
+/// sample is neither a success nor a failure and the reward clock pauses
+/// rather than running on through a blind window. `None` means every sample is
+/// observable, which is what a protocol with no `"artifact"` label gets.
+/// Unlike the `output`-bound hold path, the mute itself is NOT folded into the
+/// condition here: this path has never applied an eligibility mask, and giving
+/// it one would move what every existing protocol scores. Mirrors
+/// `_eval_reward_event` in `src/refrain/eval_.py`.
 fn step_reward_event(
     re: &mut RewardEvent,
     env: &HashMap<String, Val>,
     n: usize,
+    observable: Option<&[bool]>,
 ) -> (Vec<bool>, Vec<bool>, Vec<bool>, Vec<Vec<bool>>) {
     let mut sub_streams: Vec<Vec<bool>> = Vec::with_capacity(re.sub_conditions.len());
     let mut sub_lasts: Vec<bool> = Vec::with_capacity(re.sub_conditions.len());
@@ -660,7 +705,7 @@ fn step_reward_event(
             SubCombine::Any => sub_streams.iter().any(|s| s[i]),
         })
         .collect();
-    let (events, holds) = re.dwell.step(&condition);
+    let (events, holds) = re.dwell.step(&condition, observable);
     (events, holds, sub_lasts, sub_streams)
 }
 
@@ -850,6 +895,14 @@ struct SeedLatch {
     /// `None` when it is a literal `number` (use `target_pct_const`).
     target_pct_cell: Option<ControlCell>,
     target_pct_const: f64,
+    /// Dimensionless multiplier applied to the statistic (IR-JSON 0.6).
+    /// 1.0 for a seed that declared none.
+    scale: f64,
+    /// The control's declared range as plain numbers, or `None` on a side the
+    /// protocol left open or bound to another control. Consulted only when
+    /// `scale != 1.0` — see `step_seeds`.
+    range_low: Option<f64>,
+    range_high: Option<f64>,
     window_samples: u64,
     buffer: Percentile,
     armed: bool,
@@ -858,6 +911,35 @@ struct SeedLatch {
     value: Option<f64>,
     n_samples: u64,
     at_time_s: Option<f64>,
+    /// Samples ingested since the control was last measured. A re-seed fires
+    /// only when this reaches `window_samples` — buffer length alone would
+    /// report a full window of samples the previous seeding already spent,
+    /// since `Percentile`'s ring never shrinks. Mirrors `_SeedLatch.fresh`.
+    fresh: u64,
+    /// One record per seeding event, warm-up included, in order. Mirrors
+    /// `_SeedLatch.history`; surfaced by `seed_report`.
+    history: Vec<SeedHistoryEntry>,
+    /// Set when the warm-up seed fails closed, which is terminal for this
+    /// control: the session's output is muted for the rest of its life, so
+    /// nothing may re-measure the control afterwards and nothing may rewrite
+    /// the `insufficient_samples` status a host reads to explain the silence.
+    /// Per latch rather than reusing the evaluator-wide `seed_failed`, because
+    /// the terminal state belongs to the control that failed, not the session.
+    /// Mirrors `_SeedLatch.failed_closed`.
+    failed_closed: bool,
+}
+
+/// A control range bound as a plain number, or `None` when there isn't one.
+///
+/// Mirrors Python's `_literal_bound` (`src/refrain/eval_.py`): only a literal
+/// `number` node is a bound the runtime can clamp against. A bound the
+/// protocol omitted (`null` on the wire) or bound to another control yields
+/// `None`, and that side does not clamp.
+fn literal_bound(expr: Option<&Expr>) -> Option<f64> {
+    match expr {
+        Some(Expr::Number { value }) => Some(*value),
+        _ => None,
+    }
 }
 
 impl SeedLatch {
@@ -871,6 +953,30 @@ impl SeedLatch {
     }
 }
 
+/// One seeding event in a control's history (`seed_report()["history"]`),
+/// mirroring `Evaluator._seed_history_record`. `trigger` is `"warmup"` for the
+/// warm-up seed or `"block:<name>"` for a boundary re-seed.
+///
+/// `old_value` is the measurement this event replaced — the latch's own
+/// previous value — and not the live control value, which this core keeps in
+/// each bound stage's cell rather than in one map, and which a declared
+/// default's surface unit never reaches. "The measurement this replaced" is
+/// the same number in both engines by construction. `None` for a control's
+/// first measurement.
+#[derive(Clone, Debug)]
+pub struct SeedHistoryEntry {
+    pub at_time_s: f64,
+    pub old_value: Option<f64>,
+    pub new_value: Option<f64>,
+    pub source: String,
+    pub window_s: f64,
+    pub target_pct: f64,
+    pub scale: f64,
+    pub status: String,
+    pub trigger: String,
+    pub fresh_samples: u64,
+}
+
 /// Per-control baseline-seed outcome (`seed_report()`), mirroring the Python
 /// evaluator's report dict shape.
 pub struct SeedReportEntry {
@@ -878,9 +984,13 @@ pub struct SeedReportEntry {
     pub value: Option<f64>,
     pub source: String,
     pub target_pct: f64,
+    pub scale: f64,
     pub n_samples: u64,
     pub window_s: f64,
     pub at_time_s: Option<f64>,
+    /// Every seeding event for this control, in order (IR-JSON 0.6 /
+    /// refrain 0.25.0). Additive: every field above stays where it was.
+    pub history: Vec<SeedHistoryEntry>,
 }
 
 pub struct Evaluator {
@@ -918,6 +1028,14 @@ pub struct Evaluator {
     phase_elapsed: usize,
     held: bool,
     clock_frozen: bool,
+    /// The phase occurrence a re-seed has already fired for, or `None`.
+    /// Deliberately NOT `phase_elapsed == 0`: `advance` skips the elapsed
+    /// increment while the clock is frozen, and freezing the clock is a public
+    /// host API, so a practitioner who paused at the start of a re-seeding
+    /// phase would re-fire the re-seed and restart every downstream hold on
+    /// every chunk of the pause — identically in both engines, so the drift
+    /// gate could not see it. Mirrors `Evaluator._reseed_fired_phase`.
+    reseed_fired_phase: Option<usize>,
     /// `start(skip_warmup=true)` bypasses the leading warmup phase's output
     /// mute (offline/tests); later muted phases still mute. Mirrors the Python
     /// `_skip_leading_warmup_mute` flag.
@@ -950,6 +1068,14 @@ pub struct Evaluator {
     /// One latch per seeded control (§2.5), built unconditionally in `new`.
     /// Empty for protocols with no `seed` blocks (the common case) — inert.
     seed_latches: Vec<SeedLatch>,
+    /// Every control named in some block's `reseed`, for the `set_control`
+    /// disarm gate. Empty for every protocol that declares no `reseed`, which
+    /// is what keeps such a protocol's `seed_report` unchanged.
+    reseed_controls: std::collections::HashSet<String>,
+    /// Indices into `seed_latches` of the latches whose buffers keep filling
+    /// after they fire, in control-name order. Empty — so the per-chunk
+    /// ingestion is skipped outright — for every protocol with no `reseed`.
+    reseed_ingest: Vec<usize>,
     /// Set for the rest of the session once any latch fails closed
     /// (insufficient warmup samples) — mutes output regardless of phase.
     seed_failed: bool,
@@ -986,6 +1112,33 @@ struct RewardEvent {
     dwell: Dwell,
     sub_conditions: Vec<CNode>,
     combine: SubCombine,
+}
+
+impl RewardEvent {
+    /// Restart this event's hold clock and every hold nested in its
+    /// conditions. The dwell here is the event's own; `sub_conditions` holds
+    /// the expanded `all_of` / `any_of` elements, which is where a nested
+    /// `hold_for` / `dwell` lives. Together they are the whole expression the
+    /// Python side walks for its hold impls, so one baked site resets the
+    /// same set in both engines.
+    fn reset_holds(&mut self) {
+        self.dwell.reset();
+        self.reset_condition_holds();
+    }
+
+    /// Restart every hold nested in this event's conditions, leaving the
+    /// event's own dwell running. This is the set a transport pause
+    /// invalidates (`reset_held_outputs`): the Python evaluator resets every
+    /// `hold_for` impl in the protocol and the reward event's own `DwellImpl`
+    /// is not one, so a freeze restarts a nested hold and not the event dwell
+    /// above it. A re-seed is the other case and resets both, via
+    /// `reset_holds` — there the control the hold reads has changed under it,
+    /// so the event's own streak is stale too.
+    fn reset_condition_holds(&mut self) {
+        for condition in self.sub_conditions.iter_mut() {
+            condition.reset_holds();
+        }
+    }
 }
 
 /// How `RewardEvent` recombines its sub-conditions into the dwell's input
@@ -1100,6 +1253,8 @@ impl Evaluator {
                         reward: b.reward.clone(),
                         outputs: b.output.clone(),
                         inhibits: b.inhibits.clone(),
+                        reseed: b.reseed.clone(),
+                        reseed_holds: b.reseed_holds.clone(),
                     },
                 )
             })
@@ -1148,6 +1303,9 @@ impl Evaluator {
                 from_entity: seed.from.clone(),
                 target_pct_cell,
                 target_pct_const,
+                scale: seed.scale,
+                range_low: literal_bound(decl.range_low.as_ref()),
+                range_high: literal_bound(decl.range_high.as_ref()),
                 window_samples: seed.window_samples as u64,
                 buffer: Percentile::new(target_pct_const, seed.window_samples),
                 armed: true,
@@ -1156,8 +1314,25 @@ impl Evaluator {
                 value: None,
                 n_samples: 0,
                 at_time_s: None,
+                fresh: 0,
+                history: Vec::new(),
+                failed_closed: false,
             });
         }
+
+        // Block-boundary re-seeding (spec §4.13), baked once: the control set
+        // for the `set_control` disarm gate, and the latch indices whose
+        // buffers keep filling. Both empty for a protocol that declares no
+        // `reseed`, so its per-chunk cost is unchanged. Sorted by control
+        // name, matching `_build_reseed_maps`.
+        let reseed_controls: std::collections::HashSet<String> =
+            p.blocks.values().flat_map(|b| b.reseed.iter().cloned()).collect();
+        let mut reseed_names: Vec<&String> = reseed_controls.iter().collect();
+        reseed_names.sort();
+        let reseed_ingest: Vec<usize> = reseed_names
+            .iter()
+            .filter_map(|name| seed_latches.iter().position(|l| &&l.control_name == name))
+            .collect();
 
         Evaluator {
             inputs,
@@ -1181,6 +1356,7 @@ impl Evaluator {
             phase_elapsed: 0,
             held: false,
             clock_frozen: false,
+            reseed_fired_phase: None,
             skip_leading_warmup_mute: false,
             phase_snapshot: PhaseSnapshot::terminal(),
             last_taps: BTreeMap::new(),
@@ -1192,6 +1368,8 @@ impl Evaluator {
                 .map(|c| c.canonical_name.clone())
                 .collect(),
             seed_latches,
+            reseed_controls,
+            reseed_ingest,
             seed_failed: false,
             advisor: Advisor::new(p, sample_rate_hz),
         }
@@ -1278,11 +1456,24 @@ impl Evaluator {
         // for that control, and the session runs normally with the host's
         // value in place. Mirrors the Python `set_control`'s pre-forward
         // disarm check.
+        //
+        // A control some block RE-SEEDS is disarmed by a write at any time,
+        // before or after the warm-up fire, because for that control the
+        // engine still intends to write the value again later: without this a
+        // re-seed at block three would silently take back a threshold the
+        // practitioner set by hand during block one. The gate on
+        // `reseed_controls` is what keeps that safe — extending the post-fire
+        // disarm to every seeded control would change `seed_report`'s status
+        // from "seeded" to "disarmed_by_host" for every existing protocol in
+        // which a practitioner retunes a seeded control mid-session, a
+        // host-facing change with no new declaration present. Mirrors the same
+        // condition in `Evaluator.set_control`.
         let target = format!("control/{name}");
+        let reseeding = self.reseed_controls.contains(name);
         if let Some(latch) =
             self.seed_latches.iter_mut().find(|l| l.control_target == target)
         {
-            if latch.armed && !latch.fired {
+            if latch.armed && (!latch.fired || reseeding) {
                 latch.armed = false;
                 latch.status = SeedStatus::DisarmedByHost;
             }
@@ -1321,6 +1512,7 @@ impl Evaluator {
         self.phase_elapsed = 0;
         self.held = false;
         self.clock_frozen = false;
+        self.reseed_fired_phase = None;
         self.skip_leading_warmup_mute = skip_warmup;
         let first_muted = self.phases.first().map(|p| p.output_muted).unwrap_or(false);
         self.state = if skip_warmup || self.phases.is_empty() || !first_muted {
@@ -1384,9 +1576,84 @@ impl Evaluator {
         self.snapshot_current_phase();
     }
 
+    /// Invalidate held feedback streaks after audio mute or a data gap.
+    /// Mirrors `Evaluator.reset_held_outputs`, whose set is the reference:
+    /// every `hold_for` in the protocol wherever it sits, plus a
+    /// `dwell`/`dwell_rearm` bound in `output { }`, and NOT a reward event's
+    /// own dwell. A streak accumulated across samples that never arrived is
+    /// stale wherever the hold is written, so walking only `self.outputs` —
+    /// which is what this did until 0.25.0 — left a hold nested in a reward
+    /// condition running through a transport pause in Rust while Python
+    /// restarted it: 250 ms apart on a 256 Hz measurement, on the shape
+    /// `docs/SPEC.md` §7.4 newly specifies.
+    ///
+    /// `CNode::reset_holds` is the re-seed walk, reused here rather than
+    /// duplicated, and its reach is wider than Python's. Python resets exactly
+    /// one `dwell`/`dwell_rearm`: the one that is the WHOLE top-level
+    /// expression of an `output { }` binding. This resets any it walks, which
+    /// is six further positions, not one:
+    ///
+    ///   1. nested below the top level of an `output { }` binding
+    ///      (`all_of([dwell(...)])`, `hold_for(condition: dwell(...))`);
+    ///   2. nested in a reward event's condition;
+    ///   3. the whole expression of a derive formula;
+    ///   4. the whole expression of `reward { continuous = ... }`;
+    ///   5. the whole expression of a reward bundle's `continuous`;
+    ///   6. the whole expression of an inhibit's `metric`.
+    ///
+    /// Positions 3-6 are top-level and the resolver accepts all four today, so
+    /// "below the top level" is not the boundary — being an `output` binding
+    /// is. No protocol can observe the difference even so: in 3-6 the Python
+    /// evaluator raises on the first chunk (`'DwellResult' object has no
+    /// attribute 'size'`, or a `TypeError` from the inhibit comparison), and
+    /// in 1-2 it either raises or already disagrees with this engine before
+    /// any pause is involved. So every shape that reaches the over-reach is
+    /// one no session can run, and the refusal belongs in the resolver rather
+    /// than here. The reward event's own dwell is the one node that must NOT
+    /// be swept in, which is why the reward stage goes through
+    /// `reset_condition_holds`;
+    /// `test_a_transport_pause_leaves_a_reward_events_own_dwell_running`
+    /// pins that, and goes red if this line becomes `reset_holds`.
     pub fn reset_held_outputs(&mut self) {
+        // `output { }`: every hold in the binding, the top-level
+        // `dwell`/`dwell_rearm` included — the only place a hold other than
+        // `hold_for` is reset.
         for (_, node, _) in self.outputs.iter_mut() {
             node.reset_holds();
+        }
+        // Everywhere else a `hold_for` can legally sit. A derive formula and
+        // an inhibit metric are among them (`docs/SPEC.md` §7.4), and both
+        // compile to a `CNode` here, so they are walked rather than argued
+        // about.
+        for (_, node) in self.derives.iter_mut() {
+            node.reset_holds();
+        }
+        for (_, node) in self.thresholds.iter_mut() {
+            node.reset_holds();
+        }
+        for inhibit in self.inhibits.iter_mut() {
+            inhibit.metric.reset_holds();
+        }
+        // The reward stage: the condition holds restart, the event's own
+        // dwell does not.
+        if let Some(node) = self.reward_continuous.as_mut() {
+            node.reset_holds();
+        }
+        if let Some(event) = self.reward_event.as_mut() {
+            event.reset_condition_holds();
+        }
+        for component in self.reward_components.iter_mut() {
+            component.signal.reset_holds();
+        }
+        // Every bundle, not only the live one: a pause is a pause whichever
+        // block is running, which is how the artifact mask treats them too.
+        for bundle in self.reward_bundles.values_mut() {
+            if let Some(node) = bundle.continuous.as_mut() {
+                node.reset_holds();
+            }
+            if let Some(event) = bundle.event.as_mut() {
+                event.reset_condition_holds();
+            }
         }
     }
 
@@ -1511,6 +1778,14 @@ impl Evaluator {
         // output for the rest of the session.
         if !self.seed_latches.is_empty() {
             self.step_seeds(&env);
+            // Block-boundary re-seeding (spec §4.13), in the same slot and
+            // after the warm-up fire: on the chunk a re-seeding block goes
+            // active the warm-up seed may still be firing, and a re-seed
+            // measures the signal *since* the previous seeding, so warm-up
+            // has to be the previous seeding and not a simultaneous one.
+            if !self.reseed_controls.is_empty() {
+                self.step_reseeds();
+            }
             if self.seed_failed {
                 mutes_output = true;
             }
@@ -1539,6 +1814,13 @@ impl Evaluator {
         // chunk regardless of warmup so gate/threshold state stays current
         // (only event *emission* is warmup-suppressed). Empty → all-false.
         let mut muted = vec![false; n];
+        // The same gate restricted to inhibits labelled `kind = "artifact"`
+        // (`_compute_artifact_muted`): the samples the engine could not read,
+        // as opposed to the samples it read and scored against the trainee.
+        // Accumulated in this same loop, under the same `allowed` filter and
+        // off the same `gate.gate(&active)` output — the gate carries the
+        // release hangover, so it must be stepped exactly once per chunk.
+        let mut artifact_muted = vec![false; n];
         let mut adv_inhibits: Vec<(String, Vec<bool>)> = Vec::new();
         let mut adv_checks: Vec<Vec<bool>> = Vec::new();
         let mut adv_events: Vec<bool> = vec![false; n];
@@ -1578,8 +1860,12 @@ impl Evaluator {
             if allowed {
                 if let Some(gate) = ih.gate.as_mut() {
                     let g = gate.gate(&active);
+                    let is_artifact = ih.kind.as_deref() == Some("artifact");
                     for i in 0..n {
                         muted[i] |= g[i];
+                        if is_artifact {
+                            artifact_muted[i] |= g[i];
+                        }
                     }
                 }
             }
@@ -1587,6 +1873,49 @@ impl Evaluator {
         // `muted` tap: combined gate last sample; false when there are no
         // inhibits (the all-false vector's last sample).
         taps.insert("muted".to_string(), bool_f(muted.last().copied().unwrap_or(false)));
+
+        // The samples the engine could read, as one vector for the whole
+        // chunk. Nothing moved to get it here: this loop and the active-block
+        // lookup at the top of `eval_chunk` already ran before the reward
+        // stage below. Python had to REORDER for this — its `muted` /
+        // `artifact_muted` pair and its active-block lookup used to sit
+        // between the reward stage and the output stage — so the Python diff
+        // for this is the larger of the two and that is not accidental. Not
+        // per-channel and not per-block: an artifact is an artifact whichever
+        // block is live and whichever channel is listening, which is why every
+        // reward bundle below is stepped with this same mask, not just the
+        // active one, and why the output loop reuses the same vector.
+        let artifact_observable: Vec<bool> = artifact_muted.iter().map(|&b| !b).collect();
+
+        // Re-seed ingestion, at the point Python's `_process_chunk` reaches
+        // it: after the mute gate exists (it reads it) and after the boundary
+        // fire above, so a fire reads the trailing window through the PREVIOUS
+        // chunk — causal, and needing no reordering of the inhibit stage.
+        if !self.reseed_ingest.is_empty() {
+            self.ingest_reseed_buffers(&env, &artifact_muted, freeze_ingest);
+        }
+
+        // The reward stage's observability mask, in the env for the length of
+        // that stage and removed the moment it ends. A `hold_for` / `dwell` /
+        // `dwell_rearm` written INSIDE a reward condition is evaluated here,
+        // before the output loop runs, so this is the only place it can be
+        // handed one — and it must be, or it banks samples the engine has
+        // declared unreadable, which is what "a streak of N samples means N
+        // samples genuinely above threshold and observable" forbids.
+        //
+        // `__hold_for_eligible` is deliberately NOT inserted. The three hold
+        // arms in `CNode::eval` already `get` the two keys independently, so
+        // with only this one present a nested hold is stepped on its raw
+        // condition with the observability mask applied — which is the rule
+        // this path wants. Eligibility folds a mute into the condition as a
+        // FAILURE; this stage has never applied it, and applying it would
+        // change what a reward condition means for every protocol with nothing
+        // declared. Unobservable freezes; it does not fail. That those arms
+        // need no edit at all is why the Rust half of this change is two lines
+        // and the Python half is a dispatch rewrite — the same asymmetry as
+        // the reorder above, from the same cause.
+        env.insert("__hold_for_observable".to_string(),
+                   Val::B(artifact_observable.clone()));
 
         // Weighted composite (v0.2). Computed BEFORE reward.continuous /
         // reward.event so that `continuous = reward.composite` and a
@@ -1657,6 +1986,9 @@ impl Evaluator {
             // Evaluate each sub-condition (the `all_of`/`any_of` elements, or a
             // single condition exposed as `[0]`) and tap its last sample, then
             // recombine into the dwell's input — identical to `_eval_reward_event`.
+            // The dwell is stepped with `artifact_observable`, so artifact-gated
+            // samples pause the reward clock instead of running it on through a
+            // window the engine could not read. See `step_reward_event`.
             let mut sub_streams: Vec<Vec<bool>> = Vec::with_capacity(re.sub_conditions.len());
             for (i, sub) in re.sub_conditions.iter_mut().enumerate() {
                 let s = sub.eval(&env, n).as_b().to_vec();
@@ -1671,7 +2003,7 @@ impl Evaluator {
                     SubCombine::Any => sub_streams.iter().any(|s| s[i]),
                 })
                 .collect();
-            let (events, holds) = re.dwell.step(&condition);
+            let (events, holds) = re.dwell.step(&condition, Some(&artifact_observable));
             // `reward/event`: did the dwell fire ANY sample this chunk.
             taps.insert("reward/event".to_string(), bool_f(events.iter().any(|&b| b)));
             // `reward/event.holds`: last sample.
@@ -1698,7 +2030,8 @@ impl Evaluator {
                 }
             }
             if let Some(re) = bundle.event.as_mut() {
-                let (events, holds, sub_lasts, sub_streams) = step_reward_event(re, &env, n);
+                let (events, holds, sub_lasts, sub_streams) =
+                    step_reward_event(re, &env, n, Some(&artifact_observable));
                 if is_active {
                     for (i, &last) in sub_lasts.iter().enumerate() {
                         taps.insert(format!("reward/condition[{i}]"), bool_f(last));
@@ -1714,6 +2047,11 @@ impl Evaluator {
                 }
             }
         }
+        // The reward stage is over, so its mask stops meaning anything. Removed
+        // here for the same reason the output loop's pair is removed below, and
+        // with the same discipline: a mask left in the env is read by whatever
+        // evaluates next. The output loop puts it back for itself.
+        env.remove("__hold_for_observable");
 
         let mut outs: Vec<(String, Val)> = Vec::new();
         for (ch, node, is_event) in self.outputs.iter_mut() {
@@ -1722,6 +2060,15 @@ impl Evaluator {
             env.insert("__hold_for_eligible".to_string(), Val::B(
                 muted.iter().map(|&blocked| active && !blocked).collect()
             ));
+            // The second mask (`_hold_for_observable`). It carries ONLY the
+            // artifact label and does not vary by channel: a mid-session rest
+            // and an inactive-block channel are reasons the engine scored a
+            // sample, not reasons it could not read one. Inserted beside the
+            // eligibility mask so the two stay visibly one pair. The same
+            // vector the reward stage above was given — one answer to "could
+            // the engine read this sample", whichever stage is asking.
+            env.insert("__hold_for_observable".to_string(),
+                       Val::B(artifact_observable.clone()));
             let v = match (node.eval(&env, n), *is_event) {
                 (Val::B(values), false) => Val::F(values.into_iter().map(bool_f).collect()),
                 (value, _) => value,
@@ -1729,6 +2076,7 @@ impl Evaluator {
             outs.push((ch.clone(), v));
         }
         env.remove("__hold_for_eligible");
+        env.remove("__hold_for_observable");
 
         // Output activation gate (mirrors `_process_chunk`): silence any channel
         // not in the active block's output set, and silence ALL channels during
@@ -1837,6 +2185,7 @@ impl Evaluator {
     fn step_seeds(&mut self, env: &HashMap<String, Val>) {
         let t0_s = self.samples_pushed as f64 / self.sample_rate_hz;
         let warmup = self.state == State::Warmup;
+        let sample_rate_hz = self.sample_rate_hz;
         let mut writes: Vec<(String, f64)> = Vec::new();
         let mut any_failed = false;
         for latch in self.seed_latches.iter_mut() {
@@ -1852,6 +2201,13 @@ impl Evaluator {
             };
             if warmup {
                 latch.buffer.ingest(src); // append-only, skips non-finite
+                // The same count `ingest` keeps, so one rule ("finite samples
+                // ingested since the control was last measured") covers the
+                // warm-up fire and every re-seed after it. The warm-up ingest
+                // does NOT consult the artifact mask and must not start to:
+                // that would move the seeded value of a protocol that
+                // declared nothing new (mirrors `_step_seeds`).
+                latch.fresh += src.iter().filter(|v| v.is_finite()).count() as u64;
                 continue;
             }
             if latch.fired {
@@ -1862,14 +2218,68 @@ impl Evaluator {
             let n = latch.buffer.n_eff();
             latch.n_samples = n;
             latch.at_time_s = Some(t0_s);
+            // The measurement this event replaces — None here, since a warm-up
+            // seed is by definition the control's first. Captured before the
+            // write below either way, so the two call sites read alike.
+            let replaced = latch.value;
             if n < latch.window_samples {
                 latch.status = SeedStatus::InsufficientSamples;
+                latch.failed_closed = true;
                 any_failed = true; // set self.seed_failed after the loop
+                latch.history.push(SeedHistoryEntry {
+                    at_time_s: t0_s,
+                    old_value: replaced,
+                    new_value: None,
+                    source: latch.from_entity.clone(),
+                    window_s: latch.window_samples as f64 / sample_rate_hz,
+                    target_pct: pct,
+                    scale: latch.scale,
+                    status: SeedStatus::InsufficientSamples.as_str().to_string(),
+                    trigger: "warmup".to_string(),
+                    fresh_samples: latch.fresh,
+                });
                 continue;
             }
-            let value = latch.buffer.value_at(pct);
+            // `scale` multiplies the statistic (spec §4.9.4); `* 1.0` is exact
+            // in IEEE-754, so an unscaled seed writes the same bits it wrote
+            // before this field existed.
+            let mut value = latch.buffer.value_at(pct) * latch.scale;
+            if latch.scale != 1.0 {
+                // The clamp attaches to `scale`, not to seeding in general:
+                // there is no range clamp on a seeded value in either engine
+                // today, and clamping every seed would move the seeded value
+                // of a protocol that declared nothing new. Mirrors the same
+                // two comparisons, in the same order, as Python's
+                // `_step_seeds`.
+                if let Some(low) = latch.range_low {
+                    if value < low {
+                        value = low;
+                    }
+                }
+                if let Some(high) = latch.range_high {
+                    if value > high {
+                        value = high;
+                    }
+                }
+            }
             latch.value = Some(value);
             latch.status = SeedStatus::Seeded;
+            latch.history.push(SeedHistoryEntry {
+                at_time_s: t0_s,
+                old_value: replaced,
+                new_value: Some(value),
+                source: latch.from_entity.clone(),
+                window_s: latch.window_samples as f64 / sample_rate_hz,
+                target_pct: pct,
+                scale: latch.scale,
+                status: SeedStatus::Seeded.as_str().to_string(),
+                trigger: "warmup".to_string(),
+                fresh_samples: latch.fresh,
+            });
+            // The freshness counter restarts whenever the control is actually
+            // written, so a re-seed measures the signal since the last value
+            // the trainee was scored against — not since the session started.
+            latch.fresh = 0;
             writes.push((latch.control_name.clone(), value));
         }
         if any_failed {
@@ -1881,6 +2291,209 @@ impl Evaluator {
             // anything else), so `note_control`'s `Result` (which only errs
             // for a source other than "manual"/"seed") can't fail.
             self.advisor.note_control(&name, value, "seed").expect("fixed source");
+        }
+    }
+
+    /// Re-measure the active block's `reseed` controls, once per entry into
+    /// that phase (spec §4.13). Mirrors `Evaluator._step_reseeds`.
+    ///
+    /// Called from `eval_chunk` right after `step_seeds` and before the
+    /// thresholds loop, so a re-seeded value is live for this very chunk's
+    /// comparison rather than one chunk late — the same position, and the same
+    /// reason, as the warm-up fire.
+    ///
+    /// Three rules differ from warm-up seeding, each deliberately: a window
+    /// that has not filled keeps the old value and records the miss instead of
+    /// failing the session closed (at a re-seed there IS a known-good value);
+    /// a host write disarms it, so a practitioner's number is never taken
+    /// back; and the downstream holds restart only when a value was actually
+    /// written, because a boundary that changed nothing a streak was measured
+    /// against is no reason to take the streak away.
+    ///
+    /// Borrow discipline as in `step_seeds`: the block's two name lists are
+    /// cloned out of `self.blocks` before the latch loop, the control writes
+    /// are applied after it, and the hold resets come last.
+    fn step_reseeds(&mut self) {
+        let t0_s = self.samples_pushed as f64 / self.sample_rate_hz;
+        let sample_rate_hz = self.sample_rate_hz;
+        let Some(block_name) =
+            self.phases.get(self.phase_index).and_then(|p| p.block.clone())
+        else {
+            return;
+        };
+        let (names, sites) = match self.blocks.get(&block_name) {
+            Some(b) if !b.reseed.is_empty() => (b.reseed.clone(), b.reseed_holds.clone()),
+            _ => return,
+        };
+        if self.reseed_fired_phase == Some(self.phase_index) {
+            return;
+        }
+        self.reseed_fired_phase = Some(self.phase_index);
+        let trigger = format!("block:{block_name}");
+        let mut writes: Vec<(String, f64)> = Vec::new();
+        for name in &names {
+            // Duplicate-free by construction: the resolver refuses the same
+            // control twice in one `reseed` list.
+            let Some(latch) =
+                self.seed_latches.iter_mut().find(|l| &l.control_name == name)
+            else {
+                continue;
+            };
+            if !latch.armed {
+                continue; // a host write took this value over
+            }
+            if latch.failed_closed {
+                // The warm-up seed failed closed, which muted the output for
+                // the rest of the session (spec §4.9.4). Re-measuring now
+                // would write a real value and flip `status` from
+                // `insufficient_samples` to `seeded` while the trainee stays
+                // silent, so the one field a host reads to explain the
+                // silence would say everything is fine. Skipped silently: no
+                // history record either, because `history` records seeding
+                // events and a dead latch had no event.
+                continue;
+            }
+            let pct = latch.current_target_pct();
+            let replaced = latch.value; // the measurement now standing
+            let fresh = latch.fresh;
+            if fresh < latch.window_samples {
+                latch.history.push(SeedHistoryEntry {
+                    at_time_s: t0_s,
+                    old_value: replaced,
+                    new_value: None,
+                    source: latch.from_entity.clone(),
+                    window_s: latch.window_samples as f64 / sample_rate_hz,
+                    target_pct: pct,
+                    scale: latch.scale,
+                    status: SeedStatus::InsufficientSamples.as_str().to_string(),
+                    trigger: trigger.clone(),
+                    fresh_samples: fresh,
+                });
+                continue;
+            }
+            // The same three steps as the warm-up fire, in the same order: the
+            // statistic over the latch's own buffer, the multiplier, and the
+            // clamp `scale` brings with it. Reusing the buffer means the
+            // arithmetic is the one baseline seeding already ships, so nothing
+            // new has to be proved bit-exact.
+            let mut value = latch.buffer.value_at(pct) * latch.scale;
+            if latch.scale != 1.0 {
+                if let Some(low) = latch.range_low {
+                    if value < low {
+                        value = low;
+                    }
+                }
+                if let Some(high) = latch.range_high {
+                    if value > high {
+                        value = high;
+                    }
+                }
+            }
+            latch.value = Some(value);
+            latch.status = SeedStatus::Seeded;
+            latch.n_samples = latch.buffer.n_eff();
+            latch.at_time_s = Some(t0_s);
+            latch.history.push(SeedHistoryEntry {
+                at_time_s: t0_s,
+                old_value: replaced,
+                new_value: Some(value),
+                source: latch.from_entity.clone(),
+                window_s: latch.window_samples as f64 / sample_rate_hz,
+                target_pct: pct,
+                scale: latch.scale,
+                status: SeedStatus::Seeded.as_str().to_string(),
+                trigger: trigger.clone(),
+                fresh_samples: fresh,
+            });
+            latch.fresh = 0;
+            writes.push((latch.control_name.clone(), value));
+        }
+        let wrote_any = !writes.is_empty();
+        for (name, value) in writes {
+            let _ = self.apply_control_value(&name, value); // NOT set_control
+            self.advisor.note_control(&name, value, "seed").expect("fixed source");
+        }
+        if wrote_any {
+            self.reset_reseed_hold_sites(&sites);
+        }
+    }
+
+    /// Restart the hold clocks at the sites the resolver baked into
+    /// `reseed_holds`. A site is a whole expression, named once, so every hold
+    /// in it restarts together — the Python side resets the same set by
+    /// walking the same site's expression for its hold impls. An empty list
+    /// beside a non-empty `reseed` is a real answer (the control reaches no
+    /// hold) and must not be read as "reset everything".
+    fn reset_reseed_hold_sites(&mut self, sites: &[String]) {
+        for site in sites {
+            if site == "reward/event" {
+                if let Some(ev) = self.reward_event.as_mut() {
+                    ev.reset_holds();
+                }
+            } else if let Some(name) = site.strip_prefix("reward_bundle/") {
+                if let Some(ev) = self.reward_bundles.get_mut(name).and_then(|b| b.event.as_mut())
+                {
+                    ev.reset_holds();
+                }
+            } else if let Some(channel) = site.strip_prefix("output/") {
+                for (ch, node, _) in self.outputs.iter_mut() {
+                    if ch == channel {
+                        node.reset_holds();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Keep a re-seeding control's buffer filling for the rest of the session,
+    /// with the two freezes. Mirrors `Evaluator._ingest_reseed_buffers`.
+    ///
+    /// Only latches that have already fired ingest here: before the fire the
+    /// buffer belongs to `step_seeds`, and feeding it twice would make the
+    /// warm-up window fill at double rate over duplicated samples.
+    ///
+    /// `freeze_ingest` is the evaluator's existing mid-session-rest freeze
+    /// (`output_muted` and not the first phase). The compile-time window check
+    /// leaves output-muted phases out of the time available to fill a window
+    /// *because* of this freeze, so the two have to agree: a ten-minute rest
+    /// contributes no samples at all.
+    ///
+    /// `artifact_muted` drops the samples an inhibit labelled
+    /// `kind = "artifact"` says the engine could not read. An unlabelled mute
+    /// is a sample the engine read and scored against the trainee, so it stays
+    /// in the baseline — the same asymmetry the hold paths make.
+    fn ingest_reseed_buffers(
+        &mut self,
+        env: &HashMap<String, Val>,
+        artifact_muted: &[bool],
+        freeze_ingest: bool,
+    ) {
+        if freeze_ingest {
+            return;
+        }
+        for k in 0..self.reseed_ingest.len() {
+            let i = self.reseed_ingest[k];
+            if !self.seed_latches[i].armed
+                || !self.seed_latches[i].fired
+                || self.seed_latches[i].failed_closed
+            {
+                // `failed_closed`: nothing will ever read this buffer again
+                // (the boundary skips a dead latch), so filling it is waste.
+                continue;
+            }
+            // `env` is keyed by the BARE derive name, as in `step_seeds`.
+            let observed: Vec<f64> = match env.get(&self.seed_latches[i].from_bare) {
+                Some(Val::F(v)) => v
+                    .iter()
+                    .zip(artifact_muted)
+                    .filter(|(_, &muted)| !muted)
+                    .map(|(&x, _)| x)
+                    .collect(),
+                _ => continue,
+            };
+            let latch = &mut self.seed_latches[i];
+            latch.buffer.ingest(&observed);
+            latch.fresh += observed.iter().filter(|v| v.is_finite()).count() as u64;
         }
     }
 
@@ -1897,9 +2510,11 @@ impl Evaluator {
                     value: latch.value,
                     source: latch.from_entity.clone(),
                     target_pct: latch.current_target_pct(),
+                    scale: latch.scale,
                     n_samples: latch.n_samples,
                     window_s: latch.window_samples as f64 / self.sample_rate_hz,
                     at_time_s: latch.at_time_s,
+                    history: latch.history.clone(),
                 },
             );
         }
@@ -1914,8 +2529,52 @@ impl Evaluator {
     /// Apply the current `adjust` advice; refuses a stale id or a forbidden auto-apply.
     pub fn apply_advice(&mut self, advice_id: &str, by: &str) -> Result<Value, String> {
         let (control, value, event) = self.advisor.apply(advice_id, by)?;
+        // Reached only once the advice really applied: `apply` returns `Err`
+        // on a stale id, an unknown `by` or a forbidden auto-apply, and `?`
+        // takes us out before anything is written or disarmed.
+        if by == "practitioner" {
+            self.disarm_reseed_on_accepted_advice(&control);
+        }
         self.apply_control_value(&control, value)?;
         Ok(event)
+    }
+
+    /// The second door a practitioner sets a value by hand through, mirroring
+    /// `Evaluator._disarm_reseed_on_accepted_advice`.
+    ///
+    /// `set_control` is the first: someone types a number, and a re-seed must
+    /// not take it back (spec §4.9.4). Accepting the advisor's suggestion is
+    /// the same act — the practitioner did not type the number, they took
+    /// responsibility for it. A protocol with an advisor is exactly the
+    /// sophisticated one where re-seeding gets used, so leaving this door open
+    /// would make the promise false precisely where it matters most.
+    ///
+    /// The asymmetry with `by == "autopilot"` is deliberate, which is why the
+    /// caller tests `by` and this does not: an automatic apply has nobody
+    /// taking responsibility, and between two automatic mechanisms a fresh
+    /// measurement of the person is more authoritative than an inference from
+    /// reward rate. The re-seed wins and the advisor resumes from the new
+    /// baseline.
+    ///
+    /// Gated on `reseed_controls` for the same reason as the post-fire half of
+    /// `set_control`'s disarm: no protocol in the repository declares a
+    /// `reseed`, so no existing protocol's `seed_report` moves. Narrower than
+    /// `set_control`, which also disarms a not-yet-fired seed on ANY seeded
+    /// control; widening this door to match would change what an existing
+    /// protocol with an advisor and a seeded control reports.
+    fn disarm_reseed_on_accepted_advice(&mut self, control_name: &str) {
+        if !self.reseed_controls.contains(control_name) {
+            return;
+        }
+        let target = format!("control/{control_name}");
+        if let Some(latch) =
+            self.seed_latches.iter_mut().find(|l| l.control_target == target)
+        {
+            if latch.armed {
+                latch.armed = false;
+                latch.status = SeedStatus::DisarmedByHost;
+            }
+        }
     }
 
     pub fn dismiss_advice(&mut self, advice_id: &str) -> Result<Value, String> {
@@ -2448,6 +3107,9 @@ fn build_compute_call(
             let dwell = Arc::new(Mutex::new(DwellRearm::new(
                 c.dwell_samples.expect("dwell_rearm: missing dwell_samples"),
                 c.rearm_samples.expect("dwell_rearm: missing rearm_samples"),
+                // Absent means no forgiveness: the emitter omits the field
+                // whenever it would be 0, so this is not a silent default.
+                c.tolerance_samples.unwrap_or(0),
             )));
             if let Some((_, Some(target))) = num_named_controllable(args, "duration") {
                 ctx.register(&target, Control::DwellRearm {
@@ -2463,6 +3125,7 @@ fn build_compute_call(
         "dwell" => {
             let dwell = Arc::new(Mutex::new(Dwell::new(
                 coeffs.and_then(|c| c.dwell_samples).expect("dwell: missing baked dwell_samples"),
+                coeffs.and_then(|c| c.tolerance_samples).unwrap_or(0),
             )));
             CNode::DwellEvent { dwell, condition: Box::new(build_node(
                 &args.iter().find(|a| a.name.as_deref() == Some("condition"))
@@ -2473,6 +3136,7 @@ fn build_compute_call(
         "hold_for" => {
             let dwell = Arc::new(Mutex::new(Dwell::new(
                 coeffs.and_then(|c| c.dwell_samples).expect("hold_for: missing baked dwell_samples"),
+                coeffs.and_then(|c| c.tolerance_samples).unwrap_or(0),
             )));
             if let Some((_, Some(target))) = num_named_controllable(args, "duration") {
                 ctx.register(&target, Control::HoldFor {
@@ -2594,7 +3258,13 @@ fn build_inhibit(ih: &crate::ir::Inhibit, ctx: &mut BuildCtx) -> CompiledInhibit
         "flag" => None,
         other => panic!("PoC: unsupported inhibit action {other:?}"),
     };
-    CompiledInhibit { canonical_name: ih.canonical_name.clone(), metric, threshold, gate }
+    CompiledInhibit {
+        canonical_name: ih.canonical_name.clone(),
+        metric,
+        threshold,
+        gate,
+        kind: ih.kind.clone(),
+    }
 }
 
 /// Parse an inhibit's threshold-constructor call (`absolute(...)` /
@@ -2685,11 +3355,22 @@ fn absolute_value(args: &[crate::ir::Arg]) -> (f64, Option<String>) {
             };
         }
     }
-    // Positional fallback: `absolute(8 uV)` form (literal only; the front-end
-    // emits `value:` for control-ref bindings).
+    // Positional fallback: the `absolute(8 uV)` / `absolute(emg_limit_uv)`
+    // form. `absolute` has exactly one parameter, named `value`, so the
+    // front-end binds a positional argument to that slot and the Python
+    // engine reads the two spellings identically — the arms here therefore
+    // have to match the labelled ones above, control refs included.
+    //
+    // The control-ref arm used to be missing, on the belief (stated in the
+    // comment this replaces) that the front-end always emits `value:` for a
+    // control binding. It does not: `threshold = absolute(emg_limit_uv)`
+    // emits an unnamed `control_ref` arg, which Python runs and this core
+    // panicked on. `bench/protocols/seed_scale_emg.refrain` is the protocol
+    // that found it.
     match positional(args, 0) {
         Expr::Number { value } => (*value, None),
-        _ => panic!("absolute: numeric value"),
+        Expr::ControlRef { target, default } => (*default, Some(target.clone())),
+        _ => panic!("absolute: `value` must be a number or control_ref"),
     }
 }
 
@@ -2759,5 +3440,6 @@ fn build_reward_event(event_expr: &Expr, ctx: &mut BuildCtx) -> RewardEvent {
         _ => (vec![build_node(condition, ctx)], SubCombine::All),
     };
 
-    RewardEvent { dwell: Dwell::new(dwell_samples), sub_conditions, combine }
+    let tolerance_samples = coeffs.as_ref().and_then(|c| c.tolerance_samples).unwrap_or(0);
+    RewardEvent { dwell: Dwell::new(dwell_samples, tolerance_samples), sub_conditions, combine }
 }

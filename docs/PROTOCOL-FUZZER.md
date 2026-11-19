@@ -183,6 +183,39 @@ threshold, firing rate must be **non-decreasing**; as hold duration crosses
 the dwell, firing must be **non-decreasing**. These assert the *direction* of
 behavior at boundaries without an absolute prediction.
 
+### A forgiving hold is modelled, not skipped
+
+When the reward is `dwell(..., tolerance: <time>)`, the surface carries the
+tolerance as `dwell_tolerance_ms` (0 when the protocol declares none) and the
+predictor bakes it into whole samples exactly as the evaluator does:
+`max(0, round(ms / 1000 * rate))`. Unlike the dwell itself it is **not**
+floored at one sample, so a tolerance too short to reach a sample forgives
+nothing.
+
+The rule is **forgive, don't credit**. A false run no longer than the
+tolerance leaves the hold's streak exactly where it was; it neither advances
+nor resets it, so a streak of N always means N samples genuinely above
+threshold. Forgiveness applies only where the prediction is robustly false.
+A don't-care sample is "the oracle cannot tell", not "the signal dipped", and
+is never forgiven: it resets the streak as it always has, so the tool does not
+assert a reward it cannot know about. Only `dwell` rewards are fuzzed;
+`dwell_rearm` and `hold_for` are still skipped.
+
+Four invariants are the specification the oracle is held to
+(`tests/fuzz/test_oracle_tolerance.py`):
+
+1. **Monotone in tolerance.** Raising the tolerance moves a reward earlier or
+   leaves it; never later, and never takes it away.
+2. **No free rewards.** Behind every predicted reward are exactly `duration`
+   samples genuinely above threshold, however many dips were forgiven.
+3. **Zero is the identity.** `tolerance: 0 ms` and no tolerance at all give
+   sample-identical engine output, and neither forgives a one-sample dip.
+4. **Idempotent under dip filling.** Once short dips are filled in by hand the
+   tolerance stops mattering. Note what this does *not* say: the filled stream
+   rewards earlier than the forgiving one, by exactly the forgiven samples,
+   because filling credits a dip and forgiving does not. The forgiving stream
+   behaves like the original with its short dips cut out.
+
 ---
 
 ## In one sentence

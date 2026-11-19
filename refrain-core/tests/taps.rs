@@ -140,3 +140,13 @@ fn micro_09_inhibit_taps_equivalent() {
     // reward.continuous/output taps.
     run_taps("micro_09_inhibit");
 }
+
+#[test]
+fn micro_15_artifact_gate_taps_equivalent() {
+    // Same gate, with the inhibit labelled `kind = "artifact"`. The label
+    // changes what a hold scores, not what the gate gates, so `muted` and
+    // `inhibit/emg` must read exactly as they would unlabelled — which is
+    // what this comparison pins, alongside the `output/video_clarity` tap
+    // the label does move.
+    run_taps("micro_15_artifact_gate");
+}

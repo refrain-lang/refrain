@@ -81,3 +81,71 @@ def test_seed_dropped_when_control_folded_out():
 def test_seed_kept_when_control_referenced():
     obj = compile_to_ir_json(MODE_SRC, bindings={"threshold_style": "baseline"}).ir_json
     assert "seed" in obj["controls"]["thr_uv"]
+
+# ---------------------------------------------------------------------------
+# `scale` — a plain multiplier on the statistic (SPEC §4.9.4)
+# ---------------------------------------------------------------------------
+
+
+def _scaled(scale: str) -> str:
+    """BASE with a seed whose only difference from `_SEED` is `scale`."""
+    return BASE % {
+        "seed": 'seed = percentile { from = "env"; window = 60 s; '
+                f"target_pct = reward_pct; scale = {scale} }}"
+    }
+
+
+def test_scale_resolves_as_a_plain_multiplier():
+    obj = compile_to_ir_json(_scaled("3.0")).ir_json
+    assert obj["controls"]["thr_uv"]["seed"]["scale"] == 3.0
+
+
+def test_scale_absent_is_one():
+    # Read off the resolved IR rather than the wire: the emitter omits the key
+    # at 1.0 on purpose, which is what keeps an existing seed byte-identical.
+    from refrain.parser import parse
+    from refrain.resolver import resolve
+
+    ir = resolve(parse(BASE % {"seed": _SEED}))
+    assert ir.controls["thr_uv"].seed.scale == 1.0
+
+
+def test_a_non_positive_scale_is_refused():
+    """Review Focus 4: `scale = 0` seeds a muscle limit at 0 uV, so its
+    inhibit mutes the whole session; a negative one lands on the control's
+    range floor and reads as a working protocol."""
+    for bad in ("0", "0.0", "-1.0", "-0.5"):
+        res = compile_to_ir_json(_scaled(bad))
+        assert res.errors, bad
+        assert "scale must be greater than zero" in res.errors[0].message, bad
+
+
+def test_scale_may_not_bind_a_control():
+    """A value written once, at the warmup->run edge, cannot usefully be
+    retuned live — so the multiplier is a literal, and a control reference is
+    refused by name rather than silently read as zero."""
+    res = compile_to_ir_json(_scaled("reward_pct"))
+    assert res.errors
+    assert "scale must be a plain number" in res.errors[0].message
+    assert "reward_pct" in res.errors[0].message
+
+
+def test_a_non_finite_scale_is_named_for_what_it_is_not_called_a_control():
+    """`nan` and `inf` are bare identifiers to this grammar, so they arrive at
+    `scale` the same way a control name does. Reporting them as "the control
+    'nan'" sends the author hunting for a control they never declared."""
+    for word in ("nan", "inf", "infinity", "NaN"):
+        res = compile_to_ir_json(_scaled(word))
+        assert res.errors, word
+        message = res.errors[0].message
+        assert "scale must be a plain number" in message, word
+        assert f"the name {word!r}" in message, message
+        assert "the control" not in message, message
+
+
+def test_a_scale_with_a_unit_is_refused():
+    """The multiplier is dimensionless: `scale = 3 uV` would read as a limit,
+    not a multiple of one."""
+    res = compile_to_ir_json(_scaled("3.0 uV"))
+    assert res.errors
+    assert "scale must be a plain number" in res.errors[0].message

@@ -96,12 +96,30 @@ impl From<crate::eval::PhaseSnapshot> for PhaseInfo {
 
 /// Mirror of `eval::SeedReportEntry` / `eval_.Evaluator.seed_report`: one
 /// control's baseline-seed outcome (§2.7). Field-for-field move, no logic.
+//
+// `//`, NOT `///`, and that is the whole point of this note. uniffi copies a
+// Record's doc comment verbatim into the generated Swift and Kotlin, so the
+// two `///` lines above are published API text and are already committed at
+// `bindings/swift/refrain_core.swift` and the Kotlin twin. Adding `///` lines
+// here therefore makes those two files stale and `tools/check_bindings.py`
+// exit 1 — which is exactly what the first version of this very comment did.
+// `cargo check --features uniffi` cannot see it, because it does not run
+// bindgen. Maintainer-facing notes go in `//` lines.
+//
+// `SeedReportEntry::history` (the per-seeding-event trail a block-boundary
+// re-seed appends to, refrain 0.25.0) is deliberately NOT carried across
+// here: adding it means a second uniffi Record and regenerating the committed
+// Swift and Kotlin bindings. A mobile host that wants the trail is a
+// follow-up that does both in one change; the fields below are unchanged by
+// its absence, and `docs/EMBEDDING.md` carries the host-facing statement that
+// the field is absent.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct SeedReport {
     pub status: String,
     pub value: Option<f64>,
     pub source: String,
     pub target_pct: f64,
+    pub scale: f64,
     pub n_samples: u64,
     pub window_s: f64,
     pub at_time_s: Option<f64>,
@@ -114,6 +132,7 @@ impl From<crate::eval::SeedReportEntry> for SeedReport {
             value: e.value,
             source: e.source,
             target_pct: e.target_pct,
+            scale: e.scale,
             n_samples: e.n_samples,
             window_s: e.window_s,
             at_time_s: e.at_time_s,

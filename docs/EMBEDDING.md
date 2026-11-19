@@ -463,8 +463,8 @@ IR. Both are deliberately **not** taps — they don't share `last_taps()`'s
 strict key-set contract — so read them separately.
 
 **`seed_report()`** — a control declared `seed = percentile { from, window,
-target_pct }` (SPEC's baseline-seeding surface) measures its value from the
-person's own signal during warmup and writes it once at the warmup→run
+target_pct, scale }` (SPEC's baseline-seeding surface) measures its value from
+the person's own signal during warmup and writes it once at the warmup→run
 edge. `Evaluator.seed_report()` returns the outcome of every such control,
 keyed by bare control name (not the tap's `control/<name>` form):
 
@@ -475,19 +475,121 @@ report = evaluator.seed_report()
 #     "value": 7.42,
 #     "source": "derive/smr_envelope",
 #     "target_pct": 70.0,
+#     "scale": 1.0,                    # the declared multiplier; 1.0 = the statistic as measured
 #     "n_samples": 500,
 #     "window_s": 120.0,
 #     "at_time_s": 120.0,
+#     "history": [ { ... } ],          # one record per seeding event — below
 #   } }
 ```
 
+`value` is the statistic already multiplied by `scale`, so a report reading
+`"value": 22.26, "scale": 3.0` means the measured median was 7.42 and the
+control was written at three times it. Showing a practitioner the number
+without the multiplier beside it invites them to read a per-person limit as a
+raw measurement.
+
+**`history`** (new in 0.25.0) is every seeding event for that control, in
+order, the warm-up seed first. A staged protocol may ask for a seeded control
+to be re-measured when a block goes active (`docs/SPEC.md` §4.13 `reseed`), so
+"the seeded value" stops being one number and starts being a trail a
+practitioner can be shown:
+
+```python
+# "history": [
+#   { "at_time_s": 120.0,
+#     "old_value": None,              # the measurement this one replaced
+#     "new_value": 7.42,              # None when the attempt came up short
+#     "source": "derive/smr_envelope",
+#     "window_s": 120.0,
+#     "target_pct": 70.0,
+#     "scale": 1.0,
+#     "status": "seeded",             # "seeded" | "insufficient_samples"
+#     "trigger": "warmup",            # "warmup" | "block:<name>"
+#     "fresh_samples": 30720,         # samples measured since the last write
+#   },
+#   { "at_time_s": 600.0, "old_value": 7.42, "new_value": 9.10,
+#     "status": "seeded", "trigger": "block:alpha_up", ... },
+# ]
+```
+
+The list is **additive**: every key above it stays exactly where it was, so a
+host that parses the 0.24 shape needs no change at 0.25.0. Reading it:
+
+- `old_value` is the measurement this event replaced, not the control's live
+  value — `None` for a control's first measurement, where the control was
+  still at its declared `default`. It is deliberately the measurement and not
+  the live value, because the live value is not a number the two engines can
+  be held to bit for bit.
+- `trigger` is `"warmup"` for the warm-up seed and `"block:<name>"` for a
+  re-seed at that block's boundary. A block entered twice appears twice.
+- `status: "insufficient_samples"` with `new_value: None` is a measurement
+  that came up short — `fresh_samples` was below the window — and what that
+  means depends on the `trigger`. On a `"block:<name>"` record the control kept
+  the value it was already running and the session carries on; on a `"warmup"`
+  record it is the fail-closed case below, and every output channel is muted
+  for the rest of the session. Compare `fresh_samples` against
+  `window_s × sample_rate` to show a practitioner how short it fell.
+- **A warm-up failure is terminal, so the top-level `status` can be trusted.**
+  Once a warm-up seed has failed closed, that control is finished for the
+  session: no block boundary re-measures it, `status` stays
+  `insufficient_samples`, and nothing appears in `history` after the failure
+  record. So a host that sees `insufficient_samples` can say why the session is
+  silent without also checking whether a later re-seed happened to write a
+  value. (It would otherwise: the buffer refills from the first clean block,
+  and the next boundary would report `seeded` while the output stayed muted.)
+  The failure does not require a cut-short warm-up — the window counts
+  *finite* samples, so an electrode off for part of a full-length warm-up does
+  it too, which is the ordinary clinical version of this case.
+- The list is empty until the warm-up seed fires, and stays empty for a
+  control a `set_control()` disarmed before it fired: that control was never
+  measured.
+- A **resumed** session starts its re-seed buffers empty. `export_state()` /
+  `seed_state` (below) carries the trackers behind `percentile` / `auto_range`
+  across sessions; it does not carry a re-seed buffer. So the first re-seed of
+  a resumed session measures that session's own signal, and reports
+  `insufficient_samples` if the boundary arrives before the window has filled.
+
+The mobile (Swift / Kotlin) `SeedReport` record does not carry `history`;
+adding it means regenerating the committed uniffi bindings, which is a
+follow-up rather than part of this field's arrival. Every other field is
+present there as before.
+
 `insufficient_samples` means the seed failed closed — not enough warmup
-samples reached the buffer (or they were all non-finite) — and the control
-kept its declared default rather than writing a measured value. `pending`
+samples reached the buffer (or they were all non-finite) — so the control kept
+its declared default **and every output channel is muted for the rest of the
+session**. There is no degrade-to-default path: a trainee whose warm-up got
+cut short hears nothing at all for the whole run. `pending`
 means warmup hasn't reached the run edge yet. `disarmed_by_host` means a
 practitioner called `set_control()` on the seeded control before it fired; that
-disarms the seed permanently for the session rather than racing it. Empty
+disarms the seed permanently for the session rather than racing it. For a
+control some block **re-seeds**, a write at any point disarms it — after the
+warm-up seed as well as before — because for that control the engine still
+intends to write the value again later, and a re-seed at block three must not
+take back a threshold the practitioner set by hand during block one. For every
+other seeded control the disarm is pre-fire only, exactly as it has always
+been, so no existing protocol's report changes. Empty
 for a protocol with no seeded controls.
+
+**Two doors set a value by hand, and they are not symmetric.** A host sets a
+control either with `set_control()` or by applying the advisor's suggestion
+(`apply_advice`), and for a control some block re-seeds the two behave
+differently depending on who applied it:
+
+| call | what it does to a re-seeding control |
+|---|---|
+| `set_control(name, value)` | disarms it: `status` → `disarmed_by_host`, and no later boundary rewrites it |
+| `apply_advice(id, by="practitioner")` | **the same** — the practitioner did not type the number, but accepting it is the same act of responsibility |
+| `apply_advice(id, by="autopilot")` | writes the value and leaves re-seeding **armed**: the next boundary re-measures, and the advisor goes on nudging from the new baseline |
+
+Nobody took responsibility for an automatic apply, and between two automatic
+mechanisms a fresh measurement of the person is more authoritative than an
+inference drawn from reward rate — so the re-seed wins that one, and only that
+one. A host offering an "accept" button and an "auto-apply" setting should know
+they differ here: the first ends re-seeding for that control, the second does
+not. Advice the advisor refuses (a stale id, or an auto-apply the protocol
+allows only as a suggestion) writes nothing and disarms nothing. For a control
+no block re-seeds, neither door changes what it reported before 0.25.0.
 
 **`export_state()` / `seed_state`** — separate from control baseline
 seeding, this is cross-*session* persistence for the adaptive trackers

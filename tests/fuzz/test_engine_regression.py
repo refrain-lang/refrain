@@ -81,8 +81,15 @@ def test_dwell_latched_true_is_caught_by_degenerate_baseline_contrast(monkeypatc
     and would PASS. This test is that guard's reason to exist."""
     original_step = DwellImpl.step
 
-    def always_holding(self, condition):
-        result = original_step(self, condition)
+    # The `observable` mask is optional on the real signature but the
+    # reward-event path passes it positionally, so a stub that omits it raises
+    # TypeError inside `_run()` and the test errors out. It errors LOUDLY --
+    # the assertions below are never reached, so there is no risk of a mutant
+    # scoring as caught when it was not. The stub takes the mask and forwards
+    # it so the mutant is exercised against the oracle rather than against the
+    # stub's own arity.
+    def always_holding(self, condition, observable=None):
+        result = original_step(self, condition, observable)
         result.holds[:] = True
         return result
 
@@ -99,8 +106,8 @@ def test_dwell_latched_false_is_caught_by_degenerate_baseline_contrast(monkeypat
     down-sweep's degenerate-baseline guard (`baseline <= 0`) is what fails it."""
     original_step = DwellImpl.step
 
-    def never_holding(self, condition):
-        result = original_step(self, condition)
+    def never_holding(self, condition, observable=None):
+        result = original_step(self, condition, observable)
         result.holds[:] = False
         return result
 

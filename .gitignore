@@ -52,3 +52,4 @@ coverage.xml
 # copy of refrain-core/bindings/swift/, which IS committed and verified.
 refrain-core/Headers/
 refrain-core/RefrainCore.xcframework/
+.superpowers/

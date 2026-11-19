@@ -1,7 +1,7 @@
 //! The Rust core consumes the IR-JSON wire format emitted by the Python
 //! front-end. This test pins that it deserializes a real emitted fixture.
 
-use refrain_core::ir::{check_ir_version, Protocol};
+use refrain_core::ir::{check_ir_version, Protocol, SUPPORTED_IR_VERSIONS};
 
 #[test]
 fn deserializes_feedback_v05_and_rejects_newer_wire_versions() {
@@ -19,7 +19,12 @@ fn deserializes_feedback_v05_and_rejects_newer_wire_versions() {
     assert!(check_ir_version(&p).is_ok());
     let feedback = p.feedback.unwrap();
     assert_eq!(feedback.entries[0].role, "approach");
-    let future: Protocol = serde_json::from_str(&json.replace("0.5", "0.6")).unwrap();
+    // The refusal has to be on a tag this build genuinely does not know.
+    // v0.6 (hold dip tolerance) is supported now, so the gate moved up one;
+    // this assertion fails loudly when the next version lands without
+    // someone moving it again, which is the whole point of the gate.
+    assert_eq!(SUPPORTED_IR_VERSIONS.last(), Some(&"0.6"));
+    let future: Protocol = serde_json::from_str(&json.replace("\"0.5\"", "\"0.7\"")).unwrap();
     assert!(check_ir_version(&future).is_err());
 }
 
@@ -153,6 +158,34 @@ fn deserializes_a_control_seed() {
     let seed = p.controls["thr_uv"].seed.as_ref().unwrap();
     assert_eq!(seed.window_samples, 15360);
     assert_eq!(seed.from, "derive/env");
+}
+
+/// IR-JSON v0.6: a block may carry `reseed` plus the hold set the front end
+/// baked for it. Both are `#[serde(default)]`, so a staged document written
+/// before the field existed still deserializes — with empty vectors, which is
+/// how the evaluator reads "this block re-seeds nothing".
+#[test]
+fn deserializes_a_block_reseed_and_its_hold_set() {
+    let json = r#"{
+        "refrain_ir_version": "0.6",
+        "sample_rate_hz": 256.0, "channels": ["Cz"], "inputs": {}, "derives": {},
+        "output": {},
+        "blocks": {
+          "one": { "name": "one", "thresholds": [], "reward": "one",
+                   "output": ["audio"], "inhibits": [] },
+          "two": { "name": "two", "thresholds": [], "reward": "two",
+                   "output": ["audio"], "inhibits": [],
+                   "reseed": ["smr_threshold_uv"],
+                   "reseed_holds": ["output/audio", "reward_bundle/two"] }
+        }
+    }"#;
+    let p: Protocol = serde_json::from_str(json).expect("parse reseed IR");
+    assert!(check_ir_version(&p).is_ok());
+    let one = &p.blocks["one"];
+    assert!(one.reseed.is_empty() && one.reseed_holds.is_empty());
+    let two = &p.blocks["two"];
+    assert_eq!(two.reseed, vec!["smr_threshold_uv"]);
+    assert_eq!(two.reseed_holds, vec!["output/audio", "reward_bundle/two"]);
 }
 
 #[test]

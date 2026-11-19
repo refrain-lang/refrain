@@ -725,7 +725,7 @@ A single event_stream supports both consumption modes simultaneously; the runtim
 ### `dwell`
 
 ```
-dwell(condition: stream<boolean>, duration: time) -> event_stream
+dwell(condition: stream<boolean>, duration: time, tolerance: time = 0 ms) -> event_stream
 ```
 
 Emits an event when a boolean condition has been continuously true for at least `duration`. The `.holds` view reports current condition state. The rising-edge event fires on the transition from "duration not yet met" to "duration just met."
@@ -746,10 +746,100 @@ output {
 
 `dwell` is the canonical way to express the operant reward pattern. It replaces the older `condition + dwell + continuous` reward shape from earlier strawman drafts.
 
+#### Dip tolerance
+
+`tolerance` is optional. Absent means zero, which reproduces the behaviour
+refrain had before it existed, sample for sample.
+
+```refrain
+reward {
+  event = dwell(
+    condition: above("smr_envelope", "smr_t"),
+    duration:  250 ms,
+    tolerance: 100 ms
+  )
+}
+```
+
+**Forgive, don't credit.** A run of false samples no longer than `tolerance`
+leaves the streak exactly where it was — it neither advances nor resets it. The
+moment a dip grows longer than `tolerance`, the streak resets to zero. So a
+streak of N samples always means N samples genuinely above threshold, and
+`duration` keeps its literal meaning; reward-time numbers stay comparable
+across protocols that declare different tolerances. Crediting the dip samples
+toward the hold instead would read more like "invisible", but then a condition
+true for one sample in every 100 ms would accrue a 250 ms hold in 250 ms of
+wall clock, on 10 ms of real signal.
+
+**No lookahead, no added latency.** While a dip is in progress the streak is
+held; the moment the dip passes `tolerance` the streak is zeroed. Nothing is
+deferred, so a tolerance never delays an event that would have fired without
+it.
+
+**A forgiven dip keeps the reward sounding.** If the hold was already satisfied
+when the dip began, `.holds` stays true straight through it and drops only if
+the dip exceeds `tolerance`. A protocol that gates continuous audio on
+`reward.event.holds` therefore keeps playing the reward tone across the dip.
+That is what "invisible" has to mean: if the tone drops out, the dip was not
+invisible, it was merely unpunished.
+
+**What it forgives, and what it does not.** `tolerance` is about the signal
+dipping. Everything else that makes the condition false keeps the behaviour it
+has today: an inhibit or a muted output, a phase that mutes output and a
+channel outside the active block all still reset a hold bound in `output { }`,
+where the mute gate is AND-ed into the condition, and none of them has ever
+been folded into a hold inside `reward { ... }` (§7.4 of `docs/SPEC.md` has
+the per-path table and the `kind = "artifact"` exception).
+
+A frozen transport clock and a host call to `Evaluator.reset_held_outputs()`
+are not about the condition at all — they say the samples that would have come
+next did not come — and they reach a set of their own, which both engines
+agree on sample for sample:
+
+| Where the hold is written | A freeze or `reset_held_outputs()` |
+|---|---|
+| `hold_for(...)`, wherever it sits — an `output { }` binding, a reward event's condition, `reward { continuous = ... }`, a weighted composite's component `signal`, a derive formula, an inhibit metric | restarts it |
+| `dwell(...)` or `dwell_rearm(...)` bound directly in `output { }` | restarts it |
+| the `dwell` of a `reward { event = dwell(...) }`, top-level or per-bundle | leaves it running |
+
+The last row is the dominant shape, so it is stated rather than deduced: a
+reward dwell's first rising edge lands on the same sample with and without a
+freeze, measured at 256 Hz on both engines. It is today's behaviour in both
+rather than a reasoned exception, and the 0.25.0 release notes record it as an
+open question.
+
+Rules the compiler enforces:
+
+- `tolerance` must be a fixed duration literal with a time unit. It cannot bind
+  a control, which is how `dwell_rearm`'s `rearm` behaves and not how `dwell`'s
+  `duration` behaves. A control-bound tolerance would make the IR version gate
+  unknowable when the protocol is emitted, and retuning a duration control
+  resets the hold — which, mid-dip, would zero a streak that was being held.
+- `tolerance` must be shorter than `duration`. A hold that forgives its own
+  duration never drops once satisfied, because every dip long enough to end it
+  is first long enough to be forgiven. The compiler can only check that against
+  a literal `duration`: binding `duration` to a control leaves the comparison
+  unknowable when the protocol compiles, so it is skipped rather than guessed.
+  Keep such a control's range above the tolerance. A `duration` retuned to at
+  or below `tolerance` mid-session gives a hold that never drops once it is
+  satisfied, and gated audio that never stops — nothing will refuse it.
+- `tolerance` converts to samples as `round(tolerance_ms / 1000 × rate)` and is
+  **not** floored at 1, unlike `duration`. A tolerance too short to reach one
+  sample at the session rate forgives nothing, which is what it asked for.
+
+Four invariants hold, and are the specification as much as the prose is:
+
+| Invariant | What it means |
+|---|---|
+| Monotone in tolerance | Raising `tolerance` can only move a reward earlier in the sample stream or leave it where it was. It never moves one later and never removes one. |
+| No free rewards | The number of samples genuinely above threshold behind any reward is at least `duration`. |
+| Zero is identity | `tolerance: 0 ms` produces sample-identical output to the same protocol with no `tolerance` at all. |
+| Idempotent under dip-filling | A condition stream whose sub-tolerance false runs have been filled in by hand produces the same reward times as the original does with that tolerance. |
+
 ### `dwell_rearm`
 
 ```
-dwell_rearm(condition: stream<boolean>, duration: time, rearm: time) -> event_stream
+dwell_rearm(condition: stream<boolean>, duration: time, rearm: time, tolerance: time = 0 ms) -> event_stream
 ```
 
 For a discrete feedback cue, this emits once after a continuous qualifying
@@ -761,6 +851,23 @@ interruption. Both durations must be positive. `duration` may be a live
 duration control; changing it resets the current hold. `rearm` is a fixed
 duration. The primitive is supported as a direct `output` binding;
 `reward.event` continues to require `dwell(...)`.
+
+`tolerance` works as it does on `dwell` (see *Dip tolerance* above), with one
+addition: the re-arm countdown is held through a forgiven dip, so a dip can
+never re-arm the cue and hand out a second ding for one burst. When a dip does
+exceed `tolerance`, the re-arm counter is credited with the whole dip so far,
+counted from the dip's first sample — the condition was genuinely false from
+then, and counting only from the moment tolerance expired would make re-arming
+slower than it is without a tolerance, whenever `tolerance` is shorter than
+`rearm`.
+
+Where `tolerance` is at least as long as `rearm`, the forgiven window itself
+delays re-arming, because the counter does not start until the dip exceeds the
+tolerance. Nothing refuses that combination, and nothing in the output changes
+because of it: the streak is frozen through the forgiven window, so no hold can
+rise while the cue is disarmed. It only means the cue re-arms later than it
+would with no tolerance at all. If that matters for a protocol, keep `tolerance`
+shorter than `rearm`.
 
 ```refrain
 output {
@@ -775,7 +882,7 @@ output {
 ### `hold_for`
 
 ```
-hold_for(condition: stream<boolean>, duration: time) -> stream<boolean>
+hold_for(condition: stream<boolean>, duration: time, tolerance: time = 0 ms) -> stream<boolean>
 ```
 
 Use `hold_for` when an output needs a sustained state without creating a
@@ -784,7 +891,9 @@ true for the full duration. Inhibited or muted output, a frozen phase clock,
 or a host call to `Evaluator.reset_held_outputs()` clears its timer. Hosts
 should call that reset on a detected input gap or audio interruption before
 resuming feedback. A live duration-control change also clears the affected
-timer in both Python and Rust.
+timer in both Python and Rust. `tolerance` works as it does on `dwell` (see
+*Dip tolerance* above): a false run no longer than `tolerance` leaves the
+result true rather than dropping it.
 
 ```refrain
 output {
@@ -810,7 +919,7 @@ flag()
 Specifies how an inhibit modifies the values delivered to output bindings when active:
 
 - **`mute(release: ...)`** — gate output to zero; hold for `release` after metric clears.
-- **`freeze(release: ...)`** — hold output at last value; release after `release`.
+- **`freeze(release: ...)`** — gates output to zero exactly as `mute` does, with the same hangover; release after `release`. Neither engine holds the last value — the name is historical. See `docs/SPEC.md` §4.6.
 - **`flag()`** — emit telemetry only; do not modify output. Used for logging.
 
 Inhibits modify what reaches the person via output bindings. They do *not* modify `reward.continuous` or `reward.event` directly. Downstream protocol logic that consumes reward sees the unmodified value.

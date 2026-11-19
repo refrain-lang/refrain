@@ -934,6 +934,24 @@ class AnyOfImpl(PrimitiveImpl):
 # ---------------------------------------------------------------------------
 
 
+def _require_matching_mask(
+    name: str, n: int, observable: np.ndarray | None
+) -> None:
+    """Refuse an observability mask that does not line up with the condition.
+
+    Unchecked, a short mask raises a bare `IndexError` from inside the hold
+    loop in Python and panics in Rust, and a long one is silently accepted
+    with its tail ignored in both. The hold paths are held bit-identical, so
+    they need one defined contract — stated here, before Task 6 starts
+    passing real masks.
+    """
+    if observable is not None and observable.shape[0] != n:
+        raise ValueError(
+            f"{name}: observable has {observable.shape[0]} samples but "
+            f"condition has {n}"
+        )
+
+
 class DwellResult:
     """The two views of an event_stream that primitive instances return.
 
@@ -949,42 +967,82 @@ class DwellResult:
 
 
 class DwellImpl(PrimitiveImpl):
-    """`dwell(condition, duration)` state machine.
+    """`dwell(condition, duration, tolerance)` state machine.
 
     Maintains `samples_true_streak`. When `condition` is True the counter
-    increments; when False it resets to 0. `holds` is true when the
-    streak meets or exceeds `dwell_samples`; the rising-edge `event`
-    fires on the transition from not-holding to holding.
+    increments; when False it resets to 0, unless the false run so far is
+    no longer than `tolerance_samples`, in which case the streak is held
+    exactly where it was. `holds` is true when the streak meets or exceeds
+    `dwell_samples`; the rising-edge `event` fires on the transition from
+    not-holding to holding.
+
+    Forgive, don't credit: a forgiven dip never advances the streak, so a
+    streak of N samples always means N samples genuinely above threshold
+    and observable. A sample the engine could not observe is scored as
+    neither — streak and dip counter both freeze.
     """
 
-    def __init__(self, *, duration_ms: float, sample_rate_hz: float):
+    def __init__(
+        self,
+        *,
+        duration_ms: float,
+        sample_rate_hz: float,
+        tolerance_ms: float = 0.0,
+    ):
         if duration_ms <= 0:
             raise ValueError("dwell: duration must be positive")
         self.dwell_samples = max(1, int(round(duration_ms / 1000.0 * sample_rate_hz)))
+        # Deliberately not floored at 1, unlike `dwell_samples`: a tolerance
+        # too short to reach one sample at this rate forgives nothing, which
+        # is what it asked for. Flooring it at 1 would invent forgiveness.
+        self.tolerance_samples = max(
+            0, int(round(tolerance_ms / 1000.0 * sample_rate_hz))
+        )
         self._streak = 0
+        self._dip = 0
         self._was_holding = False
 
     def reset(self) -> None:
         self._streak = 0
+        self._dip = 0
         self._was_holding = False
 
-    def step(self, condition: np.ndarray) -> DwellResult:
+    def step(
+        self,
+        condition: np.ndarray,
+        observable: np.ndarray | None = None,
+    ) -> DwellResult:
+        """`observable=None` means every sample is observable.
+
+        The per-sample rule below needs no lookahead, which is what lets
+        `Dwell` in `refrain-core/src/dsp.rs` transcribe it line for line.
+        The two are held bit-identical by the drift gate: change one and
+        change the other in the same breath.
+        """
         n = condition.shape[0]
+        _require_matching_mask("dwell", n, observable)
         events = np.zeros(n, dtype=bool)
         holds = np.zeros(n, dtype=bool)
         streak = self._streak
+        dip = self._dip
         was_holding = self._was_holding
         for i in range(n):
-            if condition[i]:
+            if observable is not None and not observable[i]:
+                pass                                  # streak and dip frozen
+            elif condition[i]:
                 streak += 1
+                dip = 0
             else:
-                streak = 0
+                dip += 1
+                if dip > self.tolerance_samples:
+                    streak = 0
             is_holding = streak >= self.dwell_samples
             holds[i] = is_holding
             if is_holding and not was_holding:
                 events[i] = True
             was_holding = is_holding
         self._streak = streak
+        self._dip = dip
         self._was_holding = was_holding
         return DwellResult(events=events, holds=holds)
 
@@ -992,8 +1050,19 @@ class DwellImpl(PrimitiveImpl):
 class DwellRearmImpl(DwellImpl):
     """One pulse per hold, rearmed only after continuous time out."""
 
-    def __init__(self, *, duration_ms: float, rearm_ms: float, sample_rate_hz: float):
-        super().__init__(duration_ms=duration_ms, sample_rate_hz=sample_rate_hz)
+    def __init__(
+        self,
+        *,
+        duration_ms: float,
+        rearm_ms: float,
+        sample_rate_hz: float,
+        tolerance_ms: float = 0.0,
+    ):
+        super().__init__(
+            duration_ms=duration_ms,
+            sample_rate_hz=sample_rate_hz,
+            tolerance_ms=tolerance_ms,
+        )
         if rearm_ms <= 0:
             raise ValueError("dwell_rearm: rearm must be positive")
         self.rearm_samples = max(1, int(round(rearm_ms / 1000.0 * sample_rate_hz)))
@@ -1012,31 +1081,75 @@ class DwellRearmImpl(DwellImpl):
         self._armed = True
         self._out_streak = 0
 
-    def step(self, condition: np.ndarray) -> DwellResult:
-        events = np.zeros(condition.shape[0], dtype=bool)
-        holds = np.zeros(condition.shape[0], dtype=bool)
-        for i, on in enumerate(condition):
-            if on:
-                self._streak += 1
-                self._out_streak = 0
-                holding = self._streak >= self.dwell_samples
-                holds[i] = holding
-                if holding and self._armed:
-                    events[i] = True
-                    self._armed = False
+    def step(
+        self,
+        condition: np.ndarray,
+        observable: np.ndarray | None = None,
+    ) -> DwellResult:
+        """Same per-sample rule as `DwellImpl.step`, plus the re-arm clock.
+
+        The re-arm countdown is held through a forgiven dip, so a dip can
+        never re-arm the event and hand out a second reward for one burst.
+        """
+        n = condition.shape[0]
+        _require_matching_mask("dwell_rearm", n, observable)
+        events = np.zeros(n, dtype=bool)
+        holds = np.zeros(n, dtype=bool)
+        streak = self._streak
+        dip = self._dip
+        out_streak = self._out_streak
+        armed = self._armed
+        for i in range(n):
+            if observable is not None and not observable[i]:
+                pass                       # streak, dip and out_streak frozen
+            elif condition[i]:
+                streak += 1
+                dip = 0
+                out_streak = 0
             else:
-                self._streak = 0
-                self._out_streak += 1
-                if self._out_streak >= self.rearm_samples:
-                    self._armed = True
+                dip += 1
+                if dip > self.tolerance_samples:
+                    streak = 0
+                    # Credit the whole dip the first time tolerance is
+                    # exceeded, then one sample per false sample after that.
+                    # The condition was genuinely false from the dip's first
+                    # sample, so counting only from the moment tolerance
+                    # expired would make re-arming slower than it is with no
+                    # tolerance — whenever `tolerance` is shorter than
+                    # `rearm`. Where it is not, the forgiven window itself
+                    # delays re-arming; nothing refuses that, and no output
+                    # follows from it, because the streak is frozen through
+                    # the window so no hold can rise while `armed` is false.
+                    out_streak += dip if dip == self.tolerance_samples + 1 else 1
+                    if out_streak >= self.rearm_samples:
+                        armed = True
+            is_holding = streak >= self.dwell_samples
+            holds[i] = is_holding
+            if is_holding and armed:
+                events[i] = True
+                armed = False
+        self._streak = streak
+        self._dip = dip
+        self._out_streak = out_streak
+        self._armed = armed
         return DwellResult(events=events, holds=holds)
 
 
 class HoldForImpl(DwellImpl):
     """Boolean held view of an independent dwell accumulator."""
 
-    def __init__(self, *, duration_ms: float, sample_rate_hz: float):
-        super().__init__(duration_ms=duration_ms, sample_rate_hz=sample_rate_hz)
+    def __init__(
+        self,
+        *,
+        duration_ms: float,
+        sample_rate_hz: float,
+        tolerance_ms: float = 0.0,
+    ):
+        super().__init__(
+            duration_ms=duration_ms,
+            sample_rate_hz=sample_rate_hz,
+            tolerance_ms=tolerance_ms,
+        )
         self._sample_rate_hz = sample_rate_hz
 
     def update_control(self, target: str, value: float) -> None:
@@ -1045,12 +1158,12 @@ class HoldForImpl(DwellImpl):
         self.dwell_samples = max(1, round(value / 1000.0 * self._sample_rate_hz))
         self.reset()
 
-    def reset(self) -> None:
-        self._streak = 0
-        self._was_holding = False
-
-    def step(self, condition: np.ndarray) -> np.ndarray:
-        return super().step(condition).holds
+    def step(
+        self,
+        condition: np.ndarray,
+        observable: np.ndarray | None = None,
+    ) -> np.ndarray:
+        return super().step(condition, observable).holds
 
 
 # ---------------------------------------------------------------------------
@@ -1132,9 +1245,9 @@ class MuteAction:
 
 
 class FreezeAction:
-    """`freeze(release)` — hold output at last non-frozen value while
-    inhibit-active, plus hangover. The evaluator carries the last output
-    per channel."""
+    """`freeze(release)` — gate output to zero while inhibit-active, plus
+    hangover, exactly as `MuteAction` does. Neither engine holds the last
+    value; the name is historical and `docs/SPEC.md` §4.6 says so."""
 
     def __init__(self, *, release_ms: float, sample_rate_hz: float):
         self.release_samples = max(0, int(round(release_ms / 1000.0 * sample_rate_hz)))
@@ -1630,17 +1743,20 @@ def make_filter_impl(
         return DwellImpl(
             duration_ms=float(static_args["duration_ms"]),
             sample_rate_hz=sample_rate_hz,
+            tolerance_ms=float(static_args.get("tolerance_ms", 0.0)),
         )
     if callee == "dwell_rearm":
         return DwellRearmImpl(
             duration_ms=float(static_args["duration_ms"]),
             rearm_ms=float(static_args["rearm_ms"]),
             sample_rate_hz=sample_rate_hz,
+            tolerance_ms=float(static_args.get("tolerance_ms", 0.0)),
         )
     if callee == "hold_for":
         return HoldForImpl(
             duration_ms=float(static_args["duration_ms"]),
             sample_rate_hz=sample_rate_hz,
+            tolerance_ms=float(static_args.get("tolerance_ms", 0.0)),
         )
     if callee == "sigmoid":
         return SigmoidImpl(

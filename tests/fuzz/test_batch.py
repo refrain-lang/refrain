@@ -83,10 +83,38 @@ def test_batch_aggregates_multiple_paths(tmp_path, capsys):
     # condition" exactly as its four-stage twin micro_03_envelope does — both
     # declare only `output { audio_gain = 0 }` and no reward at all — so it
     # adds to the skip bucket and leaves `fuzzed` at 8.
+    # +1 total for micro_14_tolerance.refrain (the hold-dip-tolerance golden-
+    # vector bench), which skips as "non-bandpass (coherence) reward signal":
+    # its reward signal is a one-stage band_envelope() derive, and the
+    # fuzzer's `_band_from_call` only reads a literal `bandpass(band: ...)`
+    # stage, so it cannot name the band it would perturb. Nothing to do with
+    # the tolerance itself — micro_13_band_envelope would skip the same way if
+    # it declared a reward. Skip bucket again, `fuzzed` still 8.
+    # +1 total for micro_15_artifact_gate.refrain (the inhibit-`kind`
+    # golden-vector bench), which skips for the same reason as
+    # micro_14_tolerance and for that reason only: its reward signal is a
+    # one-stage band_envelope() derive, so `_band_from_call` cannot name the
+    # band it would perturb. The artifact label has nothing to do with it —
+    # the fuzzer's surface does not model an inhibit's `kind` at all. Skip
+    # bucket, `fuzzed` still 8.
+    # +1 total for seed_scale_emg.refrain (the seed-`scale` golden-vector
+    # bench and the worked per-person muscle limit), which skips as "no reward
+    # event to fuzz": it declares `reward { continuous = ... }` and no event,
+    # and the fuzzer perturbs a reward event's condition. Nothing to do with
+    # the multiplier — the fuzzer's surface does not model a seed rule at all.
+    # Skip bucket, `fuzzed` still 8.
+    # +1 total for reseed_staged.refrain (the block-boundary re-seeding
+    # golden-vector bench), which skips as "reward.event has no all_of/any_of
+    # condition" for exactly the reason autopilot_staged does: its two rewards
+    # are block-scoped, selected per `block` rather than by one top-level
+    # `reward { }`, so the resolved `ir.reward.event` is None and there is no
+    # condition to perturb. Nothing to do with `reseed` — the fuzzer's surface
+    # does not model a block's declarations at all. Skip bucket, `fuzzed`
+    # still 8.
     rc = main(["fuzz", "bench/protocols", "examples",
                "--library", "examples", "--max-scenarios", "2"])
     out = "".join(capsys.readouterr())
-    assert "coverage: fuzzed 8 / total 35" in out
+    assert "coverage: fuzzed 8 / total 39" in out
     # Inc1 splits the old generic "single-condition reward" skip into specific,
     # feature-mapped reasons (so the breakdown maps to later increments); the
     # multi-leaf control-absolute fixture adds its own feature-mapped skip.

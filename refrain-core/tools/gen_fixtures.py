@@ -176,12 +176,23 @@ def _generate_setcontrol(ir) -> None:
 
 # Protocols whose output channels actually emit events (the others are
 # pure-DSP micro corpora with no `output` bindings to compare).
-EVENT_BEARING = frozenset({"micro_05_reward", "realistic_smr", "micro_09_inhibit", "composite_smr_theta"})
+EVENT_BEARING = frozenset({
+    "micro_05_reward", "realistic_smr", "micro_09_inhibit", "composite_smr_theta",
+    "micro_14_tolerance", "micro_15_artifact_gate", "reseed_staged",
+})
 
 # Tap-rich protocols for the `taps.rs` golden-vector compare. `realistic_smr`
 # exercises input/derive/threshold/reward/condition/output taps;
-# `micro_09_inhibit` adds inhibit/<name> and the combined `muted` gate.
-TAP_BEARING = frozenset({"realistic_smr", "micro_09_inhibit"})
+# `micro_09_inhibit` adds inhibit/<name> and the combined `muted` gate;
+# `micro_15_artifact_gate` pins that `muted` is unchanged by an inhibit's
+# `kind` label — the label moves what a hold scores, not what the gate gates.
+# `reseed_staged` adds the staged-protocol tap keyset (two reward bundles, a
+# phase cursor) and the one tap a dropped re-seed moves on its own:
+# `threshold/thr` steps at the block boundary, and `output/audio_gain` steps
+# with it.
+TAP_BEARING = frozenset({
+    "realistic_smr", "micro_09_inhibit", "micro_15_artifact_gate", "reseed_staged",
+})
 
 
 def generate(
@@ -382,6 +393,8 @@ if __name__ == "__main__":
         "micro_11_control_expr",
         "micro_12_control_param_slots",
         "micro_13_band_envelope",
+        "micro_14_tolerance",
+        "micro_15_artifact_gate",
         "realistic_smr",
         "composite_smr_theta",
     ):
@@ -391,8 +404,13 @@ if __name__ == "__main__":
     # one-channel guard).
     generate("micro_passthrough_identity", channels=("Cz",))
     # Baseline-seeding conformance fixture (§2.6): the seed fires only during
-    # warmup, so this is the ONE stem generated with skip_warmup=False. A
-    # constant-fill signal makes the seeded percentile exact by construction.
+    # warmup, so this is one of the four stems generated with
+    # skip_warmup=False — the others are `seed_exprpos`, `seed_scale_emg` and
+    # `reseed_staged` below. Every other stem in this file takes the
+    # corpus-wide skip_warmup=True. docs/CONFORMANCE.md §3 names the same four
+    # as its exception to step 3; add a stem in both places if a fifth appears.
+    # A constant-fill signal makes the seeded percentile exact by
+    # construction.
     # amp=None so the resolver's chosen rate is exactly 256 Hz (the rate this
     # fixture runs at) — see the `generate()` docstring note on control-seed
     # `window_samples` baking.
@@ -411,6 +429,77 @@ if __name__ == "__main__":
         channels=("Cz",),
         skip_warmup=False,
         signal=np.full((N_SAMPLES, 1), 5.0),
+        amp=None,
+    )
+    # The worked per-person muscle limit and the golden vector for a seed
+    # rule's `scale` multiplier (design §4): a muscle envelope feeding nothing
+    # but an artifact gate, a control seeded from that envelope at three times
+    # its warm-up median amplitude, and the gate's limit read off that control.
+    #
+    # `skip_warmup=False` and `amp=None` for the same reasons as the two seeds
+    # above. The signal is where this stem departs from them, and it is worth
+    # saying why, because two obvious choices are both wrong:
+    #
+    #   - A constant fill, which the other two use so their percentile is
+    #     exact by construction, has no energy at all in 50-100 Hz. The
+    #     envelope would sit at the numerical noise floor, the seeded limit
+    #     would come out around 1e-65, and the vector would pin nothing.
+    #
+    #   - Broadband noise alone gives the envelope a realistic spread, but a
+    #     gate at three times the median amplitude never trips on it: measured
+    #     over this exact signal, 0 of the 3328 run-phase samples reach the
+    #     limit. There is no muscle in Gaussian noise. Weakening the
+    #     multiplier until noise trips it would make the fixture demonstrate a
+    #     number no clinic would use.
+    #
+    # So the signal is broadband noise plus two clenches: Hann-windowed 70 Hz
+    # bursts at 6.0 s (1 s long) and 11.0 s (0.5 s), both inside the run
+    # phase, leaving the warm-up clean so the seeded median is the person's
+    # resting level. The gate then trips twice and clears twice on muscle that
+    # is actually there, with the clinical `scale = 3.0` intact. Hann rather
+    # than a hard edge because a square-edged burst is a broadband click: it
+    # would leak into the 12-15 Hz trained band and make the vector depend on
+    # that leak rather than on the muscle band.
+    _emg_rng = np.random.default_rng(SEED)
+    _emg_signal = _emg_rng.standard_normal((N_SAMPLES, 1)) * 10.0
+    _emg_t = np.arange(N_SAMPLES) / SAMPLE_RATE_HZ
+    for _burst_start, _burst_stop in ((1536, 1792), (2816, 2944)):
+        _emg_signal[_burst_start:_burst_stop, 0] += (
+            40.0
+            * np.hanning(_burst_stop - _burst_start)
+            * np.sin(2 * np.pi * 70.0 * _emg_t[_burst_start:_burst_stop])
+        )
+    generate(
+        "seed_scale_emg",
+        channels=("Cz",),
+        skip_warmup=False,
+        signal=_emg_signal,
+        amp=None,
+    )
+    # Block-boundary re-seeding (SPEC §4.13): the fourth and last
+    # `skip_warmup=False` stem, for the same reason as the three above — a
+    # re-seed measures the signal since the warm-up seed, so the warm-up has
+    # to happen. `docs/CONFORMANCE.md` §3 names the same four; add a stem in
+    # both places if a fifth appears.
+    #
+    # The signal is constant within each phase, so every percentile in the
+    # vector is exact by construction and nothing depends on filter settling:
+    # 4 s of 2 uV warm-up (the warm-up seed writes 2.0), 6 s of 5 uV under
+    # block one (the trailing 2 s window at the boundary is all 5.0, so the
+    # re-seed writes 5.0), then 8 uV under block two — above the re-seeded
+    # threshold, so the restarted dwell earns its chime again 250 ms after the
+    # boundary. A single constant fill would have hidden both halves: the
+    # re-seed would write the number the warm-up already wrote, and the reward
+    # would stop at the boundary instead of marking it.
+    _reseed_signal = np.empty((N_SAMPLES, 1), dtype=np.float64)
+    _reseed_signal[: 4 * int(SAMPLE_RATE_HZ), 0] = 2.0
+    _reseed_signal[4 * int(SAMPLE_RATE_HZ) : 10 * int(SAMPLE_RATE_HZ), 0] = 5.0
+    _reseed_signal[10 * int(SAMPLE_RATE_HZ) :, 0] = 8.0
+    generate(
+        "reseed_staged",
+        channels=("Cz",),
+        skip_warmup=False,
+        signal=_reseed_signal,
         amp=None,
     )
     # Advisor parity fixtures (advisor_parity.rs): tracer output over every
