@@ -17,15 +17,33 @@ re-measurement at a block boundary — plus the IR-JSON `"0.6"` wire version the
 share.
 
 **All four are off by default, and a protocol that declares none of them is
-unchanged.** Same compiled IR-JSON byte for byte, same `content_hash`, same
-`refrain_ir_version`, same output sample for sample on both engines. That is
-pinned rather than asserted: `tests/test_ir_corpus_identity.py` hashes the
-compiled IR of every protocol under `examples/` and `bench/protocols/` (39
-files; 34 that existed at 0.24.0, the 4 new benches below, and
-`examples/othmer_ilf_cz_pz.refrain`, which needs an import resolver and does
-not resolve standalone) and holds all 34 pre-existing hashes to their 0.24.0
-values. Of the committed golden vectors in `refrain-core/tests/fixtures/`, only
-`advisor_trace.json` changed, and only by gaining the new bench's trace.
+unchanged.** Same compiled IR, same `refrain_ir_version`, same output sample
+for sample on both engines. That is pinned rather than asserted:
+`tests/test_ir_corpus_identity.py` compiles every protocol under `examples/`
+and `bench/protocols/` (39 files; 34 that existed at 0.24.0, the 4 new benches
+below, and `examples/othmer_ilf_cz_pz.refrain`, which needs an import resolver
+and does not resolve standalone) and holds the 34 pre-existing ones to the
+structure and the 5005 filter coefficients that **the v0.24.0 compiler itself
+produces for the same files** — not to a recorded number, to the previous
+release's own output. All 34 match: structure exactly, coefficients within
+1e-9 relative. Of the committed golden vectors in
+`refrain-core/tests/fixtures/`, only `advisor_trace.json` changed, and only by
+gaining the new bench's trace.
+
+**One correction to how that is said.** Through this release's first
+publication the paragraph above claimed the IR is identical "byte for byte,
+same `content_hash`". The guarantee is real but those two words overstate its
+reach: the IR embeds scipy-designed filter coefficients at full double
+precision, and `content_hash` is a `sha256` over that serialization, so **the
+same protocol compiled on a different CPU architecture produces a different
+`content_hash`.** This is not new in 0.25.0 and no behaviour depends on it —
+both engines read the coefficients off the wire rather than re-deriving them,
+which is why they stay sample-identical. But if you treat `content_hash` as a
+portable identity for a protocol — a cache key, a conformance-bundle check, a
+published hash a third-party runtime validates against — it holds only within
+one platform. `docs/CONFORMANCE.md` does not yet say so; a fix that makes the
+hash portable is tracked and will move every published hash once, so it is not
+being slipped into a patch.
 
 **If you arrived here from `unsupported refrain_ir_version: "0.6"` on a 0.24
 runtime,** one of four things in your protocol asked for 0.6. The emitter tags
@@ -252,6 +270,28 @@ load-time version gate exists. `SUPPORTED_IR_VERSIONS` in
   without resetting the count.
 
 ### Fixed
+
+- **The IR corpus-identity test only passed on the machine that wrote its
+  fixture.** As first merged, `tests/test_ir_corpus_identity.py` hashed
+  `json.dumps(ir_to_json_obj(...))` verbatim and pinned the result. The IR
+  carries scipy-designed filter coefficients at full double precision, those
+  differ in the last bits between CPU architectures, and so the test passed on
+  macOS/arm64 and failed on Linux/x86_64 — on every supported Python version.
+  The split was exact: of the 21 bench protocols, the 17 that embed
+  coefficients all hashed differently, the 4 that embed none all matched.
+  Rounding the floats before hashing was tried and rejected, because rounding
+  has boundaries and a protocol with 190 coefficients gets 190 chances to land
+  on one: at 12 significant digits a 64-ULP perturbation still moved 23 of the
+  34 pinned protocols. The test now compares structure and values separately —
+  every key, string, int, bool and float *position* exactly, through a hash of
+  the IR with floats blinded out, and every float by 1e-9 relative tolerance.
+  It is silent at 100,000 ULP and fires on a 1e-8 relative change. **The pinned
+  values were re-baselined once, against what the v0.24.0 compiler produces for
+  the same files rather than against the previous fixture**, so the guarantee
+  the test exists to defend was re-established rather than reset: all 34
+  pre-existing protocols match v0.24.0 on structure and on all 5005
+  coefficients. Nothing in the engines or the language changed; this is the
+  test, the fixture and the claim in this document.
 
 - **A spec reversal: `action = freeze` does not hold the output at its last
   value, and never did.** Through 0.24 three sentences said it does — §4.6's
