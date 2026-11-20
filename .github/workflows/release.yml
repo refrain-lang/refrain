@@ -244,7 +244,6 @@ jobs:
           for pat in \
             'refrain-*-py3-none-any.whl' \
             'refrain-*.tar.gz' \
-            'refrain_core-*-macosx_*universal2.whl' \
             'refrain_core-*-manylinux*.whl' \
             'refrain_core-*-win_amd64.whl' \
             'refrain_core-*.tar.gz' \
@@ -256,6 +255,26 @@ jobs:
               missing=$((missing + 1))
             fi
           done
+
+          # The macOS wheel is checked separately. Its platform tags appear in
+          # a different order depending on the builder's Python — macos-14 for
+          # 0.24.0 emitted `..._x86_64.macosx_11_0_arm64.macosx_10_12_universal2`
+          # while macos-15 for 0.25.1 emitted `..._universal2.macosx_10_12_x86_64
+          # .macosx_11_0_arm64` — so a glob anchored on a trailing tag reports a
+          # wheel that is sitting right there. That is what made v0.25.1's
+          # otherwise-complete release run red. Match on substrings instead, and
+          # check the two things actually required: a macOS wheel exists, and it
+          # is a fat universal2 build rather than single-architecture.
+          mac_wheels=$(find dist -maxdepth 1 -name 'refrain_core-*-macosx_*.whl' 2>/dev/null)
+          if [ -z "$mac_wheels" ]; then
+            echo "::error title=Missing release asset::${{ github.ref_name }} has no macOS refrain_core wheel"
+            missing=$((missing + 1))
+          elif ! printf '%s\n' "$mac_wheels" | grep -q 'universal2'; then
+            echo "::error title=Single-architecture macOS wheel::${{ github.ref_name }} has a macOS wheel but it is not universal2:"
+            printf '  %s\n' $mac_wheels
+            missing=$((missing + 1))
+          fi
+
           if [ "$missing" -ne 0 ]; then
             echo
             echo "The Release for ${{ github.ref_name }} was published with $missing expected asset(s) absent."
@@ -264,4 +283,4 @@ jobs:
             echo "with zero steps run, which reads as 'cancelled' rather than as a failure."
             exit 1
           fi
-          echo "All 8 expected assets present."
+          echo "All 8 expected assets present (7 by name, plus a universal2 macOS wheel)."
