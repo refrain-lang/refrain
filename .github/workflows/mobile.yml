@@ -59,7 +59,10 @@ jobs:
   # verbatim from bindings/README.md.
   # ---------------------------------------------------------------------------
   ios-xcframework:
-    runs-on: macos-14
+    # macos-15: GitHub retired macos-14 on 2026-11-02. A retired label is
+    # refused with zero steps run, so this job reads as 'cancelled' rather
+    # than failing — check here first if iOS coverage silently disappears.
+    runs-on: macos-15
     needs: bindings-verify
     steps:
       - uses: actions/checkout@v4

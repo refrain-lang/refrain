@@ -9,6 +9,46 @@ bumps are additive; major bumps may break compatibility.
 
 Nothing yet.
 
+## [0.25.1] — 2026-11-19
+
+**A release-infrastructure fix. No change to the engines, the language, the IR
+or any protocol — 0.25.0 and 0.25.1 compile and run identically.** Cut because
+0.25.0's Release page is missing two of its eight artifacts and cannot be
+completed in place.
+
+### Fixed
+
+- **The macOS release artifacts were never built, and the release reported
+  success anyway.** GitHub retired the `macos-14` runner image on 2026-11-02.
+  A retired label does not queue and does not fail: the job is *refused*, with
+  zero steps run, which surfaces as `cancelled`. Both macOS jobs — the
+  `universal2` `refrain_core` wheel and the iOS `RefrainCore.xcframework.zip` —
+  were refused on every attempt, so **v0.25.0 published 6 of its 8 assets** and
+  its Release page looks finished. The three `runs-on: macos-14` sites (the
+  wheel matrix and the `ios-xcframework` job in both `release.yml` and
+  `mobile.yml`) now name `macos-15`.
+
+  **Why that mattered rather than being untidy:** a Mac installing 0.25.0 gets
+  the pure-Python `refrain` wheel and finds no matching `refrain_core` wheel,
+  because the only one published is manylinux or win_amd64. `nf/backend.py` in
+  the recorder selects the Rust backend whenever `refrain_core` imports, so the
+  host silently falls back to the Python backend — the version-mismatch
+  condition that produces NF backend failures looking like code defects, with
+  nothing warning. iOS hosts get no 0.25.0 xcframework at all.
+
+- **`publish` now ends the run red when an expected asset is absent.** It still
+  runs with `if: always()` and still uploads whatever was built, which is
+  deliberate — a partial release beats none when a single builder regresses.
+  What was wrong is that a partial release looked complete. The job now checks
+  the uploaded set against the eight expected artifacts, writes a GitHub error
+  annotation naming each one missing, and exits non-zero. Verified against real
+  data: silent on v0.24.0's complete set, and on v0.25.0's actual set it names
+  exactly the `universal2` wheel and the xcframework.
+
+**If you pinned 0.25.0 on macOS or iOS, move to 0.25.1** — not for a behaviour
+change, but because 0.25.0 has no artifact for your platform. On Linux and
+Windows the two releases carry identical builds and there is no reason to move.
+
 ## [0.25.0] — 2026-10-30
 
 Four optional declarations — a forgiving hold clock, a label that makes

@@ -35,12 +35,18 @@ jobs:
       matrix:
         include:
           # One fat macOS wheel (Intel + Apple Silicon) built on the arm64
-          # runner. Replaces the separate aarch64 (macos-14) + x86_64 (macos-13)
-          # legs: GitHub is phasing out Intel `macos-13` runners and the
+          # runner. Replaces the separate aarch64 + x86_64 legs: the Intel
           # x86_64-apple-darwin job was stalling indefinitely in `queued`,
           # blocking the whole Release. `universal2` keeps Intel support without
           # needing an Intel runner.
-          - os: macos-14            # Apple Silicon runner; builds universal2
+          #
+          # Keep this label on a *supported* image and check it when a release
+          # looks thin. GitHub retired `macos-13` and then `macos-14` (the
+          # latter on 2026-11-02), and a retired label does not queue or fail —
+          # the job is refused with zero steps run, which is what left v0.25.0
+          # without its macOS wheel or its xcframework. The asset check at the
+          # end of `publish` exists so that is loud next time.
+          - os: macos-15            # Apple Silicon runner; builds universal2
             target: universal2-apple-darwin
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
@@ -109,7 +115,7 @@ jobs:
   # output is zipped and uploaded as a release asset rather than a CI artifact.
   # ---------------------------------------------------------------------------
   ios-xcframework:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -223,3 +229,39 @@ jobs:
           # If the maintainer already created the Release (e.g. for the
           # initial v0.6.3 cut-by-hand), keep its body+title. New tags pushed
           # without a pre-existing Release will get one auto-created.
+
+      # `publish` runs with `if: always()` on purpose — a partial release is
+      # better than none when one builder regresses. What must not happen is a
+      # partial release that *looks* finished. v0.25.0 published 6 of 8 assets
+      # and reported success, so a Mac could install `refrain` with no matching
+      # `refrain_core` wheel: the version mismatch that produces NF backend
+      # failures looking like code defects. The assets still upload above; this
+      # step names what is missing and ends the run red.
+      - name: Fail if the Release is missing an expected asset
+        shell: bash
+        run: |
+          missing=0
+          for pat in \
+            'refrain-*-py3-none-any.whl' \
+            'refrain-*.tar.gz' \
+            'refrain_core-*-macosx_*universal2.whl' \
+            'refrain_core-*-manylinux*.whl' \
+            'refrain_core-*-win_amd64.whl' \
+            'refrain_core-*.tar.gz' \
+            'refrain-core-android-jni.tar.gz' \
+            'RefrainCore.xcframework.zip' ; do
+            # shellcheck disable=SC2086
+            if ! compgen -G "dist/$pat" > /dev/null; then
+              echo "::error title=Missing release asset::${{ github.ref_name }} has no file matching '$pat'"
+              missing=$((missing + 1))
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo
+            echo "The Release for ${{ github.ref_name }} was published with $missing expected asset(s) absent."
+            echo "Anything pinning this version on the affected platform will resolve incompletely."
+            echo "Check whether a runner label above has been retired: a retired label is refused"
+            echo "with zero steps run, which reads as 'cancelled' rather than as a failure."
+            exit 1
+          fi
+          echo "All 8 expected assets present."
