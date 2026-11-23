@@ -81,7 +81,7 @@ _REWARD_EVENT_BASE = '''protocol "artifact gate on the reward path" {
   inhibit "emg" {
     metric    = rectify("emg_level")
     threshold = absolute(0.5 uV)
-    action    = mute(release: __RELEASE__)__KIND__
+    action    = __RACTION____KIND__
   }
 __REWARD____OUTPUT____SCOPING__}'''
 
@@ -156,6 +156,7 @@ def reward_event_protocol(
     condition: str = 'above("level", "t")',
     mode: str = "plain",
     with_outputs: bool = True,
+    action: str = "mute",
 ) -> str:
     """Protocol source whose reward is a 250 ms `dwell` over `condition`.
 
@@ -173,6 +174,9 @@ def reward_event_protocol(
     per-channel output loop never runs.
     """
     label = "" if kind is None else f'\n    kind      = "{kind}"'
+    # `flag()` takes no arguments, so it swallows `release` rather than
+    # carrying it: an artifact flag has no audio gate and so no hangover.
+    raction = "flag()" if action == "flag" else f"{action}(release: {release})"
     reward, scoping = {
         "plain": (_PLAIN_REWARD, ""),
         "block_scoped": (_PLAIN_REWARD, _BLOCK_SCOPING),
@@ -180,7 +184,7 @@ def reward_event_protocol(
     }[mode]
     return (
         _REWARD_EVENT_BASE
-        .replace("__RELEASE__", release)
+        .replace("__RACTION__", raction)
         .replace("__KIND__", label)
         .replace("__REWARD__", reward)
         .replace("__OUTPUT__", _OUTPUT if with_outputs else _NO_OUTPUT)

@@ -1857,16 +1857,31 @@ impl Evaluator {
                 adv_inhibits.push((bare_name, active.clone()));
             }
             // flag actions (`gate == None`) contribute nothing to `muted`.
+            // With `kind = "artifact"` they still mark the samples
+            // UNOBSERVABLE: `action` decides what happens to the audio,
+            // `kind` decides how the sample is scored, and the two are
+            // independent (SPEC §4.6). No release hangover on that path — a
+            // release exists to stop an audio gate chattering and a flag has
+            // no audio gate — so `active` is the mask directly, matching
+            // `_compute_artifact_muted`'s second loop in `eval_.py`.
             if allowed {
-                if let Some(gate) = ih.gate.as_mut() {
-                    let g = gate.gate(&active);
-                    let is_artifact = ih.kind.as_deref() == Some("artifact");
-                    for i in 0..n {
-                        muted[i] |= g[i];
-                        if is_artifact {
-                            artifact_muted[i] |= g[i];
+                let is_artifact = ih.kind.as_deref() == Some("artifact");
+                match ih.gate.as_mut() {
+                    Some(gate) => {
+                        let g = gate.gate(&active);
+                        for i in 0..n {
+                            muted[i] |= g[i];
+                            if is_artifact {
+                                artifact_muted[i] |= g[i];
+                            }
                         }
                     }
+                    None if is_artifact => {
+                        for i in 0..n {
+                            artifact_muted[i] |= active[i];
+                        }
+                    }
+                    None => {}
                 }
             }
         }

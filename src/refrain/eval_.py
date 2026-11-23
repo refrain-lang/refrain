@@ -2544,6 +2544,29 @@ class Evaluator:
             if inhibit is None or inhibit.kind != "artifact":
                 continue
             artifact_muted |= gated
+        # Artifact-labelled FLAG inhibits (§4.6). A flag has no output gate, so
+        # `_compute_muted` recorded nothing for it and the loop above cannot
+        # see it; its `active` stream IS the mask. This is the one declaration
+        # that separates the two axes — `action` says what happens to the
+        # audio, `kind` says how the sample is scored — so `flag()` plus
+        # `kind = "artifact"` reads "do not credit this sample, and do not
+        # silence the output either".
+        #
+        # No release hangover, deliberately. A release exists to stop an audio
+        # gate chattering across the threshold; a flag has no audio gate to
+        # chatter, and a mask that dithers around the threshold costs a hold
+        # nothing — freezing is idempotent, it only pauses. That is also why
+        # `flag()` still takes no arguments.
+        for canonical, active in inhibit_active.items():
+            short = canonical.split("/", 1)[-1]
+            if allowed is not None and short not in allowed:
+                continue
+            inhibit = self.ir.inhibits.get(short)
+            if inhibit is None or inhibit.kind != "artifact":
+                continue
+            if inhibit.action_kind != "flag":
+                continue
+            artifact_muted |= active
         return artifact_muted
 
     @staticmethod

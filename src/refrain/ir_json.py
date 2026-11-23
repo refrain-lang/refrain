@@ -245,7 +245,24 @@ def _protocol_ir_version(ir: IRProtocol, ctx: _EmitCtx) -> str:
     re-measuring would train against a threshold set from a state the trainee
     has since left. An empty `reseed` — which is every block written before
     the field existed — emits no key and does not bump the version.
+
+    An inhibit labelled `kind = "artifact"` whose action is `flag()` emits
+    v0.7, and it is the only thing that does. This one is not a dropped key:
+    both `kind` and the flag action exist in 0.6, so a 0.6 engine reads every
+    byte of the document and still runs a different protocol, because through
+    0.25.x `kind` on a flag was a resolve-time error and the engine's artifact
+    mask is built only from inhibits that gate output. Such an engine would
+    leave the hold unfrozen through exactly the samples the author declared
+    unreadable — the failure the label was added to prevent — so the version
+    has to move even though the schema does not. v0.7 is a byte-for-byte copy
+    of v0.6 but for the version string, which is the point: it exists so an
+    older engine refuses the document instead of mis-scoring it.
     """
+    if any(
+        ih.kind == "artifact" and ih.action_kind == "flag"
+        for ih in ir.inhibits.values()
+    ):
+        return "0.7"
     if (
         _bakes_a_hold_tolerance(ir, ctx)
         or any(ih.kind == "artifact" for ih in ir.inhibits.values())

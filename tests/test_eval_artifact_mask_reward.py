@@ -149,6 +149,7 @@ def _run(
     chunk: int = 64,
     pause_at: int | None = None,
     pause_via: str = "clock",
+    action: str = "mute",
 ) -> tuple[dict[str, np.ndarray], list[tuple[int, int, dict[str, float]]]]:
     """Feed the swallow signal once; return the per-sample streams and a
     `(chunk_start, chunk_stop, last_taps())` triple for each chunk.
@@ -167,7 +168,8 @@ def _run(
     what `docs/PRIMITIVES.md` tells a host to do after an input gap. Both
     reach the same invalidation and both must give the same answer.
     """
-    src = reward_event_protocol(kind=kind, condition=condition, mode=mode)
+    src = reward_event_protocol(kind=kind, condition=condition, mode=mode,
+                                action=action)
     ir = resolve(parse(src))
     level = np.full(N_SAMPLES, 0.2)
     level[BURST_START:BURST_END] = 1.0
@@ -924,3 +926,55 @@ def test_a_transport_pause_leaves_a_reward_events_own_dwell_running(backend):
     nested_running = _surface_run(backend, _BODY_NESTED, pause=False)
     nested_paused = _surface_run(backend, _BODY_NESTED, pause=True)
     assert int((nested_paused != 0).sum()) == int((nested_running != 0).sum()) - SURFACE_PAUSE_AT
+
+
+# ---------------------------------------------------------------------------
+# An artifact FLAG on the reward-event path. This is the half that has to keep
+# working: the 500 ms criterion ding depends on the freeze, and the whole point
+# of the flag is to get that freeze without the silence.
+#
+# Expected, from the two mechanisms rather than from a remembered number:
+#   * the gate never closes, so `output/gain` never reaches 0.0
+#   * the clock still freezes, so the edge lands LATER than the 2.945 s an
+#     unlabelled inhibit gives
+#   * and it lands exactly RELEASE_SAMPLES EARLIER than the artifact mute's
+#     3.797 s, because the mute's mask carries a release hangover and the
+#     flag's ends with the artifact
+# ---------------------------------------------------------------------------
+
+FLAG_RESUME = MUTE_START + EMG_SAMPLES                          # no hangover
+FLAG_PAUSED_ANSWER = FLAG_RESUME + (DWELL_SAMPLES - BANKED) - 1
+
+
+def test_an_artifact_flag_freezes_the_reward_clock_and_never_gates_the_output(backend):
+    """The new cell on the reward path: the burst is still paid, and the
+    trainee hears the tone the whole way through the alpha intrusion."""
+    streams, _ = _run(backend, kind="artifact", action="flag")
+
+    # the gate never closed -- the witness channel never reaches 0.0
+    assert _muted_span(streams) == []
+    # the clock still froze: the edge is later than the no-mask answer
+    fired_at = _first_delivered_event_time(streams)
+    assert fired_at == _at(FLAG_PAUSED_ANSWER)
+    assert FLAG_PAUSED_ANSWER > RAW_ANSWER
+    # and it was actually delivered, which is what an unlabelled mute loses
+    assert _first_raw_event_time(streams) == fired_at
+    assert int(streams["reward.event"].sum()) == 1
+
+
+def test_the_flag_beats_the_mute_by_exactly_the_release_hangover(backend):
+    """Same freeze, two mask lengths. The mute's artifact mask runs on for its
+    release; the flag's stops with the artifact, because there is no audio gate
+    to keep from chattering. That one difference is the only thing separating
+    the two answers, and both engines have to agree on it."""
+    flagged, _ = _run(backend, kind="artifact", action="flag")
+    muted, _ = _run(backend, kind="artifact", action="mute")
+
+    assert PAUSED_ANSWER - FLAG_PAUSED_ANSWER == RELEASE_SAMPLES
+    assert _first_delivered_event_time(flagged) == _at(FLAG_PAUSED_ANSWER)
+    assert _first_delivered_event_time(muted) == _at(PAUSED_ANSWER)
+    # both pay the burst exactly once; they differ in when, and in silence
+    assert int(flagged["reward.event"].sum()) == 1
+    assert int(muted["reward.event"].sum()) == 1
+    assert _muted_span(flagged) == []
+    assert _muted_span(muted) == list(range(MUTE_START, MUTE_END + 1))

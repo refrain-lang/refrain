@@ -1176,17 +1176,23 @@ class _Resolver:
                     f"\"trained\" (got {kind!r})",
                     loc=kind_loc,
                 )
-            if action_kind == "flag":
-                # `mute` and `freeze` are OR-ed into the same output gate, so
-                # the label changes what the engine scores. A flag gates
-                # nothing, so a label on one would be a silent no-op — and a
-                # silent no-op in a safety-shaped declaration is worse than a
-                # compile error.
+            if action_kind == "flag" and kind == "trained":
+                # `kind = "artifact"` on a flag is the whole point of the
+                # pairing (§4.6): `action` decides what happens to the audio,
+                # `kind` decides how the sample is scored, and a flag plus an
+                # artifact label is "do not credit this, do not silence it".
+                # `"trained"` has no such reading. A trained label says the
+                # sample RESETS a hold, which is what an unlabelled inhibit
+                # bound in `output { }` already does, and a flag changes
+                # neither the gate nor the scoring — so on a flag it would be
+                # the silent no-op this check was written to refuse.
                 raise ResolveError(
-                    f"inhibit \"{decl.name}\": kind is not allowed on a flag "
-                    f"inhibit — a flag gates nothing, so the label would be a "
-                    f"silent no-op; drop the kind or give the inhibit a "
-                    f"mute/freeze action",
+                    f"inhibit \"{decl.name}\": kind = \"trained\" is not allowed "
+                    f"on a flag inhibit — a flag neither gates output nor "
+                    f"changes scoring, so the label would be a silent no-op; "
+                    f"drop the kind, use kind = \"artifact\" to pause a hold "
+                    f"without gating audio, or give the inhibit a mute/freeze "
+                    f"action",
                     loc=kind_loc,
                 )
         return IRInhibit(

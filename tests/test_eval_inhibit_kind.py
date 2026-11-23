@@ -68,7 +68,7 @@ protocol "artifact gate" {
   inhibit "gate" {
     metric    = rectify("emg_level")
     threshold = absolute(0.5 uV)
-    action    = mute(release: RELEASE)
+    action    = ACTION
     KIND
   }
   reward { continuous = sigmoid("level" / "t", midpoint: 1.0, steepness: 3) }
@@ -109,10 +109,13 @@ PHASE_BOUNDARY = 200       # samples per 1 s phase at 200 Hz
 GAP_LEAD_IN = PHASE_BOUNDARY - 9   # 9 qualifying samples before the boundary
 
 
-def _ir(kind: str | None, tolerance: str | None, session: str, release: str):
+def _ir(kind: str | None, tolerance: str | None, session: str, release: str,
+        action: str = "mute"):
     src = PROTOCOL.replace("KIND", "" if kind is None else f'kind = "{kind}"')
     src = src.replace("TOL", "" if tolerance is None else f", tolerance: {tolerance}")
-    src = src.replace("RELEASE", release)
+    src = src.replace(
+        "ACTION", "flag()" if action == "flag" else f"{action}(release: {release})"
+    )
     return resolve(parse(src.replace("SESSION", session)))
 
 
@@ -127,6 +130,7 @@ def _run(
     chunk: int = 64,
     freeze_before: int | None = None,
     release: str = "5 ms",
+    action: str = "mute",
 ) -> dict[str, np.ndarray]:
     """Feed one `level`/`emg` pair; return the whole run's per-sample streams.
 
@@ -137,7 +141,7 @@ def _run(
     """
     signal = np.column_stack((np.where(level, 1.0, 0.2), np.where(emg, 1.0, 0.0)))
     evaluator = Evaluator.live(
-        _ir(kind, tolerance, session, release), sample_rate_hz=RATE,
+        _ir(kind, tolerance, session, release, action), sample_rate_hz=RATE,
         channel_names=("Cz", "A1"), record_streams=True, backend=backend,
     )
     evaluator.start(skip_warmup=True)
@@ -410,3 +414,86 @@ def test_a_frozen_transport_clock_still_resets_the_clock(backend):
     assert _muted_samples(frozen) == []
     assert _first_hold(running) == 9
     assert _first_hold(frozen) == 9 + HOLD_SAMPLES - 1
+
+
+# ---------------------------------------------------------------------------
+# The bold cell of SPEC §4.6's table: `flag()` plus `kind = "artifact"`.
+#
+# `action` decides what happens to the audio, `kind` decides how the sample is
+# scored, and this is the pair that separates them — "do not credit this
+# sample, and do not silence the output either". The two assertions below are
+# the whole primitive, and they have to hold together: the SAME clock answer
+# an artifact mute gives, and the OPPOSITE audio answer.
+#
+# The clock answer differs from the artifact mute's by exactly the release
+# hangover, because an artifact flag has none (a release exists to stop an
+# audio gate chattering; there is no audio gate here). So the unobservable
+# run is samples 9..13 — the 5 active samples and nothing more — and sample 14
+# is both the first readable sample and the streak's 10th.
+# ---------------------------------------------------------------------------
+
+FLAG_RESUME = MUTE_START + MUTE_ACTIVE          # 14, no release hangover
+FLAG_HELD_ANSWER = FLAG_RESUME                  # streak survived: 9 + 1
+# With no label the flag freezes nothing either, so the 5 failing samples zero
+# the streak and it has to climb all 10 again from sample 14. Not `RESET_ANSWER`:
+# that one is a sample later, because it counts from the end of a mute's release
+# hangover and an ungated flag has no hangover to wait out.
+FLAG_RESET_ANSWER = FLAG_RESUME + HOLD_SAMPLES - 1          # 23
+
+
+def test_an_artifact_flag_holds_the_clock_without_gating_the_output(backend):
+    """The new cell: the clock is held through the artifact, and the trainee
+    hears the tone the whole way through."""
+    level, emg = _swallow()
+    streams = _run(backend, level, emg, kind="artifact", action="flag")
+
+    # scored as unobservable: the streak survives the dropout
+    assert _first_hold(streams) == FLAG_HELD_ANSWER
+    # and the audio was never gated -- the witness channel never reaches 0.0
+    assert _muted_samples(streams) == []
+
+
+def test_an_artifact_flag_and_an_artifact_mute_agree_on_the_clock(backend):
+    """The flag changes the audio, not the scoring. Both hold the streak; they
+    differ only by the mute's release hangover, which the flag has no use
+    for."""
+    level, emg = _swallow()
+    flagged = _run(backend, level, emg, kind="artifact", action="flag")
+    muted = _run(backend, level, emg, kind="artifact", action="mute")
+
+    assert _first_hold(flagged) == FLAG_HELD_ANSWER
+    assert _first_hold(muted) == HELD_ANSWER
+    assert _first_hold(muted) - _first_hold(flagged) == RELEASE_SAMPLES
+    # the one that gates, gates; the one that does not, does not
+    assert _muted_samples(muted) == list(range(MUTE_START, MUTE_END + 1))
+    assert _muted_samples(flagged) == []
+
+
+def test_an_unlabelled_flag_still_changes_nothing_at_all(backend):
+    """The regression pin under the change: a flag with no `kind` is still
+    telemetry. It must not acquire a freeze by being a flag."""
+    level, emg = _swallow()
+    streams = _run(backend, level, emg, kind=None, action="flag")
+
+    # no gate and no freeze: the streak is zeroed by the failing samples
+    # themselves, exactly as it would be with no inhibit declared at all
+    assert _first_hold(streams) == FLAG_RESET_ANSWER
+    assert FLAG_RESET_ANSWER == RESET_ANSWER - RELEASE_SAMPLES
+    assert _muted_samples(streams) == []
+
+
+def test_a_dip_inside_an_artifact_flag_does_not_count_against_tolerance(backend):
+    """The dip counter freezes too, not just the streak — the same guarantee
+    `test_a_dip_inside_an_artifact_mute_does_not_count_against_tolerance`
+    pins for the muting case. A flag that froze the streak but let the
+    unobservable samples burn tolerance would reset the hold on any artifact
+    longer than the tolerance, which is the failure the label prevents."""
+    level, emg = _swallow()
+    # tolerance is 3 samples; the artifact is 5, so a dip counter that ran
+    # during it would exceed the tolerance and zero the streak
+    streams = _run(backend, level, emg, kind="artifact", action="flag",
+                   tolerance=TOLERANCE)
+
+    assert MUTE_ACTIVE > TOLERANCE_SAMPLES
+    assert _first_hold(streams) == FLAG_HELD_ANSWER
+    assert _muted_samples(streams) == []

@@ -373,7 +373,7 @@ inhibit "emg" {
 Actions:
 - `mute(release: <duration>)` — gate reward to zero, with hangover
 - `freeze(release: <duration>)` — gates output exactly as `mute` does (zero, with hangover); the engines do not hold the last value
-- `flag()` — emit only; do not modify reward (for logging-only inhibits)
+- `flag()` — emit only; do not modify output. On its own this is a logging-only inhibit; with `kind = "artifact"` it pauses a hold without gating audio (see below)
 
 #### `kind` — what kind of inhibit this is
 
@@ -395,9 +395,24 @@ The distinction is clinical, not bookkeeping. A clench tells you nothing about t
 
 **Absence is not `"trained"`.** An inhibit with no `kind` behaves exactly as it does today — it resets a hold bound in `output { }`, and contributes nothing on the `reward { event = ... }` path — but it is recorded as *unlabelled* rather than asserted to be a trained condition, because most unlabelled inhibits are artifact gates nobody has labelled yet. A compiler **may** advise on an unlabelled inhibit; it **must not** refuse one. `print_cred_nf` (`refrain.ir_print`) names each inhibit's label as `artifact`, `trained` or `unlabelled`, which is where the count of still-unlabelled inhibits across a catalog is read from.
 
-`kind` is legal on `mute` and `freeze`, which are OR-ed into the same output gate, and is a resolve-time error on `flag`, which gates nothing: there the label would be a silent no-op, and a silent no-op in a safety-shaped declaration is worse than a compile error. An unrecognised value is also a resolve-time error — `_resolve_inhibit` has no unknown-field check, so an unvalidated spelling would be dropped in silence.
+#### `action` and `kind` are independent
 
-On the wire (IR-JSON), `kind` is emitted only when it was declared, and only `"artifact"` raises the document's version to 0.6: a `"trained"` label and an absent one run identically on an engine that has never heard of the field, so refusing those documents at load would be a refusal for documentation.
+`action` decides what happens to the **audio**. `kind` decides how the sample is **scored**. They are two separate questions, and every combination means something:
+
+| | `kind` absent | `kind = "artifact"` | `kind = "trained"` |
+|---|---|---|---|
+| `mute` / `freeze` | gate the output; the sample resets a hold bound in `output { }` | gate the output; the sample is unobservable, so a hold's clock is held | gate the output; the sample resets the clock, and says so |
+| `flag()` | nothing at all — telemetry | **do not gate the output; the sample is unobservable, so a hold's clock is held** | *resolve-time error* |
+
+The bold cell is the one a protocol reaches for when contamination makes a reading unreliable without making it unsafe to listen to. Alpha intruding on an SMR band is *brain* signal: it means "do not credit this sample", not "cut the tone". Muscle is the other case — an ungated tone tracking raw amplitude turns a jaw clench into a loud reward — so EMG stays a `mute` with `kind = "artifact"`: pause the clock **and** cut the audio.
+
+Before v0.26 `kind` on a flag was a resolve-time error, on the reasoning that a flag gates nothing so the label could only be a silent no-op. That was true while the artifact mask was built solely from inhibits that gate output; it is no longer, and the two axes being tangled was the defect. `kind = "trained"` on a flag is still refused, and for the original reason: a trained label asserts the sample resets a hold, which is what an unlabelled inhibit already does, so on a flag — which changes neither the gate nor the scoring — it would be exactly the silent no-op the check was written to catch.
+
+An artifact flag takes no `release`, and `flag()` still accepts no arguments. A release hangover exists to stop an audio gate chattering across its threshold; a flag has no audio gate, and a mask that dithers around the threshold costs a hold nothing, because freezing only pauses.
+
+An unrecognised `kind` value is a resolve-time error — `_resolve_inhibit` has no unknown-field check, so an unvalidated spelling would be dropped in silence.
+
+On the wire (IR-JSON), `kind` is emitted only when it was declared, and only `"artifact"` raises the document's version to 0.6: a `"trained"` label and an absent one run identically on an engine that has never heard of the field, so refusing those documents at load would be a refusal for documentation. An `"artifact"` label on a **flag** raises it to 0.7 instead, and is the only thing that does. That bump is not about a missing field — 0.6 can represent the pair perfectly — it is about a 0.6 engine reading the whole document and still running a different protocol, because it refuses the pair at resolve time and builds its artifact mask only from gating inhibits. It would leave a hold running through the samples the author declared unreadable. v0.7 is identical to v0.6 but for the version string, so that such an engine refuses the document rather than mis-scoring it.
 
 ### 4.7 `reward`
 

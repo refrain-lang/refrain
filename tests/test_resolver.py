@@ -588,17 +588,26 @@ def test_kind_trained_resolves():
     assert ir.inhibits["emg"].kind == "trained"
 
 
-def test_kind_on_a_flag_inhibit_is_refused():
-    """A flag gates nothing, so kind = "artifact" on one would be a silent
-    no-op in a safety-shaped declaration."""
-    with pytest.raises(ResolveError, match="kind .* flag .* gates nothing"):
-        resolve(parse(inhibit_protocol(action="flag()", kind="artifact")))
+def test_kind_artifact_on_a_flag_inhibit_resolves():
+    """`action` says what happens to the audio, `kind` says how the sample is
+    scored, and this is the pair that separates them: do not credit this
+    sample, do not silence the output either (SPEC §4.6).
+
+    Refused before v0.26, on the reasoning that a flag gates nothing so the
+    label could only be a silent no-op. That held only while the artifact mask
+    was built solely from inhibits that gate output."""
+    ir = resolve(parse(inhibit_protocol(action="flag()", kind="artifact")))
+    assert ir.inhibits["emg"].kind == "artifact"
+    assert ir.inhibits["emg"].action_kind == "flag"
 
 
-def test_kind_trained_on_a_flag_inhibit_is_refused_too():
-    """The refusal is about which actions gate output, not about which label:
-    neither value means anything on an inhibit that modifies nothing."""
-    with pytest.raises(ResolveError, match="kind .* flag .* gates nothing"):
+def test_kind_trained_on_a_flag_inhibit_is_still_refused():
+    """The original refusal survives for `"trained"`, and for the original
+    reason. A trained label asserts the sample RESETS a hold, which is what an
+    unlabelled inhibit bound in `output { }` already does; a flag changes
+    neither the gate nor the scoring, so there the label really is the silent
+    no-op this check was written to catch."""
+    with pytest.raises(ResolveError, match='kind = "trained" is not allowed'):
         resolve(parse(inhibit_protocol(action="flag()", kind="trained")))
 
 

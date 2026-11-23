@@ -7,7 +7,69 @@ bumps are additive; major bumps may break compatibility.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **`kind = "artifact"` is now legal on a `flag()` inhibit: pause a hold's
+  clock without silencing the output.** `action` decides what happens to the
+  audio; `kind` decides how the sample is scored. Those are two independent
+  questions, and until now the second only worked when the answer to the first
+  was "silence it" — `_compute_artifact_muted` built the observability mask
+  from the gates `_compute_muted` had recorded, and it records none for a flag.
+  So marking a sample unobservable and cutting the tone were the same act, and
+  a protocol could not ask for one without the other. SPEC §4.6 now carries the
+  full 2×2.
+
+  **Why a protocol wants the new cell.** Contamination comes in two kinds. A
+  jaw clench is not-brain: an ungated tone tracks raw amplitude, so a clench
+  would arrive as a loud reward, and EMG must stay a `mute` with `kind =
+  "artifact"` — pause the clock *and* cut the audio. Alpha intruding on an SMR
+  band is brain signal that merely makes the reading unreliable; there the
+  right declaration is "do not credit this sample, and do not silence the
+  output either", which had no spelling. On one real-EEG protocol the four
+  guards were gating two-thirds of the session, and an onset trigger bound in
+  `output { }` lost a third of its events to gates that existed only to stop
+  the *reward* crediting a contaminated sample.
+
+  An artifact flag takes no `release`, and `flag()` still accepts no arguments:
+  a release hangover exists to stop an audio gate chattering across its
+  threshold, and a flag has no audio gate. A mask that dithers costs a hold
+  nothing, because freezing only pauses. That is also the one observable
+  difference from an artifact mute — the mute's hangover extends its mask, the
+  flag's ends with the artifact — and both engines reproduce it sample for
+  sample.
+
+  `kind = "trained"` on a flag is **still** a resolve-time error, and for the
+  original reason. A trained label asserts the sample resets a hold, which is
+  what an unlabelled inhibit bound in `output { }` already does; a flag changes
+  neither the gate nor the scoring, so there the label really is the silent
+  no-op the check was written to catch.
+
+### Changed
+
+- **IR-JSON gains v0.7, which is a byte-for-byte copy of v0.6 but for the
+  version string.** This is the first version bump that is not about a field
+  the older schema has no slot for. Both `kind` and the flag action exist in
+  0.6, so a 0.6 document carries the pair perfectly — and a 0.6 engine
+  deserializes every byte of it and still runs a different protocol, because
+  through 0.25.x it refused the pair at resolve time and builds its artifact
+  mask only from inhibits that gate output. It would leave a hold running
+  through exactly the samples the author declared unreadable, which is the
+  failure the label exists to prevent. The version is the only thing that can
+  carry that difference, so an artifact-labelled flag emits 0.7 and nothing
+  else does. An unlabelled flag stays on whatever version it had: it modifies
+  nothing on any engine that has ever existed, so moving it would be a refusal
+  for documentation.
+
+### Known gaps
+
+- **The editor cannot round-trip an artifact flag yet.** `inhibit.artifact` in
+  the editor catalog renders `action = mute(release: ...)` and nothing else, so
+  a protocol declaring `flag()` with an artifact label falls out of the editor
+  subset. It fails *loudly* — `describe_protocol` reports "artifact inhibit
+  action is flag, not mute; this block renders only mute(release: ...), so
+  accepting it would re-render the inhibit as a mute" — so nothing is silently
+  dropped or silently rewritten. A new catalog block is wanted before any
+  practitioner-editable protocol uses the pairing.
 
 ## [0.25.1] — 2026-11-19
 
