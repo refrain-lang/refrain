@@ -71,6 +71,16 @@ bumps are additive; major bumps may break compatibility.
   dropped or silently rewritten. A new catalog block is wanted before any
   practitioner-editable protocol uses the pairing.
 
+  A catalog block alone would not be enough for the protocol that motivated
+  this change, and that part is **not** caused by it. Those guards read an
+  existing derive through the `linear(..., slope: 1)` affine identity rather
+  than computing a `bandpower`, and `inhibit.artifact` hardcodes the
+  `bandpower` metric too. Checked on an artifact **mute** with a `linear`
+  metric — no flag anywhere in it — and the matcher does not refuse cleanly,
+  it raises `AttributeError: 'NoneType' object has no attribute 'value'`,
+  which `describe_protocol` reports as the `reason` string. So the editor owes
+  that shape a clean refusal before it owes anything a new block.
+
 ## [0.25.1] — 2026-11-19
 
 **A release-infrastructure fix. No change to the engines, the language, the IR
