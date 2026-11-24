@@ -866,6 +866,65 @@ def test_an_artifact_inhibit_whose_action_is_a_mute_is_still_in_the_subset():
     assert _component(d, "emg")["block"] == "inhibit.artifact"
 
 
+# `ALL_FOUR`'s two channels carry no hold of their own — `reward.event` and a
+# conditional over reward fields — so an `exempt` naming either is refused by
+# the RESOLVER as a no-op before the editor is reached. A detector channel is
+# what makes the editor's own refusal reachable at all.
+_WITH_DETECTOR = ALL_FOUR.replace(
+    "output { audio_chime = reward.event;",
+    'output { det = hold_for(condition: above("env", "env_t"), duration: 300 ms); '
+    "audio_chime = reward.event;",
+)
+
+
+def test_an_artifact_inhibit_declaring_exempt_is_not_in_the_subset():
+    """Same fidelity argument as the freeze refusal above, with sharper teeth.
+
+    This block renders a fixed set of slots and has none for `exempt`, so
+    accepting it would hand back a protocol whose detector freezes in exactly
+    the samples the author declared it should fire through — the failure
+    `exempt` was added to fix, reintroduced by the tool meant to preserve it.
+    """
+    src = _WITH_DETECTOR.replace(
+        'kind      = "artifact"', 'kind      = "artifact"\n    exempt    = ["det"]')
+    d = describe_protocol(src)
+    assert d["ok"] is True          # it resolves; it is the EDITOR that refuses
+    assert d["in_subset"] is False
+    # Named, not incidental: a future unrelated exclusion must not satisfy this.
+    assert "exempt" in d["reason"], d["reason"]
+
+
+def test_exempting_a_channel_that_holds_nothing_never_reaches_the_editor():
+    """The resolver's no-op check fires first, and that ordering is the point:
+    the author hears "this would do nothing" rather than "this tool cannot
+    render it", which are different problems with different fixes."""
+    src = ALL_FOUR.replace(
+        'kind      = "artifact"', 'kind      = "artifact"\n    exempt    = ["audio_chime"]')
+    d = describe_protocol(src)
+    assert d["ok"] is False
+    assert "contains no" in d["reason"], d["reason"]
+
+
+def test_the_exempt_refusal_wins_over_the_pre_existing_generic_one():
+    """An output-bound `hold_for` is ALREADY outside this editor's subset, for
+    a reason that predates `exempt` and has nothing to do with it: the output
+    renderer handles no call expression and reports the bare `"expr Call"`.
+    So the whole detector-bearing family — the SMR spindle protocol included —
+    was never editable.
+
+    The `exempt` refusal still has to be the one reported, because it is the
+    one that names something the author can act on. A protocol out of subset
+    for two reasons should surface the specific one."""
+    generic = describe_protocol(_WITH_DETECTOR)
+    assert generic["in_subset"] is False
+    assert "exempt" not in str(generic["reason"])      # the older, vaguer refusal
+
+    named = describe_protocol(_WITH_DETECTOR.replace(
+        'kind      = "artifact"', 'kind      = "artifact"\n    exempt    = ["det"]'))
+    assert named["in_subset"] is False
+    assert "exempt" in named["reason"], named["reason"]
+
+
 def test_dropping_the_inhibit_kind_from_the_model_changes_the_rendered_ir():
     d = describe_protocol(ALL_FOUR)
     del _component(d, "emg")["slots"]["kind"]
