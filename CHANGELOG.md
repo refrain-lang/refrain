@@ -7,6 +7,8 @@ bumps are additive; major bumps may break compatibility.
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-11-24
+
 ### Added
 
 - **`exempt` on an artifact inhibit: name the output channels its label does
