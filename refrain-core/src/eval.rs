@@ -605,6 +605,9 @@ struct CompiledInhibit {
     /// `Some("artifact")` makes this inhibit's muted samples unobservable to
     /// a hold rather than failing ones (mirrors `IRInhibit.kind`).
     kind: Option<String>,
+    /// Output channels this artifact label does NOT pause (mirrors
+    /// `IRInhibit.exempt`). Empty is the default and every pre-0.8 document.
+    exempt: Vec<String>,
 }
 
 // --- Staged-protocol phase cursor -----------------------------------------
@@ -1821,6 +1824,15 @@ impl Evaluator {
         // off the same `gate.gate(&active)` output — the gate carries the
         // release hangover, so it must be stepped exactly once per chunk.
         let mut artifact_muted = vec![false; n];
+        // Each artifact inhibit's OWN contribution, kept only when some
+        // channel is exempt from something. Needed because the gate below is
+        // stepped exactly once per chunk — it carries the release hangover —
+        // so a per-channel mask cannot be had by running the loop again.
+        // Python can simply call `_compute_artifact_muted` a second time,
+        // because there it reads gate output this loop already recorded.
+        let needs_per_channel_observable =
+            self.inhibits.iter().any(|ih| !ih.exempt.is_empty());
+        let mut artifact_parts: Vec<(String, Vec<bool>)> = Vec::new();
         let mut adv_inhibits: Vec<(String, Vec<bool>)> = Vec::new();
         let mut adv_checks: Vec<Vec<bool>> = Vec::new();
         let mut adv_events: Vec<bool> = vec![false; n];
@@ -1866,6 +1878,12 @@ impl Evaluator {
             // `_compute_artifact_muted`'s second loop in `eval_.py`.
             if allowed {
                 let is_artifact = ih.kind.as_deref() == Some("artifact");
+                let short = ih
+                    .canonical_name
+                    .split_once('/')
+                    .map(|(_, n)| n)
+                    .unwrap_or(ih.canonical_name.as_str())
+                    .to_string();
                 match ih.gate.as_mut() {
                     Some(gate) => {
                         let g = gate.gate(&active);
@@ -1875,10 +1893,16 @@ impl Evaluator {
                                 artifact_muted[i] |= g[i];
                             }
                         }
+                        if is_artifact && needs_per_channel_observable {
+                            artifact_parts.push((short, g));
+                        }
                     }
                     None if is_artifact => {
                         for i in 0..n {
                             artifact_muted[i] |= active[i];
+                        }
+                        if needs_per_channel_observable {
+                            artifact_parts.push((short, active.clone()));
                         }
                     }
                     None => {}
@@ -2068,6 +2092,48 @@ impl Evaluator {
         // evaluates next. The output loop puts it back for itself.
         env.remove("__hold_for_observable");
 
+        // Per-channel observability (SPEC §4.6), built once per chunk. A
+        // channel named in an artifact inhibit's `exempt` list does not pause
+        // for that inhibit, so it gets a mask ORed from the OTHER artifact
+        // inhibits only. A channel absent from this map takes the shared
+        // vector — which is every channel of every protocol that declares no
+        // `exempt`, and the same array the reward stage was given above. The
+        // reward stage is never in this map: the criterion is the consumer
+        // the label exists to protect.
+        let mut per_channel_observable: HashMap<String, Vec<bool>> = HashMap::new();
+        if needs_per_channel_observable {
+            for (ch, _, _) in self.outputs.iter() {
+                let exempt_here: Vec<&str> = self
+                    .inhibits
+                    .iter()
+                    .filter(|ih| {
+                        ih.kind.as_deref() == Some("artifact")
+                            && ih.exempt.iter().any(|e| e == ch)
+                    })
+                    .map(|ih| {
+                        ih.canonical_name
+                            .split_once('/')
+                            .map(|(_, n)| n)
+                            .unwrap_or(ih.canonical_name.as_str())
+                    })
+                    .collect();
+                if exempt_here.is_empty() {
+                    continue;
+                }
+                let mut masked = vec![false; n];
+                for (name, part) in artifact_parts.iter() {
+                    if exempt_here.contains(&name.as_str()) {
+                        continue;
+                    }
+                    for i in 0..n {
+                        masked[i] |= part[i];
+                    }
+                }
+                per_channel_observable
+                    .insert(ch.clone(), masked.iter().map(|&b| !b).collect());
+            }
+        }
+
         let mut outs: Vec<(String, Val)> = Vec::new();
         for (ch, node, is_event) in self.outputs.iter_mut() {
             let active = !mutes_output
@@ -2076,14 +2142,27 @@ impl Evaluator {
                 muted.iter().map(|&blocked| active && !blocked).collect()
             ));
             // The second mask (`_hold_for_observable`). It carries ONLY the
-            // artifact label and does not vary by channel: a mid-session rest
-            // and an inactive-block channel are reasons the engine scored a
-            // sample, not reasons it could not read one. Inserted beside the
-            // eligibility mask so the two stay visibly one pair. The same
-            // vector the reward stage above was given — one answer to "could
-            // the engine read this sample", whichever stage is asking.
-            env.insert("__hold_for_observable".to_string(),
-                       Val::B(artifact_observable.clone()));
+            // artifact label: a mid-session rest and an inactive-block
+            // channel are reasons the engine scored a sample, not reasons it
+            // could not read one. Inserted beside the eligibility mask so the
+            // two stay visibly one pair.
+            //
+            // It varies by channel only where an inhibit named this channel
+            // in its `exempt` list. Without that, this is the same vector the
+            // reward stage was given — one answer to "could the engine read
+            // this sample", whichever stage is asking. With it, the criterion
+            // still refuses to bank a contaminated sample while a detector
+            // bound here fires through it (mirrors `_observable_for` in
+            // `eval_.py`).
+            env.insert(
+                "__hold_for_observable".to_string(),
+                Val::B(
+                    per_channel_observable
+                        .get(ch.as_str())
+                        .unwrap_or(&artifact_observable)
+                        .clone(),
+                ),
+            );
             let v = match (node.eval(&env, n), *is_event) {
                 (Val::B(values), false) => Val::F(values.into_iter().map(bool_f).collect()),
                 (value, _) => value,
@@ -3279,6 +3358,7 @@ fn build_inhibit(ih: &crate::ir::Inhibit, ctx: &mut BuildCtx) -> CompiledInhibit
         threshold,
         gate,
         kind: ih.kind.clone(),
+        exempt: ih.exempt.clone(),
     }
 }
 

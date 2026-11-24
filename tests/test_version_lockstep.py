@@ -60,7 +60,7 @@ def test_refrain_and_refrain_core_versions_match():
 #      nothing, and that is exactly how (4) was missed for v0.7: the whole
 #      Python suite passed while `cargo test` sat at exit 101, because the only
 #      alarm lived in a gate that is not part of a `pytest` run.
-NEWEST_IR_VERSION = "0.7"
+NEWEST_IR_VERSION = "0.8"
 
 _SCHEMA_RE = re.compile(r"ir-json-v(\d+\.\d+)\.schema\.json\Z")
 

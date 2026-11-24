@@ -374,6 +374,22 @@ def _match_reward_component(decl: A.NamedDecl) -> dict:
         # keyword (`reward`/`inhibit`), the *slot* named `kind` is the label.
         label = bm.get("kind")
         kind_slot = {} if label is None else {"kind": label.value}
+        # `exempt` has no slot in this block, and the block's promise is to
+        # give back the source the author wrote. Dropping it would re-render a
+        # protocol whose detector fires through contamination as one whose
+        # detector freezes in it — the precise failure the field was added to
+        # fix, reintroduced by the tool meant to preserve it. Out of subset is
+        # the honest answer, as for `freeze` above.
+        #
+        # Reachable only through an artifact MUTE: an artifact flag is already
+        # refused by the action check above. A mute plus `exempt` is a narrower
+        # thing to write (the audio is gated regardless, so the exemption only
+        # frees the hold clock) but it resolves, so it can reach here.
+        if "exempt" in bm:
+            raise _NotInSubset(
+                "artifact inhibit declares `exempt`, which this block has no "
+                "slot for; accepting it would re-render the inhibit without "
+                "the exemption and silently re-freeze the channels it names")
         return {"name": decl.name, "kind": decl.keyword, "block": "inhibit.artifact",
                 "slots": {"input": _arg(metric, "input").value,
                           "band_low_hz": _slot_from_expr(band.elements[0]),

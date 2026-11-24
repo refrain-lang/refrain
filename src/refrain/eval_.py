@@ -40,6 +40,7 @@ from .ir import (
     IRConditional,
     IRControlRef,
     IRExpr,
+    MASKED_HOLD_PRIMITIVES,
     IRNumberLit,
     IRProtocol,
     IRRewardField,
@@ -543,6 +544,22 @@ class Evaluator:
         # condition reading last chunk's masks.
         self._hold_for_eligible: np.ndarray | None = None
         self._hold_for_observable: np.ndarray | None = None
+
+        # Per-channel artifact exemptions (§4.6), resolved once rather than
+        # per chunk: `{channel: frozenset(inhibit names that do NOT pause it)}`.
+        # A channel with nothing to exempt is absent, and when the whole map is
+        # empty the chunk path takes the shared mask unchanged — so a protocol
+        # that declares no `exempt` computes exactly what it computed before
+        # this existed, from the same single array.
+        self._channel_artifact_exempt: dict[str, frozenset[str]] = {}
+        for _channel in self.ir.output:
+            _names = frozenset(
+                ih.name
+                for ih in self.ir.inhibits.values()
+                if ih.kind == "artifact" and _channel in ih.exempt
+            )
+            if _names:
+                self._channel_artifact_exempt[_channel] = _names
 
         # Rust backend delegation (set by Evaluator.live when backend="rust").
         # When not None, all public push-mode methods forward to _rust.
@@ -1708,6 +1725,24 @@ class Evaluator:
         # early-return so a host clinician observation window can plot
         # envelopes / thresholds / output traces during warmup.
         per_channel_output: dict[str, tuple[np.ndarray, bool]] = {}
+
+        # One mask per distinct exempt-set, built on demand and shared by every
+        # channel with the same set. Protocols have one or two of these at
+        # most, and a protocol with none never enters the branch at all.
+        _observable_cache: dict[frozenset[str], np.ndarray] = {}
+
+        def _observable_for(channel: str) -> np.ndarray:
+            ex = self._channel_artifact_exempt.get(channel)
+            if ex is None:
+                return artifact_observable
+            cached = _observable_cache.get(ex)
+            if cached is None:
+                cached = ~self._compute_artifact_muted(
+                    inhibit_active, actual_chunk_size, active_block, exclude=ex
+                )
+                _observable_cache[ex] = cached
+            return cached
+
         for channel, expr in self.ir.output.items():
             # Held feedback states must lose eligibility on guards, muted
             # phases, and inactive blocks, not merely have their output hidden.
@@ -1715,13 +1750,19 @@ class Evaluator:
             self._hold_for_eligible = (
                 ~muted & (not suppress_output) & (channel in active_channels)
             )
-            # The second mask. It carries ONLY the artifact label and does not
-            # vary by channel: a mid-session rest and an inactive-block
-            # channel are reasons the engine scored a sample, not reasons it
-            # could not read one, so neither belongs here. The same array the
-            # reward stage above was given — one answer to "could the engine
-            # read this sample", whichever stage is asking.
-            self._hold_for_observable = artifact_observable
+            # The second mask. It carries ONLY the artifact label: a
+            # mid-session rest and an inactive-block channel are reasons the
+            # engine scored a sample, not reasons it could not read one, so
+            # neither belongs here.
+            #
+            # It varies by channel only where an inhibit named this channel in
+            # its `exempt` list. Without that — every protocol written before
+            # the field existed — this is the same array the reward stage was
+            # given, one answer to "could the engine read this sample"
+            # whichever stage is asking. With it, the reward criterion still
+            # refuses to bank a contaminated sample while a detector bound
+            # here fires through it, which one shared array could not express.
+            self._hold_for_observable = _observable_for(channel)
             values = self._eval_expr(
                 expr,
                 stream_values, control_chunks_cache, actual_chunk_size,
@@ -2327,7 +2368,7 @@ class Evaluator:
                     reward_composite=reward_composite, reward_component_signals=reward_component_signals,
                 )
             )
-        if call.callee in ("hold_for", "dwell", "dwell_rearm") and (
+        if call.callee in MASKED_HOLD_PRIMITIVES and (
             self._hold_for_eligible is not None
             or self._hold_for_observable is not None
         ):
@@ -2500,9 +2541,21 @@ class Evaluator:
         return muted
 
     def _compute_artifact_muted(
-        self, inhibit_active: dict[str, np.ndarray], chunk_size: int, active_block=None
+        self,
+        inhibit_active: dict[str, np.ndarray],
+        chunk_size: int,
+        active_block=None,
+        *,
+        exclude: frozenset[str] | None = None,
     ) -> np.ndarray:
         """`muted`, restricted to the inhibits labelled `kind = "artifact"`.
+
+        `exclude` leaves the named inhibits out of the OR, which is how a
+        channel listed in an inhibit's `exempt` gets a mask that does not
+        pause it (§4.6). `None` — the default and every pre-`exempt` caller —
+        includes every artifact inhibit. Safe to call more than once per
+        chunk: this reads the gate outputs `_compute_muted` already recorded
+        and steps nothing, so a second call cannot shorten a release.
 
         The same combination rule as `_compute_muted`: the same block-scoping
         `allowed` filter, the same exclusion of `flag` inhibits, the same OR
@@ -2540,6 +2593,8 @@ class Evaluator:
             short = canonical.split("/", 1)[-1]
             if allowed is not None and short not in allowed:
                 continue
+            if exclude is not None and short in exclude:
+                continue
             inhibit = self.ir.inhibits.get(short)
             if inhibit is None or inhibit.kind != "artifact":
                 continue
@@ -2560,6 +2615,8 @@ class Evaluator:
         for canonical, active in inhibit_active.items():
             short = canonical.split("/", 1)[-1]
             if allowed is not None and short not in allowed:
+                continue
+            if exclude is not None and short in exclude:
                 continue
             inhibit = self.ir.inhibits.get(short)
             if inhibit is None or inhibit.kind != "artifact":

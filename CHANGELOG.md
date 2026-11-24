@@ -9,6 +9,58 @@ bumps are additive; major bumps may break compatibility.
 
 ### Added
 
+- **`exempt` on an artifact inhibit: name the output channels its label does
+  not pause.** The observability mask was one array handed to every output
+  channel and to the reward stage, which made `kind = "artifact"` a
+  protocol-wide statement. Two consumers of the same contaminated sample can
+  want opposite things, and in the SMR spindle protocol they did: the reward
+  criterion must not bank it, while an onset detector bound in `output { }`
+  should still fire on it, because a burst rising through an alpha intrusion
+  is still a burst rising. One declaration could not give them different
+  answers.
+
+  Measured on the real corpus, that cost 63 of 358 spindles. Labelling theta
+  and alpha as artifacts took the criterion from 24.4 rewards/min to 17.1
+  against a true spindle rate of 13–15 — the honest number — and dropped the
+  detector from 67.0% of spindles caught to 55.2%, because the detector's own
+  dwell froze in exactly the samples the label covered. On one recording, at
+  identical 28.7% muting, the label alone cut raw detector fires from 189 to
+  139; with `exempt = ["audio_chime"]` the same recording gives 189 again,
+  matching a reference protocol carrying no label at all.
+
+  ```
+  inhibit "alpha" {
+    action = flag()
+    kind   = "artifact"
+    exempt = ["audio_chime"]
+  }
+  ```
+
+  **Absent means pause everything**, which is every protocol written before
+  this and the conservative reading. The list is therefore a *denylist*: a
+  channel added later pauses unless someone says otherwise, where an allowlist
+  would silently stop pausing for anything new. `exempt` requires `kind =
+  "artifact"`, since nothing else pauses a clock; `[]` is refused as a second
+  spelling of the default; every entry must name a bound channel whose binding
+  actually contains a `hold_for` / `dwell` / `dwell_rearm`. A channel bound to
+  `reward.event` carries no hold of its own — the reward stage ran before the
+  output loop and takes the shared mask — so exempting it would do nothing and
+  is refused with that reason. The reward stage itself is never exempt: it is
+  the consumer the label exists to protect.
+
+  `exempt` frees the clock, never the audio. Under a `mute` or `freeze` the
+  channel is still gated while the gate is up; its streak simply advances
+  behind a closed gate. Legal, and narrower than it reads.
+
+  A protocol with a non-empty `exempt` emits **IR-JSON 0.8**. This one is a
+  dropped key of the plainest kind: an engine ignoring the field pauses every
+  channel, so the detector the author freed freezes in exactly the samples
+  they declared it should fire through. The 0.8 schema is a byte-for-byte copy
+  of 0.7 — the key is additive — and the version exists only so an older
+  engine refuses the document instead of mis-scoring it. `describe_protocol`
+  reports a protocol carrying `exempt` as out of its subset rather than
+  re-rendering it without the field, for the same reason.
+
 - **`kind = "artifact"` is now legal on a `flag()` inhibit: pause a hold's
   clock without silencing the output.** `action` decides what happens to the
   audio; `kind` decides how the sample is scored. Those are two independent

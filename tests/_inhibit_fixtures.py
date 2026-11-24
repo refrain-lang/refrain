@@ -38,16 +38,44 @@ _BASE = '''protocol "inhibit_kind_demo" {
     action    = __ACTION____KIND__
   }
   reward { continuous = sigmoid("env" / "thr", midpoint: 1.0, steepness: 3) }
-  output { fb = reward.continuous }
+  output { fb = reward.continuous__DETECTOR__ }
 }'''
+
+# An independent hold bound in `output { }` — the shape `exempt` exists for.
+# `fb = reward.continuous` carries no hold of its own (the sigmoid is
+# stateless, and a reward-stage hold would run before the output loop), so a
+# fixture with only `fb` cannot exercise a per-channel exemption at all: the
+# resolver correctly refuses it as a no-op.
+_DETECTOR = '; det = dwell(condition: above("env", "thr"), duration: 100 ms)'
+
 
 
 def inhibit_protocol(
-    *, action: str = "mute(release: 200 ms)", kind: str | None = None
+    *,
+    action: str = "mute(release: 200 ms)",
+    kind: str | None = None,
+    exempt: str | None = None,
+    detector: bool = False,
 ) -> str:
-    """Protocol source with one inhibit. `kind=None` writes no `kind` field."""
+    """Protocol source with one inhibit.
+
+    `detector=True` adds a second output channel, `det`, bound to an
+    independent `dwell` — the only shape a per-channel `exempt` can affect,
+    since `fb = reward.continuous` holds nothing of its own.
+
+    `kind=None` writes no `kind` field. `exempt=None` writes no `exempt`
+    field, which is the default meaning "pause every channel". Pass `exempt`
+    as the literal source of the list, e.g. `'["fb"]'`, so a test can supply
+    a malformed one. `_BASE` binds exactly one output channel, `fb`.
+    """
     label = "" if kind is None else f'\n    kind      = "{kind}"'
-    return _BASE.replace("__ACTION__", action).replace("__KIND__", label)
+    if exempt is not None:
+        label += f"\n    exempt    = {exempt}"
+    return (
+        _BASE.replace("__ACTION__", action)
+        .replace("__KIND__", label)
+        .replace("__DETECTOR__", _DETECTOR if detector else "")
+    )
 
 
 # ---------------------------------------------------------------------------
