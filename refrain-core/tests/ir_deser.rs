@@ -20,11 +20,13 @@ fn deserializes_feedback_v05_and_rejects_newer_wire_versions() {
     let feedback = p.feedback.unwrap();
     assert_eq!(feedback.entries[0].role, "approach");
     // The refusal has to be on a tag this build genuinely does not know.
-    // v0.6 (hold dip tolerance) is supported now, so the gate moved up one;
-    // this assertion fails loudly when the next version lands without
-    // someone moving it again, which is the whole point of the gate.
-    assert_eq!(SUPPORTED_IR_VERSIONS.last(), Some(&"0.6"));
-    let future: Protocol = serde_json::from_str(&json.replace("\"0.5\"", "\"0.7\"")).unwrap();
+    // v0.8 (an inhibit with a non-empty `exempt`) is supported now, so the
+    // gate moved up one; this assertion fails loudly when the next version
+    // lands without someone moving it again, which is the whole point of the
+    // gate. Both lines move together: the tag used to prove the refusal must
+    // stay one ahead of the newest supported one, or it proves nothing.
+    assert_eq!(SUPPORTED_IR_VERSIONS.last(), Some(&"0.8"));
+    let future: Protocol = serde_json::from_str(&json.replace("\"0.5\"", "\"0.9\"")).unwrap();
     assert!(check_ir_version(&future).is_err());
 }
 

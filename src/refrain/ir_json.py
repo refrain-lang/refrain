@@ -245,7 +245,36 @@ def _protocol_ir_version(ir: IRProtocol, ctx: _EmitCtx) -> str:
     re-measuring would train against a threshold set from a state the trainee
     has since left. An empty `reseed` — which is every block written before
     the field existed — emits no key and does not bump the version.
+
+    An inhibit labelled `kind = "artifact"` whose action is `flag()` emits
+    v0.7. An inhibit carrying a non-empty `exempt` emits v0.8, and that one
+    IS a dropped key of the plainest kind: an engine ignoring `exempt` pauses
+    every channel, so the detector the author freed freezes in exactly the
+    samples they declared it should fire through — the document would run the
+    problem rather than the fix. Like v0.7 the schema is a byte-for-byte copy
+    of its predecessor, because the key is additive and the inhibit object is
+    not closed to extra properties; the version exists so an older engine
+    refuses the document instead of mis-scoring it.
+
+    The v0.7 case is subtler, and is the only thing that reaches 0.7. It is
+    not a dropped key:
+    both `kind` and the flag action exist in 0.6, so a 0.6 engine reads every
+    byte of the document and still runs a different protocol, because through
+    0.25.x `kind` on a flag was a resolve-time error and the engine's artifact
+    mask is built only from inhibits that gate output. Such an engine would
+    leave the hold unfrozen through exactly the samples the author declared
+    unreadable — the failure the label was added to prevent — so the version
+    has to move even though the schema does not. v0.7 is a byte-for-byte copy
+    of v0.6 but for the version string, which is the point: it exists so an
+    older engine refuses the document instead of mis-scoring it.
     """
+    if any(ih.exempt for ih in ir.inhibits.values()):
+        return "0.8"
+    if any(
+        ih.kind == "artifact" and ih.action_kind == "flag"
+        for ih in ir.inhibits.values()
+    ):
+        return "0.7"
     if (
         _bakes_a_hold_tolerance(ir, ctx)
         or any(ih.kind == "artifact" for ih in ir.inhibits.values())
@@ -545,6 +574,12 @@ def _emit_inhibit(ih: IRInhibit, ctx: _EmitCtx) -> dict:
         # a new key in every document in the corpus and move every pinned IR
         # hash, for a field that says nothing.
         obj["kind"] = ih.kind
+    if ih.exempt:
+        # Same precaution, and the same reason the empty tuple is the default:
+        # an unconditional `"exempt": []` would move every pinned IR hash in
+        # the corpus for a field that says "pause everything", which is what
+        # absence already says.
+        obj["exempt"] = list(ih.exempt)
     return obj
 
 

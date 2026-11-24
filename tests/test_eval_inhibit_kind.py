@@ -68,12 +68,14 @@ protocol "artifact gate" {
   inhibit "gate" {
     metric    = rectify("emg_level")
     threshold = absolute(0.5 uV)
-    action    = mute(release: RELEASE)
+    action    = ACTION
     KIND
+    EXEMPT
   }
   reward { continuous = sigmoid("level" / "t", midpoint: 1.0, steepness: 3) }
   output {
     latch = hold_for(condition: above("level", "t"), duration: 50 msTOL)
+    DET
     gain  = 0.5
   }
   SESSION
@@ -109,10 +111,24 @@ PHASE_BOUNDARY = 200       # samples per 1 s phase at 200 Hz
 GAP_LEAD_IN = PHASE_BOUNDARY - 9   # 9 qualifying samples before the boundary
 
 
-def _ir(kind: str | None, tolerance: str | None, session: str, release: str):
+# `det` is a twin of `latch`: the same condition, the same duration, bound in
+# the same `output` block. The only thing that can ever separate their answers
+# is the per-channel observability mask, which is exactly what `exempt`
+# changes. Added only when asked for, so every pre-`exempt` test resolves the
+# document it has always resolved — and `BLOCK_SESSION`'s output lists do not
+# name `det`, so a detector is never combined with a block session.
+DETECTOR = 'det   = hold_for(condition: above("level", "t"), duration: 50 msTOL)'
+
+
+def _ir(kind: str | None, tolerance: str | None, session: str, release: str,
+        action: str = "mute", exempt: str | None = None, detector: bool = False):
     src = PROTOCOL.replace("KIND", "" if kind is None else f'kind = "{kind}"')
+    src = src.replace("EXEMPT", "" if exempt is None else f"exempt = {exempt}")
+    src = src.replace("DET", DETECTOR if detector else "")
     src = src.replace("TOL", "" if tolerance is None else f", tolerance: {tolerance}")
-    src = src.replace("RELEASE", release)
+    src = src.replace(
+        "ACTION", "flag()" if action == "flag" else f"{action}(release: {release})"
+    )
     return resolve(parse(src.replace("SESSION", session)))
 
 
@@ -127,6 +143,9 @@ def _run(
     chunk: int = 64,
     freeze_before: int | None = None,
     release: str = "5 ms",
+    action: str = "mute",
+    exempt: str | None = None,
+    detector: bool = False,
 ) -> dict[str, np.ndarray]:
     """Feed one `level`/`emg` pair; return the whole run's per-sample streams.
 
@@ -137,7 +156,8 @@ def _run(
     """
     signal = np.column_stack((np.where(level, 1.0, 0.2), np.where(emg, 1.0, 0.0)))
     evaluator = Evaluator.live(
-        _ir(kind, tolerance, session, release), sample_rate_hz=RATE,
+        _ir(kind, tolerance, session, release, action, exempt, detector),
+        sample_rate_hz=RATE,
         channel_names=("Cz", "A1"), record_streams=True, backend=backend,
     )
     evaluator.start(skip_warmup=True)
@@ -410,3 +430,174 @@ def test_a_frozen_transport_clock_still_resets_the_clock(backend):
     assert _muted_samples(frozen) == []
     assert _first_hold(running) == 9
     assert _first_hold(frozen) == 9 + HOLD_SAMPLES - 1
+
+
+# ---------------------------------------------------------------------------
+# The bold cell of SPEC §4.6's table: `flag()` plus `kind = "artifact"`.
+#
+# `action` decides what happens to the audio, `kind` decides how the sample is
+# scored, and this is the pair that separates them — "do not credit this
+# sample, and do not silence the output either". The two assertions below are
+# the whole primitive, and they have to hold together: the SAME clock answer
+# an artifact mute gives, and the OPPOSITE audio answer.
+#
+# The clock answer differs from the artifact mute's by exactly the release
+# hangover, because an artifact flag has none (a release exists to stop an
+# audio gate chattering; there is no audio gate here). So the unobservable
+# run is samples 9..13 — the 5 active samples and nothing more — and sample 14
+# is both the first readable sample and the streak's 10th.
+# ---------------------------------------------------------------------------
+
+FLAG_RESUME = MUTE_START + MUTE_ACTIVE          # 14, no release hangover
+FLAG_HELD_ANSWER = FLAG_RESUME                  # streak survived: 9 + 1
+# With no label the flag freezes nothing either, so the 5 failing samples zero
+# the streak and it has to climb all 10 again from sample 14. Not `RESET_ANSWER`:
+# that one is a sample later, because it counts from the end of a mute's release
+# hangover and an ungated flag has no hangover to wait out.
+FLAG_RESET_ANSWER = FLAG_RESUME + HOLD_SAMPLES - 1          # 23
+
+
+def test_an_artifact_flag_holds_the_clock_without_gating_the_output(backend):
+    """The new cell: the clock is held through the artifact, and the trainee
+    hears the tone the whole way through."""
+    level, emg = _swallow()
+    streams = _run(backend, level, emg, kind="artifact", action="flag")
+
+    # scored as unobservable: the streak survives the dropout
+    assert _first_hold(streams) == FLAG_HELD_ANSWER
+    # and the audio was never gated -- the witness channel never reaches 0.0
+    assert _muted_samples(streams) == []
+
+
+def test_an_artifact_flag_and_an_artifact_mute_agree_on_the_clock(backend):
+    """The flag changes the audio, not the scoring. Both hold the streak; they
+    differ only by the mute's release hangover, which the flag has no use
+    for."""
+    level, emg = _swallow()
+    flagged = _run(backend, level, emg, kind="artifact", action="flag")
+    muted = _run(backend, level, emg, kind="artifact", action="mute")
+
+    assert _first_hold(flagged) == FLAG_HELD_ANSWER
+    assert _first_hold(muted) == HELD_ANSWER
+    assert _first_hold(muted) - _first_hold(flagged) == RELEASE_SAMPLES
+    # the one that gates, gates; the one that does not, does not
+    assert _muted_samples(muted) == list(range(MUTE_START, MUTE_END + 1))
+    assert _muted_samples(flagged) == []
+
+
+def test_an_unlabelled_flag_still_changes_nothing_at_all(backend):
+    """The regression pin under the change: a flag with no `kind` is still
+    telemetry. It must not acquire a freeze by being a flag."""
+    level, emg = _swallow()
+    streams = _run(backend, level, emg, kind=None, action="flag")
+
+    # no gate and no freeze: the streak is zeroed by the failing samples
+    # themselves, exactly as it would be with no inhibit declared at all
+    assert _first_hold(streams) == FLAG_RESET_ANSWER
+    assert FLAG_RESET_ANSWER == RESET_ANSWER - RELEASE_SAMPLES
+    assert _muted_samples(streams) == []
+
+
+def test_a_dip_inside_an_artifact_flag_does_not_count_against_tolerance(backend):
+    """The dip counter freezes too, not just the streak — the same guarantee
+    `test_a_dip_inside_an_artifact_mute_does_not_count_against_tolerance`
+    pins for the muting case. A flag that froze the streak but let the
+    unobservable samples burn tolerance would reset the hold on any artifact
+    longer than the tolerance, which is the failure the label prevents."""
+    level, emg = _swallow()
+    # tolerance is 3 samples; the artifact is 5, so a dip counter that ran
+    # during it would exceed the tolerance and zero the streak
+    streams = _run(backend, level, emg, kind="artifact", action="flag",
+                   tolerance=TOLERANCE)
+
+    assert MUTE_ACTIVE > TOLERANCE_SAMPLES
+    assert _first_hold(streams) == FLAG_HELD_ANSWER
+    assert _muted_samples(streams) == []
+
+
+# ---------------------------------------------------------------------------
+# Per-channel exemption (SPEC §4.6). Until `exempt` existed, the observability
+# mask was ONE array handed to every output channel and to the reward stage,
+# so a protocol could not say "pause the criterion through this contamination
+# but let the detector fire through it". Both consumers had to agree, and in
+# the SMR spindle protocol they wanted opposite things: measured on the real
+# corpus, labelling theta and alpha as artifacts made the criterion honest
+# (24.4 -> 17.1 rewards/min against a true spindle rate of 13-15) and cost the
+# onset detector 63 of 358 spindles, because the detector's own dwell froze in
+# exactly the samples the label covered.
+#
+# `det` below is `latch`'s twin — same condition, same duration, same block —
+# so any difference between their answers is the mask and nothing else.
+# ---------------------------------------------------------------------------
+
+def _first_det_hold(streams: dict[str, np.ndarray]) -> int | None:
+    held = np.flatnonzero(streams["output/det"])
+    return int(held[0]) if held.size else None
+
+
+def test_an_exempt_channel_and_its_twin_disagree_in_one_run(backend):
+    """The whole point of the field, in a single document.
+
+    `latch` is paused by the artifact label and survives the dropout; `det`
+    is exempt, so it sees the bare condition, which genuinely fails during
+    the swallow, and starts again. One shared array could not produce both
+    numbers at once — that is the limitation `exempt` removes."""
+    level, emg = _swallow()
+    streams = _run(backend, level, emg, kind="artifact", action="flag",
+                   exempt='["det"]', detector=True)
+
+    assert _first_hold(streams) == FLAG_HELD_ANSWER          # paused: 14
+    assert _first_det_hold(streams) == FLAG_RESET_ANSWER     # not paused: 23
+    assert _first_det_hold(streams) - _first_hold(streams) == HOLD_SAMPLES - 1
+    # a flag gates nothing, exempt or not
+    assert _muted_samples(streams) == []
+
+
+def test_an_exempt_channel_answers_exactly_as_an_unlabelled_flag_does(backend):
+    """Being exempt from the label is being untouched by it.
+
+    The independent check on the test above: `det` under an artifact flag it
+    is exempt from must equal `latch` under a flag carrying no label at all.
+    This is the engine-level form of the corpus measurement, where the
+    exempted detector fired 189 times and the plain-flag reference fired 189
+    times on the same recording at identical muting."""
+    level, emg = _swallow()
+    exempted = _run(backend, level, emg, kind="artifact", action="flag",
+                    exempt='["det"]', detector=True)
+    unlabelled = _run(backend, level, emg, kind=None, action="flag")
+
+    assert _first_det_hold(exempted) == _first_hold(unlabelled)
+
+
+def test_exempt_leaves_the_channel_it_does_not_name_untouched(backend):
+    """A declaration naming `det` must not move `latch` by a sample. If it
+    did, the mask would not be per-channel — it would merely be different."""
+    level, emg = _swallow()
+    with_exempt = _run(backend, level, emg, kind="artifact", action="flag",
+                       exempt='["det"]', detector=True)
+    without = _run(backend, level, emg, kind="artifact", action="flag",
+                   detector=True)
+
+    assert _first_hold(with_exempt) == _first_hold(without) == FLAG_HELD_ANSWER
+    # and the twin is the only thing that moved
+    assert _first_det_hold(without) == FLAG_HELD_ANSWER
+    assert _first_det_hold(with_exempt) == FLAG_RESET_ANSWER
+
+
+def test_an_exempt_channel_under_an_artifact_mute_is_still_gated(backend):
+    """`exempt` frees the hold clock, never the audio.
+
+    A mute silences the channel whatever the label says, so an exempted
+    channel under an artifact MUTE still emits nothing while the gate is up —
+    its streak advances behind a closed gate. Worth pinning because the
+    resolver accepts this combination, and someone will read `exempt` as
+    "ignore this inhibit" rather than "do not pause for it"."""
+    level, emg = _swallow()
+    streams = _run(backend, level, emg, kind="artifact", action="mute",
+                   exempt='["det"]', detector=True)
+
+    # the gate fired, over exactly the mute's samples, exempt or not
+    assert _muted_samples(streams) == list(range(MUTE_START, MUTE_END + 1))
+    # the paused twin survives the dropout; the exempt one restarts
+    assert _first_hold(streams) == HELD_ANSWER
+    assert _first_det_hold(streams) == RESET_ANSWER

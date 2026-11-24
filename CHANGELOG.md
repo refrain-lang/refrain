@@ -7,7 +7,131 @@ bumps are additive; major bumps may break compatibility.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **`exempt` on an artifact inhibit: name the output channels its label does
+  not pause.** The observability mask was one array handed to every output
+  channel and to the reward stage, which made `kind = "artifact"` a
+  protocol-wide statement. Two consumers of the same contaminated sample can
+  want opposite things, and in the SMR spindle protocol they did: the reward
+  criterion must not bank it, while an onset detector bound in `output { }`
+  should still fire on it, because a burst rising through an alpha intrusion
+  is still a burst rising. One declaration could not give them different
+  answers.
+
+  Measured on the real corpus, that cost 63 of 358 spindles. Labelling theta
+  and alpha as artifacts took the criterion from 24.4 rewards/min to 17.1
+  against a true spindle rate of 13–15 — the honest number — and dropped the
+  detector from 67.0% of spindles caught to 55.2%, because the detector's own
+  dwell froze in exactly the samples the label covered. On one recording, at
+  identical 28.7% muting, the label alone cut raw detector fires from 189 to
+  139; with `exempt = ["audio_chime"]` the same recording gives 189 again,
+  matching a reference protocol carrying no label at all.
+
+  ```
+  inhibit "alpha" {
+    action = flag()
+    kind   = "artifact"
+    exempt = ["audio_chime"]
+  }
+  ```
+
+  **Absent means pause everything**, which is every protocol written before
+  this and the conservative reading. The list is therefore a *denylist*: a
+  channel added later pauses unless someone says otherwise, where an allowlist
+  would silently stop pausing for anything new. `exempt` requires `kind =
+  "artifact"`, since nothing else pauses a clock; `[]` is refused as a second
+  spelling of the default; every entry must name a bound channel whose binding
+  actually contains a `hold_for` / `dwell` / `dwell_rearm`. A channel bound to
+  `reward.event` carries no hold of its own — the reward stage ran before the
+  output loop and takes the shared mask — so exempting it would do nothing and
+  is refused with that reason. The reward stage itself is never exempt: it is
+  the consumer the label exists to protect.
+
+  `exempt` frees the clock, never the audio. Under a `mute` or `freeze` the
+  channel is still gated while the gate is up; its streak simply advances
+  behind a closed gate. Legal, and narrower than it reads.
+
+  A protocol with a non-empty `exempt` emits **IR-JSON 0.8**. This one is a
+  dropped key of the plainest kind: an engine ignoring the field pauses every
+  channel, so the detector the author freed freezes in exactly the samples
+  they declared it should fire through. The 0.8 schema is a byte-for-byte copy
+  of 0.7 — the key is additive — and the version exists only so an older
+  engine refuses the document instead of mis-scoring it. `describe_protocol`
+  reports a protocol carrying `exempt` as out of its subset rather than
+  re-rendering it without the field, for the same reason.
+
+- **`kind = "artifact"` is now legal on a `flag()` inhibit: pause a hold's
+  clock without silencing the output.** `action` decides what happens to the
+  audio; `kind` decides how the sample is scored. Those are two independent
+  questions, and until now the second only worked when the answer to the first
+  was "silence it" — `_compute_artifact_muted` built the observability mask
+  from the gates `_compute_muted` had recorded, and it records none for a flag.
+  So marking a sample unobservable and cutting the tone were the same act, and
+  a protocol could not ask for one without the other. SPEC §4.6 now carries the
+  full 2×2.
+
+  **Why a protocol wants the new cell.** Contamination comes in two kinds. A
+  jaw clench is not-brain: an ungated tone tracks raw amplitude, so a clench
+  would arrive as a loud reward, and EMG must stay a `mute` with `kind =
+  "artifact"` — pause the clock *and* cut the audio. Alpha intruding on an SMR
+  band is brain signal that merely makes the reading unreliable; there the
+  right declaration is "do not credit this sample, and do not silence the
+  output either", which had no spelling. On one real-EEG protocol the four
+  guards were gating two-thirds of the session, and an onset trigger bound in
+  `output { }` lost a third of its events to gates that existed only to stop
+  the *reward* crediting a contaminated sample.
+
+  An artifact flag takes no `release`, and `flag()` still accepts no arguments:
+  a release hangover exists to stop an audio gate chattering across its
+  threshold, and a flag has no audio gate. A mask that dithers costs a hold
+  nothing, because freezing only pauses. That is also the one observable
+  difference from an artifact mute — the mute's hangover extends its mask, the
+  flag's ends with the artifact — and both engines reproduce it sample for
+  sample.
+
+  `kind = "trained"` on a flag is **still** a resolve-time error, and for the
+  original reason. A trained label asserts the sample resets a hold, which is
+  what an unlabelled inhibit bound in `output { }` already does; a flag changes
+  neither the gate nor the scoring, so there the label really is the silent
+  no-op the check was written to catch.
+
+### Changed
+
+- **IR-JSON gains v0.7, which is a byte-for-byte copy of v0.6 but for the
+  version string.** This is the first version bump that is not about a field
+  the older schema has no slot for. Both `kind` and the flag action exist in
+  0.6, so a 0.6 document carries the pair perfectly — and a 0.6 engine
+  deserializes every byte of it and still runs a different protocol, because
+  through 0.25.x it refused the pair at resolve time and builds its artifact
+  mask only from inhibits that gate output. It would leave a hold running
+  through exactly the samples the author declared unreadable, which is the
+  failure the label exists to prevent. The version is the only thing that can
+  carry that difference, so an artifact-labelled flag emits 0.7 and nothing
+  else does. An unlabelled flag stays on whatever version it had: it modifies
+  nothing on any engine that has ever existed, so moving it would be a refusal
+  for documentation.
+
+### Known gaps
+
+- **The editor cannot round-trip an artifact flag yet.** `inhibit.artifact` in
+  the editor catalog renders `action = mute(release: ...)` and nothing else, so
+  a protocol declaring `flag()` with an artifact label falls out of the editor
+  subset. It fails *loudly* — `describe_protocol` reports "artifact inhibit
+  action is flag, not mute; this block renders only mute(release: ...), so
+  accepting it would re-render the inhibit as a mute" — so nothing is silently
+  dropped or silently rewritten. A new catalog block is wanted before any
+  practitioner-editable protocol uses the pairing.
+
+  A catalog block alone would not be enough for the protocol that motivated
+  this change, and that part is **not** caused by it. Those guards read an
+  existing derive through the `linear(..., slope: 1)` affine identity rather
+  than computing a `bandpower`, and `inhibit.artifact` hardcodes the
+  `bandpower` metric too. Checked on an artifact **mute** with a `linear`
+  metric — no flag anywhere in it — and the matcher does not refuse cleanly,
+  it raises `AttributeError: 'NoneType' object has no attribute 'value'`,
+  which `describe_protocol` reports as the `reason` string. So the editor owes
+  that shape a clean refusal before it owes anything a new block.
 
 ## [0.25.1] — 2026-11-19
 

@@ -83,6 +83,7 @@ from .ir import (
     IRThreshold,
     IRThresholdRef,
     IRTuple,
+    MASKED_HOLD_PRIMITIVES,
 )
 from .primitives import PrimitiveSpec, ResolvedArg, ResourceBudget
 from .types_ import (
@@ -349,6 +350,8 @@ class _Resolver:
         self._resolve_reward()
         output_ir = self._resolve_output()
         self.output = output_ir
+        # Needs the output block, so it cannot live in `_resolve_inhibit`.
+        self._validate_inhibit_exempts(output_ir)
         feedback_ir = self._resolve_feedback(output_ir)
         session_ir = self._resolve_session()
         self._validate_staging(session_ir)
@@ -1176,19 +1179,33 @@ class _Resolver:
                     f"\"trained\" (got {kind!r})",
                     loc=kind_loc,
                 )
-            if action_kind == "flag":
-                # `mute` and `freeze` are OR-ed into the same output gate, so
-                # the label changes what the engine scores. A flag gates
-                # nothing, so a label on one would be a silent no-op — and a
-                # silent no-op in a safety-shaped declaration is worse than a
-                # compile error.
+            if action_kind == "flag" and kind == "trained":
+                # `kind = "artifact"` on a flag is the whole point of the
+                # pairing (§4.6): `action` decides what happens to the audio,
+                # `kind` decides how the sample is scored, and a flag plus an
+                # artifact label is "do not credit this, do not silence it".
+                # `"trained"` has no such reading. A trained label says the
+                # sample RESETS a hold, which is what an unlabelled inhibit
+                # bound in `output { }` already does, and a flag changes
+                # neither the gate nor the scoring — so on a flag it would be
+                # the silent no-op this check was written to refuse.
                 raise ResolveError(
-                    f"inhibit \"{decl.name}\": kind is not allowed on a flag "
-                    f"inhibit — a flag gates nothing, so the label would be a "
-                    f"silent no-op; drop the kind or give the inhibit a "
-                    f"mute/freeze action",
+                    f"inhibit \"{decl.name}\": kind = \"trained\" is not allowed "
+                    f"on a flag inhibit — a flag neither gates output nor "
+                    f"changes scoring, so the label would be a silent no-op; "
+                    f"drop the kind, use kind = \"artifact\" to pause a hold "
+                    f"without gating audio, or give the inhibit a mute/freeze "
+                    f"action",
                     loc=kind_loc,
                 )
+        # `exempt` (§4.6). Which output channels this artifact label does NOT
+        # pause. Same reasoning as `kind` above: `_resolve_inhibit` has no
+        # unknown-field check, so a typo would be dropped in silence and the
+        # author would believe a detector fires through contamination when it
+        # is still frozen. The channel NAMES cannot be checked here — the
+        # output block is resolved after every named decl — so that half is a
+        # post-pass, `_validate_inhibit_exempts`.
+        exempt = self._parse_inhibit_exempt(decl, fields, kind)
         return IRInhibit(
             name=decl.name,
             canonical_name=f"inhibit/{decl.name}",
@@ -1199,7 +1216,90 @@ class _Resolver:
             final=final,
             loc=decl.loc,
             kind=kind,
+            exempt=exempt,
         )
+
+    def _parse_inhibit_exempt(
+        self, decl: A.NamedDecl, fields: dict[str, A.Expr], kind: str | None
+    ) -> tuple[str, ...]:
+        """Parse `exempt = ["chan", ...]` on an inhibit into unique strings.
+
+        Absent means the empty tuple, which is every protocol written before
+        this field existed and means "pause everything" — the conservative
+        default. The list is a DENYLIST on purpose: a channel added to a
+        protocol later pauses unless someone says otherwise, where an
+        allowlist would silently stop pausing for anything new.
+        """
+        expr = fields.get("exempt")
+        if expr is None:
+            return ()
+        if kind != "artifact":
+            # Nothing to be exempt from. The artifact label is the only thing
+            # that pauses a hold clock; an unlabelled inhibit folds into the
+            # condition as a failure and a `"trained"` label is documentation
+            # the engine does not act on. Accepting `exempt` in either case
+            # would be the silent no-op this check exists to refuse.
+            raise ResolveError(
+                f"inhibit \"{decl.name}\": `exempt` needs kind = \"artifact\" — "
+                f"it names the channels an artifact label does not pause, and "
+                f"without that label there is no pause to be exempt from"
+                + (f" (this inhibit has kind = \"{kind}\")" if kind else ""),
+                loc=expr.loc,
+            )
+        if not isinstance(expr, A.Array) or not expr.elements:
+            raise ResolveError(
+                f"inhibit \"{decl.name}\": `exempt` must be a non-empty "
+                f"`[...]` of output channel names; drop the field to pause "
+                f"every channel",
+                loc=expr.loc,
+            )
+        out: list[str] = []
+        for elt in expr.elements:
+            if not isinstance(elt, A.StringLit):
+                raise ResolveError(
+                    f"inhibit \"{decl.name}\": every `exempt` entry must be a "
+                    f"string literal naming an output channel",
+                    loc=elt.loc,
+                )
+            out.append(elt.value)
+        if len(set(out)) != len(out):
+            raise ResolveError(
+                f"inhibit \"{decl.name}\": `exempt` entries must be unique, "
+                f"got {out}",
+                loc=expr.loc,
+            )
+        return tuple(out)
+
+    def _validate_inhibit_exempts(self, output_ir: dict[str, IRExpr]) -> None:
+        """Every `exempt` entry must name a channel the protocol binds.
+
+        Runs after `_resolve_output` because inhibits resolve before it. An
+        unknown name is refused rather than ignored: a misspelled channel
+        would leave the hold it was meant to free still frozen, which is the
+        failure the field was added to fix.
+        """
+        for inhibit in self.inhibits.values():
+            for channel in inhibit.exempt:
+                if channel not in output_ir:
+                    known = ", ".join(sorted(output_ir)) or "(none)"
+                    raise ResolveError(
+                        f"inhibit \"{inhibit.name}\": `exempt` names "
+                        f"\"{channel}\", which this protocol's `output` block "
+                        f"does not bind. Bound channels: {known}",
+                        loc=inhibit.loc,
+                    )
+                if not _has_masked_hold(output_ir[channel]):
+                    raise ResolveError(
+                        f"inhibit \"{inhibit.name}\": `exempt` names "
+                        f"\"{channel}\", whose binding contains no "
+                        f"{' / '.join(MASKED_HOLD_PRIMITIVES)}, so the "
+                        f"exemption would do nothing. Only a hold bound in "
+                        f"`output {{ }}` reads the artifact mask per channel; "
+                        f"a channel bound to `reward.event` or "
+                        f"`reward.continuous` has its hold in the reward "
+                        f"stage, which is never exempt",
+                        loc=inhibit.loc,
+                    )
 
     def _resolve_reward_component(self, decl: A.NamedDecl, *, role: str) -> IRRewardComponent:
         """Resolve a named `reward "<n>"` or suppress-`inhibit "<n>"` component.
@@ -3663,6 +3763,35 @@ class _Resolver:
 # ---------------------------------------------------------------------------
 # Free-standing helpers
 # ---------------------------------------------------------------------------
+
+
+def _has_masked_hold(expr: IRExpr) -> bool:
+    """Does `expr` contain a hold whose clock reads the artifact mask?
+
+    The question `exempt` depends on. An exemption frees a hold bound in the
+    `output` block; a channel bound to `reward.event` carries no hold of its
+    own — the dwell ran in the reward stage, which takes the shared mask — so
+    exempting such a channel is a silent no-op, and silent no-ops are what
+    the checks around `kind` and `exempt` exist to refuse.
+
+    Traversal mirrors `_walk_calls` in `eval_.py`. Leaves (refs, literals,
+    member access such as `reward.event`) hold no call and answer False.
+    """
+    if isinstance(expr, IRCall):
+        return expr.callee in MASKED_HOLD_PRIMITIVES or any(
+            _has_masked_hold(arg.value) for arg in expr.args
+        )
+    if isinstance(expr, IRBinaryOp):
+        return _has_masked_hold(expr.left) or _has_masked_hold(expr.right)
+    if isinstance(expr, IRConditional):
+        return (
+            _has_masked_hold(expr.cond)
+            or _has_masked_hold(expr.then_branch)
+            or _has_masked_hold(expr.else_branch)
+        )
+    if isinstance(expr, IRArray):
+        return any(_has_masked_hold(elt) for elt in expr.elements)
+    return False
 
 
 class _RewardSentinel(IRExpr):

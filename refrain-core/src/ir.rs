@@ -89,7 +89,16 @@ pub struct FeedbackEntry {
 /// misinterpreted. This crate has no `deny_unknown_fields`, so an unknown field
 /// is invisible to serde — without this gate, a newer protocol would run with
 /// its new semantics dropped and no signal to anyone.
-pub const SUPPORTED_IR_VERSIONS: &[&str] = &["0.1", "0.2", "0.3", "0.4", "0.5", "0.6"];
+///
+/// 0.7 is the case where the fields were never the problem. It carries an
+/// inhibit labelled `kind = "artifact"` whose action is `flag()`, and every
+/// byte of that is representable in 0.6 — a 0.6 core deserializes it whole and
+/// still scores it differently, because it builds `artifact_muted` only from
+/// inhibits that gate output and so leaves a hold running through samples the
+/// author declared unreadable. The version is the only thing that can carry
+/// that difference, which is why 0.7's schema is a copy of 0.6's.
+pub const SUPPORTED_IR_VERSIONS: &[&str] =
+    &["0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8"];
 
 /// Refuse a document tagged with an unsupported schema version. Untagged
 /// documents predate versioning and are treated as "0.1".
@@ -319,6 +328,16 @@ pub struct Inhibit {
     /// a document to 0.6 — the other two run identically on a 0.24 engine.
     #[serde(default)]
     pub kind: Option<String>,
+    /// Output channels this inhibit's artifact label does NOT pause
+    /// (IR-JSON 0.8, `docs/SPEC.md` §4.6). Empty — the default, and every
+    /// document emitted before 0.8 — means it pauses every channel and the
+    /// reward stage, which is the conservative reading: an artifact is an
+    /// artifact whoever is listening. A channel named here still has its
+    /// audio gated when the action is a mute/freeze; what it loses is only
+    /// the hold-clock pause, so a detector bound in `output` can fire through
+    /// contamination while the reward criterion still refuses to bank it.
+    #[serde(default)]
+    pub exempt: Vec<String>,
 }
 
 /// `reward { continuous?, event?, combine?, components? }`. For a v0.1

@@ -588,18 +588,109 @@ def test_kind_trained_resolves():
     assert ir.inhibits["emg"].kind == "trained"
 
 
-def test_kind_on_a_flag_inhibit_is_refused():
-    """A flag gates nothing, so kind = "artifact" on one would be a silent
-    no-op in a safety-shaped declaration."""
-    with pytest.raises(ResolveError, match="kind .* flag .* gates nothing"):
-        resolve(parse(inhibit_protocol(action="flag()", kind="artifact")))
+def test_kind_artifact_on_a_flag_inhibit_resolves():
+    """`action` says what happens to the audio, `kind` says how the sample is
+    scored, and this is the pair that separates them: do not credit this
+    sample, do not silence the output either (SPEC §4.6).
+
+    Refused before v0.26, on the reasoning that a flag gates nothing so the
+    label could only be a silent no-op. That held only while the artifact mask
+    was built solely from inhibits that gate output."""
+    ir = resolve(parse(inhibit_protocol(action="flag()", kind="artifact")))
+    assert ir.inhibits["emg"].kind == "artifact"
+    assert ir.inhibits["emg"].action_kind == "flag"
 
 
-def test_kind_trained_on_a_flag_inhibit_is_refused_too():
-    """The refusal is about which actions gate output, not about which label:
-    neither value means anything on an inhibit that modifies nothing."""
-    with pytest.raises(ResolveError, match="kind .* flag .* gates nothing"):
+def test_kind_trained_on_a_flag_inhibit_is_still_refused():
+    """The original refusal survives for `"trained"`, and for the original
+    reason. A trained label asserts the sample RESETS a hold, which is what an
+    unlabelled inhibit bound in `output { }` already does; a flag changes
+    neither the gate nor the scoring, so there the label really is the silent
+    no-op this check was written to catch."""
+    with pytest.raises(ResolveError, match='kind = "trained" is not allowed'):
         resolve(parse(inhibit_protocol(action="flag()", kind="trained")))
+
+
+def test_exempt_on_an_artifact_inhibit_resolves_to_the_named_channels():
+    """`exempt` names the output channels an artifact label does NOT pause.
+
+    The criterion and a detector want opposite things from a contaminated
+    sample: the criterion must not bank it, the detector should still fire on
+    it. Before this field the observability mask was one array shared by every
+    channel and the reward stage, so one declaration could not give them
+    different answers (SPEC §4.6)."""
+    ir = resolve(parse(inhibit_protocol(
+        action="flag()", kind="artifact", exempt='["det"]', detector=True)))
+    assert ir.inhibits["emg"].exempt == ("det",)
+
+
+def test_exempt_defaults_to_pausing_everything():
+    """Absent is the conservative reading and what every protocol written
+    before the field existed gets: an artifact is an artifact whoever is
+    listening."""
+    ir = resolve(parse(inhibit_protocol(action="flag()", kind="artifact")))
+    assert ir.inhibits["emg"].exempt == ()
+
+
+def test_exempt_without_an_artifact_label_is_refused():
+    """Nothing to be exempt from. The artifact label is the only thing that
+    pauses a hold clock, so `exempt` elsewhere is the silent no-op this check
+    exists to refuse."""
+    with pytest.raises(ResolveError, match='`exempt` needs kind = "artifact"'):
+        resolve(parse(inhibit_protocol(exempt='["fb"]')))
+
+
+def test_exempt_on_a_trained_label_is_refused_too():
+    """Reached through a mute, where the trained-on-flag refusal does not fire
+    first. A `"trained"` label is documentation the engine does not act on, so
+    there is still no pause to be exempt from."""
+    with pytest.raises(ResolveError, match='`exempt` needs kind = "artifact"'):
+        resolve(parse(inhibit_protocol(kind="trained", exempt='["fb"]')))
+
+
+def test_exempt_naming_an_unbound_channel_is_refused():
+    """A misspelled channel would leave the hold it was meant to free still
+    frozen — the exact failure the field was added to fix — so the name is
+    checked against the output block rather than ignored."""
+    with pytest.raises(ResolveError, match='`exempt` names "dett"'):
+        resolve(parse(inhibit_protocol(
+            action="flag()", kind="artifact", exempt='["dett"]', detector=True)))
+
+
+def test_exempting_a_channel_with_no_hold_of_its_own_is_refused():
+    """`fb = reward.continuous` carries no hold: the reward stage ran before
+    the output loop and takes the shared mask, which is never exempt. So the
+    exemption could only be a silent no-op, and the author would believe a
+    detector fires through contamination while nothing changed."""
+    with pytest.raises(ResolveError, match="so the exemption would do nothing"):
+        resolve(parse(inhibit_protocol(action="flag()", kind="artifact", exempt='["fb"]')))
+
+
+def test_the_no_op_refusal_names_the_reward_stage_as_the_reason():
+    """The message has to say WHY, or the author retries with another channel."""
+    with pytest.raises(ResolveError, match="has its hold in the reward"):
+        resolve(parse(inhibit_protocol(action="flag()", kind="artifact", exempt='["fb"]')))
+
+
+def test_an_empty_exempt_list_is_refused():
+    """`[]` reads as "exempt nothing", which is what absent already means.
+    Accepting both spellings of the default invites the author to believe the
+    empty list did something."""
+    with pytest.raises(ResolveError, match="`exempt` must be a non-empty"):
+        resolve(parse(inhibit_protocol(action="flag()", kind="artifact", exempt="[]")))
+
+
+def test_duplicate_exempt_entries_are_refused():
+    with pytest.raises(ResolveError, match="`exempt` entries must be unique"):
+        resolve(parse(inhibit_protocol(
+            action="flag()", kind="artifact", exempt='["det", "det"]', detector=True)))
+
+
+def test_every_exempt_entry_must_be_a_string_literal():
+    """Same reasoning as `kind`: `_resolve_inhibit` has no unknown-field
+    check, so an unvalidated read would drop a malformed entry in silence."""
+    with pytest.raises(ResolveError, match="must be a string literal"):
+        resolve(parse(inhibit_protocol(action="flag()", kind="artifact", exempt="[123]")))
 
 
 def test_an_unknown_kind_is_refused():

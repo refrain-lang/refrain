@@ -373,7 +373,7 @@ inhibit "emg" {
 Actions:
 - `mute(release: <duration>)` — gate reward to zero, with hangover
 - `freeze(release: <duration>)` — gates output exactly as `mute` does (zero, with hangover); the engines do not hold the last value
-- `flag()` — emit only; do not modify reward (for logging-only inhibits)
+- `flag()` — emit only; do not modify output. On its own this is a logging-only inhibit; with `kind = "artifact"` it pauses a hold without gating audio (see below)
 
 #### `kind` — what kind of inhibit this is
 
@@ -395,9 +395,53 @@ The distinction is clinical, not bookkeeping. A clench tells you nothing about t
 
 **Absence is not `"trained"`.** An inhibit with no `kind` behaves exactly as it does today — it resets a hold bound in `output { }`, and contributes nothing on the `reward { event = ... }` path — but it is recorded as *unlabelled* rather than asserted to be a trained condition, because most unlabelled inhibits are artifact gates nobody has labelled yet. A compiler **may** advise on an unlabelled inhibit; it **must not** refuse one. `print_cred_nf` (`refrain.ir_print`) names each inhibit's label as `artifact`, `trained` or `unlabelled`, which is where the count of still-unlabelled inhibits across a catalog is read from.
 
-`kind` is legal on `mute` and `freeze`, which are OR-ed into the same output gate, and is a resolve-time error on `flag`, which gates nothing: there the label would be a silent no-op, and a silent no-op in a safety-shaped declaration is worse than a compile error. An unrecognised value is also a resolve-time error — `_resolve_inhibit` has no unknown-field check, so an unvalidated spelling would be dropped in silence.
+#### `action` and `kind` are independent
 
-On the wire (IR-JSON), `kind` is emitted only when it was declared, and only `"artifact"` raises the document's version to 0.6: a `"trained"` label and an absent one run identically on an engine that has never heard of the field, so refusing those documents at load would be a refusal for documentation.
+`action` decides what happens to the **audio**. `kind` decides how the sample is **scored**. They are two separate questions, and every combination means something:
+
+| | `kind` absent | `kind = "artifact"` | `kind = "trained"` |
+|---|---|---|---|
+| `mute` / `freeze` | gate the output; the sample resets a hold bound in `output { }` | gate the output; the sample is unobservable, so a hold's clock is held | gate the output; the sample resets the clock, and says so |
+| `flag()` | nothing at all — telemetry | **do not gate the output; the sample is unobservable, so a hold's clock is held** | *resolve-time error* |
+
+The bold cell is the one a protocol reaches for when contamination makes a reading unreliable without making it unsafe to listen to. Alpha intruding on an SMR band is *brain* signal: it means "do not credit this sample", not "cut the tone". Muscle is the other case — an ungated tone tracking raw amplitude turns a jaw clench into a loud reward — so EMG stays a `mute` with `kind = "artifact"`: pause the clock **and** cut the audio.
+
+Before v0.26 `kind` on a flag was a resolve-time error, on the reasoning that a flag gates nothing so the label could only be a silent no-op. That was true while the artifact mask was built solely from inhibits that gate output; it is no longer, and the two axes being tangled was the defect. `kind = "trained"` on a flag is still refused, and for the original reason: a trained label asserts the sample resets a hold, which is what an unlabelled inhibit already does, so on a flag — which changes neither the gate nor the scoring — it would be exactly the silent no-op the check was written to catch.
+
+An artifact flag takes no `release`, and `flag()` still accepts no arguments. A release hangover exists to stop an audio gate chattering across its threshold; a flag has no audio gate, and a mask that dithers around the threshold costs a hold nothing, because freezing only pauses.
+
+#### `exempt` — which channels an artifact label does not pause
+
+The observability mask was, until IR-JSON 0.8, **one** array handed to every output channel and to the reward stage. That made a label a protocol-wide statement, and two consumers of the same contaminated sample can want opposite things:
+
+- the **reward criterion** must not bank it — that is what the label is for;
+- a **detector** bound in `output { }` should still fire on it, because a burst rising through an alpha intrusion is still a burst rising.
+
+`exempt` names the output channels a given artifact label does **not** pause:
+
+```
+inhibit "alpha" {
+  metric    = linear("alpha_envelope", midpoint: 0 uV, slope: 1)
+  threshold = percentile(target_pct: 90, window: 2 min)
+  action    = flag()
+  kind      = "artifact"
+  exempt    = ["audio_chime"]
+}
+```
+
+Rules:
+
+- **Absent means "pause everything"**, which is what every protocol written before 0.8 gets, and is the conservative reading: an artifact is an artifact whoever is listening. The list is therefore a **denylist**. An allowlist would silently stop pausing for any channel added later, which is the direction nobody notices.
+- **`exempt` requires `kind = "artifact"`.** Nothing else pauses a hold clock, so elsewhere the field could only be a silent no-op. `[]` is refused too, because it is a second spelling of the default.
+- **Every entry must name a channel the `output` block binds**, and that channel's binding must itself contain a `hold_for` / `dwell` / `dwell_rearm`. A channel bound to `reward.event` or `reward.continuous` carries no hold of its own — the reward stage ran before the output loop and takes the shared mask — so exempting it would do nothing, and is refused with that reason.
+- **The reward stage is never exempt.** It is the consumer the label exists to protect; `exempt` addresses output channels only.
+- **`exempt` frees the clock, never the audio.** Under a `mute` or `freeze` the channel is still gated while the gate is up; its streak simply advances behind a closed gate. Legal, and narrower than it looks.
+
+A compiler **must** refuse each of the cases above rather than ignore the field: an `exempt` that is quietly dropped re-freezes exactly the detector the author declared should fire, which is the failure the field exists to fix. For the same reason an editor or round-trip tool that cannot represent `exempt` **must** report the protocol as out of its subset rather than re-render it without the field.
+
+An unrecognised `kind` value is a resolve-time error — `_resolve_inhibit` has no unknown-field check, so an unvalidated spelling would be dropped in silence.
+
+On the wire (IR-JSON), `kind` is emitted only when it was declared, and only `"artifact"` raises the document's version to 0.6: a `"trained"` label and an absent one run identically on an engine that has never heard of the field, so refusing those documents at load would be a refusal for documentation. An `"artifact"` label on a **flag** raises it to 0.7 instead, and is the only thing that does. That bump is not about a missing field — 0.6 can represent the pair perfectly — it is about a 0.6 engine reading the whole document and still running a different protocol, because it refuses the pair at resolve time and builds its artifact mask only from gating inhibits. It would leave a hold running through the samples the author declared unreadable. v0.7 is identical to v0.6 but for the version string, so that such an engine refuses the document rather than mis-scoring it.
 
 ### 4.7 `reward`
 
@@ -1245,7 +1289,7 @@ While a `mute` or `freeze` inhibit is active (including its `release` hangover),
 
 #### What a hold forgives, and what it does not
 
-Silencing the output is separate from what a hold's clock does with the silenced samples. A hold (`dwell`, `dwell_rearm`, `hold_for`) takes two per-sample inputs: a condition, and an observability mask. The condition carries every reason a sample did not qualify — a signal dip, a mute, a muted phase, an inactive-block channel — and a false condition resets the streak unless the run of false samples is no longer than the hold's `tolerance` (§5.6). The observability mask carries one thing only: whether an inhibit labelled `kind = "artifact"` was gating. The mask is checked **first**, before the condition is examined, so a sample the engine could not read is scored as neither a success nor a failure: the streak and the dip counter both freeze. This ordering is the whole of the feature — an artifact mute appears in the mute gate too, so such a sample arrives with its condition already false, and a mask merely AND-ed into the condition would let an artifact mute longer than `tolerance` reset the streak through the dip path.
+Silencing the output is separate from what a hold's clock does with the silenced samples. A hold (`dwell`, `dwell_rearm`, `hold_for`) takes two per-sample inputs: a condition, and an observability mask. The condition carries every reason a sample did not qualify — a signal dip, a mute, a muted phase, an inactive-block channel — and a false condition resets the streak unless the run of false samples is no longer than the hold's `tolerance` (§5.6). The observability mask carries one thing only: whether an inhibit labelled `kind = "artifact"` was gating — and, from IR-JSON 0.8, whether that label applies to *this* consumer, since an inhibit may `exempt` named output channels from it (§4.6). The reward stage is never exempt. The mask is checked **first**, before the condition is examined, so a sample the engine could not read is scored as neither a success nor a failure: the streak and the dip counter both freeze. This ordering is the whole of the feature — an artifact mute appears in the mute gate too, so such a sample arrives with its condition already false, and a mask merely AND-ed into the condition would let an artifact mute longer than `tolerance` reset the streak through the dip path.
 
 | Why the condition is false | Forgiven by `tolerance`? | Clock |
 |---|---|---|

@@ -746,3 +746,46 @@ def test_an_artifact_label_on_a_freeze_inhibit_also_emits_0_6():
     )
     assert j["refrain_ir_version"] == "0.6"
     assert j["inhibits"]["emg"]["kind"] == "artifact"
+
+
+def test_an_artifact_label_on_a_flag_inhibit_emits_0_7():
+    """The one case where the fields were never the problem.
+
+    `kind` and `flag()` both exist in 0.6, so a 0.6 document can carry this
+    pair whole — and a 0.6 engine still runs a different protocol with it,
+    because through 0.25.x it refused the pair at resolve time and builds its
+    artifact mask only from inhibits that gate output. It would leave a hold
+    running through exactly the samples the author declared unreadable. The
+    version is the only thing that can carry that, so 0.7 exists and its
+    schema is a copy of 0.6's."""
+    j = ir_to_json_obj(
+        resolve(parse(inhibit_protocol(action="flag()", kind="artifact"))),
+        sample_rate_hz=256,
+    )
+    assert j["refrain_ir_version"] == "0.7"
+    assert j["inhibits"]["emg"]["kind"] == "artifact"
+    assert j["inhibits"]["emg"]["action_kind"] == "flag"
+    # no release on the wire either: a hangover exists to stop an audio gate
+    # chattering, and this inhibit has no audio gate
+    assert j["inhibits"]["emg"]["action_release_ms"] is None
+
+
+def test_an_unlabelled_flag_inhibit_stays_on_its_old_version():
+    """Only the pairing moves the version. A flag with no label modifies
+    nothing on any engine that has ever existed, so dragging it to 0.7 would
+    be a refusal for documentation."""
+    j = ir_to_json_obj(
+        resolve(parse(inhibit_protocol(action="flag()"))), sample_rate_hz=256
+    )
+    assert j["refrain_ir_version"] == "0.1"
+    assert "kind" not in j["inhibits"]["emg"]
+
+
+def test_a_trained_flag_cannot_reach_the_wire_at_all():
+    """The resolver refuses it, so there is no 0.7-vs-0.6 question to answer
+    for `kind = "trained"` on a flag."""
+    import pytest
+
+    from refrain.resolver import ResolveError
+    with pytest.raises(ResolveError, match='kind = "trained" is not allowed'):
+        resolve(parse(inhibit_protocol(action="flag()", kind="trained")))

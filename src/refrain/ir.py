@@ -224,6 +224,26 @@ class IRInhibit:
     # gates nobody has got round to labelling. Appended last so positional
     # construction elsewhere is unaffected.
     kind: str | None = None
+    # Output channels this inhibit's artifact label does NOT pause (§4.6).
+    # Empty — the default, and every protocol written before this existed —
+    # means it pauses every channel and the reward stage, which is the
+    # conservative reading: an artifact is an artifact whoever is listening.
+    # A channel named here still has its audio gated if the action is a
+    # mute/freeze; what it loses is only the hold-clock pause, so a detector
+    # bound in `output { }` can fire through contamination while the reward
+    # criterion still refuses to bank it. Requires `kind = "artifact"` —
+    # there is nothing to be exempt from otherwise. Appended after `kind` for
+    # the same reason `kind` was appended after `loc`.
+    exempt: tuple[str, ...] = ()
+
+
+# The primitives whose hold clock reads the artifact observability mask
+# (SPEC §4.6): a sample the engine declared unreadable neither advances nor
+# resets their streak, it pauses them. Defined here because three places need
+# the same answer and must not drift — the evaluator applies the mask to
+# exactly these, and the resolver refuses an `exempt` entry on a channel whose
+# binding contains none of them, because the exemption would be a no-op.
+MASKED_HOLD_PRIMITIVES: tuple[str, ...] = ("hold_for", "dwell", "dwell_rearm")
 
 
 @dataclass(frozen=True, slots=True)
