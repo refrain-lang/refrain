@@ -7,6 +7,8 @@ bumps are additive; major bumps may break compatibility.
 
 ## [Unreleased]
 
+## [0.27.0] — 2026-11-28
+
 ### Added
 
 - **`band_envelope(kind: "weighted")`: the same accuracy at about half the
