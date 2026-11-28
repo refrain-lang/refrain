@@ -317,9 +317,9 @@ delay; they differ in which taps they keep and how they shape the stopband.
 |---|---|---|
 | Design | Ideal response under a Hann taper reaching `D` taps either side of tap `D` | Weighted least squares (the paper's wcFIR, eq. 10–11) over a model spectrum; keeps the taps after `D` |
 | Transition, 12–16 Hz, gain at 11 Hz | −13 dB at 320 ms, −7 dB at 200 ms | −21 dB from 200 ms, −18 dB at 160 ms |
-| Far stopband (35 and 60 Hz) | −66 dB or lower | −34 to −48 dB |
-| In-band group delay | exactly `D` | `D` on average: about 40 ms faster mid-band, up to 100 ms slower at the edges |
-| Step in amplitude | no overshoot | 6–7% overshoot |
+| Far stopband (35 and 60 Hz) | −65 dB or lower | −31 to −61 dB depending on latency; −36 and −42 dB at 180 ms on 12–16 Hz |
+| In-band group delay | exactly `D` | not constant: ripples mid-band from about 40 ms under `D` to slightly over it, and rises to roughly 100–150 ms over `D` toward the band edges. The envelope's realised lag is `D` plus 0–16 ms on a 4 Hz band, up to 24 ms on a 3 Hz one |
+| Step in amplitude | no overshoot | overshoots by 5–8% of the step, most at the shortest latencies |
 | Accuracy vs latency | rises throughout | plateaus near r = 0.97–0.98 |
 | Use when | latency is about two bandwidth-periods (`2/B`) or more | latency is shorter than that |
 
