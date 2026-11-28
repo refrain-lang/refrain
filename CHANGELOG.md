@@ -38,8 +38,9 @@ bumps are additive; major bumps may break compatibility.
   r = 0.97–0.98 where the default keeps climbing, so past about two
   bandwidth-periods of latency the default measures better (from 260 ms at
   22–30 Hz, 360 ms at 13–19 Hz, about 520 ms at 12–16 Hz). It also gives up
-  exact linear phase, a far stopband of −66 dB or lower (−34 to −48 dB
-  instead) and a step response with no overshoot (6–7%).
+  exact linear phase, a far stopband of −65 dB or lower (−31 to −61 dB
+  instead, depending on latency) and a step response with no overshoot
+  (5–8% of the step).
   `docs/PRIMITIVES.md` has the table.
 
   Two things the measurement said that the name does not:

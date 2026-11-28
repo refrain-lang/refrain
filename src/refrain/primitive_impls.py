@@ -575,9 +575,12 @@ class BandEnvelopeImpl(PrimitiveImpl):
     resting recordings at Cz, 12–16 Hz, against a zero-phase reference (r
     median / worst): tapered 0.914 / 0.897 at 320 ms; weighted 0.942 / 0.912
     at 160 ms and 0.964 / 0.952 at 200 ms. What it gives up: the far stopband
-    is -34 to -48 dB at 35 and 60 Hz rather than below -66, the in-band group
-    delay is `D` only on average (about 40 ms faster mid-band, up to 100 ms
-    slower at the edges), a step in amplitude overshoots by 6–7%, and its
+    is -31 to -61 dB at 35 and 60 Hz, depending on latency, rather than below
+    -65; the in-band group delay is not constant (it ripples mid-band from
+    about 40 ms under `D` to slightly over it and rises to roughly 100–150 ms
+    over `D` toward the band edges, so the envelope's realised lag is `D` plus
+    0–16 ms on a 4 Hz band and up to 24 ms on a 3 Hz one); a step in amplitude
+    overshoots by 5–8% of the step; and its
     accuracy plateaus near r=0.97–0.98 instead of climbing with latency — so
     past about two bandwidth-periods the tapered design measures better and
     should be used.
