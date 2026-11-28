@@ -179,6 +179,11 @@ def _warn(message: str, loc: Loc | None) -> None:
 # ---------------------------------------------------------------------------
 
 
+# The fields a `seed = percentile { ... }` rule defines (SPEC §4.9.4). Anything
+# else in the block is a ResolveError — see `_parse_control_seed`.
+_SEED_PERCENTILE_FIELDS = frozenset({"from", "window", "target_pct", "scale"})
+
+
 # `nan`, `inf` and `infinity` are bare identifiers to this grammar, not numeric
 # literals, so they reach `scale` as a NameRef exactly like a control name does.
 # Reporting them as "the control 'nan'" sends the author looking for a control
@@ -1829,6 +1834,18 @@ class _Resolver:
                 loc=seed_ast.loc,
             )
         fields = self._assignments_dict(seed_ast.body)
+        # A field this statistic does not define is refused, not skipped. A
+        # dropped `scale` is the case that matters: the rule still resolves,
+        # the multiplier silently stays 1.0, and a limit meant to sit at three
+        # times the warm-up median sits on the median and mutes half the
+        # session. A misspelled `scale` has to stop the compile.
+        extra = set(fields) - _SEED_PERCENTILE_FIELDS
+        if extra:
+            raise ResolveError(
+                f"control {name!r}.seed: unexpected field(s) {sorted(extra)}; "
+                f"allowed: {', '.join(sorted(_SEED_PERCENTILE_FIELDS))}.",
+                loc=seed_ast.loc,
+            )
         from_expr = fields.get("from")
         if not isinstance(from_expr, A.StringLit):
             raise ResolveError(
@@ -1987,6 +2004,17 @@ class _Resolver:
 
     def _validate_seed_target_pct(self, name: str, target_pct: IRExpr) -> None:
         if isinstance(target_pct, IRNumberLit):
+            # A percentile is a bare number or a `%` literal. Any other unit
+            # is a mistake the evaluator would otherwise read straight past:
+            # it takes the literal's value and never looks at its unit, so
+            # `target_pct = 50 s` ran as the 50th percentile.
+            if target_pct.unit not in (None, "%"):
+                raise ResolveError(
+                    f"control {name!r}.seed.target_pct is a percentile: write a "
+                    f"plain number or a `%` literal, not a value in "
+                    f"`{target_pct.unit}`",
+                    loc=target_pct.loc,
+                )
             return
         if isinstance(target_pct, IRControlRef):
             ref_name = target_pct.target.removeprefix("control/")

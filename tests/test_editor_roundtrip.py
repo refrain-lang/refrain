@@ -504,10 +504,10 @@ def test_rendering_a_mode_folded_control_keeps_its_seed_block():
 # resolver dropped — and for nothing else, which is why no other test here
 # would notice.
 #
-# The seed is written in the one-line `;` form on purpose. In the multi-line
-# form a `scale` line after a bare-number `target_pct` lexes as
-# `target_pct = 40 s` plus a field called `cale`, and nothing refuses it (see
-# the note in render.py's `_render_seed`).
+# The seed is written in the one-line `;` form. That was once load-bearing:
+# through 0.27.0 a `scale` line after a bare-number `target_pct` parsed as
+# `target_pct = 40 s` plus a field called `cale`, and nothing refused it (see
+# the note in render.py's `_render_seed`). Either layout parses the same now.
 SEEDED_MODE_SCALE = SEEDED_MODE.replace('"seeded_mode"', '"seeded_mode_scaled"').replace(
     """      seed = percentile {
         from       = "env"
@@ -807,17 +807,16 @@ def test_the_rendered_seed_puts_the_scale_above_the_target_pct():
     """Asserted directly, so the next person does not have to rediscover the
     reason from an IR diff.
 
-    The lexer attaches a trailing unit to a bare number across a newline, so
-    `target_pct = 40` followed by a `scale` line parses as `target_pct = 40 s`
-    plus a field named `cale` — and neither the parser nor the resolver
-    objects, so the multiplier silently reverts to its 1.0 default. SPEC
-    §4.9.4's own worked example is written in that order and mis-parses
-    because of it. `window` always renders with a unit, so `scale` placed
-    straight after it can never sit behind a bare number.
+    Through 0.27.0 a unit could match the first letters of the next field
+    name, so `target_pct = 40` followed by a `scale` line parsed as
+    `target_pct = 40 s` plus a field named `cale` — and neither the parser nor
+    the resolver objected, so the multiplier silently reverted to its 1.0
+    default. Rendering `scale` straight after `window`, which always carries a
+    unit, kept it out from behind a bare number.
 
-    `test_a_protocol_using_all_four_declarations_is_in_the_subset_and_round_trips`
-    is also red if these lines are swapped, but it fails with an IR diff that
-    does not say why.
+    Both holes are closed (`test_parser_literals.py`, `test_resolve_seed.py`),
+    so the order no longer decides what the source means. It is pinned here
+    because the vendored models were rendered this way and should not move.
     """
     out = render_protocol(describe_protocol(ALL_FOUR)["model"])
     assert ("\n        window     = 1 min"

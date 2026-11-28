@@ -54,6 +54,53 @@ def test_target_pct_number_literal_is_accepted():
     assert obj["controls"]["thr_uv"]["seed"]["target_pct"]["node"] == "number"
 
 
+def test_target_pct_percent_literal_is_accepted():
+    src = BASE % {"seed": 'seed = percentile { from = "env"; window = 60 s; target_pct = 40 % }'}
+    res = compile_to_ir_json(src)
+    assert not res.errors
+    assert res.ir_json["controls"]["thr_uv"]["seed"]["target_pct"]["value"] == 40
+
+
+def test_target_pct_in_another_unit_is_refused():
+    """The evaluator reads the literal's value and never its unit, so a
+    percentile written `50 s` ran as the 50th percentile without comment."""
+    for bad in ("50 s", "50 ms", "50 uV", "50 Hz"):
+        src = BASE % {"seed": f'seed = percentile {{ from = "env"; window = 60 s; target_pct = {bad} }}'}
+        res = compile_to_ir_json(src)
+        assert res.errors, bad
+        assert "target_pct" in res.errors[0].message and "percentile" in res.errors[0].message
+
+
+def test_an_unknown_seed_field_is_refused():
+    """A misspelled `scale` must not resolve to a rule with the default
+    multiplier — that seeds a 3x-median limit at the median."""
+    for stray in ("cale = 3.0", "scal = 3.0", "target = 50", "percentile = 50"):
+        src = BASE % {"seed": f'seed = percentile {{ from = "env"; window = 60 s; target_pct = 40; {stray} }}'}
+        res = compile_to_ir_json(src)
+        field = stray.split(" ")[0]
+        assert res.errors, stray
+        assert field in res.errors[0].message and "scale" in res.errors[0].message
+
+
+def test_scale_on_the_line_after_a_bare_target_pct_is_read_as_scale():
+    """The layout that found the bug, end to end: one field per line, no `;`,
+    `scale` straight after a unit-less number. It parsed as
+    `target_pct = 50 s` plus a field named `cale`, the rule resolved with
+    `scale = 1.0`, and the session it seeded was muted from start to finish."""
+    src = BASE % {"seed": """seed = percentile {
+          from       = "env"
+          window     = 60 s
+          target_pct = 50
+          scale      = 3.0
+        }"""}
+    res = compile_to_ir_json(src)
+    assert not res.errors
+    seed = res.ir_json["controls"]["thr_uv"]["seed"]
+    assert seed["scale"] == 3.0
+    assert seed["target_pct"]["value"] == 50
+    assert seed["target_pct"].get("unit") is None
+
+
 _SEED = 'seed = percentile { from = "env"; window = 60 s; target_pct = reward_pct }'
 
 
