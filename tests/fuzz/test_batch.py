@@ -111,10 +111,15 @@ def test_batch_aggregates_multiple_paths(tmp_path, capsys):
     # condition to perturb. Nothing to do with `reseed` — the fuzzer's surface
     # does not model a block's declarations at all. Skip bucket, `fuzzed`
     # still 8.
+    # +1 total for micro_16_band_envelope_weighted.refrain (the
+    # `band_envelope(kind: "weighted")` golden-vector bench), which skips as
+    # "reward.event has no all_of/any_of condition" exactly as micro_13 does:
+    # it is micro_13 with the other filter design, and like it declares only
+    # `output { audio_gain = 0 }`. Skip bucket, `fuzzed` still 8.
     rc = main(["fuzz", "bench/protocols", "examples",
                "--library", "examples", "--max-scenarios", "2"])
     out = "".join(capsys.readouterr())
-    assert "coverage: fuzzed 8 / total 39" in out
+    assert "coverage: fuzzed 8 / total 40" in out
     # Inc1 splits the old generic "single-condition reward" skip into specific,
     # feature-mapped reasons (so the breakdown maps to later increments); the
     # multi-leaf control-absolute fixture adds its own feature-mapped skip.

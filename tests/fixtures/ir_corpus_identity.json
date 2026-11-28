@@ -5117,6 +5117,7 @@
     "bench/protocols/micro_14_tolerance.refrain",
     "bench/protocols/micro_15_artifact_gate.refrain",
     "bench/protocols/seed_scale_emg.refrain",
-    "bench/protocols/reseed_staged.refrain"
+    "bench/protocols/reseed_staged.refrain",
+    "bench/protocols/micro_16_band_envelope_weighted.refrain"
   ]
 }

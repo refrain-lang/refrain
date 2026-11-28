@@ -532,3 +532,274 @@ def test_matches_the_four_stage_chain_at_a_materially_lower_latency(case, channe
         f"only {four_stage_lag - matched_at:.0f} ms saved at equal accuracy "
         f"({matched_at} ms vs {four_stage_lag:.0f} ms)"
     )
+
+
+# ---------------------------------------------------------------------------
+# kind: "weighted" — a sharper band at a short declared latency
+#
+# The tapered design above throws away the taps after the delay and smooths
+# what is left, so at a short latency its skirts reach into the neighbouring
+# rhythm. The weighted design keeps those taps and lets least squares spend the
+# stopband where EEG has its power. The two are different trades, pinned here
+# from both sides: what weighted buys, what it costs, and that a protocol which
+# does not ask for it is not moved by it.
+# ---------------------------------------------------------------------------
+
+
+def _eeg_like(
+    band: tuple[float, float], seconds: float = 120.0, sr: float = SR, seed: int = 11
+) -> np.ndarray:
+    """A weak in-band rhythm under what makes a short filter fail on real EEG:
+    a 1/f background and a louder rhythm 2.5 Hz below the band."""
+    rng = np.random.default_rng(seed)
+    n = int(seconds * sr)
+    t = np.arange(n) / sr
+    spectrum = np.fft.rfft(rng.standard_normal(n))
+    spectrum /= np.maximum(np.fft.rfftfreq(n, 1 / sr), 0.5)  # amplitude ~ 1/f
+    background = np.fft.irfft(spectrum, n)
+    background *= 10.0 / np.std(background)
+    slow = scisig.sosfilt(
+        scisig.butter(2, 0.4 / (sr / 2), btype="low", output="sos"), rng.standard_normal(n)
+    )
+    neighbour = np.clip(8.0 + 5.0 * slow / np.std(slow), 1.0, None) * np.sin(
+        2 * np.pi * (band[0] - 2.5) * t
+    )
+    return 0.15 * _am_rhythm(band, seconds=seconds, sr=sr, seed=seed) + neighbour + background
+
+
+def _weighted(band, latency_ms, sr=SR, **kw) -> BandEnvelopeImpl:
+    return BandEnvelopeImpl(
+        band=band, latency_ms=latency_ms, kind="weighted", sample_rate_hz=sr, **kw
+    )
+
+
+def _r(impl: BandEnvelopeImpl, x: np.ndarray, band: tuple[float, float]) -> float:
+    edge = _edges(x, SR)
+    return _lag_and_corr(impl.step(x)[edge], _zero_phase_envelope(x, SR, band)[edge], SR)[1]
+
+
+def test_weighted_tracks_the_band_at_a_latency_where_tapered_cannot():
+    """The proposition. At 200 ms on a 4 Hz band the tapered skirt is 7 dB down
+    at the neighbour and the envelope is mostly the neighbour's; the weighted
+    design is still tracking the band. (On real EEG the margin is what moves
+    the matched-accuracy latency from 320 ms to 160; a synthetic neighbour at
+    one frequency is an easier case than a real alpha shoulder, so that figure
+    is measured on recordings and not asserted here.)"""
+    band = (12.0, 16.0)
+    x = _eeg_like(band)
+
+    tapered = _r(BandEnvelopeImpl(band=band, latency_ms=200.0, sample_rate_hz=SR), x, band)
+    weighted = _r(_weighted(band, 200.0), x, band)
+
+    assert weighted > 0.95, f"weighted at 200 ms r={weighted:.3f}"
+    assert tapered < 0.85, f"the premise: tapered at 200 ms r={tapered:.3f}"
+    later = _r(BandEnvelopeImpl(band=band, latency_ms=240.0, sample_rate_hz=SR), x, band)
+    assert weighted > later, f"and 40 ms more does not buy it back: tapered at 240 ms r={later:.3f}"
+
+
+def test_tapered_is_the_better_design_once_the_latency_is_generous():
+    """Why weighted is a choice and not the default. Tapered keeps improving
+    with latency; weighted plateaus, because its sharp edge stops resembling
+    the band's own once the taper is long enough to draw a smooth one. They
+    cross near 1.3-2 bandwidth-periods, and past that tapered also keeps its
+    linear phase and its -60 dB stopband."""
+    band = (22.0, 30.0)  # 8 Hz wide: 320 ms is 2.6 periods
+    x = _eeg_like(band)
+
+    tapered = _r(BandEnvelopeImpl(band=band, latency_ms=320.0, sample_rate_hz=SR), x, band)
+    weighted = _r(_weighted(band, 320.0), x, band)
+
+    assert tapered > weighted, f"tapered r={tapered:.3f}, weighted r={weighted:.3f}"
+    assert tapered > 0.99
+
+
+@pytest.mark.parametrize("band, latency_ms", [((12.0, 16.0), 200.0), ((12.0, 15.0), 320.0),
+                                              ((8.0, 12.0), 240.0), ((22.0, 30.0), 240.0)])
+def test_weighted_realizes_the_latency_it_declares(band, latency_ms):
+    """Same contract as the tapered design, from 0.8 bandwidth-periods up."""
+    x = _eeg_like(band)
+    edge = _edges(x, SR)
+
+    lag_ms, _ = _lag_and_corr(
+        _weighted(band, latency_ms).step(x)[edge], _zero_phase_envelope(x, SR, band)[edge], SR
+    )
+
+    assert abs(lag_ms - latency_ms) <= 20.0, (
+        f"declared {latency_ms} ms but the output lags by {lag_ms:.0f} ms"
+    )
+
+
+def test_weighted_refuses_a_latency_it_cannot_realize():
+    """Below half a bandwidth-period the output lags by more than the number in
+    the source (25-50 ms over, measured on real EEG). The tapered design at the
+    same setting is merely inaccurate; this one would be untruthful."""
+    with pytest.raises(ValueError, match="half a bandwidth-period") as err:
+        _weighted((12.0, 15.0), 100.0)
+
+    assert "167 ms" in str(err.value), "the message should name the latency that would work"
+    _weighted((12.0, 15.0), 170.0)  # and that latency is accepted
+
+
+def test_weighted_is_calibrated_like_tapered():
+    """`absolute(6 uV)` must mean the same thing under either design."""
+    band = (12.0, 15.0)
+    n = int(30 * SR)
+    tone = 7.0 * np.sin(2 * np.pi * 13.5 * np.arange(n) / SR)
+
+    settled = _weighted(band, 250.0).step(tone)[int(5 * SR):]
+
+    assert settled.mean() == pytest.approx(7.0, rel=0.01)
+
+
+def test_weighted_rejects_the_neighbour_tapered_lets_through():
+    """Where the accuracy comes from: 1.5 Hz below a 12-15 Hz band, at 200 ms,
+    the tapered skirt is still most of the way up and the weighted one is not."""
+    band = (12.0, 15.0)
+    n = int(60 * SR)
+    neighbour = 10.0 * np.sin(2 * np.pi * 10.5 * np.arange(n) / SR)
+    edge = _edges(neighbour, SR)
+
+    tapered = BandEnvelopeImpl(band=band, latency_ms=200.0, sample_rate_hz=SR).step(neighbour)
+    weighted = _weighted(band, 200.0).step(neighbour)
+
+    assert tapered[edge].mean() > 3.0, "the premise: tapered passes a third of it"
+    assert weighted[edge].mean() < 1.5, f"weighted passed {weighted[edge].mean():.2f} of 10"
+
+
+def test_weighted_still_rejects_mains_and_muscle():
+    """What it gives up, bounded. The far stopband is shallower than the
+    tapered design's and must still be a stopband: the white floor in the
+    weights is what holds this, and without it 60 Hz came through at -30 dB."""
+    band = (12.0, 16.0)
+    n = int(30 * SR)
+    t = np.arange(n) / SR
+    edge = _edges(t, SR)
+    impl_at = lambda hz: _weighted(band, 200.0).step(10.0 * np.sin(2 * np.pi * hz * t))[edge].mean()
+
+    assert impl_at(60.0) < 0.2, "mains: at least 34 dB down"
+    assert impl_at(35.0) < 0.3, "muscle band: at least 30 dB down"
+    assert impl_at(4.0) < 0.06, "theta, where the weights put the stopband: 44 dB down"
+
+
+def test_weighted_streams_identically_in_chunks():
+    band = (12.0, 16.0)
+    x = _eeg_like(band, seconds=30.0)
+
+    one_shot = _weighted(band, 200.0).step(x)
+    impl = _weighted(band, 200.0)
+    chunk = int(0.05 * SR)
+    streamed = np.concatenate([impl.step(x[i : i + chunk]) for i in range(0, len(x), chunk)])
+
+    assert np.allclose(streamed, one_shot, atol=1e-12)
+
+
+def test_weighted_taps_are_sized_from_the_bandwidth_not_the_delay():
+    """The taps after the delay are memory, and how much is needed depends on
+    how narrow the band is: three bandwidth-periods by default."""
+    impl = _weighted((12.0, 16.0), 200.0, sr=250.0)
+
+    assert impl.group_delay == 50
+    assert impl.taps == 50 + int(np.ceil(3 * 250.0 / 4.0)) + 1  # 239, already odd
+
+
+def test_weighted_refuses_too_little_memory():
+    with pytest.raises(ValueError, match=r"taps >= 114"):
+        _weighted((12.0, 16.0), 200.0, sr=250.0, taps=101)
+
+
+def test_weighted_design_does_not_depend_on_a_frequency_grid():
+    """Closed form, like the tapered design, and for the same reason. Checked
+    against the same integrals by brute-force quadrature."""
+    band, sr, delay = (12.0, 15.0), 250.0, 60
+    impl = _weighted(band, 240.0, sr=sr)
+    n = impl.taps
+    k = np.arange(n)
+
+    f = np.arange(0.0, sr / 2 + 0.001, 0.002)
+    weight = lambda v: 1.0 / np.maximum(np.abs(v), 1.0) ** 2 + 1.0 / 20.0**2
+    r = np.array([2.0 * np.trapezoid(weight(f) * np.cos(2 * np.pi * f * m / sr), f) for m in k])
+    fb = np.linspace(band[0], band[1], 3001)
+    p = np.array(
+        [2.0 * np.trapezoid(weight(fb) * np.exp(2j * np.pi * fb * (m - delay) / sr), fb)
+         for m in k]
+    )
+    b = np.linalg.solve(r[np.abs(k[:, None] - k[None, :])], p)
+    b *= 2.0 / abs(np.sum(b * np.exp(-2j * np.pi * 13.5 * k / sr)))
+
+    assert np.max(np.abs(impl.h_complex - b)) < 1e-4 * np.max(np.abs(b))
+
+
+def test_unknown_kind_is_refused_by_name():
+    with pytest.raises(ValueError, match="unknown kind 'wcfir'.*'tapered', 'weighted'"):
+        BandEnvelopeImpl(band=(12.0, 15.0), latency_ms=250.0, kind="wcfir", sample_rate_hz=SR)
+
+
+def test_default_kind_is_the_design_that_shipped_before_kind_existed():
+    """Nothing that does not write `kind` may move. The taps are the contract —
+    both engines read them off the wire — so they are what is compared."""
+    args = dict(band=(12.0, 15.0), latency_ms=250.0, sample_rate_hz=SR)
+
+    default, tapered = BandEnvelopeImpl(**args), BandEnvelopeImpl(kind="tapered", **args)
+
+    assert default.kind == "tapered"
+    assert np.array_equal(default.h_complex, tapered.h_complex)
+    assert default.taps == 141  # 2.2 x 64 samples, made odd: the pre-`kind` sizing
+
+
+WEIGHTED_PROTOCOL = PROTOCOL.replace(
+    "latency: 250 ms)", 'latency: 200 ms, kind: "weighted")'
+)
+
+
+def _band_envelope_call(ir_json: dict) -> dict:
+    node = ir_json["derives"]["smr_envelope"]["expression"]
+    while node["callee"] != "band_envelope":
+        node = node["args"][0]["value"]
+    return node
+
+
+def test_kind_does_not_move_the_wire_version_and_absent_emits_nothing():
+    """`kind` picks which taps get baked, and the taps are on the wire. An
+    engine that has never heard of the argument runs the identical filter, so
+    there is nothing for a version bump to protect — unlike `exempt` or a hold
+    `tolerance`, where dropping the key runs a different protocol."""
+    from refrain.ir_json import ir_to_json_obj
+
+    plain = ir_to_json_obj(resolve(parse(PROTOCOL)), sample_rate_hz=250.0)
+    weighted = ir_to_json_obj(resolve(parse(WEIGHTED_PROTOCOL)), sample_rate_hz=250.0)
+
+    assert plain["refrain_ir_version"] == weighted["refrain_ir_version"] == "0.5"
+    assert "kind" not in {a["name"] for a in _band_envelope_call(plain)["args"]}
+    call = _band_envelope_call(weighted)
+    assert {a["name"]: a["value"] for a in call["args"]}["kind"]["value"] == "weighted"
+    assert len(call["coeffs"]["fir_taps_re"]) == 50 + 250 + 1  # 200 ms + 3 periods of 3 Hz
+
+
+@pytest.mark.skipif(RUST_BACKEND_ACTIVE, reason="covered for the Rust core by micro_16's golden vector")
+def test_weighted_runs_end_to_end_through_the_evaluator():
+    ev = Evaluator.live(
+        resolve(parse(WEIGHTED_PROTOCOL)),
+        sample_rate_hz=250,
+        channel_names=("Cz", "A1", "A2"),
+        record_streams=True,
+    )
+    ev.start(skip_warmup=True)
+    rng = np.random.default_rng(0)
+
+    for _ in range(60):
+        ev.step_chunk(rng.standard_normal((13, 3)) * 10.0)
+
+    envelope = ev.last_streams()["smr_envelope"]
+    assert np.all(np.isfinite(envelope)) and np.all(envelope >= 0.0) and envelope.std() > 0.0
+
+
+def test_editor_leaves_an_explicit_kind_out_of_its_subset():
+    """The editor's envelope block has no slot for the design. Rendering it
+    back would drop `kind` and hand the author a different filter."""
+    from refrain.editor import describe_protocol
+
+    described = describe_protocol(WEIGHTED_PROTOCOL)
+
+    assert described["in_subset"] is False
+    assert described["reason"] == "band_envelope with explicit kind not in subset"
+    assert describe_protocol(PROTOCOL)["in_subset"] is True, "and without it, still in"

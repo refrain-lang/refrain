@@ -420,6 +420,13 @@ _BAND_ENVELOPE = PrimitiveSpec(
                 # a span under ~2x the delay rather than let accuracy collapse
                 # quietly.
                 ParamSpec("taps", "ratio", default=None, required=False),
+                # `kind` picks the filter design. Absent means "tapered", the
+                # only design before the argument existed, and the default is
+                # None rather than that string so a protocol that does not
+                # write it emits the IR it always did. The permitted values
+                # live with the impl (`BAND_ENVELOPE_KINDS`), which refuses
+                # anything else by name.
+                ParamSpec("kind", "string_enum", default=None, required=False),
             ),
             output=_band_envelope_output,
         ),
@@ -428,7 +435,9 @@ _BAND_ENVELOPE = PrimitiveSpec(
     doc="Band envelope in one stage, with the feedback delay as a declared "
         "parameter. Replaces `bandpass -> hilbert -> magnitude -> smooth`, "
         "whose delay is instead the sum of four stages nobody chose. "
-        "Least-squares complex FIR (Smetanin et al. 2020).",
+        "Least-squares complex FIR (Smetanin et al. 2020). `kind=\"weighted\"` "
+        "for a sharper band at a short latency, at the cost of linear phase "
+        "and far-stopband depth.",
 )
 
 _BANDPOWER = PrimitiveSpec(

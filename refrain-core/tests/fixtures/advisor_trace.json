@@ -283,6 +283,11 @@
   "check_controls": [],
   "inhibit_controls": []
  },
+ "micro_16_band_envelope_weighted.ir.json": {
+  "bundles": {},
+  "check_controls": [],
+  "inhibit_controls": []
+ },
  "micro_passthrough_identity.ir.json": {
   "bundles": {},
   "check_controls": [],
