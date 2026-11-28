@@ -306,7 +306,7 @@ enforces the pairing with `dependentRequired`, because a document carrying one
 without the other would design a different filter than the emitter intended
 and the only symptom would be a wrong envelope.
 
-**`band_envelope(kind:)` does not bump the version.** `kind` (added after 0.26.0)
+**`band_envelope(kind:)` does not bump the version.** `kind` (added in 0.27.0)
 selects which filter Python designs, and the result is on the wire as
 `fir_taps_re` / `fir_taps_im` like any other. A runtime needs no knowledge of
 the argument and one that ignores it runs the identical filter, so there is no
