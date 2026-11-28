@@ -7,6 +7,87 @@ bumps are additive; major bumps may break compatibility.
 
 ## [Unreleased]
 
+### Added
+
+- **`band_envelope(kind: "weighted")`: the same accuracy at about half the
+  declared latency, as an opt-in second design.** The question was whether a
+  different filter moves the whole accuracy/latency curve, since within the
+  shipped design every millisecond given back costs accuracy, smoothly, and
+  the worst recording pays about three times what the median does.
+
+  It does. Measured on 12 resting recordings (OpenNeuro ds003478, Cz against
+  linked mastoids, eyes open and closed, four held-out minutes each), against
+  a zero-phase reference of the same band, r as median / worst:
+
+  | Declared | 12–16 Hz, default | 12–16 Hz, `"weighted"` |
+  |---|---|---|
+  | 160 ms | 0.598 / 0.480 | 0.942 / 0.912 |
+  | 200 ms | 0.719 / 0.635 | 0.964 / 0.952 |
+  | 240 ms | 0.813 / 0.765 | 0.970 / 0.966 |
+  | 320 ms | 0.914 / 0.897 | 0.971 / 0.963 |
+  | 400 ms | 0.955 / 0.944 | 0.977 / 0.970 |
+
+  Recording by recording, the weighted design reaches each one's own default
+  accuracy at 320 ms by 180 ms at the latest (median 140 ms), and the worst
+  case no longer falls away faster than the median. The same holds at
+  12–15 Hz, against a brick-wall reference, and on eyes-open and eyes-closed
+  stretches separately.
+
+  **The default does not change, and no existing protocol moves.** The
+  weighted design is not uniformly better: its accuracy plateaus near
+  r = 0.97–0.98 where the default keeps climbing, so past about two
+  bandwidth-periods of latency the default measures better (from 260 ms at
+  22–30 Hz, 360 ms at 13–19 Hz, about 520 ms at 12–16 Hz). It also gives up
+  exact linear phase, a far stopband of −66 dB or lower (−34 to −48 dB
+  instead) and a step response with no overshoot (6–7%).
+  `docs/PRIMITIVES.md` has the table.
+
+  Two things the measurement said that the name does not:
+
+  - **It is not the subject's spectrum.** The candidate going in was the
+    paper's wcFIR, weighted by each subject's own PSD. Weights from the
+    subject's training minute, from the other eleven subjects, and from a
+    data-free `1/f²` model give medians within 0.01 of each other from 160 ms
+    up (0.02 on the worst recording). So
+    the design uses the model, which also bakes at resolve time where a
+    measured spectrum cannot. The primary source agrees once read for it:
+    Smetanin et al. report cFIR and wcFIR as "comparable" on alpha envelope
+    correlation, at the declared delay, as a mean over ten subjects with no
+    worst case — a different quantity from the one this project gates on, and
+    not evidence either way for SMR.
+  - **Most of the gain was never about weighting.** The default design tapers
+    symmetrically about the delay tap, which throws away every tap after it —
+    the filter's memory, which costs no latency. Keeping them takes 320 ms
+    from 0.914 to 0.965 with no weighting at all. That is also why earlier
+    sweeps found accuracy flat in the tap count: the extra taps were zero.
+
+  The weights carry a white floor meeting the `1/f²` term at 20 Hz. Without
+  it, 20 µV of added 60 Hz took the 160 ms envelope from 0.943 to 0.872
+  (worst 0.792); with it, 0.925 (0.890).
+
+  `"weighted"` refuses a latency under half a bandwidth-period (125 ms on a
+  4 Hz band), where the output would lag by 25–50 ms more than declared.
+
+  **No IR-JSON version change.** `kind` selects the taps Python bakes; both
+  engines read them off the wire, so a core that ignores the argument runs
+  the identical filter. A weighted protocol emits v0.5 like any other
+  `band_envelope`, the Rust core is untouched, and
+  `micro_16_band_envelope_weighted` is the golden vector that pins it. A
+  protocol that does not write `kind` emits the IR it always did: every
+  pinned protocol holds its structure and coefficients
+  (`tests/test_ir_corpus_identity.py`), and no committed golden vector moved
+  (`refrain-core/tools/verify_fixtures.py`). The Rust half of the equivalence
+  gate was not run where this was written — no Rust toolchain — so
+  `micro_16`'s cargo test is first exercised by CI.
+
+  **Not yet measured:** the file-I/O corpus the 320 ms default was chosen on,
+  including its one hard recording (`c008`); a dry-electrode amplifier; and
+  whether a shorter delay at equal fidelity changes what a trainee learns.
+  The twelve recordings here are one laboratory's, clean by construction, so
+  their worst case is a mild one. The editor does not model `kind`: a
+  protocol that writes it is out of the editor's subset, as one with explicit
+  `taps` already is.
+
 ## [0.26.0] — 2026-11-24
 
 ### Added

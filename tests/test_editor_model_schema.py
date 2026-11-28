@@ -261,4 +261,4 @@ def test_every_in_repo_protocol_in_the_subset_validates_against_the_model_schema
             continue
         validate_model(d["model"])
         validated += 1
-    assert (len(CORPUS), validated) == (39, 17)
+    assert (len(CORPUS), validated) == (40, 17)

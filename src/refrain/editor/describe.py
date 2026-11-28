@@ -308,6 +308,10 @@ def _match_derive(decl: A.NamedDecl) -> dict:
             # accepting the derive would drop it on render and quietly change
             # the filter. Out of subset is the honest answer.
             raise _NotInSubset("band_envelope with explicit taps not in subset")
+        if _arg(be, "kind") is not None:
+            # Same reason as `taps`: the block has no slot for the design, so
+            # rendering would drop it and hand back a different filter.
+            raise _NotInSubset("band_envelope with explicit kind not in subset")
         return {"name": decl.name, "block": "derive.envelope_declared",
                 "from": bm["from"].value,
                 "slots": {"band_low_hz": _slot_from_expr(band.elements[0]),

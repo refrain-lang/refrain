@@ -306,6 +306,18 @@ enforces the pairing with `dependentRequired`, because a document carrying one
 without the other would design a different filter than the emitter intended
 and the only symptom would be a wrong envelope.
 
+**`band_envelope(kind:)` does not bump the version.** `kind` (added after 0.26.0)
+selects which filter Python designs, and the result is on the wire as
+`fir_taps_re` / `fir_taps_im` like any other. A runtime needs no knowledge of
+the argument and one that ignores it runs the identical filter, so there is no
+dropped-key hazard for a version to guard — the opposite case from a hold's
+`tolerance` or an inhibit's `exempt`, where ignoring the key runs a different
+protocol. The argument appears in the call's `args` as a string literal only
+when the source writes it; a protocol that does not emits what it always did.
+A consumer that *re-derives* taps from `args` instead of reading `coeffs`
+would be wrong for `kind: "weighted"`, as it already would be for any band or
+latency it derived differently; no such consumer exists in this repository.
+
 `band_envelope` is the only primitive that bakes them. The split into two real
 arrays is not an encoding workaround looking for a better option: JSON has no
 complex type, and the pair mirrors the runtime's own complex-signal layout

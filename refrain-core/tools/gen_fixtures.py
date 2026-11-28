@@ -395,6 +395,7 @@ if __name__ == "__main__":
         "micro_13_band_envelope",
         "micro_14_tolerance",
         "micro_15_artifact_gate",
+        "micro_16_band_envelope_weighted",
         "realistic_smr",
         "composite_smr_theta",
     ):

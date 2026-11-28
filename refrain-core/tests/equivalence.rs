@@ -159,6 +159,17 @@ fn micro_13_band_envelope_equivalent() {
 }
 
 #[test]
+fn micro_16_band_envelope_weighted_equivalent() {
+    // The same stage as micro_13 fed a different tap vector: `kind: "weighted"`
+    // is a Python-side design choice, baked into `fir_taps_re`/`fir_taps_im`
+    // like any other, so the core runs it with no knowledge of the argument.
+    // The taps are longer (delay plus three bandwidth-periods rather than
+    // 2.2x the delay) and not conjugate-symmetric about the delay tap, which
+    // is what this pins: nothing in the stage assumes either.
+    run_protocol("micro_16_band_envelope_weighted");
+}
+
+#[test]
 fn realistic_smr_equivalent() {
     run_protocol("realistic_smr");
 }

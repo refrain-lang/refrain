@@ -1106,11 +1106,15 @@ def _in_subset_corpus():
 
 def test_the_in_repo_subset_is_the_size_this_suite_believes_it_is():
     """The reach of the test below, as a number rather than as a claim that
-    nothing else exists. 39 protocols under the two trees, 17 of which the
+    nothing else exists. 40 protocols under the two trees, 17 of which the
     editor admits. Both counts are tripwires: a protocol joining the corpus,
     or a matcher widening the subset, should land here and be looked at rather
-    than silently change what the round-trip gate covered."""
-    assert len(CORPUS) == 39
+    than silently change what the round-trip gate covered.
+
+    The 40th is bench/protocols/micro_16_band_envelope_weighted.refrain, and it
+    is out of the subset on purpose: it writes `kind:` on its `band_envelope`,
+    and the editor's envelope block has no slot to carry that back."""
+    assert len(CORPUS) == 40
     assert len(_in_subset_corpus()) == 17
 
 

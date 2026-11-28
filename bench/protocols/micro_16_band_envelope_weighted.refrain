@@ -1,0 +1,34 @@
+// micro_16_band_envelope_weighted.refrain
+// Bench micro: micro_13_band_envelope's envelope with the other filter design.
+// Same band, same channel; `kind: "weighted"` and a shorter declared latency,
+// which is the trade that design exists for. The three protocols micro_03,
+// micro_13 and this one are one measurement taken three ways: four stages, one
+// tapered stage, one weighted stage.
+
+protocol "micro_16_band_envelope_weighted" {
+  meta {
+    version  = "0.1.0"
+    evidence = "demo"
+    description = "Bench: band_envelope kind weighted at a short declared latency (cf. micro_13_band_envelope)"
+  }
+
+  requires {
+    sample_rate = ">= 256 Hz"
+    channels    = ["Cz"]
+  }
+
+  input "raw" {
+    montage = referential(active: "Cz", reference: "linked_ears")
+  }
+
+  derive "smr_envelope" {
+    from = "raw"
+    pipeline = [
+      band_envelope(band: (12 Hz, 15 Hz), latency: 200 ms, kind: "weighted"),
+    ]
+  }
+
+  output {
+    audio_gain = 0
+  }
+}

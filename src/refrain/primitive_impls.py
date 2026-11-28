@@ -34,7 +34,9 @@ from collections import deque
 from typing import Any
 
 import numpy as np
+from scipy import linalg as scilinalg
 from scipy import signal as scisig
+from scipy import special as scispecial
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +431,111 @@ BAND_ENVELOPE_SIZING_MARGIN = 2.2
 BAND_ENVELOPE_MIN_DELAY_SAMPLES = 3
 
 
+# `band_envelope(kind:)`. "tapered" is the design every protocol written before
+# the argument existed gets: exactly linear phase, no ringing, a deep far
+# stopband, and wide transition skirts. "weighted" trades those three for a
+# sharp transition at a short declared delay. See `BandEnvelopeImpl`.
+BAND_ENVELOPE_KINDS = ("tapered", "weighted")
+
+# The weighted design's model of what it will be fed: power falling as 1/f^2
+# above a 1 Hz knee, on a white floor that meets it at 20 Hz. The 1/f^2 term is
+# what EEG looks like and is where the accuracy comes from — it spends the
+# filter's stopband on delta, theta and alpha, where the power is. The floor is
+# what keeps it safe: without it the design buys low-frequency rejection with
+# high-frequency rejection it then does not have, and 20 uV of mains took the
+# 12-16 Hz envelope at 160 ms from r=0.943 to 0.872 (worst recording 0.792).
+# With it, 0.925 (0.890) under the same mains against 0.942 (0.912) clean. It
+# also bounds the weight's dynamic range at ~400:1, so the normal equations are
+# well conditioned and the taps reproduce across architectures.
+BAND_ENVELOPE_WEIGHT_KNEE_HZ = 1.0
+BAND_ENVELOPE_WEIGHT_FLOOR_HZ = 20.0
+
+# Taps kept after the delay tap, in periods of the bandwidth (1/B seconds).
+# They are the filter's memory, and unlike the taps before the delay they cost
+# no latency. Three periods is where the measured curve stops moving: against a
+# Butterworth reference 2 reads marginally better and against a brick-wall one
+# 4 does, by under 0.01 either way, which is the reference's edge shape talking
+# rather than the filter. Below one period the kernel's main lobe is cut.
+BAND_ENVELOPE_WEIGHTED_TAIL_PERIODS = 3.0
+BAND_ENVELOPE_WEIGHTED_MIN_TAIL_PERIODS = 1.0
+
+# Below half a bandwidth-period the weighted design cannot realize the delay it
+# is asked for: the lag measured on real EEG ran 25-50 ms over the declaration
+# at 0.4-0.5 periods (12-15 Hz at 100-160 ms; 3-5 Hz at 200 ms), 12-16 ms over
+# at 0.64, and within 4-8 ms from 0.8 up. A declared latency the output does
+# not have is the failure this primitive exists to prevent, so it is refused.
+BAND_ENVELOPE_WEIGHTED_MIN_LATENCY_PERIODS = 0.5
+
+
+def _weighted_band_fir(
+    low: float, high: float, delay: int, n_taps: int, sample_rate_hz: float
+) -> np.ndarray:
+    """Weighted least-squares complex FIR for `band_envelope(kind: "weighted")`.
+
+    Solves Smetanin et al. (2020) eq. 10-11,
+
+        b = argmin  integral S(f) |B(f) - H_D(f)|^2 df,
+
+    with `H_D = 2 e^{-j 2 pi f D / fs}` on [low, high] and 0 elsewhere, over the
+    whole of [-fs/2, fs/2] so the negative frequencies are stopband and the
+    output is analytic. The paper takes `S` from the subject's own spectrum;
+    here it is a fixed model, `1/max(|f|, knee)^2 + 1/floor^2`, because a
+    measured spectrum is not available when the taps bake and, measured, buys
+    nothing a model does not (see the class docstring).
+
+    The normal equations are `R b = p` with `R[m, n] = r[m - n]`,
+
+        r[k] = integral S(f) e^{ j 2 pi f k / fs} df            over [-fs/2, fs/2]
+        p[m] = 2 * integral S(f) e^{ j 2 pi f (m - D) / fs} df  over [low, high]
+
+    Both are evaluated in closed form through the sine and cosine integrals,
+    for the reason the tapered design is: on a frequency grid a narrow band
+    lands on a handful of points and the taps then move with the grid.
+    """
+    fs = float(sample_rate_hz)
+    knee = BAND_ENVELOPE_WEIGHT_KNEE_HZ
+    floor = 1.0 / BAND_ENVELOPE_WEIGHT_FLOOR_HZ**2
+    nyq = fs / 2.0
+
+    def exp_over_f2(alpha: np.ndarray, f1: float, f2: float) -> np.ndarray:
+        """integral_{f1}^{f2} e^{j alpha f} / f^2 df, elementwise in alpha; 0 < f1 < f2."""
+        out = np.full(alpha.shape, 1.0 / f1 - 1.0 / f2, dtype=np.complex128)
+        nz = alpha != 0.0
+        a = alpha[nz]
+        mag = np.abs(a)
+        si2, ci2 = scispecial.sici(mag * f2)
+        si1, ci1 = scispecial.sici(mag * f1)
+        # d/df [Ci(|a| f) + j sgn(a) Si(|a| f)] = e^{j a f} / f
+        e_int = (ci2 - ci1) + 1j * np.sign(a) * (si2 - si1)
+        out[nz] = (
+            -np.exp(1j * a * f2) / f2 + np.exp(1j * a * f1) / f1 + 1j * a * e_int
+        )
+        return out
+
+    def exp_flat(alpha: np.ndarray, f1: float, f2: float) -> np.ndarray:
+        """integral_{f1}^{f2} e^{j alpha f} df, elementwise in alpha."""
+        out = np.full(alpha.shape, f2 - f1, dtype=np.complex128)
+        nz = alpha != 0.0
+        a = alpha[nz]
+        out[nz] = (np.exp(1j * a * f2) - np.exp(1j * a * f1)) / (1j * a)
+        return out
+
+    def weighted_exp(alpha: np.ndarray, f1: float, f2: float) -> np.ndarray:
+        """integral_{f1}^{f2} S(f) e^{j alpha f} df for 0 <= f1 < f2."""
+        total = floor * exp_flat(alpha, f1, f2)
+        if f1 < knee:
+            total = total + exp_flat(alpha, f1, min(f2, knee)) / knee**2
+        if f2 > knee:
+            total = total + exp_over_f2(alpha, max(f1, knee), f2)
+        return total
+
+    k = np.arange(n_taps, dtype=np.float64)
+    # S is even, so r is real: twice the real part of the one-sided integral.
+    r = 2.0 * np.real(weighted_exp(2.0 * np.pi * k / fs, 0.0, nyq))
+    p = 2.0 * weighted_exp(2.0 * np.pi * (k - delay) / fs, low, high)
+    return scilinalg.solve(scilinalg.toeplitz(r), p, assume_a="pos")
+
+
 class BandEnvelopeImpl(PrimitiveImpl):
     """`band_envelope(band:, latency:)` — analytic envelope in one stage.
 
@@ -448,10 +555,40 @@ class BandEnvelopeImpl(PrimitiveImpl):
     ideal two-sided response at small `D` is the accuracy cost, and making
     that cost explicit is the point of the primitive.
 
-    This is the plain unweighted variant. The paper's PSD-weighted form
-    (wcFIR) does better where a loud adjacent rhythm contaminates the band —
-    eyes-closed alpha sitting just below 12–15 Hz is the worst case — and is
-    not implemented here.
+    Two designs, chosen by `kind`. They are different trades, not a better and
+    a worse one, which is why the choice is the author's:
+
+    `"tapered"` (the default, and the only design before `kind` existed) is
+    the ideal response under a Hann taper reaching `D` taps either side of tap
+    `D`. Exactly linear phase, no ringing, a far stopband below -60 dB — and
+    transition skirts as wide as the taper is short: at 320 ms a 12–16 Hz
+    filter is only 13 dB down at 11 Hz, and at 200 ms only 7 dB. Its accuracy
+    keeps rising with the declared latency, which makes it the right design
+    when the latency is generous for the band (about two bandwidth-periods
+    and up).
+
+    `"weighted"` is the paper's weighted form (wcFIR, eq. 10–11) with a model
+    spectrum in place of a measured one. It keeps the taps *after* `D` — the
+    filter's memory, which costs no latency and which the symmetric taper
+    throws away — and lets least squares place the stopband where EEG has its
+    power: 18 dB down at 11 Hz at 160 ms and 21 dB from 200 ms. Measured on 12
+    resting recordings at Cz, 12–16 Hz, against a zero-phase reference (r
+    median / worst): tapered 0.914 / 0.897 at 320 ms; weighted 0.942 / 0.912
+    at 160 ms and 0.964 / 0.952 at 200 ms. What it gives up: the far stopband
+    is -34 to -48 dB at 35 and 60 Hz rather than below -66, the in-band group
+    delay is `D` only on average (about 40 ms faster mid-band, up to 100 ms
+    slower at the edges), a step in amplitude overshoots by 6–7%, and its
+    accuracy plateaus near r=0.97–0.98 instead of climbing with latency — so
+    past about two bandwidth-periods the tapered design measures better and
+    should be used.
+
+    The weights are a fixed model, not the subject's spectrum. Measured on the
+    same recordings, weights from the subject's own training minute, from the
+    other eleven subjects, and from `1/f^2` with no data at all give medians
+    within 0.01 of each other at every latency from 160 ms up (0.02 on the
+    worst recording): the gain is in being weighted and one-sided, not in
+    whose spectrum it is. A model also bakes at resolve time, where a measured
+    spectrum cannot.
     """
 
     def __init__(
@@ -460,8 +597,15 @@ class BandEnvelopeImpl(PrimitiveImpl):
         band: tuple[float, float],
         latency_ms: float,
         taps: int | None = None,
+        kind: str | None = None,
         sample_rate_hz: float,
     ):
+        kind = "tapered" if kind is None else kind
+        if kind not in BAND_ENVELOPE_KINDS:
+            raise ValueError(
+                f"band_envelope: unknown kind {kind!r}; expected one of "
+                f"{', '.join(repr(k) for k in BAND_ENVELOPE_KINDS)}"
+            )
         low, high = float(band[0]), float(band[1])
         nyq = sample_rate_hz / 2.0
         if not (0 < low < high < nyq):
@@ -485,6 +629,10 @@ class BandEnvelopeImpl(PrimitiveImpl):
                 "wraps to the far end of the window, so the delay the output actually "
                 "realizes is the filter length rather than the latency asked for."
             )
+        if kind == "weighted":
+            self._init_weighted(low, high, latency_ms, delay, taps, sample_rate_hz)
+            return
+
         # The sizing rule. The taper is centred on tap `delay` and reaches
         # `delay` taps either side, so a filter shorter than 2·delay+1 truncates
         # it — and the only symptom is the accuracy number.
@@ -557,17 +705,84 @@ class BandEnvelopeImpl(PrimitiveImpl):
                 f"at {sample_rate_hz:g} Hz design a filter with no passband gain"
             )
 
+        self._finish(coeffs * (2.0 / gain), low, high, latency_ms, delay, "tapered")
+
+    def _init_weighted(
+        self,
+        low: float,
+        high: float,
+        latency_ms: float,
+        delay: int,
+        taps: int | None,
+        sample_rate_hz: float,
+    ) -> None:
+        period_samples = sample_rate_hz / (high - low)  # one bandwidth-period
+        periods = (delay / sample_rate_hz) * (high - low)
+        if periods < BAND_ENVELOPE_WEIGHTED_MIN_LATENCY_PERIODS:
+            floor_ms = BAND_ENVELOPE_WEIGHTED_MIN_LATENCY_PERIODS / (high - low) * 1000.0
+            raise ValueError(
+                f'band_envelope: kind "weighted" cannot realize a {latency_ms:g} ms latency '
+                f"on a {high - low:g} Hz wide band. Declare at least {floor_ms:.0f} ms "
+                "(half a bandwidth-period), or widen the band. Below that the output "
+                "lags by more than the latency declared: measured 25-50 ms over on real "
+                "EEG at 0.4-0.5 periods, and within 4-8 ms from 0.8 periods up."
+            )
+        tail = int(math.ceil(BAND_ENVELOPE_WEIGHTED_TAIL_PERIODS * period_samples))
+        min_tail = int(math.ceil(BAND_ENVELOPE_WEIGHTED_MIN_TAIL_PERIODS * period_samples))
+        n_taps = delay + tail + 1 if taps is None else int(taps)
+        if n_taps % 2 == 0:
+            n_taps += 1  # odd, as the tapered design is, so the two bake alike
+        required_taps = delay + min_tail + 1
+        if n_taps < required_taps:
+            raise ValueError(
+                f'band_envelope: {n_taps} taps cannot carry kind "weighted" at a '
+                f"{latency_ms:g} ms latency on a {high - low:g} Hz wide band at "
+                f"{sample_rate_hz:g} Hz. The taps after the delay are the filter's memory "
+                f"and must span at least one bandwidth-period ({min_tail} samples), so "
+                f"this needs taps >= {required_taps}. Left out, taps defaults to "
+                f"{delay + tail + 1 + ((delay + tail + 1) % 2 == 0)}."
+            )
+        coeffs = _weighted_band_fir(low, high, delay, n_taps, sample_rate_hz)
+
+        # Same calibration as the tapered design, for the same reason: a
+        # sinusoid of amplitude A at band centre reads A.
+        centre_hz = 0.5 * (low + high)
+        gain = float(
+            np.abs(
+                np.sum(
+                    coeffs
+                    * np.exp(-1j * 2.0 * np.pi * centre_hz * np.arange(n_taps) / sample_rate_hz)
+                )
+            )
+        )
+        if gain == 0.0:  # pragma: no cover - the guards above exclude it
+            raise ValueError(
+                f"band_envelope: band ({low}, {high}) Hz and latency {latency_ms:g} ms "
+                f"at {sample_rate_hz:g} Hz design a filter with no passband gain"
+            )
+        self._finish(coeffs * (2.0 / gain), low, high, latency_ms, delay, "weighted")
+
+    def _finish(
+        self,
+        h_complex: np.ndarray,
+        low: float,
+        high: float,
+        latency_ms: float,
+        delay: int,
+        kind: str,
+    ) -> None:
         # Named `h_complex`, not `h`: `ir_json._extract_coeffs` duck-types on
         # the attribute name, and `h` is the real-tap FIR branch (HilbertFirImpl).
         # The complex branch bakes as a split re/im pair for the portable core.
-        self.h_complex = coeffs * (2.0 / gain)
-        self.taps = n_taps
+        self.h_complex = h_complex
+        self.taps = len(h_complex)
         self.band = (low, high)
         self.latency_ms = latency_ms
         self.group_delay = delay
+        self.kind = kind
         # The coefficients carry the complex part, so the delay line stays
         # real — the same split HilbertFirImpl uses for its real branch.
-        self._buf = np.zeros(n_taps - 1, dtype=np.float64)
+        self._buf = np.zeros(self.taps - 1, dtype=np.float64)
 
     def step(self, x: np.ndarray) -> np.ndarray:
         analytic, self._buf = _fir_stream(self.h_complex, x, self._buf)
@@ -1693,6 +1908,7 @@ def make_filter_impl(
             band=tuple(static_args["band"]),
             latency_ms=float(static_args["latency_ms"]),
             taps=static_args.get("taps"),
+            kind=static_args.get("kind"),
             sample_rate_hz=sample_rate_hz,
         )
     if callee == "magnitude":

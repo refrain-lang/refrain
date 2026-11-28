@@ -265,7 +265,8 @@ pipeline = [
 
 ```
 band_envelope(band: (low_Hz, high_Hz), latency: duration,
-              taps: int = auto)                        -> stream<scalar uV>
+              taps: int = auto,
+              kind: "tapered" | "weighted" = "tapered") -> stream<scalar uV>
 ```
 
 A band's amplitude envelope in **one stage, with the feedback delay as a
@@ -307,10 +308,86 @@ truncates the ideal two-sided response, and that truncation *is* the accuracy
 cost. The same filter at 100 ms measures r = 0.84 on a 4 Hz band but r = 0.37
 on SMR's 3 Hz band: the method transfers, the band width does not. Narrow bands
 with a loud neighbour are the weak case — eyes-closed alpha sitting just below
-12–15 Hz leaks in. The paper's PSD-weighted variant (wcFIR) targets exactly
-this and is not implemented.
+12–15 Hz leaks in. `kind: "weighted"`, below, is the design for that case.
 
-**Sizing.** The filter span must be at least ~2× the declared delay. Below
+**`kind` — two designs, two trades.** Both are one complex FIR at a declared
+delay; they differ in which taps they keep and how they shape the stopband.
+
+| | `"tapered"` (default) | `"weighted"` |
+|---|---|---|
+| Design | Ideal response under a Hann taper reaching `D` taps either side of tap `D` | Weighted least squares (the paper's wcFIR, eq. 10–11) over a model spectrum; keeps the taps after `D` |
+| Transition, 12–16 Hz, gain at 11 Hz | −13 dB at 320 ms, −7 dB at 200 ms | −21 dB from 200 ms, −18 dB at 160 ms |
+| Far stopband (35 and 60 Hz) | −66 dB or lower | −34 to −48 dB |
+| In-band group delay | exactly `D` | `D` on average: about 40 ms faster mid-band, up to 100 ms slower at the edges |
+| Step in amplitude | no overshoot | 6–7% overshoot |
+| Accuracy vs latency | rises throughout | plateaus near r = 0.97–0.98 |
+| Use when | latency is about two bandwidth-periods (`2/B`) or more | latency is shorter than that |
+
+```refrain
+// 4 Hz band: one bandwidth-period is 250 ms. 200 ms is under two of them.
+pipeline = [ band_envelope(band: (12 Hz, 16 Hz), latency: 200 ms, kind: "weighted") ]
+```
+
+**Measured** on 12 resting recordings (OpenNeuro ds003478, eyes open and
+closed, Cz against linked mastoids, 250 Hz, four minutes each, held out from
+anything the design was tuned on), against a zero-phase reference of the same
+band — r as median / worst recording:
+
+| Declared | `"tapered"` 12–16 Hz | `"weighted"` 12–16 Hz | `"tapered"` 12–15 Hz | `"weighted"` 12–15 Hz |
+|---|---|---|---|---|
+| 160 ms | 0.598 / 0.480 | 0.942 / 0.912 | 0.492 / 0.354 | refused |
+| 200 ms | 0.719 / 0.635 | 0.964 / 0.952 | 0.598 / 0.481 | 0.933 / 0.906 |
+| 240 ms | 0.813 / 0.765 | 0.970 / 0.966 | 0.705 / 0.619 | 0.958 / 0.943 |
+| 320 ms | 0.914 / 0.897 | 0.971 / 0.963 | 0.855 / 0.816 | 0.973 / 0.967 |
+| 400 ms | 0.955 / 0.944 | 0.977 / 0.970 | 0.922 / 0.906 | 0.974 / 0.967 |
+
+Recording by recording, the weighted design reaches each one's own tapered
+accuracy at 320 ms by **180 ms at the latest** on both bands (median 140 ms at
+12–16 Hz). The same holds scored against a brick-wall reference instead of a
+Butterworth one, on eyes-open and eyes-closed stretches separately, and at C3,
+C4 and an unreferenced Cz. It does **not** hold at generous latencies: at
+22–30 Hz the tapered design is ahead from 260 ms, at 13–19 Hz from 360 ms, at
+15–20 Hz from 420 ms, at 12–16 Hz from about 520 ms. That crossover is why
+this is a choice and not a new default.
+
+Three things about those numbers:
+
+- **The weights are a model, not the subject's spectrum:** power as `1/f²`
+  above 1 Hz on a white floor that meets it at 20 Hz. Weights taken from each
+  subject's own training minute, from the other eleven subjects, and from the
+  model give medians within 0.01 of each other at every latency from 160 ms
+  (0.02 on the worst recording). The gain
+  is in being weighted and one-sided, not in whose spectrum it is — and a
+  model bakes at resolve time, where a measured spectrum cannot.
+- **Most of the gain is the taps after `D`, not the weighting.** At 320 ms
+  the tapered design reads 0.914, the same kernel with its tail kept 0.965,
+  and the weighted one 0.971. Weighting matters most below one
+  bandwidth-period: at 160 ms it is 0.89 unweighted against 0.94.
+- **The white floor is what makes it safe.** Without it the design buys
+  low-frequency rejection with high-frequency rejection: 20 µV of added 60 Hz
+  took the 160 ms envelope from 0.943 to 0.872 (worst recording 0.792). With
+  it, 0.925 (0.890). The tapered design does not notice mains at all, and
+  where the input is dominated by mains or muscle rather than by EEG it is
+  still the safer filter.
+
+**`"weighted"` refuses a latency under half a bandwidth-period** (`0.5/B`:
+125 ms on a 4 Hz band, 167 ms on a 3 Hz one). Below it the output lags by more
+than the latency declared — 25–50 ms over, measured — and a declared latency
+the output does not have is the failure this primitive exists to prevent.
+Between 0.5 and 0.8 periods expect it 12–16 ms over; from 0.8 up, within 4–8.
+`taps` defaults to the delay plus three bandwidth-periods (239 at 200 ms,
+12–16 Hz, 250 Hz) and is refused under the delay plus one. That is more state
+than the tapered design carries: a narrow band on a fast amp exceeds the 8 KB
+this primitive's budget was measured at (a 2 Hz band at 250 Hz is about
+11 KB), so check the cost report.
+
+**What has not been measured.** These are twelve recordings from one
+laboratory and one amplifier, clean by construction (crest factor 2.7–3.8),
+so the worst case here is a mild one: nothing in it resembles a low-amplitude
+subject on a dry-electrode amp. And correlation against a reference measures
+fidelity, not whether a trainee learns faster on the shorter delay.
+
+**Sizing (`"tapered"`).** The filter span must be at least ~2× the declared delay. Below
 that the taper is truncated and accuracy collapses with no other symptom
 (measured at 256 Hz with a 360 ms delay: r = 0.873 at 2×, 0.743 at 1.75×,
 0.437 at 1.4×). `taps` is therefore derived from `latency` by default and a
@@ -337,7 +414,9 @@ declared latency shorter than 3 samples at the target rate is refused.
 core, which are held to sample-for-sample parity by the drift gate
 (`refrain-core/tools/check_equivalence.py`). Filter design stays in Python: the
 core receives the finished complex taps as `fir_taps_re` / `fir_taps_im` and
-runs the convolution. Those coefficient fields are new in IR-JSON v0.5, so a
+runs the convolution — which is also why `kind` is not a wire change: it
+selects the taps Python bakes, and a core that has never heard of the argument
+runs the identical filter. Those coefficient fields are new in IR-JSON v0.5, so a
 protocol using this primitive emits a v0.5 document and needs a runtime that
 accepts v0.5 — an older core refuses it at load with an explicit version
 error rather than running it with the stage silently dropped.
