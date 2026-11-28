@@ -7,6 +7,56 @@ bumps are additive; major bumps may break compatibility.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A bare number no longer takes the first letters of the next field name as
+  its unit.** `;` between assignments is optional and whitespace is ignored,
+  and the `UNIT` terminal matched a unit spelling wherever one could start,
+  including at the front of an identifier. So the ordinary one-field-per-line
+  layout
+
+  ```refrain
+  seed = percentile {
+    from       = "emg_envelope"
+    window     = 90 s
+    target_pct = 50
+    scale      = 3.0
+  }
+  ```
+
+  parsed as `target_pct = 50 s` and a field named `cale`. The seed rule
+  resolved with `scale = 1.0`, the limit was written at the warm-up median
+  instead of three times it, and the inhibit it fed muted the session from
+  start to finish, with no error or warning at any stage. The same happened
+  to any field starting `s`, `C`, `min`, `ms`, `Hz` or `uV` that followed a
+  unit-less number: `seed` became `eed`, `steepness` became `teepness`,
+  `min_step` became `_step`, `Cz_gain` became `z_gain`.
+
+  A unit is now a whole word. `50` followed by `scale` is the number and the
+  field, on one line or two; `50 s` is still fifty seconds; and `5 seconds`,
+  which used to be `5 s` and a stray `econds`, is a parse error where it is
+  written. No `.refrain` file in this repository, in `refrain-protocols` or in
+  the recorder parses differently — the hazard had been dodged by field order
+  and semicolons, which is the part that could not last.
+
+  Two resolver checks close the path that made it silent, whatever a future
+  grammar does:
+
+  - **A seed block refuses a field it does not define.** `cale`, or a
+    misspelled `scale`, is a `ResolveError` naming the field and listing
+    `from`, `scale`, `target_pct` and `window`. An autopilot block already
+    did this, which is why the same mis-parse there failed loudly.
+  - **`seed.target_pct` refuses a literal in a unit other than `%`.** The
+    evaluator reads the literal's value and never its unit, so `50 s` ran as
+    the 50th percentile.
+
+  A protocol that relied on either leniency stops compiling. The first is a
+  typo that was changing nothing; the second is a number that was already
+  being read as a percentile.
+
+  Recorded as open in
+  `docs/superpowers/records/2026-10-30-rec-23-followups/grammar-ambiguity.md`.
+
 ## [0.27.0] — 2026-11-28
 
 ### Added

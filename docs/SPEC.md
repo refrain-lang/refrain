@@ -57,7 +57,7 @@ Double-quoted UTF-8 strings. Escape sequences: `\n`, `\t`, `\\`, `\"`, `\uXXXX`.
 0.01 Hz       250 ms       8 uV       2 min       95 %
 ```
 
-The unit is part of the value's type. Operations between incompatible units are type errors. Recognized units in v0.0:
+The unit is part of the value's type. Operations between incompatible units are type errors. A unit is a whole word: it ends where the next character could not continue an identifier, so `50 s` is fifty seconds while `50` followed by a field named `scale` is the number fifty and a field named `scale`, on the same line or the next. A spelling that is not a unit, such as `5 seconds`, is a parse error. Recognized units in v0.0:
 
 | Unit | Meaning | Notes |
 |---|---|---|
@@ -848,7 +848,8 @@ currently an error.
 
 **Resolve-time guarantees:**
 - **Real derive.** `from` is validated against the resolved derive set; a name that doesn't resolve is a `ResolveError`, not a silent no-op.
-- **`target_pct` typing.** A number literal is accepted as-is; a `control_ref` is accepted only if it targets a control declared `percent` — binding it to any other control kind is a `ResolveError`.
+- **Known fields only.** A field the statistic does not define is a `ResolveError` that names it and lists the fields allowed. It is not skipped: a misspelled `scale` that resolved anyway would leave the multiplier at its default of `1.0`, and a limit meant to sit at three times the warm-up median would sit on the median.
+- **`target_pct` typing.** A number literal is accepted if it is bare or written with `%`; a literal in any other unit (`50 s`) is a `ResolveError`. A `control_ref` is accepted only if it targets a control declared `percent` — binding it to any other control kind is a `ResolveError`.
 - **`scale` is a positive, dimensionless literal.** A non-number (including a control reference), a number carrying a unit, and any value at or below zero are each a `ResolveError`. Zero is not clamped to something harmless: `scale = 0` seeds a muscle limit at 0 µV, which makes its inhibit mute the whole session, and a negative multiplier lands on the control's range floor and reads as a working protocol while gating nothing the author asked for.
 - **Warmup fits.** If the protocol's first session phase is a timed, output-muted warmup (not `mode = "open"`), `window` must fit inside that phase's duration. A seed whose window can never fill is refused at compile time, not discovered fail-closed at runtime. This is normative and it is strict: a seeded control is only usable in a protocol that opens with a timed, output-muted phase long enough to hold its whole measurement window.
 - **Dead-seed elimination.** If the seeded control is never referenced anywhere in the resolved pipeline (derives, thresholds, inhibits, reward, output), the seed is dropped rather than attached — an unused control's seed rule would just be dead weight on the wire.

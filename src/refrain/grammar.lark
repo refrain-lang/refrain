@@ -127,7 +127,20 @@ name_ref: NAME
 
 literal: number_with_unit | string_lit | bool_lit
 number_with_unit: NUMBER UNIT?
-UNIT: "uV2" | "Hz" | "ms" | "min" | "s" | "uV" | "C" | "%"
+// A unit is a whole word: the lookahead refuses a spelling that runs straight
+// on into more identifier characters. The Earley lexer matches a terminal
+// wherever the grammar could accept one, with no longest-match rule across
+// terminals, so a plain `"s"` here also matched the first letter of `scale`.
+// `;` is optional and whitespace is ignored, so
+//
+//     target_pct = 50
+//     scale      = 3.0
+//
+// parsed as `target_pct = 50 s` and `cale = 3.0` — a unit the author never
+// wrote and a field they never named, with no diagnostic. The same went for
+// any field starting `s`, `C`, `min`, `ms`, `Hz` or `uV` after a bare number.
+// `%` is not an identifier character and needs no guard.
+UNIT: /(uV2|uV|Hz|ms|min|s|C)(?![A-Za-z0-9_])/ | "%"
 string_lit: STRING
 bool_lit: BOOL
 BOOL.2: "true" | "false"

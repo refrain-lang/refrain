@@ -109,8 +109,8 @@ but every one of those seven cost a round.
 | Should released IR schemas 0.1–0.5 be widened to accept a null range bound? | Retroactively changes what already-shipped documents claim to be valid against. R27 |
 | Should the resolver reject an event stream written into a boolean position? | Three spellings resolve today, and one of them makes the two engines disagree with no pause involved. |
 | Should a transport pause also reset a top-level reward dwell? | The principle says yes; doing it moves 44 of 45 live protocols with nothing gating it. R64's follow-up |
-| Should the grammar stop a bare number swallowing the next field's first letter? | It silently mis-parsed three worked examples in our own living docs. |
-| Should `validateModel`'s missing field-name check be added to seed blocks? | It is the difference between a loud failure and a silently mis-calibrated session. R55 |
+| Should the grammar stop a bare number swallowing the next field's first letter? | It silently mis-parsed three worked examples in our own living docs. **Decided 2026-11-28: yes, done.** |
+| Should `validateModel`'s missing field-name check be added to seed blocks? | It is the difference between a loud failure and a silently mis-calibrated session. R55. **Decided 2026-11-28: yes, done in the resolver.** |
 
 ---
 

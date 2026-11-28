@@ -75,6 +75,102 @@ def test_a_single_letter_unit_does_not_eat_identifiers():
     assert isinstance(n, A.NameRef) and n.name == "Cz_gain"
 
 
+def _assignments(body: str) -> list[tuple[str, float, str | None]]:
+    """Parse `body` as the inside of a section and return each assignment as
+    `(target, value, unit)`."""
+    f = parse(f'protocol "P" {{ meta {{ {body} }} }}')
+    return [(s.target, s.value.value, s.value.unit) for s in f.protocol.body[0].body]
+
+
+@pytest.mark.parametrize(
+    "next_field",
+    [
+        # `s`
+        "scale", "seed", "steepness", "step", "signal", "slope", "s2",
+        # `C`
+        "Cz_gain", "Cz", "C3",
+        # the multi-character units
+        "min_step", "minimum", "ms_window", "Hz_floor", "uV_limit", "uV2_limit", "uV2x",
+    ],
+)
+@pytest.mark.parametrize("sep", ["\n  ", " ", "\n\n", " // why\n  "])
+def test_a_unit_does_not_eat_the_start_of_the_next_field(next_field, sep):
+    """A bare number followed by a field whose name merely *starts* with a
+    unit spelling is a number and a field, not a number-with-unit and the
+    field's tail. `;` between assignments is optional and newlines are
+    insignificant (SPEC §2.7), so this is the ordinary one-field-per-line
+    layout:
+
+        target_pct = 50
+        scale      = 3.0
+
+    which read as `target_pct = 50 s` and `cale = 3.0`. The seed rule then
+    ran with the default multiplier of 1.0 and nothing said so."""
+    assert _assignments(f"a = 50{sep}{next_field} = 3.0") == [
+        ("a", 50.0, None),
+        (next_field, 3.0, None),
+    ]
+
+
+@pytest.mark.parametrize("unit", ["s", "ms", "min", "Hz", "uV", "uV2", "C"])
+def test_a_field_named_exactly_like_a_unit_is_still_a_field(unit):
+    assert _assignments(f"a = 50\n  {unit} = 3.0") == [
+        ("a", 50.0, None),
+        (unit, 3.0, None),
+    ]
+
+
+@pytest.mark.parametrize("unit", ["s", "ms", "min", "Hz", "uV", "uV2", "C", "%"])
+@pytest.mark.parametrize("gap", [" ", ""])
+@pytest.mark.parametrize("tail", ["\n  scale = 3.0", "; scale = 3.0", " scale = 3.0"])
+def test_a_real_unit_still_binds_before_the_next_field(unit, gap, tail):
+    """The other direction: the fix must not cost a literal its unit."""
+    assert _assignments(f"a = 50{gap}{unit}{tail}") == [
+        ("a", 50.0, unit),
+        ("scale", 3.0, None),
+    ]
+
+
+@pytest.mark.parametrize(
+    "src, unit",
+    [
+        ("(8 uV, 30 uV)", "uV"),
+        ("(4 Hz,8 Hz)", "Hz"),
+        ("[250 ms]", "ms"),
+        ("f(2 s)", "s"),
+        ("5 s+1 s", "s"),
+        ("5 s-1 s", "s"),
+        ("5 s*2", "s"),
+        ("5 s/2", "s"),
+        ("5 uV>1 uV", "uV"),
+        ("5 s==5 s", "s"),
+    ],
+)
+def test_a_unit_is_delimited_by_punctuation(src, unit):
+    """A unit ends at the first character that cannot continue an identifier,
+    so closers, commas and operators hard against it are fine."""
+    e = _value_of(src)
+    while not isinstance(e, A.NumberLit):
+        if isinstance(e, A.BinaryOp):
+            e = e.left
+        elif isinstance(e, A.Call):
+            e = e.args[0].value
+        else:
+            e = e.elements[0]
+    assert e.unit == unit
+
+
+@pytest.mark.parametrize(
+    "src",
+    ["5 seconds", "5 sec", "5 mins", "5 msec", "5 Hzz", "5 uVolts", "5 Celsius", "5 s2"],
+)
+def test_a_misspelled_unit_is_a_parse_error(src):
+    """`5 seconds` used to be `5 s` followed by a stray `econds`, which could
+    only fail later and somewhere else. It now fails here."""
+    with pytest.raises(ParseError):
+        parse(f'protocol "P" {{ meta {{ x = {src} }} }}')
+
+
 # ---------------------------------------------------------------------------
 # Unary minus (DESIGN-NOTES §1.3; absent from SPEC §3's EBNF)
 # ---------------------------------------------------------------------------

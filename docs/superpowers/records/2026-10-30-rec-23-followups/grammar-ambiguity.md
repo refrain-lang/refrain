@@ -1,5 +1,10 @@
 # Follow-up: an ambiguous grammar silently renames an output channel
 
+> **Closed 2026-11-28.** `UNIT` carries the word-boundary guard suggested below, a seed block refuses
+> a field it does not define, and `seed.target_pct` refuses a literal in a unit other than `%`. It was
+> reopened by a trial protocol written one field per line, which muted a whole replayed session. The
+> docs test at the end of this note is still not written. What follows is the record as filed.
+
 Found while implementing REC-23 Task 4. **Not a REC-23 bug** — pre-existing, latent, nothing in
 the repo trips it today. Filed here so it does not die with this session's workspace.
 

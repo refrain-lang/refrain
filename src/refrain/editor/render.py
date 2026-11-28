@@ -88,20 +88,18 @@ def _render_seed(s: dict) -> str:
     # 1.0, so a seed that never declared one keeps rendering exactly as it did
     # — which is what keeps every already-vendored model byte-identical.
     #
-    # It is emitted BEFORE `target_pct`, not after it as SPEC §4.9.4 writes it,
-    # and that is not a style choice. The lexer attaches a trailing unit to a
-    # bare number across a newline, so
+    # It is emitted BEFORE `target_pct`. That began as a workaround: through
+    # 0.27.0 a unit could match the first letters of the next field name, so
     #
     #     target_pct = 40
     #     scale      = 1.5
     #
-    # lexes as `target_pct = 40 s` plus a field called `cale`, and the
-    # resolver accepts both without complaint: the multiplier vanishes
-    # silently. `window` always renders with a unit (`_fmt_duration` never
-    # omits one), so putting `scale` straight after it can never sit behind a
-    # bare number. Do not reorder these two lines without re-reading
-    # `test_a_protocol_using_all_four_declarations_is_in_the_subset_and_round_trips`,
-    # which is red for exactly this.
+    # parsed as `target_pct = 40 s` plus a field called `cale`, and the
+    # resolver accepted both: the multiplier vanished silently. The grammar
+    # now requires a unit to be a whole word and a seed block refuses a field
+    # it does not define, so either order parses the same. The order stays
+    # because every vendored model that carries a `scale` was rendered this
+    # way, and changing it would move their bytes for no gain.
     scale = f"        scale      = {_fmt_num(s['scale'])}\n" if s.get("scale") is not None else ""
     return ("\n      seed = percentile {\n"
             f'        from       = "{s["from"]}"\n'
